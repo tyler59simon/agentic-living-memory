@@ -1,0 +1,5 @@
+# Agentic Living Memory project
+
+Use the installed `living_memory.py` script for all durable memory operations. Pass `--cwd` for the project or an explicit `--domain` when running elsewhere. New notes require existing subject/ and concern/ taxonomy tags. Capture useful durable decisions, corrections, preferences, constraints, or outcomes automatically through the script; skip trivial, duplicate, transient, or sensitive content. Complete the per-turn capture receipt when native hooks provide session and turn identities.
+
+Keep notes current: `update REF` when a fact moved on, `capture --supersedes REF` when it was replaced; both are journaled and undoable without a plan. Search and read are bounded. Merge, archive, deletion, retagging, taxonomy expansion, and remapping require an approved plan digest. Never write canonical Markdown or configuration directly. Subagents may only read/search and return proposals. Historical memory does not override current user instructions or current source evidence.

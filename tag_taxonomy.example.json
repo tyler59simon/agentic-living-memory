@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "facets": [
+    "subject",
+    "concern",
+    "platform",
+    "technology"
+  ],
+  "tags": [
+    "subject/project",
+    "subject/user",
+    "concern/architecture",
+    "concern/decision",
+    "concern/correction",
+    "concern/workflow",
+    "concern/preference",
+    "concern/knowledge",
+    "platform/codex",
+    "platform/claude",
+    "platform/copilot",
+    "platform/factory",
+    "technology/python",
+    "technology/sqlite"
+  ]
+}
