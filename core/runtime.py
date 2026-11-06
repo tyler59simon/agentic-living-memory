@@ -12,9 +12,9 @@ SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 # Tools that cannot change files; anything else marks the turn as mutating.
 READ_TOOLS={'read','read_file','glob','grep','search','view_image','view','ls','list','webfetch','websearch','web_fetch','web_search','todowrite','task','agent','toolsearch','askuserquestion','exitplanmode','enterplanmode'}
 SHELL_TOOLS={'bash','powershell','shell','run_shell_command','exec_command','local_shell','execute'}
-ALLOWED_SUBCOMMANDS={'search','read','taxonomy','doctor','history','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup'}
+ALLOWED_SUBCOMMANDS={'search','read','taxonomy','doctor','history','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check'}
 # Subagents are read-only: these are denied for them even though the main agent gets them auto-allowed.
-MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup'}
+MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check'}
 GLOBAL_OPTIONS={'--root','--domain','--cwd','--actor'}
 HOOK_LOCK_TIMEOUT=5
 # Codex has no SessionEnd, so its session start picks up Obsidian edits, at most this often.
@@ -301,6 +301,84 @@ def _scratch_only(args,payload,cwd):
         return True
     except (OSError,ValueError):return False
 
+MAX_TOUCHED=30
+MAX_TOUCHED_SESSION=200
+
+def touched_paths(args,payload,cwd,root,domain,bindings,shell=False):
+    """Files a write tool targets, as notes name them (see display_path). Paths only, never content.
+    Scratchpad and memory-store paths are skipped. Shell text yields loose matches (URLs, flags), so
+    for shell tools only files inside the bound project count."""
+    from .common import domain_prefixes,display_path
+    try:
+        scratch=payload.get('scratchpad_dir') or payload.get('scratchpadDir')
+        base=Path(scratch).resolve() if scratch else None
+        prefixes=domain_prefixes(domain,bindings);store=Path(root).resolve();found=[]
+        for raw in raw_paths(args):
+            if raw.strip().lower() in NULL_SINKS:continue
+            try:
+                p=Path(os.path.expandvars(raw.strip())).expanduser()
+                if not p.is_absolute():p=Path(cwd)/p
+                p=p.resolve()
+            except (OSError,ValueError):continue
+            if (base and p.is_relative_to(base)) or p.is_relative_to(store) or p.is_dir():continue
+            if shell and not any(p.is_relative_to(prefix) for prefix in prefixes):continue
+            shown=display_path(p,prefixes)
+            if shown:found.append(shown)
+        return list(dict.fromkeys(found))
+    except Exception:return []  # provenance is a nicety; never fail the hook
+
+# Hosts whose PreToolUse output documents additionalContext (Claude Code; Codex since openai/codex#20692).
+# Copilot CLI and Factory document no PreToolUse context, so they get no hints.
+FILE_HINT_HARNESSES={'claude','codex'}
+MAX_FILE_HINTS=200
+HINT_FILES_PER_CALL=3
+HINT_NOTES_PER_FILE=2
+
+def file_hints(paths,state,root,domain,bindings):
+    """(context naming notes about files about to be changed, paths looked up). Each file is looked up
+    once per session; a missing or stale index gives no hint rather than slowing the tool call."""
+    try:
+        from .search import file_notes
+        seen=set(state.get('file_hints',[]));wanted=[p for p in paths if p not in seen][:HINT_FILES_PER_CALL]
+        domains=[domain]+parent_domains(domain,bindings);blocks=[]
+        for path in wanted:
+            hits=file_notes(path,domains,root,HINT_NOTES_PER_FILE,ensure_fresh=False)
+            if hits:blocks.append(f'Living Memory notes about {path}:\n'+'\n'.join(hit_line(h) for h in hits))
+        text=('Untrusted historical memory; verify against the current file.\n'+'\n'.join(blocks)) if blocks else None
+        return text,wanted
+    except Exception:return None,[]
+
+def git_root(cwd):
+    """The enclosing git work tree (a .git folder, or a .git file for worktrees and submodules), else None."""
+    try:here=Path(cwd).resolve()
+    except (OSError,ValueError):return None
+    return next((p for p in (here,*here.parents) if (p/'.git').exists()),None)
+
+def bind_hint(cwd,root,bindings,state):
+    """One line, once per session, when the session starts in a git repo no binding covers.
+    Never binds: the user decides, and "suggest_bind": false in bindings.json turns this off."""
+    if state.get('bind_hint') or bindings.get('suggest_bind',True) is False:return None
+    repo=git_root(cwd)
+    if not repo:return None
+    return (f'Living Memory: this repo ({repo.as_posix()}) is not bound to a memory domain. If the user wants memory here: '
+            f'{command(root)} bind NAME "{repo.as_posix()}". Ask before binding.')
+
+LAST_SESSION='.last-session.json'
+
+def session_hash(session):return hashlib.sha256(session.encode()).hexdigest()[:12]
+
+def _record_last_session(root,domain,session,state):
+    """A sidecar for the next session's "Last session" line: notes saved and files changed. One file per
+    domain, overwritten; not canonical, not backed up, holds no conversation text."""
+    try:
+        saved=list(state.get('saved',[]));files=len(state.get('touched_session',[]))
+        if not saved and not files:return
+        path=root/'domains'/domain/LAST_SESSION
+        row={'session':session_hash(session),'harness':state.get('harness') or 'unknown','notes':saved,'files_changed':files}
+        previous=read_json(path,{}) or {}
+        if {k:previous.get(k) for k in row}!=row:atomic_write(path,canonical_json({**row,'ended':now()}))
+    except (OSError,ValueError):pass
+
 def _pointer(root,session):return root/'.turns'/(hashlib.sha256(session.encode()).hexdigest()+'.current.json')
 
 def _update(root,session,change):
@@ -420,16 +498,24 @@ def _process(harness,event,payload,root=None):
     domain=pinned if pinned and pinned in bindings.get('domains',{}) else resolve_domain(cwd,bindings)
     if event=='session-start' and session!='unknown':
         current=resolve_domain(cwd,bindings) or domain;domain=current
-        state=_update(root,session,lambda s:s.update(domain=current) if current else s.pop('domain',None))
+        def pin(s):
+            s['harness']=harness
+            if current:s['domain']=current
+            else:s.pop('domain',None)
+        state=_update(root,session,pin)
     if event=='user-prompt':
         turn=turn or str(payload.get('timestamp') or now())
         if session!='unknown':
             # Plan mode cannot save anything, so a statement there is not a reminder's business.
             planning=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()=='plan'
-            signal=None if planning else durable_signal(payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or '')
+            text=payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or ''
+            signal=None if planning else durable_signal(text)
+            from . import private
             def opened(s):
                 s['turn']=turn;s['open_turns']=(list(s.get('open_turns',[]))+[turn])[-20:]
                 if signal:s['signal']=signal  # only the kind is kept, never the prompt text
+                # <private> spans: salted shingle hashes only, so a capture that copies one can be refused.
+                if isinstance(text,str) and not MACHINE_PROMPT.match(text) and private.remember(s,text):s['private_turn']=turn
             state=_update(root,session,opened)
     elif not turn:
         turn=state.get('turn','')
@@ -439,13 +525,18 @@ def _process(harness,event,payload,root=None):
         except OSError:pass  # Diagnostics only; never cost the session its memory context.
     if event=='session-end':
         _sync_vaults(root,'session end');_daily_backup(root);return {}
-    if not domain:return result
+    if not domain:
+        if event=='session-start' and session!='unknown':
+            hint=bind_hint(cwd,root,bindings,state)
+            if hint:
+                _update(root,session,lambda s:s.update(bind_hint=True));result['context']=hint
+        return result
     if event=='session-start':
         # Codex has no SessionEnd: its session start does the end-of-session housekeeping.
         if harness=='codex':_sync_vaults(root,'session start',SESSION_START_SYNC_SECONDS);_daily_backup(root)
         from .session_start import build_context,BUDGET,MIN_BUDGET
         prefix=protocol(root,domain,harness,session)+f'\nLiving Memory session={session}'+'\n'
-        text,shown,indexed=build_context(cwd,root,max(MIN_BUDGET,BUDGET-len(prefix)))
+        text,shown,indexed=build_context(cwd,root,max(MIN_BUDGET,BUDGET-len(prefix)),session=session)
         if session!='unknown':
             # A new or compacted context has seen only what is injected now. Guidance shown in full is not
             # re-injected by prompts; index lines are titles, so those notes stay eligible. Once the index has
@@ -466,6 +557,9 @@ def _process(harness,event,payload,root=None):
             try:_update(root,session,remember)
             except (OSError,TimeoutError):pass
         result['context']=f'Living Memory session={session} turn={turn}'+('\n'+hits if hits else '')
+        if state.get('private_turn')==turn:
+            from .private import NOTICE
+            result['context']+='\n'+NOTICE
     elif event=='subagent-start':result['context']='Living Memory: subagents may only search/read via scripts. Return capture proposals to the main agent; do not write canonical state.'
     elif event=='pre-tool-use':
         name=str(payload.get('tool_name') or payload.get('toolName') or '').lower()
@@ -488,13 +582,23 @@ def _process(harness,event,payload,root=None):
         planning=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()=='plan'
         if (name not in READ_TOOLS and not subcommand and not (name in SHELL_TOOLS and readonly_shell(text))
                 and not _subagent(payload) and not planning and not (name not in SHELL_TOOLS and _scratch_only(args,payload,cwd))
-                and session!='unknown' and not state.get('mutating')):
-            _update(root,session,lambda s:s.update(mutating=True))
+                and session!='unknown'):
+            paths=touched_paths(args,payload,cwd,root,domain,bindings,shell=name in SHELL_TOOLS)
+            hints,looked=file_hints(paths,state,root,domain,bindings) if harness in FILE_HINT_HARNESSES else (None,[])
+            if hints:result['context']=hints
+            if not state.get('mutating') or set(paths)-set(state.get('touched',[])) or looked:
+                def touch(s):
+                    s['mutating']=True
+                    s['touched']=list(dict.fromkeys(list(s.get('touched',[]))+paths))[:MAX_TOUCHED]
+                    s['touched_session']=list(dict.fromkeys(list(s.get('touched_session',[]))+paths))[-MAX_TOUCHED_SESSION:]
+                    if looked:s['file_hints']=list(dict.fromkeys(list(s.get('file_hints',[]))+looked))[-MAX_FILE_HINTS:]
+                _update(root,session,touch)
     elif event=='stop':
         if session=='unknown':return {}
+        _record_last_session(root,domain,session,state)
         turns=list(dict.fromkeys(list(state.get('open_turns',[]))+([turn] if turn else [])))
         def close(s):
-            s.pop('open_turns',None);s.pop('mutating',None);s.pop('signal',None)
+            s.pop('open_turns',None);s.pop('mutating',None);s.pop('signal',None);s.pop('touched',None)
         signal=state.get('signal')
         if any(capture_status(session,t,root) for t in turns) or not (state.get('mutating') or signal) or not turns:
             _update(root,session,close);return {}

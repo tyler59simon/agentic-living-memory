@@ -78,6 +78,40 @@ def find_secret(text):
     return None
 
 
+PRIVATE_KEY_END = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
+
+
+def find_secrets(text):
+    """Every credential-looking span as (kind, start, end), in text order, without overlaps.
+    For key = value assignments only the value is covered, so the key name stays readable."""
+    spans = []
+    for name, pattern in SECRET_PATTERNS:
+        for m in pattern.finditer(text):
+            end = m.end()
+            if name == "private key":
+                # The header only marks the block: cover the key material through its END line (or the rest of the text).
+                closing = PRIVATE_KEY_END.search(text, m.end())
+                end = closing.end() if closing else len(text)
+            spans.append((name, m.start(), end))
+    for match in ASSIGNMENT.finditer(text):
+        value = match[1]
+        if not PLACEHOLDER.match(value) and (re.search(r"[0-9]", value) or re.search(r"[^A-Za-z]", value)):
+            spans.append(("credential assignment", match.start(1), match.end(1)))
+    result = []
+    for span in sorted(spans, key=lambda s: (s[1], -s[2])):
+        if not result or span[1] >= result[-1][2]:
+            result.append(span)
+    return result
+
+
+def redact(text):
+    """(text with each credential replaced by <redacted type='KIND'/>, kinds replaced)."""
+    spans = find_secrets(text)
+    for kind, start, end in reversed(spans):
+        text = text[:start] + f"<redacted type='{kind}'/>" + text[end:]
+    return text, [kind for kind, _, _ in spans]
+
+
 def now():
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
@@ -216,8 +250,29 @@ def parse_text(raw, path=""):
 
 
 # Frontmatter order: the properties a person reads first, then bookkeeping.
-FRONT_KEYS = ("title", "type", "status", "tags", "context")
-SYSTEM_KEYS = ("id", "domain", "created", "updated", "review_by", "supersedes", "superseded_by", "schema_version", "capture_key")
+FRONT_KEYS = ("title", "type", "status", "tags", "context", "files")
+SYSTEM_KEYS = ("id", "domain", "created", "updated", "review_by", "supersedes", "superseded_by", "schema_version", "capture_key", "origin")
+MAX_FILES = 30
+
+
+def clean_files(value):
+    """The `files` property as a list of forward-slash paths (Obsidian may store one path as text)."""
+    if value in (None, ""):
+        return []
+    items = [value] if isinstance(value, str) else value
+    if not isinstance(items, list):
+        raise ValueError("files must be a list of paths")
+    result = []
+    for item in items:
+        text = str(item).strip().replace("\\", "/")
+        if text.startswith("./"):
+            text = text[2:]
+        if not text:
+            continue
+        if len(text) > 300 or "\n" in text:
+            raise ValueError("files entries must be single paths of at most 300 characters")
+        result.append(text)
+    return list(dict.fromkeys(result))[:MAX_FILES]
 
 
 def serialize(note):
@@ -305,6 +360,8 @@ def validate(note, domain, root=None, new=False):
     tags = note.get("tags", [])
     if not isinstance(tags, list) or any(not isinstance(t, str) for t in tags):
         raise ValueError("Tags must be a string list")
+    if "files" in note and (not isinstance(note["files"], list) or any(not isinstance(f, str) for f in note["files"])):
+        raise ValueError("files must be a list of paths")
     taxonomy = read_json(Path(root or memory_root()) / "tag_taxonomy.json", {"tags": []})
     known = taxonomy.get("tags", []) if isinstance(taxonomy, dict) else taxonomy
     if isinstance(known, dict):
@@ -321,7 +378,7 @@ def validate(note, domain, root=None, new=False):
         raise ValueError("Initialize the controlled taxonomy before capturing notes")
     found = find_secret("\n".join(str(note.get(k) or "") for k in ("title", "body", "context")))
     if found:
-        raise ValueError(f"Potential credential detected ({found[0]} at character {found[1]}); remove it or replace it with a placeholder such as <REDACTED>")
+        raise ValueError(f"Potential credential detected ({found[0]} at character {found[1]}); remove it, replace it with a placeholder such as <REDACTED>, or pass --redact")
     if note.get("status") == "superseded" and not note.get("superseded_by"):
         raise ValueError("Supersession requires a successor note ID")
 

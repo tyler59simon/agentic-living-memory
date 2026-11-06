@@ -26,6 +26,68 @@ def _turn(root,session,turn):
     if not value.get('turn'):raise ValueError('No prompt recorded for this session yet; pass --turn')
     return value['turn']
 
+def _session_state(root,session):
+    """The hooks' state for a session ({} when there is none or it is unreadable)."""
+    if not session:return {}
+    from .runtime import _pointer
+    try:value=read_json(_pointer(root,session),{})
+    except ValueError:return {}
+    return value if isinstance(value,dict) else {}
+
+def _session_domain(root,session):
+    """The domain the hooks pinned for this session, if it is still bound."""
+    pinned=_session_state(root,session).get('domain')
+    return pinned if pinned and pinned in load_bindings(root).get('domains',{}) else None
+
+def _origin(root,session):
+    """Where a note came from: harness and a hash of the session, never the session ID itself."""
+    from .runtime import session_hash
+    return f"{_session_state(root,session).get('harness') or 'unknown'}:{session_hash(session)}"
+
+def _file_args(args,domain,root,existing=()):
+    """(files to store or None when unchanged, suggested files) from --file/--files and this turn's edits."""
+    from .common import domain_prefixes,display_path
+    if getattr(args,'files',None)=='auto' and not args.session:raise ValueError('--files auto needs --session')
+    touched=_session_state(root,args.session).get('touched',[]) if args.session else []
+    if not args.file and not args.files:return None,[t for t in touched if t not in existing]
+    prefixes=domain_prefixes(domain,load_bindings(root));files=[] if args.files=='none' else list(existing)
+    for value in args.file or []:
+        path=Path(value).expanduser()
+        files.append(display_path(path.resolve(),prefixes) or value if path.is_absolute() else value)
+    if args.files=='auto':files+=touched
+    from .repository import clean_files
+    files=clean_files(files)
+    return files,[t for t in touched if t not in files]
+
+def _file_flags(p):
+    p.add_argument('--file',action='append',help='A file this note is about, relative to the project (repeatable)')
+    p.add_argument('--files',choices=['auto','none'],help="auto: add the files changed this turn (needs --session); none: clear the list")
+
+FACET_FLAGS=('subject','concern','platform','technology')
+def _facet_tags(args):
+    """--subject x and --subject subject/x both mean subject/x."""
+    return [v if v.startswith(f+'/') else f+'/'+v for f in FACET_FLAGS for v in (getattr(args,f) or [])]
+
+# Defaults when a capture names no subject/ or concern/ tag; used only if the tag is in the taxonomy.
+SUBJECT_BY_TYPE={'preference':'subject/user'}
+CONCERN_BY_TYPE={'decision':'concern/decision','preference':'concern/preference','bug':'concern/bug','knowledge':'concern/knowledge','policy':'concern/workflow'}
+def _infer_tags(item,root):
+    from .notes import taxonomy
+    known=taxonomy(root);tags=list(item.get('tags') or []);kind=item.get('type') or 'knowledge';added=[]
+    for facet,tag in (('subject',SUBJECT_BY_TYPE.get(kind,'subject/project')),('concern',CONCERN_BY_TYPE.get(kind))):
+        if tag and tag in known and not any(t.startswith(facet+'/') for t in tags):tags.append(tag);added.append(tag)
+    item['tags']=tags
+    return added
+
+def _redact(values):
+    """Replace credentials in title, body and context; [{kind, field}] for what was replaced."""
+    from .repository import redact
+    found=[]
+    for field in ('title','body','context'):
+        if isinstance(values.get(field),str):
+            values[field],kinds=redact(values[field]);found+=[{'kind':k,'field':field} for k in kinds]
+    return found
+
 def _receipt(args,domain,note_id,root):
     """Updating or superseding is a memory decision for the turn, like a capture."""
     if getattr(args,'session',None):
@@ -104,15 +166,19 @@ def main(argv=None):
     p=sub('setup');p.add_argument('--location',type=Path);p.add_argument('--non-interactive',action='store_true');p.add_argument('--source',type=Path);p.add_argument('--apply-plan');p.add_argument('--inspect-plan');p.add_argument('--expected-plan-sha256')
     p=sub('bind');p.add_argument('name');p.add_argument('prefix',nargs='+')
     p=sub('capture');p.add_argument('items',nargs='*');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='');p.add_argument('--prefix',help='Compatibility assertion only; must equal the uppercase type');p.add_argument('--type',choices=NOTE_TYPES,default='knowledge');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help='REF of a note this one replaces; it is retired in the same transaction');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk notes get a default')
-    for facet in ('subject','concern','platform','technology'):p.add_argument('--'+facet,action='append',default=[])
-    sections_args(p)
-    p=sub('search');p.add_argument('query');p.add_argument('--scope',choices=['active','fallback','all'],default='fallback');p.add_argument('--limit',type=int,default=5);p.add_argument('--filter',action='append',default=[]);p.add_argument('--rebuild',action='store_true')
+    for facet in FACET_FLAGS:p.add_argument('--'+facet,action='append',default=[])
+    p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
+    sections_args(p);_file_flags(p)
+    p=sub('search');p.add_argument('query',nargs='?',default='');p.add_argument('--file',help='Notes about this file or folder: listed in their files property, or named in the body');p.add_argument('--scope',choices=['active','fallback','all'],default='fallback');p.add_argument('--limit',type=int,default=5);p.add_argument('--filter',action='append',default=[]);p.add_argument('--rebuild',action='store_true')
     p=sub('read');p.add_argument('reference');p.add_argument('--max-chars',type=int,default=16000);p.add_argument('--metadata-only',action='store_true')
     p=sub('update');p.add_argument('reference');p.add_argument('--title');p.add_argument('--body');p.add_argument('--body-file',type=Path);p.add_argument('--tag',action='append');p.add_argument('--type',choices=NOTE_TYPES);p.add_argument('--context');p.add_argument('--review-by');p.add_argument('--expected-revision');p.add_argument('--payload-file',type=Path);p.add_argument('--session');p.add_argument('--turn')
-    for facet in ('subject','concern','platform','technology'):p.add_argument('--'+facet,action='append')
-    sections_args(p)
+    for facet in FACET_FLAGS:p.add_argument('--'+facet,action='append')
+    p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
+    sections_args(p);_file_flags(p)
     p=sub('supersede');p.add_argument('reference');p.add_argument('--by',required=True,help='REF of the note that replaces it');p.add_argument('--session');p.add_argument('--turn')
     p=sub('review');p.add_argument('--limit',type=int,default=20)
+    p=sub('open');p.add_argument('--limit',type=int,default=50)
+    p=sub('check');p.add_argument('reference');p.add_argument('item',nargs='?',help='Text of the Action Item: exact, or a unique part of it');p.add_argument('--index',type=int,help='1-based position among the note\'s Action Items, as open lists it');p.add_argument('--undo',action='store_true',help='Untick instead');p.add_argument('--session');p.add_argument('--turn')
     p=sub('plan');p.add_argument('action',choices=['update','rename','retag','resolve','reopen','archive','supersede','delete']);p.add_argument('reference');p.add_argument('--payload-file',type=Path)
     p=sub('apply');p.add_argument('plan_id');p.add_argument('--expected-plan-sha256',required=True)
     p=sub('inspect-plan');p.add_argument('plan_id')
@@ -159,13 +225,13 @@ def main(argv=None):
         root=resolve_root(args.root)[0]
         cmd=args.command
         try:
-            domain=args.domain or resolve_domain(cwd,load_bindings(root))
+            domain=args.domain or _session_domain(root,getattr(args,'session',None)) or resolve_domain(cwd,load_bindings(root))
             if domain:domain=canonical_domain(domain,root)
         except ValueError:
             # Snapshots exist to repair a damaged store, so restoring must not depend on readable bindings.
             if cmd not in {'restore-plan','inspect-plan','apply','backup','history'}:raise
             domain=None
-        if args.actor=='subagent' and cmd not in {'search','read','query','doctor','validate','history'}:raise ValueError('Subagents are read-only; return mutation proposals to the main agent')
+        if args.actor=='subagent' and cmd not in {'search','read','query','doctor','validate','history','open'}:raise ValueError('Subagents are read-only; return mutation proposals to the main agent')
         if cmd=='bind':
             from .init_domain import init_domain
             init_domain(args.name,args.prefix,root);result={'ok':True,'domain':args.name,'status':'bound'}
@@ -180,13 +246,15 @@ def main(argv=None):
                 else:raise ValueError('Use title body, domain title body, --title with --summary/--detail, or a JSON payload')
                 body=_sectioned(args,body) or body
                 tags=args.tag+[t.strip() for t in args.tags.split(',') if t.strip()]
-                tags += [facet+'/'+value for facet in ('subject','concern','platform','technology') for value in getattr(args,facet)]
+                tags += _facet_tags(args)
                 data={'title':title,'body':body,'tags':tags,'prefix':args.prefix,'type':args.type,'context':args.context,'idempotency_key':args.idempotency_key,'domain':domain}
                 if args.turn and not args.session:raise ValueError('--turn needs --session')
                 if args.session:data.update(session_id=args.session,turn_id=_turn(root,args.session,args.turn))
                 if args.allow_similar:data['allow_similar']=True
                 if args.supersedes:data['supersedes']=args.supersedes
                 if args.review_by:data['review_by']=args.review_by
+                files,_=_file_args(args,domain,root)
+                if files:data['files']=files
             else:data=_payload(args)
             batch=data if isinstance(data,list) else [data]
             if not 1<=len(batch)<=20:raise ValueError('Capture batch must contain 1..20 items')
@@ -196,7 +264,16 @@ def main(argv=None):
                     item=dict(item);selected=item.pop('domain',domain);session=item.pop('session_id',None);turn=item.pop('turn_id',None)
                     if session and not turn:turn=_turn(root,session,None)
                     if not selected:raise ValueError('Project is unbound; pass --domain or bind it')
-                    outcome=capture(domain=selected,root=root,**item);outcome.pop('path',None);results.append(outcome)
+                    inferred=_infer_tags(item,root);redacted=_redact(item) if args.redact else []
+                    if session:
+                        from .private import check as private_check
+                        private_check(_session_state(root,session),item);item['origin']=_origin(root,session)
+                    outcome=capture(domain=selected,root=root,**item);outcome.pop('path',None)
+                    if inferred:outcome['inferred_tags']=inferred
+                    if redacted:outcome['redacted']=redacted
+                    suggested=[t for t in _session_state(root,session).get('touched',[]) if t not in (item.get('files') or [])] if session else []
+                    if suggested and outcome.get('status')=='created':outcome['suggested_files']=suggested
+                    results.append(outcome)
                     if session and turn:
                         from .capture import finalize
                         finalize(session,turn,[selected+':'+outcome['id']],root)
@@ -210,7 +287,22 @@ def main(argv=None):
             from .runtime import parent_domains
             primary=list(dict.fromkeys([domain]+parent_domains(domain,config)+globals_));foreign=scope.get('foreign_domains',[])
             filters=dict(value.split('=',1) for value in args.filter)
-            if set(filters)-{'prefix','status','tag','type'}:raise ValueError('Unsupported search filter')
+            if set(filters)-{'prefix','status','tag','type','file'}:raise ValueError('Unsupported search filter')
+            if args.file:
+                from .common import domain_prefixes,display_path
+                given=Path(args.file).expanduser()
+                wanted=(display_path(given.resolve(),domain_prefixes(domain,config)) or args.file) if given.is_absolute() else args.file
+                if not args.query.strip():
+                    # Lists notes about a file; --filter narrows a query's results, so it needs a query.
+                    if filters:raise ValueError('--filter needs a query; with --file alone, use --scope to choose domains')
+                    from .search import file_notes
+                    domains=sorted(config.get('domains',{})) if args.scope=='all' else primary
+                    hits=file_notes(wanted,domains,root,max(1,min(100,args.limit)));fallback=False
+                    if not hits and args.scope=='fallback' and foreign:domains=foreign;hits=file_notes(wanted,domains,root,max(1,min(100,args.limit)));fallback=True
+                    result={'ok':True,'mode':'file','file':wanted,'domains':domains,'fallback':fallback,'results':hits}
+                    print(json.dumps(result,ensure_ascii=False,separators=(',',':')));return 0
+                filters['file']=wanted
+            if not args.query.strip():raise ValueError('search needs a query, or --file PATH')
             def run(domains):
                 return search_domains(args.query,domains,args.limit,root,filters or None,args.rebuild)
             domains=sorted(load_bindings(root).get('domains',{})) if args.scope=='all' else primary
@@ -226,7 +318,7 @@ def main(argv=None):
         elif cmd=='update':
             from .notes import change
             d,n=_reference(args.reference,domain,root)
-            values=_payload(args) if args.payload_file or not any(getattr(args,k) is not None for k in ('title','body','body_file','tag','type','context','review_by','subject','concern','platform','technology')+SECTION_ARGS) else {}
+            values=_payload(args) if args.payload_file or not any(getattr(args,k) is not None for k in ('title','body','body_file','tag','type','context','review_by','file','files','subject','concern','platform','technology')+SECTION_ARGS) else {}
             if args.title is not None:values['title']=args.title
             if args.body is not None:values['body']=args.body
             if args.body_file:values['body']=args.body_file.read_text(encoding='utf-8-sig')
@@ -235,12 +327,21 @@ def main(argv=None):
                 from .notes import find_note
                 base=values['body'] if 'body' in values else find_note(n,d,root)[1]['body']
                 values['body']=_sectioned(args,base)
-            tags=(args.tag or [])+[f+'/'+v for f in ('subject','concern','platform','technology') for v in (getattr(args,f) or [])]
+            tags=(args.tag or [])+_facet_tags(args)
             if tags:values['tags']=tags
             for key in ('type','context','review_by'):
                 if getattr(args,key) is not None:values[key]=getattr(args,key)
             revision=values.pop('expected_revision',None) or args.expected_revision
+            redacted=_redact(values) if args.redact else []
+            if args.session:
+                from .private import check as private_check
+                private_check(_session_state(root,args.session),values)
+            from .notes import find_note
+            files,suggested=_file_args(args,d,root,find_note(n,d,root)[1].get('files') or [])
+            if files is not None:values['files']=files
             result=change(n,d,'update',root,revision,**values)
+            if redacted:result['redacted']=redacted
+            if suggested:result['suggested_files']=suggested
             _receipt(args,d,n,root)
         elif cmd=='supersede':
             from .notes import change
@@ -255,6 +356,21 @@ def main(argv=None):
             due.sort(key=lambda n:(str(n.get('review_by') or n.get('updated',''))))
             result={'ok':True,'domain':domain,'due':len(due),'notes':[{'ref':f"{domain}:{n['id']}",'title':n['title'],'type':n.get('type'),'updated':str(n.get('updated',''))[:10],'review_by':n.get('review_by')} for n in due[:max(1,min(100,args.limit))]],
                     'hint':'For each note: update it if it is still true (this resets its review date), supersede it if it was replaced, or ask for an archive plan.'}
+        elif cmd=='open':
+            from .notes import open_work,short_ref
+            from .runtime import parent_domains
+            if not domain:raise ValueError('unbound_project')
+            found=open_work([domain]+parent_domains(domain,load_bindings(root)),root)
+            items=[{'ref':f"{d}:{n['id']}",'short_ref':short_ref(d,n['id']),'title':n['title'],'type':n['type'],'updated':str(n.get('updated',''))[:10],'index':i,'item':text}
+                   for d,n,listed in found for i,text in listed]
+            result={'ok':True,'domain':domain,'notes':len(found),'count':len(items),'items':items[:max(1,min(500,args.limit))],
+                    'hint':"Tick one when done: check REF 'item text' (or --index N); --undo unticks."}
+        elif cmd=='check':
+            from .notes import check_action
+            d,n=_reference(args.reference,domain,root)
+            if (args.item is None)==(args.index is None):raise ValueError('Name the item by its text or pass --index N (not both)')
+            result=check_action(n,d,root,args.item,args.index,not args.undo);result.pop('path',None)
+            if result.get('status')!='unchanged':_receipt(args,d,n,root)
         elif cmd=='plan':
             from .notes import change
             d,n=_reference(args.reference,domain,root);values=_payload(args) if args.payload_file or args.action in {'update','rename','retag','supersede'} else {}

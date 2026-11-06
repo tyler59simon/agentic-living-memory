@@ -196,6 +196,38 @@ def render(summary='', details=(), links=(), actions=(), done=(), important='', 
     return format_body('\n\n'.join(out))
 
 
+_ACTION = re.compile(r'^(\s*[-*+]\s*)\[([ xX])\](.*)$')
+
+
+def _action_lines(body):
+    """(formatted body lines, indexes of the checkbox lines in its Action Items section)."""
+    lines = format_body(body).split('\n')
+    found, inside = [], False
+    for i, line in enumerate(lines):
+        heading = _H2.match(line)
+        if heading:
+            inside = _key(heading[1]) == 'actions'
+        elif line.lstrip().startswith('>') and _CALLOUT.match(line):
+            inside = False
+        elif inside and _ACTION.match(line):
+            found.append(i)
+    return lines, found
+
+
+def action_items(body):
+    """[(done, text)] for each checkbox in Action Items, in written order."""
+    lines, found = _action_lines(body)
+    return [(_ACTION.match(lines[i])[2] != ' ', _ACTION.match(lines[i])[3].strip()) for i in found]
+
+
+def set_action(body, index, done=True):
+    """The body with one Action Item (0-based) ticked or unticked in place; nothing else moves."""
+    lines, found = _action_lines(body)
+    match = _ACTION.match(lines[found[index]])
+    lines[found[index]] = f"{match[1]}[{'x' if done else ' '}]{match[3]}"
+    return '\n'.join(lines)
+
+
 def without_actions(body):
     """The body minus its Action Items section (open steps are expected there)."""
     return '\n\n'.join(text for key, _, text in split(format_body(body)) if key != 'actions')

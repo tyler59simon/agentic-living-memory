@@ -38,7 +38,55 @@ def query_terms(text):
     return unique
 
 def domain_dir(domain,root=None):return Path(root or memory_root())/'domains'/canonical_domain(domain,Path(root or memory_root()))
-def _fingerprint(notes):return hashlib.sha256(json.dumps([(n.get('id'),n['revision']) for n in notes],sort_keys=True).encode()).hexdigest()
+# Bump when the index schema changes, so an index built by older code counts as stale and is rebuilt.
+INDEX_VERSION=2
+def _fingerprint(notes):return hashlib.sha256(json.dumps([INDEX_VERSION,[(n.get('id'),n['revision']) for n in notes]],sort_keys=True).encode()).hexdigest()
+
+def normalize_file(value):
+    """A path as the `files` property stores it: forward slashes, no ./ or trailing slash."""
+    text=str(value).strip().replace('\\','/')
+    while text.startswith('./'):text=text[2:]
+    return text.rstrip('/') if len(text)>1 else text
+
+def file_matches(files,wanted):
+    """True when a note's files include this path, or anything under it when it names a folder."""
+    wanted=normalize_file(wanted).casefold()
+    return any(f.casefold()==wanted or f.casefold().startswith(wanted+'/') for f in map(normalize_file,files or []))
+
+def mentions_file(body,path):
+    """A body names this path as a whole path token (backslashes count as slashes)."""
+    path=normalize_file(path)
+    if '/' not in path and '.' not in path:return False   # a bare word is not a file reference
+    pattern=r'(?<![\w./-])'+re.escape(path)+r'(?![\w/-])'
+    return bool(re.search(pattern,body.replace('\\','/'),re.I))
+
+def file_notes(path,domains,root=None,limit=2,ensure_fresh=True):
+    """Active notes about a file: those listing it in `files` first, then those naming it in the body;
+    newest first within each group. Hooks pass ensure_fresh=False and get nothing from a missing index."""
+    root=Path(root or memory_root()).resolve();ranked=[]
+    for domain in dict.fromkeys(domains):
+        try:folder=domain_dir(domain,root)
+        except ValueError:continue
+        if not (folder/'notes').is_dir():continue   # never create a domain folder just to look in it
+        db_path=folder/'search.sqlite3'
+        if ensure_fresh:
+            with store_lock(root):
+                if not _fresh(domain,root,inventory(domain,root,retired=True)):rebuild_index(domain,root)
+        if not db_path.exists():continue
+        try:
+            db=sqlite3.connect(db_path.as_uri()+'?mode=ro',uri=True)
+            try:rows=db.execute("SELECT id,title,type,updated,files,body FROM notes WHERE status='active'").fetchall()
+            finally:db.close()
+        except sqlite3.Error:continue
+        for note_id,title,kind,updated,files,body in rows:
+            try:listed=json.loads(files or '[]')
+            except ValueError:listed=[]
+            group=0 if file_matches(listed,path) else 1 if mentions_file(body,path) else None
+            if group is not None:
+                ranked.append((group,str(updated or ''),{'id':note_id,'domain':domain,'title':title,'type':kind or 'knowledge','updated':str(updated or '')[:10],
+                               'match':'files' if group==0 else 'body','snippet':snippet(body,terms(path))}))
+    ranked.sort(key=lambda r:r[1],reverse=True);ranked.sort(key=lambda r:r[0])
+    return [hit for _,_,hit in ranked[:max(1,limit)]]
 def rebuild_index(domain,root=None):
     root=Path(root or memory_root()).resolve(); directory=domain_dir(domain,root);directory.mkdir(parents=True,exist_ok=True)
     with store_lock(root):
@@ -46,12 +94,12 @@ def rebuild_index(domain,root=None):
         fd,name=tempfile.mkstemp(prefix='.search-',suffix='.sqlite3',dir=directory);os.close(fd)
         db=sqlite3.connect(name)
         try:
-            db.execute('CREATE TABLE notes(domain TEXT,id TEXT,prefix TEXT,title TEXT,type TEXT,status TEXT,created TEXT,updated TEXT,review_by TEXT,context TEXT,tags TEXT,body TEXT,path TEXT,sha256 TEXT,revision TEXT,schema_version INTEGER,PRIMARY KEY(domain,id))')
+            db.execute('CREATE TABLE notes(domain TEXT,id TEXT,prefix TEXT,title TEXT,type TEXT,status TEXT,created TEXT,updated TEXT,review_by TEXT,context TEXT,tags TEXT,body TEXT,path TEXT,sha256 TEXT,revision TEXT,schema_version INTEGER,files TEXT,PRIMARY KEY(domain,id))')
             db.execute("CREATE VIRTUAL TABLE notes_fts USING fts5(title,tags,body,tokenize='porter unicode61')")
             db.execute('CREATE TABLE metadata(fingerprint TEXT)')
             for n in notes:
-                values=(domain,n['id'],n.get('prefix','NOTE'),n['title'],n.get('type','knowledge'),n.get('status','active'),n.get('created'),n.get('updated'),n.get('review_by'),n.get('context',''),json.dumps(n.get('tags',[])),n['body'],n['path'],n['digest'],n['revision'],n.get('schema_version',1))
-                cursor=db.execute('INSERT INTO notes VALUES('+','.join('?'*16)+')',values)
+                values=(domain,n['id'],n.get('prefix','NOTE'),n['title'],n.get('type','knowledge'),n.get('status','active'),n.get('created'),n.get('updated'),n.get('review_by'),n.get('context',''),json.dumps(n.get('tags',[])),n['body'],n['path'],n['digest'],n['revision'],n.get('schema_version',1),json.dumps(n.get('files') or []))
+                cursor=db.execute('INSERT INTO notes VALUES('+','.join('?'*17)+')',values)
                 db.execute('INSERT INTO notes_fts(rowid,title,tags,body) VALUES(?,?,?,?)',(cursor.lastrowid,n['title'],' '.join(n.get('tags',[])),n['body']))
             db.execute('INSERT INTO metadata VALUES(?)',(_fingerprint(notes),));db.commit();db.close();os.replace(name,directory/'search.sqlite3')
         finally:
@@ -152,7 +200,7 @@ def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False):
         if filters and not fresh:raise ValueError('stale_filtered_index: rebuild required before filtered search')
         active=[n for n in notes if n.get('status','active')=='active']
         if filters:
-            active=[n for n in notes if all((v in n.get('tags',[]) if k=='tag' else n.get(k)==v) for k,v in filters.items())]
+            active=[n for n in notes if all((v in n.get('tags',[]) if k=='tag' else file_matches(n.get('files'),v) if k=='file' else n.get(k)==v) for k,v in filters.items())]
         ranked=[];engine='canonical_bm25';coverage={};common=set()
         if fresh:
             engine='fts5';db=sqlite3.connect((domain_dir(domain,root)/'search.sqlite3').as_uri()+'?mode=ro',uri=True)

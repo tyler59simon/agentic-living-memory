@@ -1,0 +1,35 @@
+{
+  "comment": "Hand-labelled near-duplicate title pairs. corpus stands in for the domain's other active titles (document frequencies); each pair adds its existing title to it. duplicate = the same subject, so capture should point at update/--supersedes.",
+  "corpus": [
+    "Webcam diagnosis on the Helios laptop",
+    "Release gotchas for the plugin",
+    "Sandbox workspace memory scope",
+    "Living Memory protocol lives in managed instruction blocks",
+    "GCP icon sources for diagrams",
+    "Claude calling Codex for code review",
+    "Deploy with install.py from the source repo",
+    "Search ranking uses BM25 weights",
+    "Session start budget and degradation order",
+    "Obsidian vault sync conflicts",
+    "Backup retention keeps seven snapshots",
+    "Hook timeouts on Windows"
+  ],
+  "pairs": [
+    {"new": "rdlp-api release checklist", "existing": "rdlp-plugin release checklist", "label": "distinct", "why": "different component"},
+    {"new": "Architecture plugin B decisions", "existing": "Architecture plugin decisions", "label": "distinct", "why": "a dropped stop word must not hide the added identifier"},
+    {"new": "Living Memory roadmap: Phase 2 complete", "existing": "Living Memory roadmap: Phase 1 complete", "label": "distinct", "why": "different phase"},
+    {"new": "Python 3.15 upgrade notes", "existing": "Python 3.14 upgrade notes", "label": "distinct", "why": "version"},
+    {"new": "How we deploy the docs site", "existing": "Why we deploy the docs site", "label": "distinct", "why": "different question"},
+    {"new": "Cache invalidation policy", "existing": "Cache invalidation rules", "label": "distinct", "why": "a reworded subject is not provably the same; allow it"},
+    {"new": "Postgres connection pool sizing", "existing": "Redis connection pool sizing", "label": "distinct", "why": "different system"},
+    {"new": "Hook timeouts", "existing": "Hook timeout", "label": "duplicate", "why": "plural"},
+    {"new": "Hook latency baseline measured", "existing": "Hook latency baseline", "label": "duplicate", "why": "added ordinary word"},
+    {"new": "The session start budget and its degradation order", "existing": "Session start budget and degradation order", "label": "duplicate", "why": "function words only"},
+    {"new": "Obsidian vault sync conflicts resolved", "existing": "Obsidian vault sync conflicts", "label": "duplicate", "why": "same subject, one more word"},
+    {"new": "Webcam diagnosis on the Helios laptop", "existing": "Webcam diagnosis on the Helios laptop", "label": "duplicate", "why": "exact"},
+    {"new": "Search ranking using BM25 weights", "existing": "Search ranking uses BM25 weights", "label": "duplicate", "why": "inflection"},
+    {"new": "Backup retention keeps 30 snapshots", "existing": "Backup retention keeps seven snapshots", "label": "distinct", "why": "the retention changed: a different fact"},
+    {"new": "File patch handling", "existing": "File path handling", "label": "distinct", "why": "a shared prefix is not an inflection"},
+    {"new": "Claude calling Codex for plan review", "existing": "Claude calling Codex for code review", "label": "distinct", "why": "substituted subject word"}
+  ]
+}

@@ -1,6 +1,6 @@
 # Factory Droid adapter
 
-Generate a native setup plan with `py -3.15 ~/.codex/agentic-living-memory/integrations/setup.py factory --home PATH`, then apply the exact reviewed plan digest.
+Generate a native setup plan with `py -3.15 $env:LOCALAPPDATA/agentic-living-memory/app/integrations/setup.py factory --home PATH`, then apply the exact reviewed plan digest.
 
 The default is instructions only: a full protocol block in `~/.factory/AGENTS.md`. That mode has no session or turn identity, so it requests no per-turn receipts.
 

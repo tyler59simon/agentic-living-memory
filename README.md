@@ -11,13 +11,15 @@ Python 3.10+ with SQLite FTS5 is required. Python 3.15 is supported; use your se
 ```powershell
 py -3.15 living_memory.py setup
 py -3.15 install.py
+# then, from the installed copy, for each harness (the install plan lists the exact commands):
+py -3.15 $env:LOCALAPPDATA/agentic-living-memory/app/integrations/setup.py claude --hooks
 py -3.15 living_memory.py bind my-project C:/path/to/project
 py -3.15 living_memory.py doctor --cwd C:/path/to/project
 ```
 
 Setup suggests `~/LivingMemory` and records your choice in `~/.config/agentic-living-memory/config.json`. All harness adapters read this same pointer. The Git checkout and harness packages contain software; the selected folder contains your memory. Existing-store relocation produces an exact-hash approval plan and retains the source backup. See [installation](INSTALLATION.md).
 
-The direct installer owns only its package and hook handlers, preserves unrelated configuration, and journals package and hook changes together. Native hook trust must be reviewed in Codex. Only Codex is installed by this command; other harness setup is optional.
+The installer puts the package in its own per-user folder (`%LOCALAPPDATA%\agentic-living-memory\app` on Windows, `~/.local/lib/agentic-living-memory/app` elsewhere), so no harness depends on another's folder. `integrations/setup.py HARNESS --hooks` then wires Claude Code, Codex, Copilot or Factory. It owns only its handlers and instruction block, preserves unrelated configuration, and journals its changes. Native hook trust must be reviewed in each harness. Upgrading from an install inside `~/.codex` is covered in [installation](INSTALLATION.md#upgrading-from-a-codex_home-install).
 
 Notes are created by the script, including when the main agent decides automatically that a turn produced useful durable knowledge:
 

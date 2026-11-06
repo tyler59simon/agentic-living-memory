@@ -4,12 +4,12 @@ import argparse,json,re,uuid
 from datetime import date
 from pathlib import Path
 from .common import memory_root,safe_domain,canonical_domain
-from .repository import inventory,parse,serialize,validate,read_json,transaction,reconcile,store_lock,now,digest
+from .repository import inventory,parse,serialize,validate,read_json,transaction,reconcile,store_lock,now,digest,clean_files
 from .note_types import prefix_for,normalize,effective_type,default_review_by
 from .note_format import format_body,without_actions,ACTION_TYPES
 
 # Fields an agent may change directly (journaled and undoable, no plan) with `update`.
-UPDATABLE=('title','body','tags','type','context','review_by')
+UPDATABLE=('title','body','tags','type','context','review_by','files')
 
 def slug(value):return re.sub(r'[^a-z0-9]+','-',value.casefold()).strip('-')[:64] or 'note'
 def taxonomy(root):
@@ -113,15 +113,69 @@ def quality_warnings(note):
         if pattern.search(text):found.append(message)
     return found
 
+# Below this many active notes, document frequencies say little; the overlap rule above is used instead.
+IDF_MIN_NOTES=8
+
+def _identifier(token):
+    """Version numbers, single letters and short codes name a different thing: "plugin B", "v2", "Phase 3"."""
+    return len(token)<=2 or any(c.isdigit() for c in token)
+
+class TitleScorer:
+    """Near-duplicate title scores over one domain's active titles: IDF-weighted cosine of the title words,
+    with a rare-token veto. A word that appears in few titles and only on one side ("rdlp-api" vs
+    "rdlp-plugin", "Phase 1" vs "Phase 2") marks the pair distinct whatever the overlap."""
+    def __init__(self,notes):
+        from collections import Counter
+        self.n=len(notes);self.df=Counter(t for n in notes for t in _title_words(n['title']))
+    def idf(self,token):
+        import math
+        return math.log((self.n+1)/(self.df.get(token,0)+1))+1
+    def rare(self,token):return self.df.get(token,0)<=max(2,0.1*self.n)
+    def vetoed(self,x,y):
+        left=[t for t in x-y if self.rare(t)];right=[t for t in y-x if self.rare(t)]
+        # Substituted rare words on both sides, or an added identifier on either side.
+        return bool(left and right) or any(_identifier(t) for t in left+right)
+    @staticmethod
+    def _base(word):
+        """The word without one inflectional ending: use, uses, used, using -> us. Different words stay
+        different (path, patch)."""
+        for suffix in ('ing','ed','es','s','e'):
+            if word.endswith(suffix) and len(word)-len(suffix)>=2:return word[:-len(suffix)]
+        return word
+    @classmethod
+    def _fold(cls,x,y):
+        """y with inflections of x's words replaced by them ("using" and "use" are one word; the light
+        stemmer keeps short stems apart)."""
+        y=set(y)
+        for t in x-y:
+            for u in sorted(y-x):
+                if not _identifier(t) and not _identifier(u) and cls._base(t)==cls._base(u):
+                    y.discard(u);y.add(t);break
+        return y
+    def score(self,a,b):
+        x,y=_title_words(a),_title_words(b)
+        if not x or not y:return 0.0
+        y=self._fold(x,y)
+        if x==y:return 1.0
+        if self.n<IDF_MIN_NOTES:return title_similarity(a,b)
+        shared=x&y
+        if len(shared)<2 or self.vetoed(x,y):return 0.0
+        import math
+        weight=lambda words:sum(self.idf(t)**2 for t in words)
+        return weight(shared)/math.sqrt(weight(x)*weight(y))
+
 def similar_title(title,notes,threshold=0.8):
-    """Near-duplicate guard: high title-term overlap with an active note."""
-    # Keeps digits and single characters: "Parallel 0" != "Parallel 1".
+    """Near-duplicate guard: the active note whose title scores highest, if it reaches the threshold."""
+    scorer=TitleScorer(notes);best=None;top=0.0
     for note in notes:
-        if title_similarity(title,note['title'])>=threshold:return note
-    return None
+        score=scorer.score(title,note['title'])
+        if score>top:best,top=note,score
+    return best if top>=threshold else None
 
 def near_titles(title,notes,low=0.6,high=0.8):
-    return [n for n in notes if low<=title_similarity(title,n['title'])<high][:3]
+    scorer=TitleScorer(notes)
+    scored=sorted(((scorer.score(title,n['title']),n) for n in notes),key=lambda s:-s[0])
+    return [n for s,n in scored if low<=s<high][:3]
 
 def capture(title,body,tags,domain,root=None,**metadata):
     root=Path(root or memory_root()).resolve();domain=canonical_domain(domain,root)
@@ -166,6 +220,10 @@ def capture(title,body,tags,domain,root=None,**metadata):
         note={'id':str(uuid.uuid4()),'title':title.strip(),'body':body.strip(),'domain':domain,'tags':sorted(set(tags)),'status':'active','created':stamp,'updated':stamp,'type':selected_type,'prefix':derived,'schema_version':3,'context':metadata.pop('context',''),'capture_key':key}
         if review_by:note['review_by']=review_by
         if supersedes:note['supersedes']=sorted(set(supersedes))
+        files=clean_files(metadata.pop('files',None))
+        if files:note['files']=files
+        origin=metadata.pop('origin',None)
+        if origin:note['origin']=str(origin)
         if metadata:raise ValueError('Unsupported capture metadata: '+', '.join(metadata))
         validate(note,domain,root,new=True)
         path=root/'domains'/domain/'notes'/f"{note['prefix']} - {slug(title)}-{note['id'][:8]}.md"
@@ -204,6 +262,10 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
         if 'body' in values:note['body']=format_body(str(values['body']))
         if 'tags' in values:note['tags']=sorted(set(values['tags']))
         if 'context' in values:note['context']=str(values['context'] or '')
+        if 'files' in values:
+            files=clean_files(values['files'])
+            if files:note['files']=files
+            else:note.pop('files',None)
         if 'review_by' in values:
             review=_review_date(values['review_by'])
             if review:note['review_by']=review
@@ -270,6 +332,46 @@ def change(note_id,domain,action,root=None,expected_revision=None,plan_only=Fals
             from .repository import parse
             warnings=quality_warnings(parse(target) or {})
             if warnings:result['quality_warnings']=warnings
+        return result
+
+def open_work(domains,root=None):
+    """[(domain, note, [(1-based index, text) of unchecked Action Items])] for active plan, bug and risk
+    notes with open items, newest first."""
+    from .note_format import action_items
+    found=[]
+    for domain in dict.fromkeys(domains):
+        try:notes=inventory(domain,root)
+        except (OSError,ValueError):continue
+        for note in notes:
+            if note.get('type') not in ACTION_TYPES:continue
+            items=[(i+1,text) for i,(done,text) in enumerate(action_items(note.get('body',''))) if not done and text]
+            if items:found.append((domain,note,items))
+    return sorted(found,key=lambda f:str(f[1].get('updated') or ''),reverse=True)
+
+def check_action(note_id,domain,root=None,item=None,index=None,done=True):
+    """Tick (or with done=False untick) one Action Item, chosen by its 1-based index or its text:
+    an exact match (case-insensitive) first, else a unique substring. A journaled, undoable update."""
+    from .note_format import action_items,set_action
+    root=Path(root or memory_root()).resolve()
+    with store_lock(root):
+        _,note=find_note(note_id,domain,root)
+        if note.get('type') not in ACTION_TYPES:raise ValueError('Only plan, bug and risk notes have Action Items')
+        items=action_items(note['body'])
+        if not items:raise ValueError('This note has no Action Items')
+        if index is not None:
+            if not 1<=index<=len(items):raise ValueError(f'No Action Item {index}; the note has {len(items)}')
+            chosen=index-1
+        else:
+            wanted=str(item or '').strip().casefold()
+            if not wanted:raise ValueError('Name the item by its text or pass --index N')
+            matches=[i for i,(_,text) in enumerate(items) if text.casefold()==wanted] or [i for i,(_,text) in enumerate(items) if wanted in text.casefold()]
+            if len(matches)>1:raise ValueError('ambiguous_item: '+'; '.join(f'{i+1}. {items[i][1]}' for i in matches[:10])+'. Pass --index N')
+            if not matches:raise ValueError('No Action Item matches '+repr(item)+'. Items: '+'; '.join(f'{i+1}. {t}' for i,(_,t) in enumerate(items[:10])))
+            chosen=matches[0]
+        if items[chosen][0]==done:
+            return {'ok':True,'id':note['id'],'status':'unchanged','item':items[chosen][1],'done':done}
+        result=change(note['id'],domain,'update',root,note['revision'],body=set_action(note['body'],chosen,done))
+        result.update(item=items[chosen][1],index=chosen+1,done=done,open=sum(1 for d,_ in action_items(find_note(note['id'],domain,root)[1]['body']) if not d))
         return result
 
 def main(argv=None):

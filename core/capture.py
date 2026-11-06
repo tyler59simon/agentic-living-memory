@@ -29,8 +29,23 @@ def finalize(session,turn,notes=(),root=None):
         domain,note_id=reference.split(':',1)
         resolved.append(domain+':'+find_note(note_id,domain,root)[1]['id'])  # short refs are stored in full
     notes=resolved
-    if status(session,turn,root):return {'ok':True,'status':'already_finalized'}
-    row={'schema':1,'completed':now(),'notes':list(notes)[:20],'outcome':'saved' if notes else 'nothing_durable'}
+    existing=status(session,turn,root)
+    if existing:
+        # A second capture in the same turn joins the receipt; a bare finalize changes nothing.
+        added=[n for n in notes if n not in existing.get('notes',[])]
+        if not added:return {'ok':True,'status':'already_finalized'}
+        row=dict(existing,notes=(list(existing.get('notes',[]))+added)[:20],outcome='saved')
+    else:
+        row={'schema':1,'completed':now(),'notes':list(notes)[:20],'outcome':'saved' if notes else 'nothing_durable'}
     atomic_write(root/'.turns'/(key+'.json'),canonical_json(row))
+    if notes:_remember_saved(root,session,notes)
     prune(root)
     return {'ok':True,'status':row['outcome']}
+
+MAX_SAVED=20
+
+def _remember_saved(root,session,notes):
+    """The session's captured and updated notes, for the next session's "Last session" line."""
+    from .runtime import _update
+    try:_update(root,session,lambda s:s.update(saved=list(dict.fromkeys(list(s.get('saved',[]))+list(notes)))[-MAX_SAVED:]))
+    except (OSError,TimeoutError,ValueError):pass
