@@ -30,7 +30,7 @@ class Retrieval(StoreFixture):
         n = capture('Build pipeline status', 'Green on main.', TAGS, 'demo', self.root, type='status')
         line = self.prompt('build pipeline').splitlines()[2]
         self.assertTrue(line.startswith('- [STATUS 20'), line)
-        self.assertIn('demo:' + n['id'], line)
+        self.assertIn('demo:' + n['id'][:8] + ' ', line)
 
     def test_newest_status_on_a_topic_ranks_first(self):
         capture('Plugin tests: 144 pass', 'Plugin suite has 144 passing tests.', TAGS, 'demo', self.root, type='status')
@@ -171,6 +171,41 @@ class SecretScreening(StoreFixture):
     def test_placeholders_and_prose_are_allowed(self):
         for text in ('password=<REDACTED>', 'API_KEY=${API_KEY}', 'api_key=os.environ["API_KEY"]', 'The client secret: configured via Key Vault',
                      'token: ******', 'Set password: changeme in the example config'):
+            with self.subTest(text=text):
+                self.assertIsNone(find_secret(text))
+
+    VENDOR = {
+        'Hugging Face token': 'hf_' + 'aB3' * 12,
+        'Docker token': 'dckr_pat_' + 'aB3_' * 6,
+        'Linear key': 'lin_api_' + 'aB3' * 12,
+        'Notion token': 'ntn_' + 'aB3' * 15,
+        'SendGrid key': 'SG.' + 'aB3_' * 5 + '.' + 'aB3-' * 10,
+        'DigitalOcean token': 'dop_v1_' + 'a1b2' * 16,
+        'Shopify token': 'shpat_' + 'a1B2' * 8,
+        'PyPI token': 'pypi-AgE' + 'aB3_' * 15,
+        'Databricks token': 'dapi' + 'a1b2' * 8,
+        'Vault token': 'hvs.' + 'aB3_' * 7,
+        'Groq key': 'gsk_' + 'aB3' * 15,
+        'xAI key': 'xai-' + 'aB3' * 15,
+        'Supabase token': 'sbp_' + 'a1b2' * 10,
+        'Sentry token': 'sntrys_' + 'aB3=' * 12,
+        'Slack webhook': 'https://hooks.slack.com/services/T0ABC123/B0DEF456/' + 'aB3' * 8,
+        'Discord webhook': 'https://discord.com/api/webhooks/123456789/' + 'aB3_' * 8,
+        'Google OAuth token': 'ya29.' + 'aB3_' * 8,
+        'GitLab token': 'glrt-' + 'aB3_' * 6,
+        'basic auth credentials': 'Authorization: Basic dXNlcjpwYXNzd29yZDEyMw==',
+    }
+
+    def test_vendor_tokens_are_caught_by_name(self):
+        for kind, text in self.VENDOR.items():
+            with self.subTest(kind=kind):
+                self.assertEqual(find_secret('Config: ' + text + ' end')[0], kind)
+
+    def test_vendor_prefixes_in_prose_are_allowed(self):
+        for text in ('Hugging Face tokens start with hf_ and are long', 'Docker PATs look like dckr_pat_ plus text',
+                     'Use the SG. prefix for SendGrid', 'xai- keys come from the console', 'Basic authentication is disabled',
+                     'Basic auth over HTTPS only', 'the secret_key setting', 'ya29. tokens expire hourly',
+                     'shpat_ tokens are per store', 'see hooks.slack.com/services for webhooks', 'dapi tokens are per workspace'):
             with self.subTest(text=text):
                 self.assertIsNone(find_secret(text))
 

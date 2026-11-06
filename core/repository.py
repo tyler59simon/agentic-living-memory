@@ -34,6 +34,26 @@ SECRET_PATTERNS = [(name, re.compile(pattern, flags)) for name, pattern, flags i
     ("bearer token", r"\bBearer\s+[A-Za-z0-9._~+/-]{20,}=*", re.I),
     ("password in URL", r"\b[a-z][a-z0-9+.-]*://[^\s:/@]+:[^\s@/]{3,}@", re.I),
     ("Azure account key", r"\bAccountKey=[A-Za-z0-9+/=]{20,}", re.I),
+    ("Hugging Face token", _EDGE + r"hf_[A-Za-z0-9]{30,}", 0),
+    ("Docker token", _EDGE + r"dckr_pat_[A-Za-z0-9_-]{20,}", 0),
+    ("Linear key", _EDGE + r"lin_api_[A-Za-z0-9]{30,}", 0),
+    ("Notion token", _EDGE + r"(?:ntn_[A-Za-z0-9]{40,}|secret_[A-Za-z0-9]{40,})", 0),
+    ("SendGrid key", _EDGE + r"SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}", 0),
+    ("DigitalOcean token", _EDGE + r"do[por]_v1_[a-f0-9]{64}", 0),
+    ("Shopify token", _EDGE + r"shp(?:at|ca|pa|ss)_[a-fA-F0-9]{32}", 0),
+    ("PyPI token", _EDGE + r"pypi-AgE[A-Za-z0-9_-]{50,}", 0),
+    ("Databricks token", _EDGE + r"dapi[a-f0-9]{32}", 0),
+    ("Vault token", _EDGE + r"hv[sb]\.[A-Za-z0-9_-]{24,}", 0),
+    ("Groq key", _EDGE + r"gsk_[A-Za-z0-9]{40,}", 0),
+    ("xAI key", _EDGE + r"xai-[A-Za-z0-9]{40,}", 0),
+    ("Supabase token", _EDGE + r"sbp_[a-f0-9]{40}", 0),
+    ("Sentry token", _EDGE + r"sntry[us]_[A-Za-z0-9_=+/-]{40,}", 0),
+    ("Slack webhook", r"hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]{16,}", 0),
+    ("Discord webhook", r"discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_-]{20,}", re.I),
+    ("Google OAuth token", _EDGE + r"ya29\.[A-Za-z0-9_-]{20,}", 0),
+    ("GitLab token", _EDGE + r"gl(?:dt|rt)-[A-Za-z0-9_-]{20,}", 0),
+    # Basic credentials are base64; prose after "Basic" has no digits or symbols.
+    ("basic auth credentials", r"\bBasic\s+(?=[A-Za-z0-9+/]*[0-9+/])[A-Za-z0-9+/]{16,}={0,2}", 0),
 )]
 # key = value assignments: DB_PASSWORD=..., client_secret: ..., api-key=..., aws_secret_access_key = ...
 ASSIGNMENT = re.compile(

@@ -1,9 +1,11 @@
-"""Stop-hook reminder: only real file changes by the main agent arm it."""
+"""Stop-hook reminder: real file changes by the main agent, or a durable statement by the user, arm it."""
+import json
+
 from test_core import StoreFixture
 from core import runtime
 
 
-class StopHook(StoreFixture):
+class StopFixture(StoreFixture):
     def setUp(self):
         super().setUp()
         self.cwd = str(self.base / 'project')
@@ -19,6 +21,8 @@ class StopHook(StoreFixture):
     def shell(command, tool='Bash'):
         return {'tool_name': tool, 'tool_input': {'command': command}}
 
+
+class StopHook(StopFixture):
     def test_readonly_shell_commands_do_not_arm(self):
         for command in ['ls -la', 'git status --short', 'git log --oneline -5 | head -3',
                         'grep -n x file.py 2>/dev/null', 'cat a.txt && wc -l a.txt']:
@@ -87,6 +91,76 @@ class StopHook(StoreFixture):
         second = runtime.process('claude', 'stop', self.payload, self.root)
         self.assertIn('continue_reason', first)
         self.assertEqual(second, {})
+
+
+
+class ConversationalSignal(StopFixture):
+    """Preferences, corrections and decisions are stated in conversation; those turns arm the reminder too."""
+    def said(self, prompt, **extra):
+        self.payload = {**self.payload, 'prompt': prompt, **extra}
+        return self.turn()
+
+    def test_each_kind_arms_a_specific_reminder(self):
+        for prompt, phrase in [('From now on, use tabs in this repo', 'stated a preference'),
+                               ("I'd prefer short commit messages", 'stated a preference'),
+                               ('No, the cache lives in AppData', 'corrected you'),
+                               ('Actually the port is 8081', 'corrected you'),
+                               ("Let's go with option B", 'made a decision'),
+                               ('Remember that the staging box is shared', 'asked you to remember something')]:
+            with self.subTest(prompt=prompt):
+                reason = self.said(prompt).get('continue_reason', '')
+                self.assertIn(phrase, reason)
+                self.assertIn('capture-finalize', reason)
+
+    def test_neutral_prompts_do_not_arm(self):
+        for prompt in ['work on it', 'summarize the file', 'No problem with that approach? Check it',
+                       'what does the cache do', 'I want you to add a button', 'continue']:
+            with self.subTest(prompt=prompt):
+                self.assertEqual(self.said(prompt), {})
+
+    def test_pasted_quoted_and_machine_text_do_not_arm(self):
+        for prompt in ['look at this log\n```\nalways use --force, from now on\n```',
+                       '<pasted_content id="1">From now on never deploy on Fridays</pasted_content>\nwhat is this?',
+                       '> from now on use tabs\nwhat did they mean?',
+                       '<task-notification>from now on</task-notification>']:
+            with self.subTest(prompt=prompt):
+                self.assertEqual(self.said(prompt), {})
+
+    def test_plan_mode_does_not_arm(self):
+        self.assertEqual(self.said('From now on use tabs', permission_mode='plan'), {})
+
+    def test_a_receipt_satisfies_it(self):
+        runtime.process('claude', 'user-prompt', {**self.payload, 'prompt': 'From now on use tabs', 'turn_id': 't1'}, self.root)
+        from core.capture import finalize
+        finalize('session', 't1', [], self.root)
+        self.assertEqual(runtime.process('claude', 'stop', {**self.payload, 'turn_id': 't1'}, self.root), {})
+
+    def test_one_reminder_per_turn_and_no_prompt_text_kept(self):
+        runtime.process('claude', 'user-prompt', {**self.payload, 'prompt': 'From now on use zebra-tabs'}, self.root)
+        state = json.loads(runtime._pointer(self.root, 'session').read_text(encoding='utf-8'))
+        self.assertEqual(state['signal'], 'preference')
+        self.assertNotIn('zebra', json.dumps(state))
+        self.assertIn('continue_reason', runtime.process('claude', 'stop', self.payload, self.root))
+        self.assertEqual(runtime.process('claude', 'stop', self.payload, self.root), {})
+        self.assertNotIn('signal', json.loads(runtime._pointer(self.root, 'session').read_text(encoding='utf-8')))
+
+    def test_signal_and_file_changes_mention_both(self):
+        self.payload = {**self.payload, 'prompt': 'From now on use tabs'}
+        write = {'tool_name': 'Edit', 'tool_input': {'file_path': self.cwd + '/x.py'}}
+        reason = self.turn(write)['continue_reason']
+        self.assertIn('stated a preference this turn (and files changed)', reason)
+
+
+
+class ReminderDelivery(StopFixture):
+    def test_claude_gets_feedback_not_a_blocking_error(self):
+        from unittest.mock import patch
+        from hooks import claude_hooks
+        with patch('core.runtime.process', return_value={'continue_reason': 'save?'}):
+            self.assertEqual(claude_hooks.handle('stop', {}),
+                             {'hookSpecificOutput': {'hookEventName': 'Stop', 'additionalContext': 'save?'}})
+            # Factory shares the adapter but keeps the documented block form.
+            self.assertEqual(claude_hooks.handle('stop', {}, 'factory'), {'decision': 'block', 'reason': 'save?'})
 
 
 if __name__ == '__main__':

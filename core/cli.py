@@ -11,10 +11,12 @@ def _payload(args):
     else:raw=sys.stdin.read()
     if len(raw.encode())>1024*1024:raise ValueError('Payload exceeds 1 MiB')
     return json.loads(raw)
-def _reference(value,domain):
-    if ':' in value:return value.split(':',1)
-    if not domain:raise ValueError('Pass domain:id, --domain, or --cwd for a bound project')
-    return domain,value
+def _reference(value,domain,root):
+    """(domain, full note ID) for a ref, a unique ID prefix, or an exact note title."""
+    from .notes import resolve_ref
+    from .runtime import parent_domains
+    parents=parent_domains(domain,load_bindings(root)) if domain else []
+    return resolve_ref(value,domain,root,parents)
 
 def _turn(root,session,turn):
     """The turn a receipt belongs to: explicit, else the session's latest prompt."""
@@ -59,6 +61,9 @@ def doctor(root,cwd,explicit=None,domain=None):
             try:missing=not (root/'domains'/canonical_domain(name,root)).is_dir()
             except ValueError:missing=True
             if missing:warnings.append(f"search_scope.{kind} names '{name}', which has no domain folder; {effect}")
+    from .backup import staleness_warning
+    stale=staleness_warning(root)
+    if stale:warnings.append(stale)
     if domain:index='fresh' if _fresh(domain,root,inventory(domain,root,retired=True)) else 'dirty_or_missing'
     last=read_json(root/'hooks/last-delivery.json',{})
     domain_exists=bool(domain and (root/'domains'/domain/'notes').is_dir())
@@ -117,6 +122,8 @@ def main(argv=None):
     p=sub('recover');p.add_argument('operation_id');p.add_argument('--direction',choices=['forward','backward'],default='forward');p.add_argument('--abandon',action='store_true',help='Stop treating the operation as pending; no note file is changed')
     p=sub('diff');p.add_argument('operation_id')
     p=sub('doctor')
+    p=sub('backup');p.add_argument('--keep',type=int,default=7)
+    p=sub('restore-plan');p.add_argument('file',type=Path)
     p=sub('migration-plan')
     p=sub('note-type-plan')
     p=sub('rebuild');p.add_argument('name',nargs='?')
@@ -150,9 +157,14 @@ def main(argv=None):
             print(json.dumps(result,ensure_ascii=False,separators=(',',':')));return 0
         from .storage import resolve_root
         root=resolve_root(args.root)[0]
-        domain=args.domain or resolve_domain(cwd,load_bindings(root))
-        if domain:domain=canonical_domain(domain,root)
         cmd=args.command
+        try:
+            domain=args.domain or resolve_domain(cwd,load_bindings(root))
+            if domain:domain=canonical_domain(domain,root)
+        except ValueError:
+            # Snapshots exist to repair a damaged store, so restoring must not depend on readable bindings.
+            if cmd not in {'restore-plan','inspect-plan','apply','backup','history'}:raise
+            domain=None
         if args.actor=='subagent' and cmd not in {'search','read','query','doctor','validate','history'}:raise ValueError('Subagents are read-only; return mutation proposals to the main agent')
         if cmd=='bind':
             from .init_domain import init_domain
@@ -208,12 +220,12 @@ def main(argv=None):
             result={'ok':True,'mode':args.scope,'domains':domains,'fallback':fallback,'results':hits}
         elif cmd=='read':
             from .notes import find_note
-            d,n=_reference(args.reference,domain);path,note=find_note(n,d,root)
+            d,n=_reference(args.reference,domain,root);path,note=find_note(n,d,root)
             result={k:v for k,v in note.items() if k not in {'body','path','digest'}}
             if not args.metadata_only:result.update(body=note['body'][:max(0,min(64000,args.max_chars))],truncated=len(note['body'])>args.max_chars)
         elif cmd=='update':
             from .notes import change
-            d,n=_reference(args.reference,domain)
+            d,n=_reference(args.reference,domain,root)
             values=_payload(args) if args.payload_file or not any(getattr(args,k) is not None for k in ('title','body','body_file','tag','type','context','review_by','subject','concern','platform','technology')+SECTION_ARGS) else {}
             if args.title is not None:values['title']=args.title
             if args.body is not None:values['body']=args.body
@@ -232,7 +244,7 @@ def main(argv=None):
             _receipt(args,d,n,root)
         elif cmd=='supersede':
             from .notes import change
-            d,n=_reference(args.reference,domain);bd,bn=_reference(args.by,domain)
+            d,n=_reference(args.reference,domain,root);bd,bn=_reference(args.by,domain,root)
             if bd!=d:raise ValueError('A note can only be superseded by a note in the same domain')
             result=change(n,d,'supersede',root,superseded_by=bn)
             _receipt(args,d,bn,root)
@@ -245,7 +257,7 @@ def main(argv=None):
                     'hint':'For each note: update it if it is still true (this resets its review date), supersede it if it was replaced, or ask for an archive plan.'}
         elif cmd=='plan':
             from .notes import change
-            d,n=_reference(args.reference,domain);values=_payload(args) if args.payload_file or args.action in {'update','rename','retag','supersede'} else {}
+            d,n=_reference(args.reference,domain,root);values=_payload(args) if args.payload_file or args.action in {'update','rename','retag','supersede'} else {}
             result=change(n,d,args.action,root,plan_only=True,**values)
         elif cmd=='apply':
             from .governance import apply
@@ -276,6 +288,14 @@ def main(argv=None):
                 before=base64.b64decode(e['before']).decode() if e['before'] else '';after=base64.b64decode(e['after']).decode() if e['after'] else ''
                 result.append({'path':e['path'],'diff':''.join(difflib.unified_diff(before.splitlines(True),after.splitlines(True)))[:8000]})
         elif cmd=='doctor':result=doctor(root,cwd,args.root,domain)
+        elif cmd=='backup':
+            from .backup import backup
+            result=backup(root,max(1,min(100,args.keep)))
+            from .common import atomic_write
+            atomic_write(root/'hooks'/'last-backup.json',canonical_json({'at':now(),'backup':Path(result['backup']).name}))
+        elif cmd=='restore-plan':
+            from .backup import restore_plan
+            result=restore_plan(root,args.file)
         elif cmd=='migration-plan':
             from .migration import migration_plan
             result=migration_plan(root)

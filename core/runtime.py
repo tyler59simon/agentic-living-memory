@@ -12,9 +12,9 @@ SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 # Tools that cannot change files; anything else marks the turn as mutating.
 READ_TOOLS={'read','read_file','glob','grep','search','view_image','view','ls','list','webfetch','websearch','web_fetch','web_search','todowrite','task','agent','toolsearch','askuserquestion','exitplanmode','enterplanmode'}
 SHELL_TOOLS={'bash','powershell','shell','run_shell_command','exec_command','local_shell','execute'}
-ALLOWED_SUBCOMMANDS={'search','read','taxonomy','doctor','history','inspect-plan','capture','capture-finalize','validate','update','supersede','review'}
+ALLOWED_SUBCOMMANDS={'search','read','taxonomy','doctor','history','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup'}
 # Subagents are read-only: these are denied for them even though the main agent gets them auto-allowed.
-MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede'}
+MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup'}
 GLOBAL_OPTIONS={'--root','--domain','--cwd','--actor'}
 HOOK_LOCK_TIMEOUT=5
 # Codex has no SessionEnd, so its session start picks up Obsidian edits, at most this often.
@@ -275,6 +275,13 @@ def _sync_vaults(root,trigger,min_interval=0):
         return sync_all(root,trigger)
     except Exception:return None
 
+def _daily_backup(root):
+    """At most one snapshot a day, taken from session housekeeping. Never fails the hook."""
+    try:
+        from .backup import maybe_backup
+        return maybe_backup(root)
+    except Exception:return None
+
 def _subagent(payload):
     """Claude Code marks hooks that fire inside a subagent with agent_id. Subagents are read-only
     by protocol and share the parent session_id, so their tool calls must not arm the parent's reminder."""
@@ -307,12 +314,33 @@ def _update(root,session,change):
 # Harness-generated turns (subagent hand-backs, task notifications) are not questions to answer from memory.
 MACHINE_PROMPT=re.compile(r'\A\s*(?:<(?:agent-message|task-notification|system-reminder)\b|\[SYSTEM NOTIFICATION)')
 HIT_SNIPPET=220
+# Conversation is where preferences, corrections and decisions are stated, and those turns often edit no files.
+# Deterministic and conservative: a false positive costs one reminder line and a capture-finalize.
+QUOTED=re.compile(r'```.*?(?:```|\Z)|<(pasted_content|system-reminder|agent-message|task-notification)\b.*?(?:</\1>|\Z)|^\s*>.*$',re.S|re.M|re.I)
+SIGNALS=(
+    ('remember',re.compile(r"\b(?:remember (?:that|this|we|it)|keep in mind|for (?:the )?record|don'?t forget)\b",re.I)),
+    ('correction',re.compile(r"^\s*(?:no|nope)\s*[,.!:;—-]|^\s*actually\b|\bthat'?s (?:wrong|not right|incorrect|not what i)\b|\byou(?:'re| are| were) wrong\b|\bi meant\b",re.I|re.M)),
+    ('preference',re.compile(r"\b(?:i(?:'d)? prefer|i'?d rather|i (?:hate|don'?t like)|from now on|going forward|in (?:the )?future|please (?:don'?t|do not|never|always)|stop doing|don'?t ever|always use|never use|by default,? use)\b",re.I)),
+    ('decision',re.compile(r"\b(?:let'?s (?:go with|use)|we(?:'ll| will) (?:go with|use)|we decided|i(?:'ve)? decided|go with option)\b",re.I)),
+)
+SIGNAL_TEXT={'remember':('asked you to remember something','--type TYPE --concern CONCERN'),
+             'correction':('corrected you','--type knowledge --concern correction'),
+             'preference':('stated a preference','--type preference --concern preference'),
+             'decision':('made a decision','--type decision --concern decision')}
+
+def durable_signal(prompt):
+    """The kind of durable statement the user's own words carry ('preference', 'correction', 'decision',
+    'remember'), else None. Pasted, quoted and harness-generated text is ignored."""
+    if not isinstance(prompt,str) or MACHINE_PROMPT.match(prompt):return None
+    text=QUOTED.sub(' ',prompt)
+    return next((kind for kind,pattern in SIGNALS if pattern.search(text)),None)
 
 def hit_line(hit):
     snippet=hit.get('snippet','')
     if len(snippet)>HIT_SNIPPET:
         cut=snippet.rfind(' ',0,HIT_SNIPPET);snippet=snippet[:cut if cut>0 else HIT_SNIPPET]+' …'
-    return f"- [{str(hit.get('type','note')).upper()} {hit.get('updated','')}] {hit['domain']}:{hit['id']} {hit['title']} — {snippet}"
+    from .notes import short_ref
+    return f"- [{str(hit.get('type','note')).upper()} {hit.get('updated','')}] {short_ref(hit['domain'],hit['id'])} {hit['title']} — {snippet}"
 
 def context(cwd,prompt,root,active=None,shown=(),overview_done=False):
     """Relevant memory for a prompt: (text or None, ids injected, overview shown)."""
@@ -353,7 +381,8 @@ def context(cwd,prompt,root,active=None,shown=(),overview_done=False):
         except (OSError,ValueError):continue
     overview=overview[:5]
     if not overview:return None,[],False
-    return (f'No lexical match. {heading} for semantic consideration:\n'+'\n'.join(f"- {n['domain']}:{n['id']} {n['title']}" for n in overview),[],True)
+    from .notes import short_ref
+    return (f'No lexical match. {heading} for semantic consideration:\n'+'\n'.join(f"- {short_ref(n['domain'],n['id'])} {n['title']}" for n in overview),[],True)
 
 def parent_domains(domain,bindings):
     """Domains bound to a folder that contains this domain's folder (e.g. Sandbox above Sandbox/project)."""
@@ -395,8 +424,12 @@ def _process(harness,event,payload,root=None):
     if event=='user-prompt':
         turn=turn or str(payload.get('timestamp') or now())
         if session!='unknown':
+            # Plan mode cannot save anything, so a statement there is not a reminder's business.
+            planning=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()=='plan'
+            signal=None if planning else durable_signal(payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or '')
             def opened(s):
                 s['turn']=turn;s['open_turns']=(list(s.get('open_turns',[]))+[turn])[-20:]
+                if signal:s['signal']=signal  # only the kind is kept, never the prompt text
             state=_update(root,session,opened)
     elif not turn:
         turn=state.get('turn','')
@@ -405,15 +438,24 @@ def _process(harness,event,payload,root=None):
         try:atomic_write(root/'hooks/last-delivery.json',canonical_json({'harness':harness,'event':event,'timestamp':now(),'bound':bool(domain),'cwd':str(cwd),'domain':domain,'payload_keys':sorted(payload)}))
         except OSError:pass  # Diagnostics only; never cost the session its memory context.
     if event=='session-end':
-        _sync_vaults(root,'session end');return {}
+        _sync_vaults(root,'session end');_daily_backup(root);return {}
     if not domain:return result
     if event=='session-start':
-        if harness=='codex':_sync_vaults(root,'session start',SESSION_START_SYNC_SECONDS)
-        from .session_start import render_context
+        # Codex has no SessionEnd: its session start does the end-of-session housekeeping.
+        if harness=='codex':_sync_vaults(root,'session start',SESSION_START_SYNC_SECONDS);_daily_backup(root)
+        from .session_start import build_context,BUDGET,MIN_BUDGET
+        prefix=protocol(root,domain,harness,session)+f'\nLiving Memory session={session}'+'\n'
+        text,shown,indexed=build_context(cwd,root,max(MIN_BUDGET,BUDGET-len(prefix)))
         if session!='unknown':
-            # A new or compacted context has seen nothing yet.
-            _update(root,session,lambda s:(s.pop('shown',None),s.pop('overview_shown',None)))
-        result['context']=protocol(root,domain,harness,session)+f'\nLiving Memory session={session}'+'\n'+(render_context(cwd,root) or '')
+            # A new or compacted context has seen only what is injected now. Guidance shown in full is not
+            # re-injected by prompts; index lines are titles, so those notes stay eligible. Once the index has
+            # listed the newest titles, the prompt-time "recent titles" fallback has nothing to add.
+            def started(s):
+                s.pop('shown',None);s.pop('overview_shown',None)
+                if shown:s['shown']=shown
+                if indexed:s['overview_shown']=True
+            _update(root,session,started)
+        result['context']=prefix+(text or '')
     elif event=='user-prompt':
         prompt=payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or ''
         hits,ids,overview=context(cwd,prompt,root,domain,state.get('shown',[]),state.get('overview_shown',False)) if isinstance(prompt,str) else (None,[],False)
@@ -452,14 +494,22 @@ def _process(harness,event,payload,root=None):
         if session=='unknown':return {}
         turns=list(dict.fromkeys(list(state.get('open_turns',[]))+([turn] if turn else [])))
         def close(s):
-            s.pop('open_turns',None);s.pop('mutating',None)
-        if any(capture_status(session,t,root) for t in turns) or not state.get('mutating') or not turns:
+            s.pop('open_turns',None);s.pop('mutating',None);s.pop('signal',None)
+        signal=state.get('signal')
+        if any(capture_status(session,t,root) for t in turns) or not (state.get('mutating') or signal) or not turns:
             _update(root,session,close);return {}
         latest=turns[-1];reminder=root/'.turns'/(turn_key(session,latest)+'.reminded')
         if payload.get('stop_hook_active') or payload.get('stopHookActive') or reminder.exists():
             _update(root,session,close);return {}
         atomic_write(reminder,'reminded\n')
         cmd=command(root,domain)
-        result['continue_reason']=(f"Living Memory: this turn changed files. Usually nothing here is durable: then run {cmd} capture-finalize --session {session} --turn {latest}. "
-                                   f"Only if a future session needs it (a decision, preference, constraint or non-obvious fix), update the workstream's note or run {cmd} capture --session {session} --turn {latest} --type TYPE --subject SUBJECT --concern CONCERN 'Title' 'Body'.")
+        finalize=f"{cmd} capture-finalize --session {session} --turn {latest}"
+        if signal in SIGNAL_TEXT:
+            said,hint=SIGNAL_TEXT[signal]
+            result['continue_reason']=(f"Living Memory: the user {said} this turn{' (and files changed)' if state.get('mutating') else ''}. "
+                                       f"If it should shape future sessions, update the matching note or run {cmd} capture --session {session} --turn {latest} {hint} --subject SUBJECT --title 'Title' --summary '...'; "
+                                       f"if it only mattered for this task, run {finalize}.")
+        else:
+            result['continue_reason']=(f"Living Memory: this turn changed files. Usually nothing here is durable: then run {finalize}. "
+                                       f"Only if a future session needs it (a decision, preference, constraint or non-obvious fix), update the workstream's note or run {cmd} capture --session {session} --turn {latest} --type TYPE --subject SUBJECT --concern CONCERN 'Title' 'Body'.")
     return result

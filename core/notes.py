@@ -15,10 +15,51 @@ def slug(value):return re.sub(r'[^a-z0-9]+','-',value.casefold()).strip('-')[:64
 def taxonomy(root):
     data=read_json(Path(root)/'tag_taxonomy.json',{'tags':[]});tags=data.get('tags',[]) if isinstance(data,dict) else data
     return set(tags)
+# Injected lines show the first 8 characters of an ID (filenames already end in them); commands accept any unique prefix that long.
+SHORT_ID=8
+ID_PREFIX=re.compile(r'[0-9a-f][0-9a-f-]{%d,}'%(SHORT_ID-1),re.I)
+
+def short_ref(domain,note_id):return f'{domain}:{str(note_id)[:SHORT_ID]}'
+
+def _by_id(note_id,notes):
+    exact=[n for n in notes if n.get('id')==note_id]
+    if exact or not ID_PREFIX.fullmatch(note_id):return exact
+    return [n for n in notes if str(n.get('id','')).lower().startswith(note_id.lower())]
+
+def _ambiguous(domain,matches):
+    return ValueError('ambiguous_ref: '+', '.join(f"{domain}:{n['id']} \"{n['title']}\"" for n in matches[:10]))
+
 def find_note(note_id,domain,root=None):
-    matches=[n for n in inventory(domain,root,retired=True) if n.get('id')==note_id]
+    """The note with this ID, or with this unique ID prefix (8+ characters)."""
+    matches=_by_id(note_id,inventory(domain,root,retired=True))
+    if len(matches)>1:raise _ambiguous(domain,matches)
     if len(matches)!=1:raise ValueError(f'Expected one note ID, found {len(matches)}')
     return Path(matches[0]['path']),matches[0]
+
+def resolve_ref(value,domain=None,root=None,search_domains=()):
+    """(domain, full ID) for DOMAIN:ID, DOMAIN:PREFIX, a bare ID or prefix in the active domain,
+    or an active note's exact title (case-insensitive) in the active or search domains.
+    A title may itself contain a colon, so an unmatched DOMAIN:ID falls through to titles."""
+    value=str(value).strip();head,sep,tail=value.partition(':')
+    lookup=None
+    if sep and head and not any(c.isspace() for c in head):
+        try:explicit=canonical_domain(head,root)
+        except ValueError:explicit=None
+        if explicit and (Path(root or memory_root())/'domains'/explicit).is_dir():lookup=(explicit,tail.strip())
+    elif domain:lookup=(domain,value)
+    if lookup:
+        found=_by_id(lookup[1],inventory(lookup[0],root,retired=True))
+        if len(found)>1:raise _ambiguous(lookup[0],found)
+        if found:return lookup[0],found[0]['id']
+    domains=list(dict.fromkeys([d for d in (domain,*search_domains) if d]))
+    if not domains:raise ValueError('Pass domain:id, --domain, or --cwd for a bound project')
+    wanted=value.casefold();titled=[]
+    for d in domains:
+        try:titled+=[(d,n) for n in inventory(d,root) if n.get('status','active')=='active' and n['title'].strip().casefold()==wanted]
+        except (OSError,ValueError):continue
+    if len(titled)>1:raise ValueError('ambiguous_ref: several notes have this title: '+', '.join(f'{d}:{n["id"]}' for d,n in titled[:10]))
+    if not titled:raise ValueError(f'No note with ID, ID prefix or exact title {value!r}')
+    return titled[0][0],titled[0][1]['id']
 def _commit(domain,changes,kind,root,expected=None):
     changes=dict(changes);changes[f'domains/{domain}/.derived-dirty']='dirty\n'
     receipt=transaction(root,changes,kind,expected)
@@ -95,8 +136,15 @@ def capture(title,body,tags,domain,root=None,**metadata):
         key=metadata.pop('idempotency_key',None);allow_similar=bool(metadata.pop('allow_similar',False))
         supersedes=metadata.pop('supersedes',None) or []
         if isinstance(supersedes,str):supersedes=[supersedes]
-        supersedes=[ref.split(':',1)[1] if ':' in ref else ref for ref in supersedes]
         existing=inventory(domain,root,retired=True)
+        resolved=[]
+        for ref in supersedes:
+            ref_id=ref.split(':',1)[1] if ':' in ref else ref
+            found=_by_id(ref_id,existing)
+            if len(found)>1:raise _ambiguous(domain,found)
+            # An unknown ref fails in _change_set below with the usual message.
+            resolved.append(found[0]['id'] if found else ref_id)
+        supersedes=resolved
         for note in existing:
             if key and note.get('capture_key')==key:
                 if note['body'].strip()!=body.strip() or note['title']!=title.strip():raise ValueError('Idempotency key has different content')

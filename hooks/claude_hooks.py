@@ -14,7 +14,12 @@ def handle(event,payload,harness='claude'):
     for decision in ('deny','allow'):
         if result.get(decision):
             out['hookSpecificOutput']={'hookEventName':'PreToolUse','permissionDecision':decision,'permissionDecisionReason':result[decision]};break
-    if result.get('continue_reason'):out.update(decision='block',reason=result['continue_reason'])
+    if result.get('continue_reason'):
+        if harness=='claude':
+            # Claude Code continues the turn on Stop additionalContext like decision=block, with the same loop
+            # protections, but labels it "Stop hook feedback" instead of a hook error.
+            out['hookSpecificOutput']={'hookEventName':'Stop','additionalContext':result['continue_reason']}
+        else:out.update(decision='block',reason=result['continue_reason'])
     if result.get('warning'):out['systemMessage']=result['warning']
     return out
 
