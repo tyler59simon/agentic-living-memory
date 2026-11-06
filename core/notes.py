@@ -177,6 +177,21 @@ def near_titles(title,notes,low=0.6,high=0.8):
     scored=sorted(((scorer.score(title,n['title']),n) for n in notes),key=lambda s:-s[0])
     return [n for s,n in scored if low<=s<high][:3]
 
+def build_note(title,body,tags,domain,root,note_type='knowledge',context='',key=None,review_by=None,supersedes=(),files=None,origin=None,note_id=None):
+    """(path, note, file text) for a new active note, validated like every capture. Writes nothing; capture and
+    ingest-plan both create notes through it."""
+    stamp=now()
+    note={'id':note_id or str(uuid.uuid4()),'title':title.strip(),'body':format_body(body).strip(),'domain':domain,'tags':sorted(set(tags)),'status':'active','created':stamp,'updated':stamp,'type':note_type,'prefix':prefix_for(note_type),'schema_version':3,'context':context or '','capture_key':key}
+    review=_review_date(review_by) or default_review_by(note_type)
+    if review:note['review_by']=review
+    if supersedes:note['supersedes']=sorted(set(supersedes))
+    files=clean_files(files)
+    if files:note['files']=files
+    if origin:note['origin']=str(origin)
+    validate(note,domain,root,new=True)
+    path=Path(root)/'domains'/domain/'notes'/f"{note['prefix']} - {slug(title)}-{note['id'][:8]}.md"
+    return path,note,serialize(note)
+
 def capture(title,body,tags,domain,root=None,**metadata):
     root=Path(root or memory_root()).resolve();domain=canonical_domain(domain,root)
     with store_lock(root):
@@ -215,23 +230,15 @@ def capture(title,body,tags,domain,root=None,**metadata):
                 raise ValueError(f"possible_duplicate conflict: similar to {ref} \"{similar['title']}\". If it is the same subject, "
                                  f"run `update {ref}` (the fact moved on) or capture with `--supersedes {ref}` (it was replaced); "
                                  "pass allow_similar only for a genuinely distinct note")
-        stamp=now()
-        review_by=_review_date(metadata.pop('review_by',None)) or default_review_by(selected_type)
-        note={'id':str(uuid.uuid4()),'title':title.strip(),'body':body.strip(),'domain':domain,'tags':sorted(set(tags)),'status':'active','created':stamp,'updated':stamp,'type':selected_type,'prefix':derived,'schema_version':3,'context':metadata.pop('context',''),'capture_key':key}
-        if review_by:note['review_by']=review_by
-        if supersedes:note['supersedes']=sorted(set(supersedes))
-        files=clean_files(metadata.pop('files',None))
-        if files:note['files']=files
-        origin=metadata.pop('origin',None)
-        if origin:note['origin']=str(origin)
+        review_by=metadata.pop('review_by',None);context=metadata.pop('context','');files=metadata.pop('files',None);origin=metadata.pop('origin',None)
         if metadata:raise ValueError('Unsupported capture metadata: '+', '.join(metadata))
-        validate(note,domain,root,new=True)
-        path=root/'domains'/domain/'notes'/f"{note['prefix']} - {slug(title)}-{note['id'][:8]}.md"
-        changes={path.relative_to(root).as_posix():serialize(note)};expected={}
+        path,note,text=build_note(title,body,tags,domain,root,selected_type,context=context,key=key,review_by=review_by,supersedes=supersedes,files=files,origin=origin)
+        changes={path.relative_to(root).as_posix():text};expected={}
         for old in supersedes:
             # The new note and the retirement of what it replaces commit together.
-            old_changes,old_expected,_=_change_set(old,domain,'supersede',root,successor=note)
-            changes.update(old_changes);expected.update(old_expected)
+            old_changes,old_expected,_=_change_set(old,domain,'supersede',root,successor=note,pending=changes)
+            changes.update(old_changes)
+            for rel,revision in old_expected.items():expected.setdefault(rel,revision)
         result=_commit(domain,changes,'capture_supersede' if supersedes else 'capture',root,expected or None)
         result.update(id=note['id'],status='created',path=str(path))
         near=near_titles(title,[n for n in existing if n.get('status','active')=='active' and n['id'] not in set(supersedes)])
@@ -241,11 +248,15 @@ def capture(title,body,tags,domain,root=None,**metadata):
         if supersedes:result['superseded']=[f'{domain}:{old}' for old in supersedes]
         return result
 
-def _change_set(note_id,domain,action,root,expected_revision=None,successor=None,**values):
-    """Files to write for one note action, with the revisions they must still have."""
+def _change_set(note_id,domain,action,root,expected_revision=None,successor=None,pending=None,**values):
+    """Files to write for one note action, with the revisions they must still have. `pending` holds the
+    changes of earlier steps in the same transaction (rel path -> text, or None when removed); files are
+    read through it, so steps build on each other instead of overwriting one another."""
+    pending=pending or {}
     path,note=find_note(note_id,domain,root)
     if expected_revision and note['revision']!=expected_revision:raise ValueError('stale_revision')
     expected={path.relative_to(root).as_posix():note['revision']}
+    if pending.get(path.relative_to(root).as_posix()):note=parse_changed(pending[path.relative_to(root).as_posix()],note)
     note=normalize(note)
     if action=='update' and 'type' in values:note=normalize(note,values['type'])
     if 'prefix' in values and values['prefix']!=note['prefix']:raise ValueError('Prefix is derived from type; update the type instead')
@@ -274,6 +285,18 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
             # Updating a time-sensitive note makes it current again.
             review=default_review_by(note['type'])
             if review:note['review_by']=review
+    elif action=='confirm':
+        # "Still true": a dated confirmation and a fresh review date, without touching content or `updated`.
+        if note.get('status','active')!='active':raise ValueError('Only active notes can be confirmed')
+        today=date.today().isoformat();confirmed=[d for d in note.get('confirmed') or [] if isinstance(d,str) and d!=today]
+        note['confirmed']=(confirmed+[today])[-CONFIRM_KEEP:]
+        review=default_review_by(note['type'])
+        if review:note['review_by']=review
+        elif note.get('review_by'):
+            # An explicit date on a type without an interval would keep the note due; move it out like the age rule.
+            from .note_types import STALE_DAYS
+            from datetime import timedelta
+            note['review_by']=(date.today()+timedelta(days=STALE_DAYS)).isoformat()
     elif action in {'resolve','reopen'}:
         if action=='resolve' and (note['type']!='bug' or note.get('status')!='active'):raise ValueError('Only active bug notes may be resolved')
         if action=='reopen' and (note['type']!='bug' or note.get('status')!='resolved'):raise ValueError('Only resolved bug notes may be reopened')
@@ -289,8 +312,12 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
         folder=root/'domains'/domain/'archive'
     elif action!='delete':raise ValueError('Unknown note action')
     target=path if action=='delete' else folder/f"{note['prefix']} - {slug(note['title'])}-{note_id[:8]}.md"
-    note['updated']=now()
+    if action!='confirm':note['updated']=now()  # `updated` means the content changed; it drives recency
     note['path']=str(target)
+    if target.parent!=path.parent and action!='delete':
+        # Moving between notes/ and archive/: the note's own relative links must still reach their files.
+        from .migration import rewrite_type_links
+        note['body']=rewrite_type_links(note['body'],target,{path.resolve():target},moved_from=path)  # self-links follow the note
     if action!='delete':validate(note,domain,root)
     if target!=path and target.exists():raise ValueError('Portable filename collision')
     changes={path.relative_to(root).as_posix():None}
@@ -303,14 +330,26 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
         expected[successor_path.relative_to(root).as_posix()]=successor_note['revision']
     if target!=path:
         from .migration import rewrite_type_links
+        moved={}
+        if any(text is None for text in pending.values()):
+            from .repository import parse_text
+            for rel,text in pending.items():
+                if text is not None:
+                    parsed=parse_text(text,root/rel)
+                    if parsed and parsed.get('id'):moved.setdefault(parsed['id'],rel)
         for referring in inventory(domain,root,retired=True):
             if referring['id']==note_id:continue
-            rel=Path(referring['path']).relative_to(root).as_posix()
-            current=parse_changed(changes.get(rel),referring)
+            rel=Path(referring['path']).relative_to(root).as_posix();original=rel
+            if rel in pending and pending[rel] is None:
+                # An earlier step moved this note (e.g. retired it too): rewrite its new copy, not the old file.
+                if referring['id'] not in moved:continue
+                rel=moved[referring['id']];referring={**referring,'path':str(root/rel)}
+            current=parse_changed(changes.get(rel,pending.get(rel)),referring)
             old=current['body'];new=rewrite_type_links(old,Path(referring['path']),{path.resolve():target})
             if new!=old:
                 current['body']=new;current['updated']=now()
-                changes[rel]=serialize(current);expected[rel]=referring['revision']
+                changes[rel]=serialize(current)
+                if rel==original:expected[rel]=referring['revision']
     return changes,expected,target
 
 def parse_changed(pending_text,note):
@@ -347,6 +386,21 @@ def open_work(domains,root=None):
             items=[(i+1,text) for i,(done,text) in enumerate(action_items(note.get('body',''))) if not done and text]
             if items:found.append((domain,note,items))
     return sorted(found,key=lambda f:str(f[1].get('updated') or ''),reverse=True)
+
+CONFIRM_KEEP=8
+
+def confirm(note_id,domain,root=None):
+    """Record that an active note is still true today: a journaled, undoable change that appends the date to
+    `confirmed` (the last CONFIRM_KEEP kept) and moves a time-sensitive note's review date out."""
+    root=Path(root or memory_root()).resolve()
+    with store_lock(root):
+        _,note=find_note(note_id,domain,root)
+        if date.today().isoformat() in (note.get('confirmed') or []):
+            return {'ok':True,'id':note['id'],'status':'unchanged','confirmed':note['confirmed'],'review_by':note.get('review_by')}
+        result=change(note['id'],domain,'confirm',root,note['revision'])
+        after=find_note(note['id'],domain,root)[1]
+        result.update(confirmed=after.get('confirmed',[]),review_by=after.get('review_by'))
+        return result
 
 def check_action(note_id,domain,root=None,item=None,index=None,done=True):
     """Tick (or with done=False untick) one Action Item, chosen by its 1-based index or its text:

@@ -42,20 +42,55 @@ def default_review_by(note_type, today=None):
     return ((today or date.today()) + timedelta(days=days)).isoformat()
 
 
+def last_confirmed(note):
+    """The latest `confirm` date, or None."""
+    dates = [d for d in note.get('confirmed') or [] if isinstance(d, str) and len(d) == 10]
+    return max(dates) if dates else None
+
+
+def effective_date(note):
+    """When the note was last known true: its last content change or confirmation, whichever is later."""
+    try:
+        updated = datetime.fromisoformat(str(note.get('updated') or note.get('created') or '').replace('Z', '+00:00'))
+    except ValueError:
+        updated = None
+    if updated is not None and updated.tzinfo is None:
+        updated = updated.replace(tzinfo=timezone.utc)
+    found = updated.date() if updated else None
+    confirmed = last_confirmed(note)
+    if confirmed:
+        try:
+            found = max(filter(None, (found, date.fromisoformat(confirmed))))
+        except ValueError:
+            pass
+    return found
+
+
 def review_due(note, today=None):
-    """True when an active note should be checked: its review date passed, or it is old."""
+    """True when an active note should be checked: its review date passed, or it is old.
+    A confirmation counts as fresh: `confirm` resets the age a note without a review date is judged by."""
     if note.get('status', 'active') != 'active':
         return False
     today = today or date.today()
     review = str(note.get('review_by') or '')[:10]
     if review:
         return review < today.isoformat()
-    try:
-        updated = datetime.fromisoformat(str(note.get('updated') or note.get('created') or '').replace('Z', '+00:00'))
-    except ValueError:
+    known = effective_date(note)
+    if known is None:
         return False
-    if updated.tzinfo is None:
-        updated = updated.replace(tzinfo=timezone.utc)
     note_type = LEGACY_TYPES.get(note.get('type'), note.get('type'))
     horizon = REVIEW_DAYS.get(note_type, STALE_DAYS)
-    return updated.date() + timedelta(days=horizon) < today
+    return known + timedelta(days=horizon) < today
+
+
+def review_order(notes, read_refs=(), domain=None, today=None):
+    """Due notes, most neglected first: never confirmed and not in read_refs ('domain:id' strings the usage
+    diary saw read or used; it keeps 30 days) ahead of the rest, then the oldest review date or effective date."""
+    today = today or date.today()
+    read = set(read_refs)
+    def key(note):
+        confirmed = last_confirmed(note)
+        neglected = not confirmed and f"{domain or note.get('domain')}:{note.get('id')}" not in read
+        when = str(note.get('review_by') or '')[:10] or (effective_date(note) or today).isoformat()
+        return (not neglected, when, str(note.get('title', '')))
+    return sorted(notes, key=key)

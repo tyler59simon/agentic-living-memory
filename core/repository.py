@@ -251,7 +251,7 @@ def parse_text(raw, path=""):
 
 # Frontmatter order: the properties a person reads first, then bookkeeping.
 FRONT_KEYS = ("title", "type", "status", "tags", "context", "files")
-SYSTEM_KEYS = ("id", "domain", "created", "updated", "review_by", "supersedes", "superseded_by", "schema_version", "capture_key", "origin")
+SYSTEM_KEYS = ("id", "domain", "created", "updated", "review_by", "confirmed", "supersedes", "superseded_by", "schema_version", "capture_key", "origin")
 MAX_FILES = 30
 
 
@@ -362,6 +362,8 @@ def validate(note, domain, root=None, new=False):
         raise ValueError("Tags must be a string list")
     if "files" in note and (not isinstance(note["files"], list) or any(not isinstance(f, str) for f in note["files"])):
         raise ValueError("files must be a list of paths")
+    if "confirmed" in note and (not isinstance(note["confirmed"], list) or any(not isinstance(d, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d) for d in note["confirmed"])):
+        raise ValueError("confirmed must be a list of YYYY-MM-DD dates")
     taxonomy = read_json(Path(root or memory_root()) / "tag_taxonomy.json", {"tags": []})
     known = taxonomy.get("tags", []) if isinstance(taxonomy, dict) else taxonomy
     if isinstance(known, dict):

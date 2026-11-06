@@ -353,20 +353,28 @@ def sync(domain,vault,root=None):
                 note_type=str(note.get('type') or 'knowledge')
                 if sections(note.get('body','')).get('summary','').strip()==TEMPLATE_PROMPTS.get(note_type,'').strip():
                     raise ValueError('Still the template text; replace it with the note, and it is saved at the next sync')
-                # Notes written from an Obsidian template carry no stable identity yet.
-                if not note.get('id'):note['id']=str(uuid.uuid4())
-                if not note.get('domain'):note['domain']=domain
-                if not note.get('status'):note['status']='active'
-                stamp=now();note.setdefault('created',stamp);note.setdefault('updated',stamp)
-                note=normalize(note)
-                destination=root/'domains'/domain/'notes'/f"{note['prefix']} - {slug(note['title'])}-{note['id'][:8]}.md"
-                note['path']=str(destination)
-                validate(note,domain,root,new=True)
-                if any(n['id']==note['id'] for n in notes):raise ValueError('Duplicate ID')
-                if destination.exists():raise ValueError('Filename collision')
-                new_text=serialize(note)
-                receipt=transaction(root,{destination.relative_to(root).as_posix():new_text,f'domains/{domain}/.derived-dirty':'dirty\n'},'overlay_capture');wrote_canonical=True
-                log('Captured',note['id'],note['title'],receipt.get('operation_id'))
+                # Notes written from an Obsidian template carry no stable identity yet. The ID derives from the
+                # file's content, so if a sync stops after the canonical write, the retry finds that note
+                # instead of capturing the same text again under a new random ID.
+                derived=not note.get('id')
+                if derived:note['id']=str(uuid.uuid5(uuid.NAMESPACE_URL,f'living-memory-vault-capture:{domain}:{h}'))
+                replay=next((n for n in notes if n['id']==note['id']),None) if derived else None
+                if replay:
+                    destination=Path(replay['path']);new_text=destination.read_text(encoding='utf-8').replace('\r\n','\n')
+                    log('Captured',note['id'],note['title'],'already saved by an interrupted sync')
+                else:
+                    if not note.get('domain'):note['domain']=domain
+                    if not note.get('status'):note['status']='active'
+                    stamp=now();note.setdefault('created',stamp);note.setdefault('updated',stamp)
+                    note=normalize(note)
+                    destination=root/'domains'/domain/'notes'/f"{note['prefix']} - {slug(note['title'])}-{note['id'][:8]}.md"
+                    note['path']=str(destination)
+                    validate(note,domain,root,new=True)
+                    if any(n['id']==note['id'] for n in notes):raise ValueError('Duplicate ID')
+                    if destination.exists():raise ValueError('Filename collision')
+                    new_text=serialize(note)
+                    receipt=transaction(root,{destination.relative_to(root).as_posix():new_text,f'domains/{domain}/.derived-dirty':'dirty\n'},'overlay_capture');wrote_canonical=True
+                    log('Captured',note['id'],note['title'],receipt.get('operation_id'))
                 new_rel=note_rel(domain,destination.name)
                 view_changes[path_rel]=None;view_changes[new_rel]=new_text;copied+=1
                 entries[note['id']]={'overlay':new_rel,'canonical_hash':digest(new_text.encode()),'overlay_hash':digest(new_text.encode()),'status':'active'}

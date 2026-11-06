@@ -73,7 +73,7 @@ One or two sentences: the fact, decision or problem.
 > A critical caveat or warning.
 ```
 
-- The frontmatter lists `title, type, status, tags, context` first and bookkeeping after them.
+- The frontmatter lists `title, type, status, tags, context` first and bookkeeping after them. Optional bookkeeping appears only when set: `files` (after `context`), and after `updated`: `review_by`, `confirmed` (the dates `confirm` recorded, at most 8, newest last), `supersedes`, `superseded_by`, then `origin` after `capture_key`.
 - The `# 🎯` heading always comes from the `title` property. It is not stored in the body, so to rename a note, change `title`.
 - The Executive Summary is required. Every other section is optional, and empty sections are dropped.
 - **Action Items are only for `plan`, `bug` and `risk` notes.** Capturing them on another type, or changing a note to another type while they exist, is refused. Lasting facts go in Key Details.

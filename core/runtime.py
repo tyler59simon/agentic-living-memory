@@ -12,9 +12,9 @@ SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 # Tools that cannot change files; anything else marks the turn as mutating.
 READ_TOOLS={'read','read_file','glob','grep','search','view_image','view','ls','list','webfetch','websearch','web_fetch','web_search','todowrite','task','agent','toolsearch','askuserquestion','exitplanmode','enterplanmode'}
 SHELL_TOOLS={'bash','powershell','shell','run_shell_command','exec_command','local_shell','execute'}
-ALLOWED_SUBCOMMANDS={'search','read','taxonomy','doctor','history','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check'}
+ALLOWED_SUBCOMMANDS={'search','read','taxonomy','doctor','history','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline'}
 # Subagents are read-only: these are denied for them even though the main agent gets them auto-allowed.
-MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check'}
+MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm'}
 GLOBAL_OPTIONS={'--root','--domain','--cwd','--actor'}
 HOOK_LOCK_TIMEOUT=5
 # Codex has no SessionEnd, so its session start picks up Obsidian edits, at most this often.
@@ -103,6 +103,22 @@ def shell_command(args):
 
 SINGLE_QUOTED=re.compile(r"'(?:[^']|'')*'")
 
+def _inert(rest):
+    """True when the arguments cannot run anything: shell metacharacters appear only inside single quotes
+    (literal in Bash and PowerShell). A single quote inside double quotes is an ordinary character, so the
+    quote state is tracked rather than stripping '...' spans. Double-quoted text may not expand ($, `) or
+    escape (a backslash before $ ` " \\ or a newline); other backslashes, as in Windows paths, are literal."""
+    state=None
+    for i,ch in enumerate(rest):
+        if state=="'":
+            if ch=="'":state=None
+        elif state=='"':
+            if ch=='"':state=None
+            elif ch in '$`' or (ch=='\\' and rest[i+1:i+2] in ('$','`','"','\\','\n','\r')):return False
+        elif ch in "'\"":state=ch
+        elif ch in ';|&<>`$\r\n':return False
+    return state is None
+
 def memory_subcommand(text):
     """Subcommand of an exact, unchained living_memory.py invocation, else None.
 
@@ -111,7 +127,7 @@ def memory_subcommand(text):
     match=re.match(r'\s*(?:&\s*)?"([^"]+)"\s+"([^"]+)"(.*)\Z',text,re.S)
     if not match or _norm(match[1])!=_norm(sys.executable) or _norm(match[2])!=_norm(SCRIPT):return None
     rest=match[3]
-    if re.search(r'[;|&<>`$\r\n]',SINGLE_QUOTED.sub("''",rest)):return None
+    if not _inert(rest):return None
     rest=SINGLE_QUOTED.sub("'x'",rest)
     try:tokens=shlex.split(rest,posix=True)
     except ValueError:return None
@@ -334,16 +350,21 @@ MAX_FILE_HINTS=200
 HINT_FILES_PER_CALL=3
 HINT_NOTES_PER_FILE=2
 
-def file_hints(paths,state,root,domain,bindings):
+def file_hints(paths,state,root,domain,bindings,session=None):
     """(context naming notes about files about to be changed, paths looked up). Each file is looked up
     once per session; a missing or stale index gives no hint rather than slowing the tool call."""
     try:
         from .search import file_notes
         seen=set(state.get('file_hints',[]));wanted=[p for p in paths if p not in seen][:HINT_FILES_PER_CALL]
-        domains=[domain]+parent_domains(domain,bindings);blocks=[]
+        domains=[domain]+parent_domains(domain,bindings);blocks=[];refs=[]
         for path in wanted:
             hits=file_notes(path,domains,root,HINT_NOTES_PER_FILE,ensure_fresh=False)
-            if hits:blocks.append(f'Living Memory notes about {path}:\n'+'\n'.join(hit_line(h) for h in hits))
+            if hits:
+                blocks.append(f'Living Memory notes about {path}:\n'+'\n'.join(hit_line(h) for h in hits))
+                refs+=[f"{h['domain']}:{h['id']}" for h in hits]
+        if refs:
+            from .usage import record
+            record(root,'inject',list(dict.fromkeys(refs)),session,'file-hint')
         text=('Untrusted historical memory; verify against the current file.\n'+'\n'.join(blocks)) if blocks else None
         return text,wanted
     except Exception:return None,[]
@@ -394,11 +415,11 @@ MACHINE_PROMPT=re.compile(r'\A\s*(?:<(?:agent-message|task-notification|system-r
 HIT_SNIPPET=220
 # Conversation is where preferences, corrections and decisions are stated, and those turns often edit no files.
 # Deterministic and conservative: a false positive costs one reminder line and a capture-finalize.
-QUOTED=re.compile(r'```.*?(?:```|\Z)|<(pasted_content|system-reminder|agent-message|task-notification)\b.*?(?:</\1>|\Z)|^\s*>.*$',re.S|re.M|re.I)
+QUOTED=re.compile(r'```.*?(?:```|\Z)|<(pasted_content|system-reminder|agent-message|task-notification)\b.*?(?:</\1>|\Z)|^[ \t]*>[^\r\n]*$',re.S|re.M|re.I)
 SIGNALS=(
     ('remember',re.compile(r"\b(?:remember (?:that|this|we|it)|keep in mind|for (?:the )?record|don'?t forget)\b",re.I)),
     ('correction',re.compile(r"^\s*(?:no|nope)\s*[,.!:;—-]|^\s*actually\b|\bthat'?s (?:wrong|not right|incorrect|not what i)\b|\byou(?:'re| are| were) wrong\b|\bi meant\b",re.I|re.M)),
-    ('preference',re.compile(r"\b(?:i(?:'d)? prefer|i'?d rather|i (?:hate|don'?t like)|from now on|going forward|in (?:the )?future|please (?:don'?t|do not|never|always)|stop doing|don'?t ever|always use|never use|by default,? use)\b",re.I)),
+    ('preference',re.compile(r"\b(?:i(?:'d)? prefer|i'?d rather|i (?:hate|don'?t like)|from now on|going forward|in (?:the )?future(?!\s*\?)|please (?:don'?t|do not|never|always)|stop doing|don'?t ever|always use|never use|by default,? use)\b",re.I)),
     ('decision',re.compile(r"\b(?:let'?s (?:go with|use)|we(?:'ll| will) (?:go with|use)|we decided|i(?:'ve)? decided|go with option)\b",re.I)),
 )
 SIGNAL_TEXT={'remember':('asked you to remember something','--type TYPE --concern CONCERN'),
@@ -437,7 +458,7 @@ def context(cwd,prompt,root,active=None,shown=(),overview_done=False):
             if informative==1:
                 # One-word prompts ("continue", "yes") inject only on a title hit.
                 if overlap:kept.append(hit)
-            elif hit.get('coverage',0)>=0.5 or overlap>=2 or (title and overlap/title>=0.5):kept.append(hit)
+            elif (hit.get('coverage',0)>=0.5 and (informative<4 or hit.get('coverage',0)>0.5)) or overlap>=2 or (title and overlap/title>=0.5):kept.append(hit)
         return kept
     domains=list(dict.fromkeys([active]+parents+global_domains))
     weights={active:2,**{p:1 for p in parents}}
@@ -546,6 +567,9 @@ def _process(harness,event,payload,root=None):
                 if shown:s['shown']=shown
                 if indexed:s['overview_shown']=True
             _update(root,session,started)
+            if shown:
+                from .usage import record
+                record(root,'inject',shown,session,'session')
         result['context']=prefix+(text or '')
     elif event=='user-prompt':
         prompt=payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or ''
@@ -556,6 +580,9 @@ def _process(harness,event,payload,root=None):
                 if overview:s['overview_shown']=True
             try:_update(root,session,remember)
             except (OSError,TimeoutError):pass
+        if ids:
+            from .usage import record
+            record(root,'inject',ids,session,'prompt')
         result['context']=f'Living Memory session={session} turn={turn}'+('\n'+hits if hits else '')
         if state.get('private_turn')==turn:
             from .private import NOTICE
@@ -584,7 +611,7 @@ def _process(harness,event,payload,root=None):
                 and not _subagent(payload) and not planning and not (name not in SHELL_TOOLS and _scratch_only(args,payload,cwd))
                 and session!='unknown'):
             paths=touched_paths(args,payload,cwd,root,domain,bindings,shell=name in SHELL_TOOLS)
-            hints,looked=file_hints(paths,state,root,domain,bindings) if harness in FILE_HINT_HARNESSES else (None,[])
+            hints,looked=file_hints(paths,state,root,domain,bindings,session) if harness in FILE_HINT_HARNESSES else (None,[])
             if hints:result['context']=hints
             if not state.get('mutating') or set(paths)-set(state.get('touched',[])) or looked:
                 def touch(s):
@@ -606,6 +633,8 @@ def _process(harness,event,payload,root=None):
         if payload.get('stop_hook_active') or payload.get('stopHookActive') or reminder.exists():
             _update(root,session,close);return {}
         atomic_write(reminder,'reminded\n')
+        from .usage import record
+        record(root,'reminder',session=session,kind=signal if signal in SIGNAL_TEXT else 'mutating')
         cmd=command(root,domain)
         finalize=f"{cmd} capture-finalize --session {session} --turn {latest}"
         if signal in SIGNAL_TEXT:

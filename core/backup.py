@@ -17,7 +17,7 @@ STALE_HOURS=48
 AUTO_MAX_NOTES=1500
 TOP_LEVEL=('bindings.json','tag_taxonomy.json','schema-version.json')
 MEMBER=re.compile(r'domains/[A-Za-z0-9_.-]+/(?:notes|archive)/(?:[^/\\]+/)*[^/\\]+\.md')
-NAME=re.compile(r'lm-\d{8}-\d{6}(?:-\d+)?\.zip')
+NAME=re.compile(r'lm-(\d{8}-\d{6})(?:-(\d+))?\.zip')
 
 def backup_dir(root):return Path(root)/'backups'
 
@@ -36,9 +36,12 @@ def _allowed(name):
     return name in TOP_LEVEL or bool(MEMBER.fullmatch(name)) and '..' not in name.split('/')
 
 def snapshots(root):
-    """Existing snapshots, newest first."""
+    """Existing snapshots, newest first: by timestamp, then by same-second sequence (lm-T.zip, lm-T-1.zip, ...)."""
     folder=backup_dir(root)
-    return sorted((p for p in folder.glob('lm-*.zip') if NAME.fullmatch(p.name)),key=lambda p:p.name,reverse=True) if folder.is_dir() else []
+    if not folder.is_dir():return []
+    def order(p):
+        m=NAME.fullmatch(p.name);return (m[1],int(m[2] or 0))
+    return sorted((p for p in folder.glob('lm-*.zip') if NAME.fullmatch(p.name)),key=order,reverse=True)
 
 def backup(root,keep=KEEP):
     """Write and verify a snapshot, then keep the newest `keep`."""
@@ -46,8 +49,10 @@ def backup(root,keep=KEEP):
     # Naming, writing, verification, publication and pruning all hold the store lock, so two sessions
     # backing up in the same second cannot share or delete each other's files.
     with store_lock(root):
-        stamp=datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S');target=folder/f'lm-{stamp}.zip';n=1
-        while target.exists():target=folder/f'lm-{stamp}-{n}.zip';n+=1
+        stamp=datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S');target=folder/f'lm-{stamp}.zip'
+        # Always above the highest same-second sequence: reusing a pruned lower name would sort as older and be pruned.
+        taken=[int(m[2] or 0) for m in (NAME.fullmatch(p.name) for p in folder.glob(f'lm-{stamp}*.zip')) if m and m[1]==stamp]
+        if taken:target=folder/f'lm-{stamp}-{max(taken)+1}.zip'
         temp=target.with_name('.'+target.name+'.tmp')
         try:
             files=canonical_files(root)
