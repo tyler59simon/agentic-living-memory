@@ -25,8 +25,10 @@ def migration_plan(root=None):
     return plan(root,changes,'schema_migration',domains,{'notes_preserved':count,'warnings':warnings,'files':len(changes)})
 
 
-def rewrite_type_links(body, referring_path, targets):
-    """Update ordinary local Markdown links only when their file is being renamed."""
+def rewrite_type_links(body, referring_path, targets, moved_from=None):
+    """Update ordinary local Markdown links only when their file is being renamed. With moved_from, the
+    referring note itself moves from that path: every relative link is resolved from its old folder and
+    rewritten relative to its new one."""
     import os,re
     from urllib.parse import unquote,quote,urlsplit,urlunsplit
     def rewrite(raw):
@@ -37,8 +39,8 @@ def rewrite_type_links(body, referring_path, targets):
         url=raw_url[1:-1] if angle else raw_url
         parts=urlsplit(url)
         if parts.scheme or parts.netloc or not parts.path:return raw
-        resolved=(referring_path.parent/unquote(parts.path)).resolve()
-        target=targets.get(resolved)
+        resolved=((moved_from or referring_path).parent/unquote(parts.path)).resolve()
+        target=targets.get(resolved,resolved if moved_from is not None else None)
         if target is None:return raw
         relative=Path(os.path.relpath(target,referring_path.parent)).as_posix()
         if '%' in parts.path:relative=quote(relative,safe='/')

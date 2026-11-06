@@ -1,0 +1,30 @@
+{
+  "comment": "Synthetic eval fixture: scripts/eval_retrieval.py builds these notes into a temporary store. Cases name notes as @key.",
+  "domain": "evaldemo",
+  "notes": [
+    {"key": "deploy", "type": "knowledge", "title": "Deploy the package with install.py", "body": "Edit the source repo, run the tests, then install.py --plan and --apply-plan to deploy the package."},
+    {"key": "webcam", "type": "bug", "title": "Laptop webcam not detected", "body": "The webcam vanished from Device Manager; a BIOS reset did not bring it back."},
+    {"key": "commits", "type": "preference", "title": "Prefer small focused commits", "body": "Keep each commit small and focused on one change."},
+    {"key": "backups", "type": "decision", "title": "Daily backups keep seven snapshots", "body": "The store is zipped once a day and the newest seven snapshots are kept."},
+    {"key": "obsidian", "type": "knowledge", "title": "Obsidian vault sync rules", "body": "Vault edits to title, tags and body are copied back to canonical notes at session end."},
+    {"key": "diagrams", "type": "decision", "title": "Cloud diagrams render elements by role", "body": "Elements with cloud metadata render by role in SVG, Draw.io and Mermaid output."}
+  ],
+  "retrieval": [
+    {"prompt": "how do I deploy the package?", "expect": ["@deploy"], "forbid": ["@webcam"]},
+    {"prompt": "the webcam is still not detected", "expect": ["@webcam"]},
+    {"prompt": "how many backup snapshots do we keep?", "expect": ["@backups"]},
+    {"prompt": "what does obsidian vault sync copy back?", "expect": ["@obsidian"]},
+    {"prompt": "render the cloud diagram elements", "expect": ["@diagrams"], "forbid": ["@deploy"]},
+    {"prompt": "what is the weather forecast tomorrow", "expect": []},
+    {"prompt": "recommend a good pasta recipe", "expect": []}
+  ],
+  "signals": [
+    {"prompt": "from now on, always run the tests first", "kind": "preference"},
+    {"prompt": "I prefer tabs over spaces", "kind": "preference"},
+    {"prompt": "no, that's wrong — the hook runs at Stop", "kind": "correction"},
+    {"prompt": "let's go with option B", "kind": "decision"},
+    {"prompt": "remember that the staging box is slow", "kind": "remember"},
+    {"prompt": "please summarize the file", "kind": null},
+    {"prompt": "```\nalways retry\n```\nwhat does this log mean?", "kind": null}
+  ]
+}

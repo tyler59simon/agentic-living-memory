@@ -29,7 +29,7 @@ def finalize(session,turn,notes=(),root=None):
         domain,note_id=reference.split(':',1)
         resolved.append(domain+':'+find_note(note_id,domain,root)[1]['id'])  # short refs are stored in full
     notes=resolved
-    existing=status(session,turn,root)
+    existing=status(session,turn,root);added=list(notes)
     if existing:
         # A second capture in the same turn joins the receipt; a bare finalize changes nothing.
         added=[n for n in notes if n not in existing.get('notes',[])]
@@ -38,7 +38,9 @@ def finalize(session,turn,notes=(),root=None):
     else:
         row={'schema':1,'completed':now(),'notes':list(notes)[:20],'outcome':'saved' if notes else 'nothing_durable'}
     atomic_write(root/'.turns'/(key+'.json'),canonical_json(row))
-    if notes:_remember_saved(root,session,notes)
+    if notes:
+        _remember_saved(root,session,notes)
+        _signal_capture(root,session,turn,added)
     prune(root)
     return {'ok':True,'status':row['outcome']}
 
@@ -49,3 +51,15 @@ def _remember_saved(root,session,notes):
     from .runtime import _update
     try:_update(root,session,lambda s:s.update(saved=list(dict.fromkeys(list(s.get('saved',[]))+list(notes)))[-MAX_SAVED:]))
     except (OSError,TimeoutError,ValueError):pass
+
+def _signal_capture(root,session,turn,notes):
+    """Diary: a note saved on a turn whose prompt carried a durable statement (preference, correction, ...).
+    This is how the "one captured preference or correction a week" goal is measured."""
+    if not notes:return
+    try:
+        from .runtime import _pointer
+        state=read_json(_pointer(root,session),{}) or {}
+        if state.get('signal') and turn in list(state.get('open_turns') or [])+[state.get('turn')]:
+            from .usage import record
+            record(root,'signal-capture',notes,session,state['signal'])
+    except (OSError,ValueError):pass

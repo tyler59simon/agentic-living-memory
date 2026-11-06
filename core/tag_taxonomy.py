@@ -2,11 +2,16 @@
 import argparse,difflib,json
 from pathlib import Path
 from .common import memory_root
-from .repository import read_json,canonical_json,FACETS
+from .repository import read_json,canonical_json,FACETS,store_lock
 from .governance import plan
 
 def plan_update(tags,root=None,replace=False):
-    root=Path(root or memory_root()).resolve();old=read_json(root/'tag_taxonomy.json',{'version':2,'tags':[]})
+    root=Path(root or memory_root()).resolve()
+    # Read and record under one lock, so the plan's recorded hash is of the file its contents came from.
+    with store_lock(root):return _plan_update(tags,root,replace)
+
+def _plan_update(tags,root,replace):
+    old=read_json(root/'tag_taxonomy.json',{'version':2,'tags':[]})
     known=old.get('tags',[]) if isinstance(old,dict) else old
     if isinstance(known,dict):known=list(known)
     invalid=[t for t in tags if '/' not in t or t.split('/',1)[0] not in FACETS or not t.split('/',1)[1] or any(c.isspace() for c in t)]

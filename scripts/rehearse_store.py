@@ -13,7 +13,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix='living-memory-rehearsal-') as folder:
         root=Path(folder)/'store';shutil.copytree(args.root,root)
         before={str(p.relative_to(root)):hashlib.sha256(p.read_bytes()).hexdigest() for p in (root/'domains').rglob('*.md') if p.parent.name in {'notes','archive'}}
-        proposed=migration_plan(root);receipt=apply(root,proposed['plan_id'],proposed['digest'])
+        # The copy carries sync-state.json with the real vault's path; never sync it from the rehearsal.
+        proposed=migration_plan(root);receipt=apply(root,proposed['plan_id'],proposed['digest'],sync_overlay=False)
         after={str(p.relative_to(root)):hashlib.sha256(p.read_bytes()).hexdigest() for p in (root/'domains').rglob('*.md') if p.parent.name in {'notes','archive'}}
         domains=sorted(p.name for p in (root/'domains').iterdir() if p.is_dir());issues={d:validate_domain(d,root) for d in domains}
         result={'ok':before==after and not any(issues.values()),'canonical_files_preserved':before==after,'note_count':sum(len(inventory(d,root,True)) for d in domains),'domains':domains,'issues':issues,'migration':proposed['summary'],'state':receipt['state']}

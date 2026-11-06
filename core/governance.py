@@ -5,7 +5,9 @@ from pathlib import Path
 from .common import atomic_write,memory_root
 from .repository import canonical_json,confined,digest,read_json,transaction,recover,store_lock,reconcile,now
 
-def plan(root, changes, kind, domains=(), summary=None):
+def plan(root, changes, kind, domains=(), summary=None, guards=None):
+    """guards: store-wide conditions that per-file hashes cannot express, re-checked at apply:
+    absent_ids (no note in the plan's domains has these IDs) and unused_tags (no note outside the plan carries them)."""
     root=Path(root).resolve()
     with store_lock(root):
         expected={}
@@ -14,6 +16,7 @@ def plan(root, changes, kind, domains=(), summary=None):
             expected[rel]=digest(p.read_bytes()) if p.exists() else None
         value={'schema':2,'id':uuid.uuid4().hex,'kind':kind,'domains':sorted(set(domains)),
                'created':now(),'changes':changes,'expected':expected,'summary':summary or {'files':len(changes)}}
+        if guards:value['guards']={k:sorted(set(v)) for k,v in guards.items() if v}
         value['digest']=hashlib.sha256(canonical_json(value).encode()).hexdigest()
         path=root/'.plans'/(value['id']+'.json');atomic_write(path,canonical_json(value))
         return {'ok':True,'plan_id':value['id'],'digest':value['digest'],'kind':kind,'summary':value['summary']}
@@ -27,11 +30,28 @@ def apply(root,plan_id,expected_digest,sync_overlay=True):
         unsigned={k:v for k,v in value.items() if k!='digest'}
         actual=hashlib.sha256(canonical_json(unsigned).encode()).hexdigest()
         if value['digest']!=actual or actual!=expected_digest:raise ValueError('Plan digest mismatch')
+        _check_guards(root,value)
         receipt=transaction(root,value['changes'],value['kind'],value['expected'],value['id'])
         for domain in value['domains']:
             try:reconcile(domain,root,sync_overlay=sync_overlay)
             except Exception:receipt.setdefault('warnings',[]).append(f'{domain}: derived state requires repair')
         return receipt
+
+def _check_guards(root,value):
+    """Fail as stale when the store changed in a way the plan's file hashes cannot see."""
+    from .repository import inventory
+    guards=value.get('guards') or {}
+    if not guards:return
+    absent=set(guards.get('absent_ids',[]));unused=set(guards.get('unused_tags',[]))
+    folders=sorted(p.name for p in (root/'domains').iterdir() if p.is_dir()) if (root/'domains').is_dir() else []
+    for domain in folders:
+        if unused or domain in value['domains']:
+            for note in inventory(domain,root,retired=True):
+                rel=Path(note['path']).relative_to(root).as_posix()
+                if absent and domain in value['domains'] and note['id'] in absent and rel not in value['changes']:
+                    raise ValueError(f"stale plan: {domain}:{note['id']} was added since the plan was made; make a new plan")
+                if unused and rel not in value['changes'] and unused&set(note.get('tags',[])):
+                    raise ValueError(f"stale plan: {domain}:{note['id']} now uses {', '.join(sorted(unused&set(note['tags'])))}, which this plan removes; make a new plan")
 
 def history(root,note_id=None,limit=20):
     root=Path(root).resolve();rows=[]
@@ -89,10 +109,12 @@ def undo(root,operation_id):
     value['effects']=[e for e in value['effects'] if Path(e['path']).name!='.derived-dirty']
     changes={e['path']:base64.b64decode(e['before']).decode() if e['before'] is not None else None for e in value['effects']}
     domains={Path(p).parts[1] for p in changes if Path(p).parts[0]=='domains'}
-    for effect in value['effects']:
-        p=confined(root,effect['path']);current=digest(p.read_bytes()) if p.exists() else None
-        if current!=effect['after_hash']:raise ValueError('Undo conflicts with later edits')
-    return plan(root,changes,'undo:'+operation_id,domains)
+    # Check and record under one lock: an edit between the check and the plan's snapshot would be overwritten.
+    with store_lock(root):
+        for effect in value['effects']:
+            p=confined(root,effect['path']);current=digest(p.read_bytes()) if p.exists() else None
+            if current!=effect['after_hash']:raise ValueError('Undo conflicts with later edits')
+        return plan(root,changes,'undo:'+operation_id,domains)
 
 def remap(root,mappings):
     from .notes import find_note
@@ -138,4 +160,5 @@ def retag_plan(root,mappings,domains=None):
                     note['tags']=tags;note['updated']=now();changes[Path(note['path']).relative_to(root).as_posix()]=serialize(note);affected.append(domain)
         taxonomy=read_json(root/'tag_taxonomy.json',{'tags':[]});known=taxonomy.get('tags',[]) if isinstance(taxonomy,dict) else taxonomy
         changes['tag_taxonomy.json']=canonical_json({'version':2,'facets':list(FACETS),'tags':sorted({mappings.get(t,t) for t in known}|set(mappings.values()))})
-        return plan(root,changes,'bulk_retag',affected,{'files':len(changes),'mappings':mappings})
+        return plan(root,changes,'bulk_retag',affected,{'files':len(changes),'mappings':mappings},
+                    guards={'unused_tags':set(mappings)-set(mappings.values())})

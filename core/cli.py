@@ -88,8 +88,11 @@ def _redact(values):
             values[field],kinds=redact(values[field]);found+=[{'kind':k,'field':field} for k in kinds]
     return found
 
-def _receipt(args,domain,note_id,root):
-    """Updating or superseding is a memory decision for the turn, like a capture."""
+def _receipt(args,domain,note_id,root,event=None):
+    """Updating or superseding is a memory decision for the turn, like a capture; the diary notes it as use."""
+    if event:
+        from .usage import record
+        record(root,event,[domain+':'+note_id],getattr(args,'session',None))
     if getattr(args,'session',None):
         from .capture import finalize
         finalize(args.session,_turn(root,args.session,getattr(args,'turn',None)),[domain+':'+note_id],root)
@@ -179,6 +182,12 @@ def main(argv=None):
     p=sub('review');p.add_argument('--limit',type=int,default=20)
     p=sub('open');p.add_argument('--limit',type=int,default=50)
     p=sub('check');p.add_argument('reference');p.add_argument('item',nargs='?',help='Text of the Action Item: exact, or a unique part of it');p.add_argument('--index',type=int,help='1-based position among the note\'s Action Items, as open lists it');p.add_argument('--undo',action='store_true',help='Untick instead');p.add_argument('--session');p.add_argument('--turn')
+    p=sub('timeline');p.add_argument('reference',nargs='?',help='Anchor note; default: the newest note');p.add_argument('--date',help='YYYY-MM-DD: anchor at the first note on or after this date');p.add_argument('--before',type=int,default=5);p.add_argument('--after',type=int,default=5);p.add_argument('--type',choices=NOTE_TYPES,action='append');p.add_argument('--by',choices=['updated','created'],default='updated');p.add_argument('--all',action='store_true',help='Include superseded, archived and resolved notes')
+    p=sub('ingest-plan');p.add_argument('--source',type=Path,help="Auto-memory folder; default: Claude Code's folder for --cwd");p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of skipping the file");p.add_argument('--allow-similar',action='store_true')
+    p=sub('export');p.add_argument('--out',type=Path,required=True,help='New .zip file, outside the store');p.add_argument('--type',choices=NOTE_TYPES,action='append');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)');p.add_argument('--all',action='store_true',help='Include superseded, archived and resolved notes')
+    p=sub('import-plan');p.add_argument('file',type=Path)
+    p=sub('confirm');p.add_argument('reference');p.add_argument('--session');p.add_argument('--turn')
+    p=sub('stats');p.add_argument('--days',type=int,default=30,help='Window, at most 30 (the diary keeps 30 days)');p.add_argument('--limit',type=int,default=10)
     p=sub('plan');p.add_argument('action',choices=['update','rename','retag','resolve','reopen','archive','supersede','delete']);p.add_argument('reference');p.add_argument('--payload-file',type=Path)
     p=sub('apply');p.add_argument('plan_id');p.add_argument('--expected-plan-sha256',required=True)
     p=sub('inspect-plan');p.add_argument('plan_id')
@@ -231,7 +240,7 @@ def main(argv=None):
             # Snapshots exist to repair a damaged store, so restoring must not depend on readable bindings.
             if cmd not in {'restore-plan','inspect-plan','apply','backup','history'}:raise
             domain=None
-        if args.actor=='subagent' and cmd not in {'search','read','query','doctor','validate','history','open'}:raise ValueError('Subagents are read-only; return mutation proposals to the main agent')
+        if args.actor=='subagent' and cmd not in {'search','read','query','doctor','validate','history','open','stats','timeline'}:raise ValueError('Subagents are read-only; return mutation proposals to the main agent')
         if cmd=='bind':
             from .init_domain import init_domain
             init_domain(args.name,args.prefix,root);result={'ok':True,'domain':args.name,'status':'bound'}
@@ -274,6 +283,10 @@ def main(argv=None):
                     suggested=[t for t in _session_state(root,session).get('touched',[]) if t not in (item.get('files') or [])] if session else []
                     if suggested and outcome.get('status')=='created':outcome['suggested_files']=suggested
                     results.append(outcome)
+                    if outcome.get('status') in {'duplicate','existing'}:
+                        # Re-stating a saved fact is evidence it still holds (#9 reinforcement).
+                        from .usage import record
+                        record(root,'duplicate',[selected+':'+outcome['id']],session)
                     if session and turn:
                         from .capture import finalize
                         finalize(session,turn,[selected+':'+outcome['id']],root)
@@ -315,6 +328,8 @@ def main(argv=None):
             d,n=_reference(args.reference,domain,root);path,note=find_note(n,d,root)
             result={k:v for k,v in note.items() if k not in {'body','path','digest'}}
             if not args.metadata_only:result.update(body=note['body'][:max(0,min(64000,args.max_chars))],truncated=len(note['body'])>args.max_chars)
+            from .usage import record
+            record(root,'read',[f'{d}:{n}'])
         elif cmd=='update':
             from .notes import change
             d,n=_reference(args.reference,domain,root)
@@ -342,20 +357,22 @@ def main(argv=None):
             result=change(n,d,'update',root,revision,**values)
             if redacted:result['redacted']=redacted
             if suggested:result['suggested_files']=suggested
-            _receipt(args,d,n,root)
+            _receipt(args,d,n,root,'update')
         elif cmd=='supersede':
             from .notes import change
             d,n=_reference(args.reference,domain,root);bd,bn=_reference(args.by,domain,root)
             if bd!=d:raise ValueError('A note can only be superseded by a note in the same domain')
             result=change(n,d,'supersede',root,superseded_by=bn)
+            from .usage import record
+            record(root,'supersede',[f'{d}:{n}'],args.session)
             _receipt(args,d,bn,root)
         elif cmd=='review':
-            from .note_types import review_due
+            from .note_types import review_due,review_order,last_confirmed
+            from .usage import used_refs
             if not domain:raise ValueError('unbound_project')
-            due=[n for n in inventory(domain,root) if review_due(n)]
-            due.sort(key=lambda n:(str(n.get('review_by') or n.get('updated',''))))
-            result={'ok':True,'domain':domain,'due':len(due),'notes':[{'ref':f"{domain}:{n['id']}",'title':n['title'],'type':n.get('type'),'updated':str(n.get('updated',''))[:10],'review_by':n.get('review_by')} for n in due[:max(1,min(100,args.limit))]],
-                    'hint':'For each note: update it if it is still true (this resets its review date), supersede it if it was replaced, or ask for an archive plan.'}
+            due=review_order([n for n in inventory(domain,root) if review_due(n)],used_refs(root),domain)
+            result={'ok':True,'domain':domain,'due':len(due),'notes':[{'ref':f"{domain}:{n['id']}",'title':n['title'],'type':n.get('type'),'updated':str(n.get('updated',''))[:10],'review_by':n.get('review_by'),'confirmed':last_confirmed(n)} for n in due[:max(1,min(100,args.limit))]],
+                    'hint':'For each note: still true -> confirm REF; changed -> update REF; replaced -> supersede it; obsolete -> ask for an archive plan. Never-confirmed notes nobody has read lately come first.'}
         elif cmd=='open':
             from .notes import open_work,short_ref
             from .runtime import parent_domains
@@ -370,7 +387,52 @@ def main(argv=None):
             d,n=_reference(args.reference,domain,root)
             if (args.item is None)==(args.index is None):raise ValueError('Name the item by its text or pass --index N (not both)')
             result=check_action(n,d,root,args.item,args.index,not args.undo);result.pop('path',None)
-            if result.get('status')!='unchanged':_receipt(args,d,n,root)
+            if result.get('status')!='unchanged':_receipt(args,d,n,root,'check')
+        elif cmd=='timeline':
+            from .notes import short_ref
+            if not domain:raise ValueError('unbound_project')
+            if args.reference and args.date:raise ValueError('Anchor on a REF or a --date, not both')
+            when=lambda n:str(n.get(args.by) or n.get('created') or '')
+            anchor_id=None
+            if args.reference:
+                d,anchor_id=_reference(args.reference,domain,root)
+                if d!=domain:raise ValueError('timeline lists one domain; pass --domain '+d)
+            notes=[n for n in inventory(domain,root,retired=args.all or bool(anchor_id)) if args.all or n.get('status','active')=='active' or n['id']==anchor_id]
+            notes=sorted((n for n in notes if not args.type or n.get('type') in args.type or n['id']==anchor_id),key=lambda n:(when(n),n['id']))
+            if not notes:raise ValueError('No notes to list')
+            if anchor_id:at=next(i for i,n in enumerate(notes) if n['id']==anchor_id)
+            elif args.date:
+                from datetime import date as _date
+                try:_date.fromisoformat(args.date)
+                except ValueError:raise ValueError('--date must be YYYY-MM-DD') from None
+                at=next((i for i,n in enumerate(notes) if when(n)[:10]>=args.date),len(notes)-1)
+            else:at=len(notes)-1
+            before,after=max(0,min(50,args.before)),max(0,min(50,args.after))
+            rows=[{'ref':f"{domain}:{n['id']}",'short_ref':short_ref(domain,n['id']),'date':when(n)[:10],'type':n.get('type'),'title':n['title'],'status':n.get('status','active'),**({'anchor':True} if i==at else {})}
+                  for i,n in enumerate(notes) if at-before<=i<=at+after]
+            result={'ok':True,'domain':domain,'by':args.by,'anchor':rows[min(at,before)]['ref'],'notes':rows}
+        elif cmd=='ingest-plan':
+            from .ingest import ingest_plan,default_source
+            if not domain:raise ValueError('unbound_project')
+            result=ingest_plan(root,domain,args.source or default_source(cwd),args.redact,args.allow_similar)
+        elif cmd=='export':
+            from .bundle import export
+            if not domain:raise ValueError('unbound_project')
+            result=export(root,domain,args.out,args.type or (),args.tag,args.all)
+        elif cmd=='import-plan':
+            from .bundle import import_plan
+            # The bundle's own domain unless --domain names another; the cwd binding does not choose it.
+            result=import_plan(root,args.file,args.domain)
+        elif cmd=='confirm':
+            from .notes import confirm
+            d,n=_reference(args.reference,domain,root)
+            result=confirm(n,d,root);result.pop('path',None)
+            if result.get('status')!='unchanged':_receipt(args,d,n,root,'confirm')
+        elif cmd=='stats':
+            from .usage import stats
+            from .runtime import parent_domains
+            if not domain:raise ValueError('unbound_project')
+            result=stats(root,[domain]+parent_domains(domain,load_bindings(root)),max(1,min(30,args.days)),max(1,min(100,args.limit)))
         elif cmd=='plan':
             from .notes import change
             d,n=_reference(args.reference,domain,root);values=_payload(args) if args.payload_file or args.action in {'update','rename','retag','supersede'} else {}

@@ -205,12 +205,15 @@ def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False):
         if fresh:
             engine='fts5';db=sqlite3.connect((domain_dir(domain,root)/'search.sqlite3').as_uri()+'?mode=ro',uri=True)
             try:
-                ids={n['id']:n for n in active}
+                ids={n['id']:n for n in active};found=[];listed=set()
+                # Notes with every term first; when they do not fill the limit, notes with some terms follow, so one
+                # weak all-terms match cannot hide a note whose title carries most of the query.
                 for joiner in (' AND ',' OR '):
                     match=joiner.join('"'+t+'"' for t in tokens)
-                    rows=db.execute('SELECT n.id,bm25(notes_fts,5.0,3.0,1.0),n.rowid FROM notes_fts JOIN notes n ON n.rowid=notes_fts.rowid WHERE notes_fts MATCH ? ORDER BY bm25(notes_fts,5.0,3.0,1.0)',(match,)).fetchall()
-                    ranked=[(ids[note_id],-score) for note_id,score,_ in rows if note_id in ids]
-                    if ranked:break
+                    batch=db.execute('SELECT n.id,bm25(notes_fts,5.0,3.0,1.0),n.rowid FROM notes_fts JOIN notes n ON n.rowid=notes_fts.rowid WHERE notes_fts MATCH ? ORDER BY bm25(notes_fts,5.0,3.0,1.0)',(match,)).fetchall()
+                    found+=[row for row in batch if row[0] in ids and row[0] not in listed];listed|={row[0] for row in batch}
+                    if len(found)>=limit or len(tokens)==1:break
+                rows=found;ranked=[(ids[note_id],-score) for note_id,score,_ in rows]
                 per_row,informative,common=_coverage_fts(db,tokens)
                 coverage={note_id:per_row.get(rowid,0)/max(1,len(informative)) for note_id,_,rowid in rows} if informative else {note_id:0.0 for note_id,_,_ in rows}
             finally:db.close()
@@ -236,6 +239,11 @@ def search_domains(query,domains,limit=3,root=None,filters=None,rebuild=False,we
         weight=(weights or {}).get(domain,2 if index==0 else 1)
         for hit in search_domain(query,domain,max(20,limit),root,filters,rebuild):
             hit['score']=weight/(60+hit['rank']);hits.append(hit)
+    from . import usage
+    if usage.USE_STRENGTH and hits:
+        # Reinforcement breaks near-ties: notes in use recently and repeatedly rise a little.
+        power=usage.strength_map(Path(root or memory_root()),{h['domain'] for h in hits});top=max(power.values(),default=0) or 1
+        for hit in hits:hit['score']*=1+usage.STRENGTH_NUDGE*power.get(f"{hit['domain']}:{hit['id']}",0)/top
     return sorted(hits,key=lambda h:(-h['score'],h['domain'],h['id']))[:limit]
 def recent_notes(domain,limit=3,root=None):
     notes=inventory(domain,root)
