@@ -125,7 +125,7 @@ def validate_store(root):
             if issues:
                 raise ValueError(f'Invalid store domain {domain.name}: {issues}')
     for journal in (root / '.operations').glob('*/journal.json'):
-        if _read(journal).get('state') not in ('committed', 'rolled_back'):
+        if _read(journal).get('state') not in ('committed', 'rolled_back', 'abandoned'):
             raise ValueError('Pending operation recovery required before relocation')
 
 
