@@ -133,8 +133,11 @@ def doctor(root,cwd,explicit=None,domain=None):
     last=read_json(root/'hooks/last-delivery.json',{})
     domain_exists=bool(domain and (root/'domains'/domain/'notes').is_dir())
     from .storage import diagnostics
+    from .semantic import status as semantic_status
     location = diagnostics(explicit)
-    return {'ok':fts and not pending and not unreadable and (not domain or domain_exists),'problems':unreadable,'interpreter':sys.executable,'python':sys.version.split()[0],'fts5':fts,'root':str(root),'location':location,'domain':domain,'binding':'bound' if domain else 'unbound','domain_data':'present' if domain_exists else 'missing' if domain else 'unbound','index':index,'pending_recovery':pending,'hooks':{'trust':'unknown','last_delivery':last},'capture':'main_agent_via_scripts','protection':'cooperating_agent_governance','notes':counts,'warnings':warnings}
+    semantic=semantic_status(root)
+    if semantic.get('error'):warnings.append(f"semantic model {semantic['model']} cannot be read ({semantic['error']}); search is lexical-only until it is reinstalled or removed")
+    return {'semantic':{k:semantic[k] for k in ('enabled','model') if k in semantic},'ok':fts and not pending and not unreadable and (not domain or domain_exists),'problems':unreadable,'interpreter':sys.executable,'python':sys.version.split()[0],'fts5':fts,'root':str(root),'location':location,'domain':domain,'binding':'bound' if domain else 'unbound','domain_data':'present' if domain_exists else 'missing' if domain else 'unbound','index':index,'pending_recovery':pending,'hooks':{'trust':'unknown','last_delivery':last},'capture':'main_agent_via_scripts','protection':'cooperating_agent_governance','notes':counts,'warnings':warnings}
 
 SECTION_ARGS=('summary','detail','link','action','done','important')
 
@@ -202,6 +205,7 @@ def main(argv=None):
     p=sub('migration-plan')
     p=sub('note-type-plan')
     p=sub('rebuild');p.add_argument('name',nargs='?')
+    p=sub('semantic');p.add_argument('action',choices=['status','install','remove']);p.add_argument('--model',help='Model to install (default: the recommended one)');p.add_argument('--from',dest='source',type=Path,help='Folder already holding the model files, for an offline install; hashes are still verified')
     p=sub('validate');p.add_argument('name',nargs='?')
     p=sub('query');p.add_argument('sql')
     p=sub('taxonomy-plan');p.add_argument('tags',nargs='+')
@@ -485,6 +489,11 @@ def main(argv=None):
             if not d:raise ValueError('unbound_project')
             from .validate import reconcile,validate_domain
             result=reconcile(d,root) if cmd=='rebuild' else {'issues':validate_domain(d,root)}
+        elif cmd=='semantic':
+            from . import semantic
+            if args.action=='install':result=semantic.install(root,args.model or semantic.DEFAULT_MODEL,args.source)
+            elif args.model or args.source:raise ValueError('--model and --from apply to install only')
+            else:result=semantic.remove(root) if args.action=='remove' else semantic.status(root)
         elif cmd=='query':
             from .search import readonly_query
             if not domain:raise ValueError('unbound_project')

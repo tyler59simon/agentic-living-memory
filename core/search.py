@@ -1,6 +1,6 @@
 ﻿"""Scoped canonical retrieval; SQLite is a disposable derived view."""
 from __future__ import annotations
-import hashlib,json,math,re,sqlite3,tempfile,os
+import hashlib,json,math,re,sqlite3,struct,tempfile,os
 from collections import Counter
 from pathlib import Path
 from .common import memory_root,safe_domain,canonical_domain
@@ -40,7 +40,15 @@ def query_terms(text):
 def domain_dir(domain,root=None):return Path(root or memory_root())/'domains'/canonical_domain(domain,Path(root or memory_root()))
 # Bump when the index schema changes, so an index built by older code counts as stale and is rebuilt.
 INDEX_VERSION=2
-def _fingerprint(notes):return hashlib.sha256(json.dumps([INDEX_VERSION,[(n.get('id'),n['revision']) for n in notes]],sort_keys=True).encode()).hexdigest()
+# An installed semantic model is part of the fingerprint, so installing or removing it makes the index stale.
+# Without one the fingerprint is unchanged, so lexical indexes built by earlier releases stay fresh.
+def _fingerprint(notes,model=None):
+    key=[INDEX_VERSION,[(n.get('id'),n['revision']) for n in notes]]
+    if model:key.insert(1,model)
+    return hashlib.sha256(json.dumps(key,sort_keys=True).encode()).hexdigest()
+# Notes the model ranks this high join the lexical list in reciprocal rank fusion.
+SEMANTIC_TOP=20
+RRF_K=60
 
 def normalize_file(value):
     """A path as the `files` property stores it: forward slashes, no ./ or trailing slash."""
@@ -87,31 +95,41 @@ def file_notes(path,domains,root=None,limit=2,ensure_fresh=True):
                                'match':'files' if group==0 else 'body','snippet':snippet(body,terms(path))}))
     ranked.sort(key=lambda r:r[1],reverse=True);ranked.sort(key=lambda r:r[0])
     return [hit for _,_,hit in ranked[:max(1,limit)]]
+def _embedding_text(note):
+    """Title plus Executive Summary: what the note is about, without the detail that dilutes a mean vector."""
+    from .note_format import sections,plain
+    return note['title']+'\n'+plain(sections(note['body']).get('summary',''))
+
 def rebuild_index(domain,root=None):
+    from . import semantic
     root=Path(root or memory_root()).resolve(); directory=domain_dir(domain,root);directory.mkdir(parents=True,exist_ok=True)
     with store_lock(root):
-        notes=inventory(domain,root,retired=True)
+        notes=inventory(domain,root,retired=True);model=semantic.load(root)
         fd,name=tempfile.mkstemp(prefix='.search-',suffix='.sqlite3',dir=directory);os.close(fd)
         db=sqlite3.connect(name)
         try:
             db.execute('CREATE TABLE notes(domain TEXT,id TEXT,prefix TEXT,title TEXT,type TEXT,status TEXT,created TEXT,updated TEXT,review_by TEXT,context TEXT,tags TEXT,body TEXT,path TEXT,sha256 TEXT,revision TEXT,schema_version INTEGER,files TEXT,PRIMARY KEY(domain,id))')
             db.execute("CREATE VIRTUAL TABLE notes_fts USING fts5(title,tags,body,tokenize='porter unicode61')")
             db.execute('CREATE TABLE metadata(fingerprint TEXT)')
+            if model:db.execute('CREATE TABLE vectors(rowid INTEGER PRIMARY KEY,vec BLOB NOT NULL)')
             for n in notes:
                 values=(domain,n['id'],n.get('prefix','NOTE'),n['title'],n.get('type','knowledge'),n.get('status','active'),n.get('created'),n.get('updated'),n.get('review_by'),n.get('context',''),json.dumps(n.get('tags',[])),n['body'],n['path'],n['digest'],n['revision'],n.get('schema_version',1),json.dumps(n.get('files') or []))
                 cursor=db.execute('INSERT INTO notes VALUES('+','.join('?'*17)+')',values)
                 db.execute('INSERT INTO notes_fts(rowid,title,tags,body) VALUES(?,?,?,?)',(cursor.lastrowid,n['title'],' '.join(n.get('tags',[])),n['body']))
-            db.execute('INSERT INTO metadata VALUES(?)',(_fingerprint(notes),));db.commit();db.close();os.replace(name,directory/'search.sqlite3')
+                vector=model.embed(_embedding_text(n)) if model else None
+                if vector:db.execute('INSERT INTO vectors VALUES(?,?)',(cursor.lastrowid,semantic.to_blob(vector)))
+            db.execute('INSERT INTO metadata VALUES(?)',(_fingerprint(notes,semantic.installed(root)),));db.commit();db.close();os.replace(name,directory/'search.sqlite3')
         finally:
             db.close()
             if os.path.exists(name):os.unlink(name)
     return len(notes)
 def _fresh(domain,root,notes):
+    from .semantic import installed
     path=domain_dir(domain,root)/'search.sqlite3'
     if not path.exists():return False
     try:
         db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)
-        try:return db.execute('SELECT fingerprint FROM metadata').fetchone()[0]==_fingerprint(notes)
+        try:return db.execute('SELECT fingerprint FROM metadata').fetchone()[0]==_fingerprint(notes,installed(root))
         finally:db.close()
     except (sqlite3.Error,IndexError,TypeError):return False
 
@@ -201,7 +219,7 @@ def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False):
         active=[n for n in notes if n.get('status','active')=='active']
         if filters:
             active=[n for n in notes if all((v in n.get('tags',[]) if k=='tag' else file_matches(n.get('files'),v) if k=='file' else n.get(k)==v) for k,v in filters.items())]
-        ranked=[];engine='canonical_bm25';coverage={};common=set()
+        ranked=[];engine='canonical_bm25';coverage={};common=set();similarity=None
         if fresh:
             engine='fts5';db=sqlite3.connect((domain_dir(domain,root)/'search.sqlite3').as_uri()+'?mode=ro',uri=True)
             try:
@@ -216,6 +234,13 @@ def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False):
                 rows=found;ranked=[(ids[note_id],-score) for note_id,score,_ in rows]
                 per_row,informative,common=_coverage_fts(db,tokens)
                 coverage={note_id:per_row.get(rowid,0)/max(1,len(informative)) for note_id,_,rowid in rows} if informative else {note_id:0.0 for note_id,_,_ in rows}
+                similarity=_similarities(db,query,ids,root)
+                if similarity is not None:
+                    engine='fts5+semantic';ranked=_fuse(ranked,similarity,ids)
+                    # Notes found by meaning alone still report how many query words they carry.
+                    rowids=dict(db.execute('SELECT id,rowid FROM notes').fetchall())
+                    for note,_ in ranked:
+                        if note['id'] not in coverage:coverage[note['id']]=per_row.get(rowids[note['id']],0)/max(1,len(informative)) if informative else 0.0
             finally:db.close()
         else:
             ranked=_fallback(tokens,active);common=_common_fallback(tokens,notes)
@@ -230,7 +255,31 @@ def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False):
                            'tags':note.get('tags',[]),'status':note.get('status','active'),'snippet':snippet(note['body'],tokens),'score':score,'rank':len(output)+1,'engine':engine,
                            'revision':note['revision'],'sourceField':field,'sourceScope':'active','coverage':coverage[note['id']],
                            'titleOverlap':len(wanted&title),'titleTerms':len(title),'queryTerms':len(wanted),'relevance':round(coverage[note['id']],2)})
+            if similarity is not None:output[-1]['similarity']=round(similarity.get(note['id'],0.0),4)
         return output
+
+def _similarities(db,query,ids,root):
+    """note id -> cosine with the query, for candidate notes; None when the index or model has no vectors."""
+    from . import semantic
+    model=semantic.load(root)
+    if not model:return None
+    try:rows=db.execute('SELECT n.id,v.vec FROM vectors v JOIN notes n ON n.rowid=v.rowid').fetchall()
+    except sqlite3.Error:return None   # built before the model was installed, or without it
+    try:wanted=model.embed(query)
+    except (ValueError,struct.error):return None
+    if wanted is None:return {}
+    return {note_id:semantic.cosine(wanted,semantic.from_blob(blob)) for note_id,blob in rows if note_id in ids}
+
+def _fuse(ranked,similarity,ids):
+    """Reciprocal rank fusion of the lexical order and the semantic top: 1/(k+lexical rank) + 1/(k+semantic rank).
+    Ties keep the lexical order: word matches are the better-tested signal."""
+    fused={};notes={};lexical={}
+    for rank,(note,_) in enumerate(ranked,1):fused[note['id']]=1/(RRF_K+rank);notes[note['id']]=note;lexical[note['id']]=rank
+    top=sorted((i for i,s in similarity.items() if s>0),key=lambda i:(-similarity[i],i))[:SEMANTIC_TOP]
+    for rank,note_id in enumerate(top,1):
+        fused[note_id]=fused.get(note_id,0)+1/(RRF_K+rank);notes.setdefault(note_id,ids[note_id])
+    order=sorted(fused,key=lambda i:(-round(fused[i],12),lexical.get(i,len(ranked)+1),i))
+    return [(notes[i],fused[i]) for i in order]
 
 def search_domains(query,domains,limit=3,root=None,filters=None,rebuild=False,weights=None):
     """Rank-fused results across domains; the first domain counts double unless weights say otherwise."""

@@ -450,6 +450,8 @@ def context(cwd,prompt,root,active=None,shown=(),overview_done=False):
     if not query:return None,[],False
     scope=bindings.get('search_scope',{});global_domains=[canonical_domain(d,root) for d in scope.get('global_domains',['_global'])];global_domains=[d for d in global_domains if (root/'domains'/d).exists()]
     parents=parent_domains(active,bindings)
+    from .semantic import threshold
+    near=threshold(root)
     def relevant(hits):
         kept=[]
         for hit in hits:
@@ -459,6 +461,8 @@ def context(cwd,prompt,root,active=None,shown=(),overview_done=False):
                 # One-word prompts ("continue", "yes") inject only on a title hit.
                 if overlap:kept.append(hit)
             elif (hit.get('coverage',0)>=0.5 and (informative<4 or hit.get('coverage',0)>0.5)) or overlap>=2 or (title and overlap/title>=0.5):kept.append(hit)
+            # Same meaning in other words ("laid out" for "layout"): only a close semantic match counts.
+            elif near is not None and hit.get('similarity',0)>=near:kept.append(hit)
         return kept
     domains=list(dict.fromkeys([active]+parents+global_domains))
     weights={active:2,**{p:1 for p in parents}}

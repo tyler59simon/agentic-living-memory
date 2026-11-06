@@ -112,8 +112,9 @@ class Bundles(StoreFixture):
         code, result = self.tampered('extra.zip', lambda m: m.update({'readme.txt': b'hi'}))
         self.assertIn('outside the bundle layout', result['error']['message'])
         def change_note(m):
-            name = next(n for n in m if n.startswith('notes/'))
-            m[name] = m[name].replace(b'LRU', b'MRU').replace(b'Hardware', b'Software')
+            # Every note: member order follows random IDs, and not every note holds these words.
+            for name in [n for n in m if n.startswith('notes/')]:
+                m[name] = m[name].replace(b'LRU', b'MRU').replace(b'Hardware', b'Software')
         code, result = self.tampered('edit.zip', change_note)
         self.assertIn('changed after export', result['error']['message'])
         code, result = self.tampered('nomanifest.zip', lambda m: m.pop('manifest.json'))
