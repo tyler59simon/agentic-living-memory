@@ -348,6 +348,21 @@ def file_hints(paths,state,root,domain,bindings):
         return text,wanted
     except Exception:return None,[]
 
+def git_root(cwd):
+    """The enclosing git work tree (a .git folder, or a .git file for worktrees and submodules), else None."""
+    try:here=Path(cwd).resolve()
+    except (OSError,ValueError):return None
+    return next((p for p in (here,*here.parents) if (p/'.git').exists()),None)
+
+def bind_hint(cwd,root,bindings,state):
+    """One line, once per session, when the session starts in a git repo no binding covers.
+    Never binds: the user decides, and "suggest_bind": false in bindings.json turns this off."""
+    if state.get('bind_hint') or bindings.get('suggest_bind',True) is False:return None
+    repo=git_root(cwd)
+    if not repo:return None
+    return (f'Living Memory: this repo ({repo.as_posix()}) is not bound to a memory domain. If the user wants memory here: '
+            f'{command(root)} bind NAME "{repo.as_posix()}". Ask before binding.')
+
 LAST_SESSION='.last-session.json'
 
 def session_hash(session):return hashlib.sha256(session.encode()).hexdigest()[:12]
@@ -510,7 +525,12 @@ def _process(harness,event,payload,root=None):
         except OSError:pass  # Diagnostics only; never cost the session its memory context.
     if event=='session-end':
         _sync_vaults(root,'session end');_daily_backup(root);return {}
-    if not domain:return result
+    if not domain:
+        if event=='session-start' and session!='unknown':
+            hint=bind_hint(cwd,root,bindings,state)
+            if hint:
+                _update(root,session,lambda s:s.update(bind_hint=True));result['context']=hint
+        return result
     if event=='session-start':
         # Codex has no SessionEnd: its session start does the end-of-session housekeeping.
         if harness=='codex':_sync_vaults(root,'session start',SESSION_START_SYNC_SECONDS);_daily_backup(root)
