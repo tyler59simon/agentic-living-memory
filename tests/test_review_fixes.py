@@ -151,12 +151,12 @@ class VaultCaptureReplay(StoreFixture):
         draft = vault / 'Domains/demo/Vault idea.md'
         draft.write_text('---\ntitle: "Vault idea"\ntype: "knowledge"\ntags: ["subject/project", "concern/architecture"]\n---\n\n'
                          '## 📌 Executive Summary\nA note written in Obsidian.\n', encoding='utf-8')
-        real = sync.note_rel
-        def crash(domain, name, *rest):
-            # note_rel runs just after the capture transaction commits; stop there, as a crash would.
-            if 'vault-idea' in name:raise RuntimeError('interrupted after the canonical write')
-            return real(domain, name, *rest)
-        with patch.object(sync, 'note_rel', crash):
+        real = sync.transaction
+        def crash(root, changes, kind, *rest):
+            # The vault write follows the canonical capture; stop there, as a crash would.
+            if kind == 'overlay_sync':raise RuntimeError('interrupted after the canonical write')
+            return real(root, changes, kind, *rest)
+        with patch.object(sync, 'transaction', crash):
             with self.assertRaises(RuntimeError):
                 sync.build_overlay('demo', vault, self.root)
         self.assertEqual([n['title'] for n in inventory('demo', self.root)].count('Vault idea'), 1)

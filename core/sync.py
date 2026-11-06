@@ -229,10 +229,17 @@ def sync(domain,vault,root=None):
         managed=sum(1 for n in notes if n.get('status')=='active' and n['id'] in entries)
         vault_reset=len(missing)>=MASS_MISSING[0] and len(missing)>=MASS_MISSING[1]*max(1,managed)
         known_paths=set()
+        owned_copies=(read_json(vault/COPIES,None) or {}).get('files',{})
+        blocked={}
 
         def place(note_id,old_rel,rel,text,current_text,current_hash):
-            """Write a canonical copy at rel (keeping vault-only properties), removing old_rel. Returns its hash."""
+            """Write a canonical copy at rel (keeping vault-only properties), removing old_rel. Returns its hash.
+            A rename never replaces a file memory does not own there; the copy stays at old_rel instead."""
             out=_with_vault_only(text,current_text)
+            if old_rel!=rel:
+                existing=_hash(confined(vault,rel))
+                if existing is not None and existing!=owned_copies.get(rel) and existing!=digest(out.encode()):
+                    blocked[note_id]=rel;rel=old_rel
             if current_hash is not None:owner.setdefault(note_id,(old_rel,current_hash))
             if old_rel!=rel and current_hash is not None:view_changes[old_rel]=None
             view_changes[rel]=out;known_paths.add(rel)
@@ -326,6 +333,10 @@ def sync(domain,vault,root=None):
                     entry={**{k:v for k,v in entry.items() if k not in ('pending_plan','pending_action','conflict')},'pending_hash':overlay_hash,'pending_error':str(exc)}
             else:
                 after_hash=place(note_id,old_rel,rel,source_text,overlay_text,overlay_hash);copied+=1
+            if note_id in blocked:
+                after_rel=old_rel;conflicts+=1
+                conflict=conflict or {'message':f'Not renamed to {blocked[note_id]}: another file is already there. '
+                                      'Move or rename that file and the next sync renames this note.'}
             if pending:entries[note_id]={**entry,'overlay':old_rel}
             else:
                 entries[note_id]={'overlay':after_rel,'canonical_hash':after_source,'overlay_hash':after_hash,'status':note.get('status')}
@@ -341,6 +352,9 @@ def sync(domain,vault,root=None):
                 view_changes[entry['overlay']]=None;entries.pop(note_id);copied+=1
             elif path.exists():conflicts+=1
         scan_dirs=[vault/NOTES/domain,vault/LEGACY/'domains'/domain/'notes']
+        # New drafts: (path_rel, hash read, note id, title, managed copy rel, canonical write or None for a replay).
+        # Canonical captures are committed after the drafts are re-checked, just before the vault write.
+        drafts=[];captured_ids=set()
         for path in (p for d in scan_dirs if d.is_dir() for p in sorted(d.rglob('*.md'))):
             confined(vault,path.relative_to(vault));path_rel=path.relative_to(vault).as_posix()
             if path_rel in known_paths or path_rel in view_changes:continue
@@ -358,10 +372,10 @@ def sync(domain,vault,root=None):
                 # instead of capturing the same text again under a new random ID.
                 derived=not note.get('id')
                 if derived:note['id']=str(uuid.uuid5(uuid.NAMESPACE_URL,f'living-memory-vault-capture:{domain}:{h}'))
-                replay=next((n for n in notes if n['id']==note['id']),None) if derived else None
+                replay=next((n for n in notes if n['id']==note['id']),None) if derived and note['id'] not in captured_ids else None
                 if replay:
                     destination=Path(replay['path']);new_text=destination.read_text(encoding='utf-8').replace('\r\n','\n')
-                    log('Captured',note['id'],note['title'],'already saved by an interrupted sync')
+                    canonical=None
                 else:
                     if not note.get('domain'):note['domain']=domain
                     if not note.get('status'):note['status']='active'
@@ -370,12 +384,11 @@ def sync(domain,vault,root=None):
                     destination=root/'domains'/domain/'notes'/f"{note['prefix']} - {slug(note['title'])}-{note['id'][:8]}.md"
                     note['path']=str(destination)
                     validate(note,domain,root,new=True)
-                    if any(n['id']==note['id'] for n in notes):raise ValueError('Duplicate ID')
+                    if note['id'] in captured_ids or any(n['id']==note['id'] for n in notes):raise ValueError('Duplicate ID')
                     if destination.exists():raise ValueError('Filename collision')
-                    new_text=serialize(note)
-                    receipt=transaction(root,{destination.relative_to(root).as_posix():new_text,f'domains/{domain}/.derived-dirty':'dirty\n'},'overlay_capture');wrote_canonical=True
-                    log('Captured',note['id'],note['title'],receipt.get('operation_id'))
+                    new_text=serialize(note);canonical=destination.relative_to(root).as_posix()
                 new_rel=note_rel(domain,destination.name)
+                captured_ids.add(note['id']);drafts.append((path_rel,h,note['id'],note['title'],new_rel,canonical and (canonical,new_text)))
                 view_changes[path_rel]=None;view_changes[new_rel]=new_text;copied+=1
                 entries[note['id']]={'overlay':new_rel,'canonical_hash':digest(new_text.encode()),'overlay_hash':digest(new_text.encode()),'status':'active'}
             except ValueError as exc:
@@ -388,6 +401,16 @@ def sync(domain,vault,root=None):
             for r in touched:view_changes.pop(r,None)
             if note_id in entries:entries[note_id]={**entries[note_id],'overlay':old_rel,'overlay_hash':seen}
             skipped+=1
+        for path_rel,seen,note_id,title,new_rel,canonical in drafts:
+            if _hash(confined(vault,path_rel))!=seen:
+                # Saved again in Obsidian while syncing: keep the draft; the next sync captures the newer text.
+                view_changes.pop(path_rel,None);view_changes.pop(new_rel,None);entries.pop(note_id,None);copied-=1;skipped+=1
+                continue
+            if canonical is None:
+                log('Captured',note_id,title,'already saved by an interrupted sync');continue
+            rel,text=canonical
+            receipt=transaction(root,{rel:text,f'domains/{domain}/.derived-dirty':'dirty\n'},'overlay_capture');wrote_canonical=True
+            log('Captured',note_id,title,receipt.get('operation_id'))
         state['capture_errors']=capture_errors;state['applied']=applied_log[-20:]
         copy_manifest=read_json(vault/COPIES,None)
         if copy_manifest is None:copy_manifest=read_json(vault/LEGACY_COPIES,{'files':{}})

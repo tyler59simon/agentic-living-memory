@@ -533,7 +533,7 @@ def _process(harness,event,payload,root=None):
         if session!='unknown':
             # Plan mode cannot save anything, so a statement there is not a reminder's business.
             planning=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()=='plan'
-            text=payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or ''
+            text=payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or payload.get('transformedPrompt') or ''
             signal=None if planning else durable_signal(text)
             from . import private
             def opened(s):
@@ -576,7 +576,7 @@ def _process(harness,event,payload,root=None):
                 record(root,'inject',shown,session,'session')
         result['context']=prefix+(text or '')
     elif event=='user-prompt':
-        prompt=payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or ''
+        prompt=payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or payload.get('transformedPrompt') or ''
         hits,ids,overview=context(cwd,prompt,root,domain,state.get('shown',[]),state.get('overview_shown',False)) if isinstance(prompt,str) else (None,[],False)
         if (ids or overview) and session!='unknown':
             def remember(s):

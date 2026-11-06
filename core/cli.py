@@ -341,24 +341,26 @@ def main(argv=None):
             if args.title is not None:values['title']=args.title
             if args.body is not None:values['body']=args.body
             if args.body_file:values['body']=args.body_file.read_text(encoding='utf-8-sig')
-            if any(getattr(args,k) for k in SECTION_ARGS):
-                # Sections given on the command line replace only themselves; the rest of the body is kept.
+            # Read, rebuild and write under one lock: a concurrent update between them would otherwise be lost.
+            with store_lock(root):
+                if any(getattr(args,k) for k in SECTION_ARGS):
+                    # Sections given on the command line replace only themselves; the rest of the body is kept.
+                    from .notes import find_note
+                    base=values['body'] if 'body' in values else find_note(n,d,root)[1]['body']
+                    values['body']=_sectioned(args,base)
+                tags=(args.tag or [])+_facet_tags(args)
+                if tags:values['tags']=tags
+                for key in ('type','context','review_by'):
+                    if getattr(args,key) is not None:values[key]=getattr(args,key)
+                revision=values.pop('expected_revision',None) or args.expected_revision
+                redacted=_redact(values) if args.redact else []
+                if args.session:
+                    from .private import check as private_check
+                    private_check(_session_state(root,args.session),values)
                 from .notes import find_note
-                base=values['body'] if 'body' in values else find_note(n,d,root)[1]['body']
-                values['body']=_sectioned(args,base)
-            tags=(args.tag or [])+_facet_tags(args)
-            if tags:values['tags']=tags
-            for key in ('type','context','review_by'):
-                if getattr(args,key) is not None:values[key]=getattr(args,key)
-            revision=values.pop('expected_revision',None) or args.expected_revision
-            redacted=_redact(values) if args.redact else []
-            if args.session:
-                from .private import check as private_check
-                private_check(_session_state(root,args.session),values)
-            from .notes import find_note
-            files,suggested=_file_args(args,d,root,find_note(n,d,root)[1].get('files') or [])
-            if files is not None:values['files']=files
-            result=change(n,d,'update',root,revision,**values)
+                files,suggested=_file_args(args,d,root,find_note(n,d,root)[1].get('files') or [])
+                if files is not None:values['files']=files
+                result=change(n,d,'update',root,revision,**values)
             if redacted:result['redacted']=redacted
             if suggested:result['suggested_files']=suggested
             _receipt(args,d,n,root,'update')

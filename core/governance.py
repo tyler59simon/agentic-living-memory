@@ -79,24 +79,40 @@ def inspect_plan(root,identity):
 
 def merge_plan(root,payload):
     from .notes import find_note
-    from .repository import serialize,validate
+    from .repository import serialize,validate,inventory
+    from .migration import rewrite_type_links
     root=Path(root).resolve();domain,target_id=payload['target'].split(':',1);sources=payload['sources']
     if not isinstance(sources,list) or not 1<=len(sources)<=20 or len(set(sources))!=len(sources):raise ValueError('Merge requires 1..20 distinct source references')
     with store_lock(root):
         target_path,target=find_note(target_id,domain,root)
         if target.get('status')!='active':raise ValueError('Merge target must be active')
-        target['body']=payload['body'].strip();target['updated']=now();changes={};merged=[]
+        target['body']=payload['body'].strip();target['updated']=now();changes={};merged=[];moves={}
         for ref in sources:
             source_domain,identity=ref.split(':',1)
-            if source_domain!=domain or identity==target_id:raise ValueError('Merge sources must be distinct notes in the target domain')
+            if source_domain!=domain:raise ValueError('Merge sources must be distinct notes in the target domain')
             path,note=find_note(identity,domain,root)
+            # Compare resolved notes, not spellings: a full ID and its short prefix are the same note.
+            if note['id']==target['id'] or note['id'] in merged:raise ValueError('Merge sources must be distinct notes in the target domain')
             if note.get('status')!='active':raise ValueError('Merge sources must be active')
-            note.update(status='superseded',superseded_by=target_id,updated=now());validate(note,domain,root)
             archived=root/'domains'/domain/'archive'/path.name
             if archived.exists():raise ValueError('Merge archive collision')
-            changes[path.relative_to(root).as_posix()]=None;changes[archived.relative_to(root).as_posix()]=serialize(note);merged.append(identity)
+            merged.append(note['id']);moves[path.resolve()]=(path,archived,note)
+        targets={key:archived for key,(_,archived,_) in moves.items()}
+        for path,archived,note in moves.values():
+            # Moving to archive/: the note's own relative links, and links between moved sources, still resolve.
+            note['body']=rewrite_type_links(note['body'],archived,targets,moved_from=path)
+            note.update(status='superseded',superseded_by=target['id'],updated=now());validate(note,domain,root)
+            changes[path.relative_to(root).as_posix()]=None;changes[archived.relative_to(root).as_posix()]=serialize(note)
+        target['body']=rewrite_type_links(target['body'],target_path,targets)
         target['supersedes']=sorted(set(target.get('supersedes',[])+merged));validate(target,domain,root)
         changes[target_path.relative_to(root).as_posix()]=serialize(target)
+        for referring in inventory(domain,root,retired=True):
+            # Links from other notes follow the sources into archive/.
+            if referring['id']==target['id'] or Path(referring['path']).resolve() in moves:continue
+            new=rewrite_type_links(referring['body'],Path(referring['path']),targets)
+            if new!=referring['body']:
+                referring['body']=new;referring['updated']=now()
+                changes[Path(referring['path']).relative_to(root).as_posix()]=serialize(referring)
         return plan(root,changes,'merge',[domain],{'target':payload['target'],'sources':sources,'files':len(changes)})
 
 def undo(root,operation_id):
