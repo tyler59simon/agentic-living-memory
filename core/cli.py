@@ -265,7 +265,9 @@ def main(argv=None):
                     if session and not turn:turn=_turn(root,session,None)
                     if not selected:raise ValueError('Project is unbound; pass --domain or bind it')
                     inferred=_infer_tags(item,root);redacted=_redact(item) if args.redact else []
-                    if session:item['origin']=_origin(root,session)
+                    if session:
+                        from .private import check as private_check
+                        private_check(_session_state(root,session),item);item['origin']=_origin(root,session)
                     outcome=capture(domain=selected,root=root,**item);outcome.pop('path',None)
                     if inferred:outcome['inferred_tags']=inferred
                     if redacted:outcome['redacted']=redacted
@@ -327,6 +329,9 @@ def main(argv=None):
                 if getattr(args,key) is not None:values[key]=getattr(args,key)
             revision=values.pop('expected_revision',None) or args.expected_revision
             redacted=_redact(values) if args.redact else []
+            if args.session:
+                from .private import check as private_check
+                private_check(_session_state(root,args.session),values)
             from .notes import find_note
             files,suggested=_file_args(args,d,root,find_note(n,d,root)[1].get('files') or [])
             if files is not None:values['files']=files

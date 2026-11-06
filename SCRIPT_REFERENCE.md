@@ -35,6 +35,8 @@ Search defaults to active plus configured global domains, then explicitly config
 
 Mutation plans snapshot all touched files and require their exact digest. `undo` creates a new plan and rejects later conflicting edits. `inspect-plan` bounds each diff at 16,000 characters and marks truncation. Overlay teardown plans are rooted at the vault: inspect/apply them with `--root VAULT`. Installer plans are rooted at CODEX_HOME.
 
+With `--session`, capture and update refuse text that repeats a `<private>` span from the session's prompts, with a `private_content` conflict (see PROTOCOL.md).
+
 Error exit codes: invalid=2, conflict=5, stale=6. Native host event wrappers fail with their adapter's bounded output contract.
 
 `scripts/safe_write.py DOMAIN notes/FILENAME --content-file FILE --expected-revision HASH` returns an approved update plan, not a direct write.

@@ -25,6 +25,8 @@ Capture: `capture --session SESSION --type TYPE [--subject SUBJECT] [--concern C
 
 Provenance and file hints: PreToolUse records the paths, never the content, of files the main agent's write tools target in a turn. Scratchpad paths, memory-store paths and paths from subagent or plan-mode calls are skipped. A capture or update with `--session` lists them as `suggested_files`. `--files auto` or `--file PATH` stores them in the note's `files` property. Captures with `--session` also store `origin` as the harness plus a 12-character hash of the session, never the session ID. Before a write tool changes a file, the hook may name up to two notes about that file: notes whose `files` lists it, or whose body names its path. This happens once per file per session, where the host supports PreToolUse context (Claude Code and Codex; see [INTEGRATION.md](INTEGRATION.md)). Hints never deny a call.
 
+Private spans: text the user wraps in `<private>…</private>` may be used for the task but must not be saved. When a prompt has one, the prompt hook adds the line "Content inside <private> must not be saved to memory." It also keeps salted hashes of the span's word shingles in the session state, never the text; an unclosed tag marks nothing. For the rest of the session, a capture or update with `--session` that repeats such a span in its title, context or any body section fails with a `private_content` conflict (exit 5) naming the section. Like the rest of the governance this is cooperative: vault edits and commands without `--session` are not checked (`core/private.py`).
+
 ## Keeping memory current
 
 Memory is only useful if it stays true, so agents keep notes current instead of adding near-copies:

@@ -493,10 +493,14 @@ def _process(harness,event,payload,root=None):
         if session!='unknown':
             # Plan mode cannot save anything, so a statement there is not a reminder's business.
             planning=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()=='plan'
-            signal=None if planning else durable_signal(payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or '')
+            text=payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or ''
+            signal=None if planning else durable_signal(text)
+            from . import private
             def opened(s):
                 s['turn']=turn;s['open_turns']=(list(s.get('open_turns',[]))+[turn])[-20:]
                 if signal:s['signal']=signal  # only the kind is kept, never the prompt text
+                # <private> spans: salted shingle hashes only, so a capture that copies one can be refused.
+                if isinstance(text,str) and not MACHINE_PROMPT.match(text) and private.remember(s,text):s['private_turn']=turn
             state=_update(root,session,opened)
     elif not turn:
         turn=state.get('turn','')
@@ -533,6 +537,9 @@ def _process(harness,event,payload,root=None):
             try:_update(root,session,remember)
             except (OSError,TimeoutError):pass
         result['context']=f'Living Memory session={session} turn={turn}'+('\n'+hits if hits else '')
+        if state.get('private_turn')==turn:
+            from .private import NOTICE
+            result['context']+='\n'+NOTICE
     elif event=='subagent-start':result['context']='Living Memory: subagents may only search/read via scripts. Return capture proposals to the main agent; do not write canonical state.'
     elif event=='pre-tool-use':
         name=str(payload.get('tool_name') or payload.get('toolName') or '').lower()
