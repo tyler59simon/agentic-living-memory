@@ -23,7 +23,7 @@ def usage(session='SESSION'):
     """Command shapes shared by the static block (SESSION placeholder) and the full fallback injection."""
     return ("Search: CMD search 'query'. Read: CMD read REF (DOMAIN:ID, an 8+ character ID prefix, or the exact title)."
             f"\nCapture (also records this turn): CMD capture --session {session} --type TYPE --subject SUBJECT --concern CONCERN --title 'Title' --summary 'One or two sentences' [--detail '**Label:** fact' ...] [--link '[[Note]] or URL' ...] [--important 'Critical caveat']"
-            f"\n  Types: {', '.join(NOTE_TYPES)}. --action/--done add Action Items, for plan, bug and risk notes only. Each flag replaces only its own section, on capture or update."
+            f"\n  Types: {', '.join(NOTE_TYPES)}. --subject/--concern default from the type when omitted (the result lists inferred_tags). --action/--done add Action Items, for plan, bug and risk notes only. Each flag replaces only its own section, on capture or update. A note with a credential is rejected; --redact saves it with the value replaced."
             "\n  Use single quotes: they are literal in Bash and PowerShell (inside them write ' as '' in PowerShell, '\\'' in Bash). Long or multi-line body: --title 'Title' --content-file FILE."
             f"\nKeep current: CMD update REF --session {session} --body '...' [--title '...']; replaced: capture ... --supersedes REF; due notes: CMD review."
             f'\nChanged files but nothing durable: CMD capture-finalize --session {session}. Conversational turns need no receipt unless a reminder asks. The turn defaults to the latest prompt.')

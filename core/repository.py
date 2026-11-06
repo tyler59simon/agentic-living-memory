@@ -78,6 +78,29 @@ def find_secret(text):
     return None
 
 
+def find_secrets(text):
+    """Every credential-looking span as (kind, start, end), in text order, without overlaps.
+    For key = value assignments only the value is covered, so the key name stays readable."""
+    spans = [(name, m.start(), m.end()) for name, pattern in SECRET_PATTERNS for m in pattern.finditer(text)]
+    for match in ASSIGNMENT.finditer(text):
+        value = match[1]
+        if not PLACEHOLDER.match(value) and (re.search(r"[0-9]", value) or re.search(r"[^A-Za-z]", value)):
+            spans.append(("credential assignment", match.start(1), match.end(1)))
+    result = []
+    for span in sorted(spans, key=lambda s: (s[1], -s[2])):
+        if not result or span[1] >= result[-1][2]:
+            result.append(span)
+    return result
+
+
+def redact(text):
+    """(text with each credential replaced by <redacted type='KIND'/>, kinds replaced)."""
+    spans = find_secrets(text)
+    for kind, start, end in reversed(spans):
+        text = text[:start] + f"<redacted type='{kind}'/>" + text[end:]
+    return text, [kind for kind, _, _ in spans]
+
+
 def now():
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
@@ -321,7 +344,7 @@ def validate(note, domain, root=None, new=False):
         raise ValueError("Initialize the controlled taxonomy before capturing notes")
     found = find_secret("\n".join(str(note.get(k) or "") for k in ("title", "body", "context")))
     if found:
-        raise ValueError(f"Potential credential detected ({found[0]} at character {found[1]}); remove it or replace it with a placeholder such as <REDACTED>")
+        raise ValueError(f"Potential credential detected ({found[0]} at character {found[1]}); remove it, replace it with a placeholder such as <REDACTED>, or pass --redact")
     if note.get("status") == "superseded" and not note.get("superseded_by"):
         raise ValueError("Supersession requires a successor note ID")
 

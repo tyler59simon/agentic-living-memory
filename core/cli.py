@@ -26,6 +26,39 @@ def _turn(root,session,turn):
     if not value.get('turn'):raise ValueError('No prompt recorded for this session yet; pass --turn')
     return value['turn']
 
+def _session_domain(root,session):
+    """The domain the hooks pinned for this session, if it is still bound."""
+    if not session:return None
+    from .runtime import _pointer
+    try:pinned=(read_json(_pointer(root,session),{}) or {}).get('domain')
+    except ValueError:return None
+    return pinned if pinned in load_bindings(root).get('domains',{}) else None
+
+FACET_FLAGS=('subject','concern','platform','technology')
+def _facet_tags(args):
+    """--subject x and --subject subject/x both mean subject/x."""
+    return [v if v.startswith(f+'/') else f+'/'+v for f in FACET_FLAGS for v in (getattr(args,f) or [])]
+
+# Defaults when a capture names no subject/ or concern/ tag; used only if the tag is in the taxonomy.
+SUBJECT_BY_TYPE={'preference':'subject/user'}
+CONCERN_BY_TYPE={'decision':'concern/decision','preference':'concern/preference','bug':'concern/bug','knowledge':'concern/knowledge','policy':'concern/workflow'}
+def _infer_tags(item,root):
+    from .notes import taxonomy
+    known=taxonomy(root);tags=list(item.get('tags') or []);kind=item.get('type') or 'knowledge';added=[]
+    for facet,tag in (('subject',SUBJECT_BY_TYPE.get(kind,'subject/project')),('concern',CONCERN_BY_TYPE.get(kind))):
+        if tag and tag in known and not any(t.startswith(facet+'/') for t in tags):tags.append(tag);added.append(tag)
+    item['tags']=tags
+    return added
+
+def _redact(values):
+    """Replace credentials in title, body and context; [{kind, field}] for what was replaced."""
+    from .repository import redact
+    found=[]
+    for field in ('title','body','context'):
+        if isinstance(values.get(field),str):
+            values[field],kinds=redact(values[field]);found+=[{'kind':k,'field':field} for k in kinds]
+    return found
+
 def _receipt(args,domain,note_id,root):
     """Updating or superseding is a memory decision for the turn, like a capture."""
     if getattr(args,'session',None):
@@ -104,12 +137,14 @@ def main(argv=None):
     p=sub('setup');p.add_argument('--location',type=Path);p.add_argument('--non-interactive',action='store_true');p.add_argument('--source',type=Path);p.add_argument('--apply-plan');p.add_argument('--inspect-plan');p.add_argument('--expected-plan-sha256')
     p=sub('bind');p.add_argument('name');p.add_argument('prefix',nargs='+')
     p=sub('capture');p.add_argument('items',nargs='*');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='');p.add_argument('--prefix',help='Compatibility assertion only; must equal the uppercase type');p.add_argument('--type',choices=NOTE_TYPES,default='knowledge');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help='REF of a note this one replaces; it is retired in the same transaction');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk notes get a default')
-    for facet in ('subject','concern','platform','technology'):p.add_argument('--'+facet,action='append',default=[])
+    for facet in FACET_FLAGS:p.add_argument('--'+facet,action='append',default=[])
+    p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
     sections_args(p)
     p=sub('search');p.add_argument('query');p.add_argument('--scope',choices=['active','fallback','all'],default='fallback');p.add_argument('--limit',type=int,default=5);p.add_argument('--filter',action='append',default=[]);p.add_argument('--rebuild',action='store_true')
     p=sub('read');p.add_argument('reference');p.add_argument('--max-chars',type=int,default=16000);p.add_argument('--metadata-only',action='store_true')
     p=sub('update');p.add_argument('reference');p.add_argument('--title');p.add_argument('--body');p.add_argument('--body-file',type=Path);p.add_argument('--tag',action='append');p.add_argument('--type',choices=NOTE_TYPES);p.add_argument('--context');p.add_argument('--review-by');p.add_argument('--expected-revision');p.add_argument('--payload-file',type=Path);p.add_argument('--session');p.add_argument('--turn')
-    for facet in ('subject','concern','platform','technology'):p.add_argument('--'+facet,action='append')
+    for facet in FACET_FLAGS:p.add_argument('--'+facet,action='append')
+    p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
     sections_args(p)
     p=sub('supersede');p.add_argument('reference');p.add_argument('--by',required=True,help='REF of the note that replaces it');p.add_argument('--session');p.add_argument('--turn')
     p=sub('review');p.add_argument('--limit',type=int,default=20)
@@ -159,7 +194,7 @@ def main(argv=None):
         root=resolve_root(args.root)[0]
         cmd=args.command
         try:
-            domain=args.domain or resolve_domain(cwd,load_bindings(root))
+            domain=args.domain or _session_domain(root,getattr(args,'session',None)) or resolve_domain(cwd,load_bindings(root))
             if domain:domain=canonical_domain(domain,root)
         except ValueError:
             # Snapshots exist to repair a damaged store, so restoring must not depend on readable bindings.
@@ -180,7 +215,7 @@ def main(argv=None):
                 else:raise ValueError('Use title body, domain title body, --title with --summary/--detail, or a JSON payload')
                 body=_sectioned(args,body) or body
                 tags=args.tag+[t.strip() for t in args.tags.split(',') if t.strip()]
-                tags += [facet+'/'+value for facet in ('subject','concern','platform','technology') for value in getattr(args,facet)]
+                tags += _facet_tags(args)
                 data={'title':title,'body':body,'tags':tags,'prefix':args.prefix,'type':args.type,'context':args.context,'idempotency_key':args.idempotency_key,'domain':domain}
                 if args.turn and not args.session:raise ValueError('--turn needs --session')
                 if args.session:data.update(session_id=args.session,turn_id=_turn(root,args.session,args.turn))
@@ -196,7 +231,11 @@ def main(argv=None):
                     item=dict(item);selected=item.pop('domain',domain);session=item.pop('session_id',None);turn=item.pop('turn_id',None)
                     if session and not turn:turn=_turn(root,session,None)
                     if not selected:raise ValueError('Project is unbound; pass --domain or bind it')
-                    outcome=capture(domain=selected,root=root,**item);outcome.pop('path',None);results.append(outcome)
+                    inferred=_infer_tags(item,root);redacted=_redact(item) if args.redact else []
+                    outcome=capture(domain=selected,root=root,**item);outcome.pop('path',None)
+                    if inferred:outcome['inferred_tags']=inferred
+                    if redacted:outcome['redacted']=redacted
+                    results.append(outcome)
                     if session and turn:
                         from .capture import finalize
                         finalize(session,turn,[selected+':'+outcome['id']],root)
@@ -235,12 +274,14 @@ def main(argv=None):
                 from .notes import find_note
                 base=values['body'] if 'body' in values else find_note(n,d,root)[1]['body']
                 values['body']=_sectioned(args,base)
-            tags=(args.tag or [])+[f+'/'+v for f in ('subject','concern','platform','technology') for v in (getattr(args,f) or [])]
+            tags=(args.tag or [])+_facet_tags(args)
             if tags:values['tags']=tags
             for key in ('type','context','review_by'):
                 if getattr(args,key) is not None:values[key]=getattr(args,key)
             revision=values.pop('expected_revision',None) or args.expected_revision
+            redacted=_redact(values) if args.redact else []
             result=change(n,d,'update',root,revision,**values)
+            if redacted:result['redacted']=redacted
             _receipt(args,d,n,root)
         elif cmd=='supersede':
             from .notes import change
