@@ -55,6 +55,16 @@ class Relocation(StoreFixture):
             self.apply(self.codex,proposed)
         self.assertFalse((self.legacy/'living_memory.py').exists());self.assertFalse((self.legacy/'.core-ownership-v1.json').exists())
         self.assertTrue((self.legacy/'.gitignore').exists());self.assertTrue((home/'app/living_memory.py').exists())
+    def test_retire_checks_custom_homes_when_given(self):
+        import install
+        home=self.base/'local'/'agentic-living-memory';custom=self.base/'custom-claude'
+        with patch.multiple(install,CODEX_HOME=self.codex,LEGACY_DIR=self.legacy,INSTALL_HOME=home,INSTALL_DIR=home/'app'):
+            self.apply(self.codex,plan(self.codex,install._package_changes(self.legacy,False),'legacy_install'))
+            self.apply(home,install.plan_install())
+            self.from_legacy('claude',custom)
+            proposed=install.plan_retire()   # the default homes are clean
+            self.assertNotIn(str(custom/'settings.json'),proposed['summary']['checked'])
+            with self.assertRaisesRegex(ValueError,'still in use by: claude'):install.plan_retire([('claude',str(custom))])
     def test_retire_without_legacy_copy(self):
         import install
         with patch.multiple(install,LEGACY_DIR=self.legacy):

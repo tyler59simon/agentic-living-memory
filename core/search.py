@@ -65,7 +65,10 @@ def file_notes(path,domains,root=None,limit=2,ensure_fresh=True):
     newest first within each group. Hooks pass ensure_fresh=False and get nothing from a missing index."""
     root=Path(root or memory_root()).resolve();ranked=[]
     for domain in dict.fromkeys(domains):
-        db_path=domain_dir(domain,root)/'search.sqlite3'
+        try:folder=domain_dir(domain,root)
+        except ValueError:continue
+        if not (folder/'notes').is_dir():continue   # never create a domain folder just to look in it
+        db_path=folder/'search.sqlite3'
         if ensure_fresh:
             with store_lock(root):
                 if not _fresh(domain,root,inventory(domain,root,retired=True)):rebuild_index(domain,root)

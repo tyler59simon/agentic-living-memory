@@ -23,7 +23,7 @@ Earlier builds installed the package into `CODEX_HOME/agentic-living-memory` (de
 1. From the source checkout, run `py -3.15 install.py --plan`, then `--apply-plan ID --expected-plan-sha256 DIGEST`. This installs the new copy; the old one keeps working meanwhile.
 2. From the new copy, run `integrations/setup.py HARNESS --hooks` for each harness, and apply each plan. Setup recognises handlers that point at the old copy and replaces them without a "Modified managed handlers preserved" error and without duplicates. For Codex this takes over `hooks.json` and the `AGENTS.md` block from the old installer.
 3. Restart each harness and check `doctor`.
-4. Run `py -3.15 install.py --retire-legacy-plan`, then apply it with `--apply-plan`. It refuses while any harness configuration still references the old folder. It removes only the files the old install owns and that are unchanged; anything else is listed under `not_owned_left_in_place`. It does not touch the legacy data store `CODEX_HOME/agentic-living-memory-data` or old lifecycle receipts.
+4. Run `py -3.15 install.py --retire-legacy-plan`, then apply it with `--apply-plan`. It refuses while any harness configuration still references the old folder. It checks the default harness homes, plus any home you set up with `setup.py --home PATH`, which you pass as `--home HARNESS=PATH` (repeatable); the plan lists every file it checked under `checked`. It removes only the files the old install owns and that are unchanged; anything else is listed under `not_owned_left_in_place`. It does not touch the legacy data store `CODEX_HOME/agentic-living-memory-data` or old lifecycle receipts.
 
 ## Relocating existing memory
 

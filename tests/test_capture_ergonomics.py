@@ -70,6 +70,14 @@ class CaptureErgonomics(StoreFixture):
     def test_redacted_text_passes_the_secret_check(self):
         text,kinds=redact(f'a {TOKEN} b api_key=sk-'+'x1'*15+' c')
         self.assertEqual(len(kinds),2);self.assertIsNone(find_secret(text));self.assertEqual(find_secrets(text),[])
+    def test_private_key_block_is_redacted_whole(self):
+        key='-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAsecretmaterial\nQkVZTUFURVJJQUw=\n-----END RSA PRIVATE KEY-----'
+        text,kinds=redact(f'before\n{key}\nafter')
+        self.assertEqual(kinds,['private key']);self.assertEqual(text,"before\n<redacted type='private key'/>\nafter")
+        unterminated,_=redact('x -----BEGIN PRIVATE KEY-----\nMIIEsecret')
+        self.assertEqual(unterminated,"x <redacted type='private key'/>")
+        code,result=self.cli('--domain','demo','capture','--redact','--title','Key note','--summary','A key.','--detail',key.replace('\n',' '))
+        self.assertEqual(code,0,result);self.assertNotIn('secretmaterial',find_note(result['id'],'demo',self.root)[1]['body'])
     def test_overlapping_matches_are_redacted_once(self):
         jwt='eyJ'+'a'*12+'.eyJ'+'b'*12+'.'+'c'*12
         text,kinds=redact(f'Authorization: Bearer {jwt}')

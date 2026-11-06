@@ -78,10 +78,21 @@ def find_secret(text):
     return None
 
 
+PRIVATE_KEY_END = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
+
+
 def find_secrets(text):
     """Every credential-looking span as (kind, start, end), in text order, without overlaps.
     For key = value assignments only the value is covered, so the key name stays readable."""
-    spans = [(name, m.start(), m.end()) for name, pattern in SECRET_PATTERNS for m in pattern.finditer(text)]
+    spans = []
+    for name, pattern in SECRET_PATTERNS:
+        for m in pattern.finditer(text):
+            end = m.end()
+            if name == "private key":
+                # The header only marks the block: cover the key material through its END line (or the rest of the text).
+                closing = PRIVATE_KEY_END.search(text, m.end())
+                end = closing.end() if closing else len(text)
+            spans.append((name, m.start(), end))
     for match in ASSIGNMENT.finditer(text):
         value = match[1]
         if not PLACEHOLDER.match(value) and (re.search(r"[0-9]", value) or re.search(r"[^A-Za-z]", value)):

@@ -89,6 +89,18 @@ class Provenance(StoreFixture):
         self.assertEqual(code,0,result);self.assertEqual([h['id'] for h in result['results']],[b['id'],a['id']])
         code,result=self.cli('--domain','demo','search','note','--file','core/cli.py','--rebuild')
         self.assertEqual(code,0,result);self.assertEqual([h['id'] for h in result['results']],[b['id']])
+    def test_file_only_search_honors_scope_and_rejects_filters(self):
+        from core.init_domain import init_domain
+        from core.notes import capture
+        init_domain('other',[str(self.base/'other')],self.root)
+        far=capture('Other domain note','Body.',['subject/project','concern/architecture'],'other',self.root,files=['core/cli.py'])
+        code,result=self.cli('--domain','demo','search','--file','core/cli.py')
+        self.assertEqual((code,result['results']),(0,[]))
+        code,result=self.cli('--domain','demo','search','--file','core/cli.py','--scope','all')
+        self.assertEqual(code,0,result);self.assertEqual([h['id'] for h in result['results']],[far['id']])
+        code,result=self.cli('--domain','demo','search','--file','core/cli.py','--filter','type=bug')
+        self.assertEqual(code,2);self.assertIn('--filter needs a query',result['error']['message'])
+        self.assertFalse((self.root/'domains'/'missing').exists())
     def test_mentions_need_a_path_token(self):
         self.assertTrue(mentions_file('see core\\cli.py.','core/cli.py'))
         self.assertFalse(mentions_file('see core/cli.pyc','core/cli.py'))

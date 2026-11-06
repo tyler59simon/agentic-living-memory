@@ -136,14 +136,20 @@ class TitleScorer:
         # Substituted rare words on both sides, or an added identifier on either side.
         return bool(left and right) or any(_identifier(t) for t in left+right)
     @staticmethod
-    def _fold(x,y):
+    def _base(word):
+        """The word without one inflectional ending: use, uses, used, using -> us. Different words stay
+        different (path, patch)."""
+        for suffix in ('ing','ed','es','s','e'):
+            if word.endswith(suffix) and len(word)-len(suffix)>=2:return word[:-len(suffix)]
+        return word
+    @classmethod
+    def _fold(cls,x,y):
         """y with inflections of x's words replaced by them ("using" and "use" are one word; the light
         stemmer keeps short stems apart)."""
-        def common(a,b):return next((i for i,(p,q) in enumerate(zip(a,b)) if p!=q),min(len(a),len(b)))
         y=set(y)
         for t in x-y:
             for u in sorted(y-x):
-                if not _identifier(t) and not _identifier(u) and common(t,u)>=max(2,min(len(t),len(u))-1):
+                if not _identifier(t) and not _identifier(u) and cls._base(t)==cls._base(u):
                     y.discard(u);y.add(t);break
         return y
     def score(self,a,b):

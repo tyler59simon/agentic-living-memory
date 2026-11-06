@@ -293,9 +293,13 @@ def main(argv=None):
                 given=Path(args.file).expanduser()
                 wanted=(display_path(given.resolve(),domain_prefixes(domain,config)) or args.file) if given.is_absolute() else args.file
                 if not args.query.strip():
+                    # Lists notes about a file; --filter narrows a query's results, so it needs a query.
+                    if filters:raise ValueError('--filter needs a query; with --file alone, use --scope to choose domains')
                     from .search import file_notes
-                    hits=file_notes(wanted,primary,root,max(1,min(100,args.limit)))
-                    result={'ok':True,'mode':'file','file':wanted,'domains':primary,'results':hits}
+                    domains=sorted(config.get('domains',{})) if args.scope=='all' else primary
+                    hits=file_notes(wanted,domains,root,max(1,min(100,args.limit)));fallback=False
+                    if not hits and args.scope=='fallback' and foreign:domains=foreign;hits=file_notes(wanted,domains,root,max(1,min(100,args.limit)));fallback=True
+                    result={'ok':True,'mode':'file','file':wanted,'domains':domains,'fallback':fallback,'results':hits}
                     print(json.dumps(result,ensure_ascii=False,separators=(',',':')));return 0
                 filters['file']=wanted
             if not args.query.strip():raise ValueError('search needs a query, or --file PATH')

@@ -29,6 +29,7 @@
     {"new": "Webcam diagnosis on the Helios laptop", "existing": "Webcam diagnosis on the Helios laptop", "label": "duplicate", "why": "exact"},
     {"new": "Search ranking using BM25 weights", "existing": "Search ranking uses BM25 weights", "label": "duplicate", "why": "inflection"},
     {"new": "Backup retention keeps 30 snapshots", "existing": "Backup retention keeps seven snapshots", "label": "distinct", "why": "the retention changed: a different fact"},
+    {"new": "File patch handling", "existing": "File path handling", "label": "distinct", "why": "a shared prefix is not an inflection"},
     {"new": "Claude calling Codex for plan review", "existing": "Claude calling Codex for code review", "label": "distinct", "why": "substituted subject word"}
   ]
 }

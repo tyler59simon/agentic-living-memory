@@ -28,6 +28,10 @@ class Dedup(unittest.TestCase):
         old=judged(lambda p:title_similarity(p['new'],p['existing']));new=judged(new_rule)
         print(f"\ntitle dedup fixture: overlap rule precision {old[0]:.2f} recall {old[1]:.2f}; idf rule precision {new[0]:.2f} recall {new[1]:.2f}")
         self.assertGreaterEqual(new[0],old[0]);self.assertGreaterEqual(new[1],old[1])
+    def test_only_inflections_fold(self):
+        scorer=TitleScorer([])  # even at cold start, folding must not make different words equal
+        self.assertLess(scorer.score('File patch handling','File path handling'),1.0)
+        self.assertEqual(TitleScorer._base('using'),TitleScorer._base('use'))
     def test_cold_start_uses_the_overlap_rule(self):
         few=[{'title':'rdlp-plugin release checklist'}]
         self.assertEqual(TitleScorer(few).score('rdlp-api release checklist','rdlp-plugin release checklist'),
