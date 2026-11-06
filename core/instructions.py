@@ -21,13 +21,14 @@ AUTO_MEMORY='Where Living Memory applies, it is the durable memory system: do no
 
 def usage(session='SESSION'):
     """Command shapes shared by the static block (SESSION placeholder) and the full fallback injection."""
-    return ("Search: CMD search 'query'. Read: CMD read REF (DOMAIN:ID, an 8+ character ID prefix, or the exact title)."
+    return ("Search: CMD search 'query'. Read: CMD read REF (short or full ref, or exact title)."
             f"\nCapture (also records this turn): CMD capture --session {session} --type TYPE [--concern CONCERN] --title 'Title' --summary 'One or two sentences' [--detail '**Label:** fact' ...] [--link '[[Note]] or URL' ...] [--important 'Critical caveat']"
             f"\n  Types: {', '.join(NOTE_TYPES)}. Omitted --subject/--concern default from the type. --action/--done add Action Items (plan, bug, risk only). Each flag replaces only its own section, on capture or update. --redact replaces credentials instead of rejecting the note."
-            "\n  Notes about specific files: add --files auto (this turn's edits) or --file PATH; find them with CMD search --file PATH."
+            "\n  Notes about files: --files auto (this turn's edits) or --file PATH; find them: CMD search --file PATH."
             "\n  Use single quotes, literal in Bash and PowerShell (write ' as '' in PowerShell, '\\'' in Bash). Long body: --content-file FILE."
             f"\nKeep current: CMD update REF --session {session} --body '...' [--title '...']; replaced: capture ... --supersedes REF; due notes: CMD review."
-            f'\nChanged files but nothing durable: CMD capture-finalize --session {session}. Conversational turns need no receipt unless a reminder asks. The turn defaults to the latest prompt.')
+            f"\nTo resume work, check Open work first (CMD open); tick a done item: CMD check REF 'item' --session {session}."
+            f'\nChanged files, nothing durable: CMD capture-finalize --session {session}. Conversational turns need no receipt unless a reminder asks.')
 
 def static_protocol(harness):
     """Machine-independent protocol text for instruction files: no interpreter paths, domains or sessions."""

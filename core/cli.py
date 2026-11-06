@@ -41,8 +41,8 @@ def _session_domain(root,session):
 
 def _origin(root,session):
     """Where a note came from: harness and a hash of the session, never the session ID itself."""
-    harness=_session_state(root,session).get('harness') or 'unknown'
-    return f"{harness}:{hashlib.sha256(session.encode()).hexdigest()[:12]}"
+    from .runtime import session_hash
+    return f"{_session_state(root,session).get('harness') or 'unknown'}:{session_hash(session)}"
 
 def _file_args(args,domain,root,existing=()):
     """(files to store or None when unchanged, suggested files) from --file/--files and this turn's edits."""
@@ -177,6 +177,8 @@ def main(argv=None):
     sections_args(p);_file_flags(p)
     p=sub('supersede');p.add_argument('reference');p.add_argument('--by',required=True,help='REF of the note that replaces it');p.add_argument('--session');p.add_argument('--turn')
     p=sub('review');p.add_argument('--limit',type=int,default=20)
+    p=sub('open');p.add_argument('--limit',type=int,default=50)
+    p=sub('check');p.add_argument('reference');p.add_argument('item',nargs='?',help='Text of the Action Item: exact, or a unique part of it');p.add_argument('--index',type=int,help='1-based position among the note\'s Action Items, as open lists it');p.add_argument('--undo',action='store_true',help='Untick instead');p.add_argument('--session');p.add_argument('--turn')
     p=sub('plan');p.add_argument('action',choices=['update','rename','retag','resolve','reopen','archive','supersede','delete']);p.add_argument('reference');p.add_argument('--payload-file',type=Path)
     p=sub('apply');p.add_argument('plan_id');p.add_argument('--expected-plan-sha256',required=True)
     p=sub('inspect-plan');p.add_argument('plan_id')
@@ -229,7 +231,7 @@ def main(argv=None):
             # Snapshots exist to repair a damaged store, so restoring must not depend on readable bindings.
             if cmd not in {'restore-plan','inspect-plan','apply','backup','history'}:raise
             domain=None
-        if args.actor=='subagent' and cmd not in {'search','read','query','doctor','validate','history'}:raise ValueError('Subagents are read-only; return mutation proposals to the main agent')
+        if args.actor=='subagent' and cmd not in {'search','read','query','doctor','validate','history','open'}:raise ValueError('Subagents are read-only; return mutation proposals to the main agent')
         if cmd=='bind':
             from .init_domain import init_domain
             init_domain(args.name,args.prefix,root);result={'ok':True,'domain':args.name,'status':'bound'}
@@ -345,6 +347,21 @@ def main(argv=None):
             due.sort(key=lambda n:(str(n.get('review_by') or n.get('updated',''))))
             result={'ok':True,'domain':domain,'due':len(due),'notes':[{'ref':f"{domain}:{n['id']}",'title':n['title'],'type':n.get('type'),'updated':str(n.get('updated',''))[:10],'review_by':n.get('review_by')} for n in due[:max(1,min(100,args.limit))]],
                     'hint':'For each note: update it if it is still true (this resets its review date), supersede it if it was replaced, or ask for an archive plan.'}
+        elif cmd=='open':
+            from .notes import open_work,short_ref
+            from .runtime import parent_domains
+            if not domain:raise ValueError('unbound_project')
+            found=open_work([domain]+parent_domains(domain,load_bindings(root)),root)
+            items=[{'ref':f"{d}:{n['id']}",'short_ref':short_ref(d,n['id']),'title':n['title'],'type':n['type'],'updated':str(n.get('updated',''))[:10],'index':i,'item':text}
+                   for d,n,listed in found for i,text in listed]
+            result={'ok':True,'domain':domain,'notes':len(found),'count':len(items),'items':items[:max(1,min(500,args.limit))],
+                    'hint':"Tick one when done: check REF 'item text' (or --index N); --undo unticks."}
+        elif cmd=='check':
+            from .notes import check_action
+            d,n=_reference(args.reference,domain,root)
+            if (args.item is None)==(args.index is None):raise ValueError('Name the item by its text or pass --index N (not both)')
+            result=check_action(n,d,root,args.item,args.index,not args.undo);result.pop('path',None)
+            if result.get('status')!='unchanged':_receipt(args,d,n,root)
         elif cmd=='plan':
             from .notes import change
             d,n=_reference(args.reference,domain,root);values=_payload(args) if args.payload_file or args.action in {'update','rename','retag','supersede'} else {}

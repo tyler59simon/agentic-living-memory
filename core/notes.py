@@ -280,6 +280,46 @@ def change(note_id,domain,action,root=None,expected_revision=None,plan_only=Fals
             if warnings:result['quality_warnings']=warnings
         return result
 
+def open_work(domains,root=None):
+    """[(domain, note, [(1-based index, text) of unchecked Action Items])] for active plan, bug and risk
+    notes with open items, newest first."""
+    from .note_format import action_items
+    found=[]
+    for domain in dict.fromkeys(domains):
+        try:notes=inventory(domain,root)
+        except (OSError,ValueError):continue
+        for note in notes:
+            if note.get('type') not in ACTION_TYPES:continue
+            items=[(i+1,text) for i,(done,text) in enumerate(action_items(note.get('body',''))) if not done and text]
+            if items:found.append((domain,note,items))
+    return sorted(found,key=lambda f:str(f[1].get('updated') or ''),reverse=True)
+
+def check_action(note_id,domain,root=None,item=None,index=None,done=True):
+    """Tick (or with done=False untick) one Action Item, chosen by its 1-based index or its text:
+    an exact match (case-insensitive) first, else a unique substring. A journaled, undoable update."""
+    from .note_format import action_items,set_action
+    root=Path(root or memory_root()).resolve()
+    with store_lock(root):
+        _,note=find_note(note_id,domain,root)
+        if note.get('type') not in ACTION_TYPES:raise ValueError('Only plan, bug and risk notes have Action Items')
+        items=action_items(note['body'])
+        if not items:raise ValueError('This note has no Action Items')
+        if index is not None:
+            if not 1<=index<=len(items):raise ValueError(f'No Action Item {index}; the note has {len(items)}')
+            chosen=index-1
+        else:
+            wanted=str(item or '').strip().casefold()
+            if not wanted:raise ValueError('Name the item by its text or pass --index N')
+            matches=[i for i,(_,text) in enumerate(items) if text.casefold()==wanted] or [i for i,(_,text) in enumerate(items) if wanted in text.casefold()]
+            if len(matches)>1:raise ValueError('ambiguous_item: '+'; '.join(f'{i+1}. {items[i][1]}' for i in matches[:10])+'. Pass --index N')
+            if not matches:raise ValueError('No Action Item matches '+repr(item)+'. Items: '+'; '.join(f'{i+1}. {t}' for i,(_,t) in enumerate(items[:10])))
+            chosen=matches[0]
+        if items[chosen][0]==done:
+            return {'ok':True,'id':note['id'],'status':'unchanged','item':items[chosen][1],'done':done}
+        result=change(note['id'],domain,'update',root,note['revision'],body=set_action(note['body'],chosen,done))
+        result.update(item=items[chosen][1],index=chosen+1,done=done,open=sum(1 for d,_ in action_items(find_note(note['id'],domain,root)[1]['body']) if not d))
+        return result
+
 def main(argv=None):
     from .cli import main as command
     return command(argv)

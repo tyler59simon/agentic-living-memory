@@ -12,9 +12,9 @@ SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 # Tools that cannot change files; anything else marks the turn as mutating.
 READ_TOOLS={'read','read_file','glob','grep','search','view_image','view','ls','list','webfetch','websearch','web_fetch','web_search','todowrite','task','agent','toolsearch','askuserquestion','exitplanmode','enterplanmode'}
 SHELL_TOOLS={'bash','powershell','shell','run_shell_command','exec_command','local_shell','execute'}
-ALLOWED_SUBCOMMANDS={'search','read','taxonomy','doctor','history','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup'}
+ALLOWED_SUBCOMMANDS={'search','read','taxonomy','doctor','history','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check'}
 # Subagents are read-only: these are denied for them even though the main agent gets them auto-allowed.
-MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup'}
+MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check'}
 GLOBAL_OPTIONS={'--root','--domain','--cwd','--actor'}
 HOOK_LOCK_TIMEOUT=5
 # Codex has no SessionEnd, so its session start picks up Obsidian edits, at most this often.
@@ -348,6 +348,22 @@ def file_hints(paths,state,root,domain,bindings):
         return text,wanted
     except Exception:return None,[]
 
+LAST_SESSION='.last-session.json'
+
+def session_hash(session):return hashlib.sha256(session.encode()).hexdigest()[:12]
+
+def _record_last_session(root,domain,session,state):
+    """A sidecar for the next session's "Last session" line: notes saved and files changed. One file per
+    domain, overwritten; not canonical, not backed up, holds no conversation text."""
+    try:
+        saved=list(state.get('saved',[]));files=len(state.get('touched_session',[]))
+        if not saved and not files:return
+        path=root/'domains'/domain/LAST_SESSION
+        row={'session':session_hash(session),'harness':state.get('harness') or 'unknown','notes':saved,'files_changed':files}
+        previous=read_json(path,{}) or {}
+        if {k:previous.get(k) for k in row}!=row:atomic_write(path,canonical_json({**row,'ended':now()}))
+    except (OSError,ValueError):pass
+
 def _pointer(root,session):return root/'.turns'/(hashlib.sha256(session.encode()).hexdigest()+'.current.json')
 
 def _update(root,session,change):
@@ -496,7 +512,7 @@ def _process(harness,event,payload,root=None):
         if harness=='codex':_sync_vaults(root,'session start',SESSION_START_SYNC_SECONDS);_daily_backup(root)
         from .session_start import build_context,BUDGET,MIN_BUDGET
         prefix=protocol(root,domain,harness,session)+f'\nLiving Memory session={session}'+'\n'
-        text,shown,indexed=build_context(cwd,root,max(MIN_BUDGET,BUDGET-len(prefix)))
+        text,shown,indexed=build_context(cwd,root,max(MIN_BUDGET,BUDGET-len(prefix)),session=session)
         if session!='unknown':
             # A new or compacted context has seen only what is injected now. Guidance shown in full is not
             # re-injected by prompts; index lines are titles, so those notes stay eligible. Once the index has
@@ -552,6 +568,7 @@ def _process(harness,event,payload,root=None):
                 _update(root,session,touch)
     elif event=='stop':
         if session=='unknown':return {}
+        _record_last_session(root,domain,session,state)
         turns=list(dict.fromkeys(list(state.get('open_turns',[]))+([turn] if turn else [])))
         def close(s):
             s.pop('open_turns',None);s.pop('mutating',None);s.pop('signal',None);s.pop('touched',None)
