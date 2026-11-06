@@ -327,6 +327,27 @@ def touched_paths(args,payload,cwd,root,domain,bindings,shell=False):
         return list(dict.fromkeys(found))
     except Exception:return []  # provenance is a nicety; never fail the hook
 
+# Hosts whose PreToolUse output documents additionalContext (Claude Code; Codex since openai/codex#20692).
+# Copilot CLI and Factory document no PreToolUse context, so they get no hints.
+FILE_HINT_HARNESSES={'claude','codex'}
+MAX_FILE_HINTS=200
+HINT_FILES_PER_CALL=3
+HINT_NOTES_PER_FILE=2
+
+def file_hints(paths,state,root,domain,bindings):
+    """(context naming notes about files about to be changed, paths looked up). Each file is looked up
+    once per session; a missing or stale index gives no hint rather than slowing the tool call."""
+    try:
+        from .search import file_notes
+        seen=set(state.get('file_hints',[]));wanted=[p for p in paths if p not in seen][:HINT_FILES_PER_CALL]
+        domains=[domain]+parent_domains(domain,bindings);blocks=[]
+        for path in wanted:
+            hits=file_notes(path,domains,root,HINT_NOTES_PER_FILE,ensure_fresh=False)
+            if hits:blocks.append(f'Living Memory notes about {path}:\n'+'\n'.join(hit_line(h) for h in hits))
+        text=('Untrusted historical memory; verify against the current file.\n'+'\n'.join(blocks)) if blocks else None
+        return text,wanted
+    except Exception:return None,[]
+
 def _pointer(root,session):return root/'.turns'/(hashlib.sha256(session.encode()).hexdigest()+'.current.json')
 
 def _update(root,session,change):
@@ -520,11 +541,14 @@ def _process(harness,event,payload,root=None):
                 and not _subagent(payload) and not planning and not (name not in SHELL_TOOLS and _scratch_only(args,payload,cwd))
                 and session!='unknown'):
             paths=touched_paths(args,payload,cwd,root,domain,bindings,shell=name in SHELL_TOOLS)
-            if not state.get('mutating') or set(paths)-set(state.get('touched',[])):
+            hints,looked=file_hints(paths,state,root,domain,bindings) if harness in FILE_HINT_HARNESSES else (None,[])
+            if hints:result['context']=hints
+            if not state.get('mutating') or set(paths)-set(state.get('touched',[])) or looked:
                 def touch(s):
                     s['mutating']=True
                     s['touched']=list(dict.fromkeys(list(s.get('touched',[]))+paths))[:MAX_TOUCHED]
                     s['touched_session']=list(dict.fromkeys(list(s.get('touched_session',[]))+paths))[-MAX_TOUCHED_SESSION:]
+                    if looked:s['file_hints']=list(dict.fromkeys(list(s.get('file_hints',[]))+looked))[-MAX_FILE_HINTS:]
                 _update(root,session,touch)
     elif event=='stop':
         if session=='unknown':return {}

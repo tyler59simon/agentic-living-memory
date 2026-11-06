@@ -13,7 +13,8 @@ def handle(event,payload,harness='claude'):
     if result.get('context'):out['hookSpecificOutput']={'hookEventName':NAMES.get(event,event),'additionalContext':result['context']}
     for decision in ('deny','allow'):
         if result.get(decision):
-            out['hookSpecificOutput']={'hookEventName':'PreToolUse','permissionDecision':decision,'permissionDecisionReason':result[decision]};break
+            # A file hint (additionalContext) and a permission decision travel together.
+            out.setdefault('hookSpecificOutput',{'hookEventName':'PreToolUse'}).update(permissionDecision=decision,permissionDecisionReason=result[decision]);break
     if result.get('continue_reason'):
         if harness=='claude':
             # Claude Code continues the turn on Stop additionalContext like decision=block, with the same loop
