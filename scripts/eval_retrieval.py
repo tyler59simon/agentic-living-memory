@@ -8,7 +8,7 @@ cases name notes as "@key". Otherwise cases name real notes by ref (short refs a
     py -3.15 scripts/eval_retrieval.py --fixture ~/LivingMemory/.eval/sandbox.json [--root STORE] [--json]
 """
 from __future__ import annotations
-import argparse,json,sys,tempfile
+import argparse,json,sys,tempfile,time
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from core import runtime,session_start
@@ -51,8 +51,8 @@ def evaluate(fixture,root,cwd=None,domain=None,keys=None,harness='claude'):
     cases=[]
     for case in fixture.get('retrieval',[]):
         expect=[resolve(r) for r in case.get('expect',[])];forbid=[resolve(r) for r in case.get('forbid',[])]
-        text,ids,overview=runtime.context(cwd,case['prompt'],root,domain)
-        cases.append({'prompt':case['prompt'],'expect':expect,'forbid':forbid,'injected':ids,'overview':overview,
+        started=time.perf_counter();text,ids,overview=runtime.context(cwd,case['prompt'],root,domain)
+        cases.append({'prompt':case['prompt'],'expect':expect,'forbid':forbid,'injected':ids,'overview':overview,'ms':(time.perf_counter()-started)*1000,
                       'chars':len(text or ''),'hit':bool(set(expect)&set(ids)) if expect else None,
                       'forbidden':sorted(set(forbid)&set(ids)),'false':bool(ids) if not expect else None})
     positive=[c for c in cases if c['expect']];negative=[c for c in cases if not c['expect']]
@@ -83,6 +83,7 @@ def evaluate(fixture,root,cwd=None,domain=None,keys=None,harness='claude'):
             'false_injection':_ratio(sum(c['false'] for c in negative),len(negative)),
             'forbid_violations':[{'prompt':c['prompt'],'refs':c['forbidden']} for c in cases if c['forbidden']],
             'mean_injected_chars':round(sum(c['chars'] for c in cases)/len(cases)) if cases else None,
+            'mean_ms':round(sum(c['ms'] for c in cases)/len(cases),1) if cases else None,
             'overview_rate':_ratio(sum(c['overview'] for c in cases),len(cases)),
             'misses':[{'prompt':c['prompt'],'expect':c['expect'],'injected':c['injected']} for c in positive if not c['hit']],
             'false_injections':[{'prompt':c['prompt'],'injected':c['injected']} for c in negative if c['false']],
@@ -95,15 +96,27 @@ def evaluate(fixture,root,cwd=None,domain=None,keys=None,harness='claude'):
                    'wrong':[s for s in signals if s['got']!=s['kind']]},
     }
 
-def run(fixture_path,root=None):
+def run(fixture_path,root=None,semantic_mode=None):
+    """semantic_mode 'on'/'off' measures with or without the installed semantic model, then puts the indexes back."""
     fixture=json.loads(Path(fixture_path).expanduser().read_text(encoding='utf-8-sig'))
     if fixture.get('notes'):
+        if semantic_mode:raise ValueError('--semantic needs a real store: synthetic fixtures run in a temporary store with no model')
         with tempfile.TemporaryDirectory(prefix='living-memory-eval-') as directory:
             store=Path(directory)/'store'
             cwd,domain,keys=_build(fixture,store)
             return evaluate(fixture,store,cwd,domain,keys)
     from core.storage import resolve_root
-    return evaluate(fixture,resolve_root(root)[0])
+    from core import semantic
+    store=resolve_root(root)[0]
+    if not semantic_mode:return evaluate(fixture,store)
+    # Hooks never rebuild, so the derived indexes must match the setting being measured, and afterwards the
+    # setting the hooks use, or they would fall back to lexical search until the next write.
+    default=semantic.USE_SEMANTIC;semantic.USE_SEMANTIC=semantic_mode=='on'
+    try:
+        semantic.rebuild_all(store)
+        return evaluate(fixture,store)
+    finally:
+        semantic.USE_SEMANTIC=default;semantic.rebuild_all(store)
 
 def _table(report):
     r,s,g=report['retrieval'],report['session'],report['signals']
@@ -112,6 +125,7 @@ def _table(report):
            f"  false injection  {r['false_injection']}   (target <= 0.1)",
            f"  forbid hits      {len(r['forbid_violations'])}",
            f"  mean chars       {r['mean_injected_chars']}",
+           f"  mean ms          {r['mean_ms']}   (prompt-time retrieval, in process)",
            f"  overview rate    {r['overview_rate']}",
            f"Session start: {s['chars']} chars (target <= {s['budget']}); index coverage {s['index_coverage']}; {s['fallback_chars']} chars if the instruction block is stale",
            f"Signals: {g['cases']} cases; false-arm {g['false_arm']}"]
@@ -124,11 +138,12 @@ def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('--fixture',required=True);parser.add_argument('--root');parser.add_argument('--json',action='store_true')
     parser.add_argument('--strength',choices=['on','off'],help='Override core.usage.USE_STRENGTH for this run, to compare orderings')
+    parser.add_argument('--semantic',choices=['on','off'],help='Override core.semantic.USE_SEMANTIC (on needs `semantic install` in the store); indexes are rebuilt to match and restored afterwards')
     args=parser.parse_args(argv)
     if args.strength:
         from core import usage
         usage.USE_STRENGTH=args.strength=='on'
-    report=run(args.fixture,args.root)
+    report=run(args.fixture,args.root,args.semantic)
     print(json.dumps(report,indent=2,ensure_ascii=False) if args.json else _table(report))
 
 if __name__=='__main__':main()
