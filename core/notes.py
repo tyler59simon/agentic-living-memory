@@ -113,15 +113,63 @@ def quality_warnings(note):
         if pattern.search(text):found.append(message)
     return found
 
+# Below this many active notes, document frequencies say little; the overlap rule above is used instead.
+IDF_MIN_NOTES=8
+
+def _identifier(token):
+    """Version numbers, single letters and short codes name a different thing: "plugin B", "v2", "Phase 3"."""
+    return len(token)<=2 or any(c.isdigit() for c in token)
+
+class TitleScorer:
+    """Near-duplicate title scores over one domain's active titles: IDF-weighted cosine of the title words,
+    with a rare-token veto. A word that appears in few titles and only on one side ("rdlp-api" vs
+    "rdlp-plugin", "Phase 1" vs "Phase 2") marks the pair distinct whatever the overlap."""
+    def __init__(self,notes):
+        from collections import Counter
+        self.n=len(notes);self.df=Counter(t for n in notes for t in _title_words(n['title']))
+    def idf(self,token):
+        import math
+        return math.log((self.n+1)/(self.df.get(token,0)+1))+1
+    def rare(self,token):return self.df.get(token,0)<=max(2,0.1*self.n)
+    def vetoed(self,x,y):
+        left=[t for t in x-y if self.rare(t)];right=[t for t in y-x if self.rare(t)]
+        # Substituted rare words on both sides, or an added identifier on either side.
+        return bool(left and right) or any(_identifier(t) for t in left+right)
+    @staticmethod
+    def _fold(x,y):
+        """y with inflections of x's words replaced by them ("using" and "use" are one word; the light
+        stemmer keeps short stems apart)."""
+        import os
+        y=set(y)
+        for t in x-y:
+            for u in sorted(y-x):
+                if not _identifier(t) and not _identifier(u) and len(os.path.commonprefix([t,u]))>=max(2,min(len(t),len(u))-1):
+                    y.discard(u);y.add(t);break
+        return y
+    def score(self,a,b):
+        x,y=_title_words(a),_title_words(b)
+        if not x or not y:return 0.0
+        y=self._fold(x,y)
+        if x==y:return 1.0
+        if self.n<IDF_MIN_NOTES:return title_similarity(a,b)
+        shared=x&y
+        if len(shared)<2 or self.vetoed(x,y):return 0.0
+        import math
+        weight=lambda words:sum(self.idf(t)**2 for t in words)
+        return weight(shared)/math.sqrt(weight(x)*weight(y))
+
 def similar_title(title,notes,threshold=0.8):
-    """Near-duplicate guard: high title-term overlap with an active note."""
-    # Keeps digits and single characters: "Parallel 0" != "Parallel 1".
+    """Near-duplicate guard: the active note whose title scores highest, if it reaches the threshold."""
+    scorer=TitleScorer(notes);best=None;top=0.0
     for note in notes:
-        if title_similarity(title,note['title'])>=threshold:return note
-    return None
+        score=scorer.score(title,note['title'])
+        if score>top:best,top=note,score
+    return best if top>=threshold else None
 
 def near_titles(title,notes,low=0.6,high=0.8):
-    return [n for n in notes if low<=title_similarity(title,n['title'])<high][:3]
+    scorer=TitleScorer(notes)
+    scored=sorted(((scorer.score(title,n['title']),n) for n in notes),key=lambda s:-s[0])
+    return [n for s,n in scored if low<=s<high][:3]
 
 def capture(title,body,tags,domain,root=None,**metadata):
     root=Path(root or memory_root()).resolve();domain=canonical_domain(domain,root)
