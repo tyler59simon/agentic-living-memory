@@ -1,6 +1,6 @@
 # Compact script reference
 
-Use `python living_memory.py COMMAND --help` for exact arguments. Common options are `--root STORE`, `--domain DOMAIN`, `--cwd PROJECT`, and `--actor main|subagent`. Outputs are compact JSON. Stable references are `domain:id`; revisions hash the full note file.
+Use `python living_memory.py COMMAND --help` for exact arguments. Common options are `--root STORE`, `--domain DOMAIN`, `--cwd PROJECT`, and `--actor main|subagent`. Outputs are compact JSON. Stable references are `domain:id`; a REF may also be `domain:` plus a unique 8+ character ID prefix (the short form injected lines show), a bare ID or prefix in the active domain, or an active note's exact title (case-insensitive, active and parent domains; ambiguous matches fail with `ambiguous_ref`). Outputs and receipts always carry full IDs. Revisions hash the full note file.
 
 | Purpose | Commands |
 | --- | --- |
@@ -12,6 +12,7 @@ Use `python living_memory.py COMMAND --help` for exact arguments. Common options
 | Reviewed mutation | plan update|rename|retag|resolve|reopen|archive|supersede|delete REF [--payload-file FILE] |
 | Review/apply | inspect-plan ID; apply ID --expected-plan-sha256 HASH |
 | History/recovery | history; diff OPERATION; undo OPERATION; recover OPERATION --direction forward|backward |
+| Snapshots | backup [--keep 7]; restore-plan FILE (then inspect-plan and apply) |
 | Bulk governance | merge-plan, retag-plan, taxonomy-plan, remap-plan |
 | Derived views | sync VAULT; overlay-build VAULT; overlay-teardown-plan VAULT |
 

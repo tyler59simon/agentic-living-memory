@@ -14,6 +14,7 @@ Inspect `~/.claude/.plans/ID.json` before applying. Setup merges five hook group
 - The full protocol is injected once at SessionStart, only in bound projects. Unbound projects see only the pointer block and ignore Living Memory. Bound sessions are told not to duplicate facts into Claude's built-in auto-memory.
 - PreToolUse returns `allow` for exact, unchained `living_memory.py` read/search/capture commands (no permission prompt) and `deny` for Write/Edit/NotebookEdit calls that target store files. Shell commands are not path-checked; they only feed the end-of-turn reminder. Plan-application commands follow your normal Claude Code permissions.
 - If the store is unavailable, only SessionStart and UserPromptSubmit show a banner. Other events stay silent.
+- The end-of-turn reminder is returned as Stop `hookSpecificOutput.additionalContext`. Claude continues the turn as with `decision: block` (same loop protections), but the transcript shows it as Stop hook feedback rather than a hook error. Factory shares this adapter and keeps `decision: block`.
 
 Notes:
 - Because the hooks point at `~/.codex/agentic-living-memory`, uninstalling or relocating the Codex package breaks them. Regenerate this adapter after moving the package.

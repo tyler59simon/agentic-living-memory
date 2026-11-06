@@ -24,8 +24,11 @@ def prune(root,days=RETENTION_DAYS):
 def finalize(session,turn,notes=(),root=None):
     root=Path(root or memory_root());key=turn_key(session,turn)
     from .notes import find_note
+    resolved=[]
     for reference in notes:
-        domain,note_id=reference.split(':',1);find_note(note_id,domain,root)
+        domain,note_id=reference.split(':',1)
+        resolved.append(domain+':'+find_note(note_id,domain,root)[1]['id'])  # short refs are stored in full
+    notes=resolved
     if status(session,turn,root):return {'ok':True,'status':'already_finalized'}
     row={'schema':1,'completed':now(),'notes':list(notes)[:20],'outcome':'saved' if notes else 'nothing_durable'}
     atomic_write(root/'.turns'/(key+'.json'),canonical_json(row))

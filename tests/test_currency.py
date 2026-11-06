@@ -97,7 +97,7 @@ class Currency(StoreFixture):
         self.assertEqual((listed['due'], listed['notes'][0]['ref']), (1, 'demo:' + old['id']))
         context = render_context(str(self.base / 'project'), self.root)
         self.assertIn('1 note(s) due for review', context)
-        self.assertIn('demo:' + old['id'], context)
+        self.assertIn('demo:' + old['id'][:8], context)
         # Updating the body makes it current again.
         change(old['id'], 'demo', 'update', self.root, body='Still green.')
         self.assertEqual(self.run_cli('review')['due'], 0)
