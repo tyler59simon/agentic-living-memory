@@ -4,12 +4,12 @@ import argparse,json,re,uuid
 from datetime import date
 from pathlib import Path
 from .common import memory_root,safe_domain,canonical_domain
-from .repository import inventory,parse,serialize,validate,read_json,transaction,reconcile,store_lock,now,digest
+from .repository import inventory,parse,serialize,validate,read_json,transaction,reconcile,store_lock,now,digest,clean_files
 from .note_types import prefix_for,normalize,effective_type,default_review_by
 from .note_format import format_body,without_actions,ACTION_TYPES
 
 # Fields an agent may change directly (journaled and undoable, no plan) with `update`.
-UPDATABLE=('title','body','tags','type','context','review_by')
+UPDATABLE=('title','body','tags','type','context','review_by','files')
 
 def slug(value):return re.sub(r'[^a-z0-9]+','-',value.casefold()).strip('-')[:64] or 'note'
 def taxonomy(root):
@@ -166,6 +166,10 @@ def capture(title,body,tags,domain,root=None,**metadata):
         note={'id':str(uuid.uuid4()),'title':title.strip(),'body':body.strip(),'domain':domain,'tags':sorted(set(tags)),'status':'active','created':stamp,'updated':stamp,'type':selected_type,'prefix':derived,'schema_version':3,'context':metadata.pop('context',''),'capture_key':key}
         if review_by:note['review_by']=review_by
         if supersedes:note['supersedes']=sorted(set(supersedes))
+        files=clean_files(metadata.pop('files',None))
+        if files:note['files']=files
+        origin=metadata.pop('origin',None)
+        if origin:note['origin']=str(origin)
         if metadata:raise ValueError('Unsupported capture metadata: '+', '.join(metadata))
         validate(note,domain,root,new=True)
         path=root/'domains'/domain/'notes'/f"{note['prefix']} - {slug(title)}-{note['id'][:8]}.md"
@@ -204,6 +208,10 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
         if 'body' in values:note['body']=format_body(str(values['body']))
         if 'tags' in values:note['tags']=sorted(set(values['tags']))
         if 'context' in values:note['context']=str(values['context'] or '')
+        if 'files' in values:
+            files=clean_files(values['files'])
+            if files:note['files']=files
+            else:note.pop('files',None)
         if 'review_by' in values:
             review=_review_date(values['review_by'])
             if review:note['review_by']=review

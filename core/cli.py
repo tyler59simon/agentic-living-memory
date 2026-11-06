@@ -26,13 +26,42 @@ def _turn(root,session,turn):
     if not value.get('turn'):raise ValueError('No prompt recorded for this session yet; pass --turn')
     return value['turn']
 
+def _session_state(root,session):
+    """The hooks' state for a session ({} when there is none or it is unreadable)."""
+    if not session:return {}
+    from .runtime import _pointer
+    try:value=read_json(_pointer(root,session),{})
+    except ValueError:return {}
+    return value if isinstance(value,dict) else {}
+
 def _session_domain(root,session):
     """The domain the hooks pinned for this session, if it is still bound."""
-    if not session:return None
-    from .runtime import _pointer
-    try:pinned=(read_json(_pointer(root,session),{}) or {}).get('domain')
-    except ValueError:return None
-    return pinned if pinned in load_bindings(root).get('domains',{}) else None
+    pinned=_session_state(root,session).get('domain')
+    return pinned if pinned and pinned in load_bindings(root).get('domains',{}) else None
+
+def _origin(root,session):
+    """Where a note came from: harness and a hash of the session, never the session ID itself."""
+    harness=_session_state(root,session).get('harness') or 'unknown'
+    return f"{harness}:{hashlib.sha256(session.encode()).hexdigest()[:12]}"
+
+def _file_args(args,domain,root,existing=()):
+    """(files to store or None when unchanged, suggested files) from --file/--files and this turn's edits."""
+    from .common import domain_prefixes,display_path
+    if getattr(args,'files',None)=='auto' and not args.session:raise ValueError('--files auto needs --session')
+    touched=_session_state(root,args.session).get('touched',[]) if args.session else []
+    if not args.file and not args.files:return None,[t for t in touched if t not in existing]
+    prefixes=domain_prefixes(domain,load_bindings(root));files=[] if args.files=='none' else list(existing)
+    for value in args.file or []:
+        path=Path(value).expanduser()
+        files.append(display_path(path.resolve(),prefixes) or value if path.is_absolute() else value)
+    if args.files=='auto':files+=touched
+    from .repository import clean_files
+    files=clean_files(files)
+    return files,[t for t in touched if t not in files]
+
+def _file_flags(p):
+    p.add_argument('--file',action='append',help='A file this note is about, relative to the project (repeatable)')
+    p.add_argument('--files',choices=['auto','none'],help="auto: add the files changed this turn (needs --session); none: clear the list")
 
 FACET_FLAGS=('subject','concern','platform','technology')
 def _facet_tags(args):
@@ -139,13 +168,13 @@ def main(argv=None):
     p=sub('capture');p.add_argument('items',nargs='*');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='');p.add_argument('--prefix',help='Compatibility assertion only; must equal the uppercase type');p.add_argument('--type',choices=NOTE_TYPES,default='knowledge');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help='REF of a note this one replaces; it is retired in the same transaction');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk notes get a default')
     for facet in FACET_FLAGS:p.add_argument('--'+facet,action='append',default=[])
     p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
-    sections_args(p)
-    p=sub('search');p.add_argument('query');p.add_argument('--scope',choices=['active','fallback','all'],default='fallback');p.add_argument('--limit',type=int,default=5);p.add_argument('--filter',action='append',default=[]);p.add_argument('--rebuild',action='store_true')
+    sections_args(p);_file_flags(p)
+    p=sub('search');p.add_argument('query',nargs='?',default='');p.add_argument('--file',help='Notes about this file or folder: listed in their files property, or named in the body');p.add_argument('--scope',choices=['active','fallback','all'],default='fallback');p.add_argument('--limit',type=int,default=5);p.add_argument('--filter',action='append',default=[]);p.add_argument('--rebuild',action='store_true')
     p=sub('read');p.add_argument('reference');p.add_argument('--max-chars',type=int,default=16000);p.add_argument('--metadata-only',action='store_true')
     p=sub('update');p.add_argument('reference');p.add_argument('--title');p.add_argument('--body');p.add_argument('--body-file',type=Path);p.add_argument('--tag',action='append');p.add_argument('--type',choices=NOTE_TYPES);p.add_argument('--context');p.add_argument('--review-by');p.add_argument('--expected-revision');p.add_argument('--payload-file',type=Path);p.add_argument('--session');p.add_argument('--turn')
     for facet in FACET_FLAGS:p.add_argument('--'+facet,action='append')
     p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
-    sections_args(p)
+    sections_args(p);_file_flags(p)
     p=sub('supersede');p.add_argument('reference');p.add_argument('--by',required=True,help='REF of the note that replaces it');p.add_argument('--session');p.add_argument('--turn')
     p=sub('review');p.add_argument('--limit',type=int,default=20)
     p=sub('plan');p.add_argument('action',choices=['update','rename','retag','resolve','reopen','archive','supersede','delete']);p.add_argument('reference');p.add_argument('--payload-file',type=Path)
@@ -222,6 +251,8 @@ def main(argv=None):
                 if args.allow_similar:data['allow_similar']=True
                 if args.supersedes:data['supersedes']=args.supersedes
                 if args.review_by:data['review_by']=args.review_by
+                files,_=_file_args(args,domain,root)
+                if files:data['files']=files
             else:data=_payload(args)
             batch=data if isinstance(data,list) else [data]
             if not 1<=len(batch)<=20:raise ValueError('Capture batch must contain 1..20 items')
@@ -232,9 +263,12 @@ def main(argv=None):
                     if session and not turn:turn=_turn(root,session,None)
                     if not selected:raise ValueError('Project is unbound; pass --domain or bind it')
                     inferred=_infer_tags(item,root);redacted=_redact(item) if args.redact else []
+                    if session:item['origin']=_origin(root,session)
                     outcome=capture(domain=selected,root=root,**item);outcome.pop('path',None)
                     if inferred:outcome['inferred_tags']=inferred
                     if redacted:outcome['redacted']=redacted
+                    suggested=[t for t in _session_state(root,session).get('touched',[]) if t not in (item.get('files') or [])] if session else []
+                    if suggested and outcome.get('status')=='created':outcome['suggested_files']=suggested
                     results.append(outcome)
                     if session and turn:
                         from .capture import finalize
@@ -249,7 +283,18 @@ def main(argv=None):
             from .runtime import parent_domains
             primary=list(dict.fromkeys([domain]+parent_domains(domain,config)+globals_));foreign=scope.get('foreign_domains',[])
             filters=dict(value.split('=',1) for value in args.filter)
-            if set(filters)-{'prefix','status','tag','type'}:raise ValueError('Unsupported search filter')
+            if set(filters)-{'prefix','status','tag','type','file'}:raise ValueError('Unsupported search filter')
+            if args.file:
+                from .common import domain_prefixes,display_path
+                given=Path(args.file).expanduser()
+                wanted=(display_path(given.resolve(),domain_prefixes(domain,config)) or args.file) if given.is_absolute() else args.file
+                if not args.query.strip():
+                    from .search import file_notes
+                    hits=file_notes(wanted,primary,root,max(1,min(100,args.limit)))
+                    result={'ok':True,'mode':'file','file':wanted,'domains':primary,'results':hits}
+                    print(json.dumps(result,ensure_ascii=False,separators=(',',':')));return 0
+                filters['file']=wanted
+            if not args.query.strip():raise ValueError('search needs a query, or --file PATH')
             def run(domains):
                 return search_domains(args.query,domains,args.limit,root,filters or None,args.rebuild)
             domains=sorted(load_bindings(root).get('domains',{})) if args.scope=='all' else primary
@@ -265,7 +310,7 @@ def main(argv=None):
         elif cmd=='update':
             from .notes import change
             d,n=_reference(args.reference,domain,root)
-            values=_payload(args) if args.payload_file or not any(getattr(args,k) is not None for k in ('title','body','body_file','tag','type','context','review_by','subject','concern','platform','technology')+SECTION_ARGS) else {}
+            values=_payload(args) if args.payload_file or not any(getattr(args,k) is not None for k in ('title','body','body_file','tag','type','context','review_by','file','files','subject','concern','platform','technology')+SECTION_ARGS) else {}
             if args.title is not None:values['title']=args.title
             if args.body is not None:values['body']=args.body
             if args.body_file:values['body']=args.body_file.read_text(encoding='utf-8-sig')
@@ -280,8 +325,12 @@ def main(argv=None):
                 if getattr(args,key) is not None:values[key]=getattr(args,key)
             revision=values.pop('expected_revision',None) or args.expected_revision
             redacted=_redact(values) if args.redact else []
+            from .notes import find_note
+            files,suggested=_file_args(args,d,root,find_note(n,d,root)[1].get('files') or [])
+            if files is not None:values['files']=files
             result=change(n,d,'update',root,revision,**values)
             if redacted:result['redacted']=redacted
+            if suggested:result['suggested_files']=suggested
             _receipt(args,d,n,root)
         elif cmd=='supersede':
             from .notes import change

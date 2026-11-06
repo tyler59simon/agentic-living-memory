@@ -43,6 +43,24 @@ def resolve_domain(cwd: str|Path, bindings: dict|None=None) -> str|None:
             found.append((len(str(prefix)),name))
     return max(found)[1] if found else None
 
+def domain_prefixes(domain: str|None, bindings: dict) -> list[Path]:
+    """The folders bound to a domain, longest first."""
+    paths=[]
+    for name,_,prefixes in _entries(bindings):
+        if name!=domain: continue
+        for raw in prefixes:
+            try: paths.append(Path(os.path.expandvars(str(raw))).expanduser().resolve())
+            except (OSError,ValueError): continue
+    return sorted(paths,key=lambda p:-len(str(p)))
+
+def display_path(path: Path, prefixes: list[Path]) -> str|None:
+    """A note's view of a file: relative to the bound project folder, else absolute; forward slashes."""
+    for prefix in prefixes:
+        if path.is_relative_to(prefix):
+            rel=path.relative_to(prefix).as_posix()
+            return None if rel=='.' else rel
+    return path.as_posix()
+
 def safe_domain(name: str) -> str:
     if not isinstance(name,str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]*",name) or name in {".",".."}:
         raise ValueError("invalid domain")

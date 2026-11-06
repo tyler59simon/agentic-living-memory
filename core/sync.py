@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib,json,re,sys,time,uuid
 from pathlib import Path
 from .common import memory_root,atomic_write,load_bindings
-from .repository import inventory,parse,parse_text,validate,serialize,store_lock,read_json,canonical_json,transaction,digest,confined,now,reconcile
+from .repository import inventory,parse,parse_text,validate,serialize,store_lock,read_json,canonical_json,transaction,digest,confined,now,reconcile,clean_files
 from .governance import plan
 from .note_types import normalize,NOTE_TYPES,review_due,STALE_DAYS
 from .notes import slug
@@ -95,7 +95,7 @@ def is_managed(vault):
     vault=Path(vault)
     return (vault/VAULT_ID).exists() or (vault/COPIES).exists() or (vault/LEGACY_COPIES).exists()
 
-EDITABLE=('title','tags','type','context','review_by')
+EDITABLE=('title','tags','type','context','review_by','files')
 LIFECYCLE={'archived':'archive','resolved':'resolve'}
 DONE={'archive':'Archived','resolve':'Resolved','delete':'Deleted'}
 APPROVAL_LINE=re.compile(r'^\s*[-*]\s*\[[xX]\].*<!--\s*lm:([a-f0-9]{32})\s*-->')
@@ -299,6 +299,9 @@ def sync(domain,vault,root=None):
                     updated=dict(note)
                     for k in EDITABLE:
                         if k in proposed_note:updated[k]=proposed_note[k]
+                    if 'files' in updated:
+                        updated['files']=clean_files(updated['files'])
+                        if not updated['files']:updated.pop('files')
                     updated['body']=proposed_note['body'];updated=normalize(updated)
                     if serialize({**updated,'updated':''})!=serialize({**normalize(note),'updated':''}):
                         updated['updated']=now()

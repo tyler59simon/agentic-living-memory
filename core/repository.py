@@ -239,8 +239,29 @@ def parse_text(raw, path=""):
 
 
 # Frontmatter order: the properties a person reads first, then bookkeeping.
-FRONT_KEYS = ("title", "type", "status", "tags", "context")
-SYSTEM_KEYS = ("id", "domain", "created", "updated", "review_by", "supersedes", "superseded_by", "schema_version", "capture_key")
+FRONT_KEYS = ("title", "type", "status", "tags", "context", "files")
+SYSTEM_KEYS = ("id", "domain", "created", "updated", "review_by", "supersedes", "superseded_by", "schema_version", "capture_key", "origin")
+MAX_FILES = 30
+
+
+def clean_files(value):
+    """The `files` property as a list of forward-slash paths (Obsidian may store one path as text)."""
+    if value in (None, ""):
+        return []
+    items = [value] if isinstance(value, str) else value
+    if not isinstance(items, list):
+        raise ValueError("files must be a list of paths")
+    result = []
+    for item in items:
+        text = str(item).strip().replace("\\", "/")
+        if text.startswith("./"):
+            text = text[2:]
+        if not text:
+            continue
+        if len(text) > 300 or "\n" in text:
+            raise ValueError("files entries must be single paths of at most 300 characters")
+        result.append(text)
+    return list(dict.fromkeys(result))[:MAX_FILES]
 
 
 def serialize(note):
@@ -328,6 +349,8 @@ def validate(note, domain, root=None, new=False):
     tags = note.get("tags", [])
     if not isinstance(tags, list) or any(not isinstance(t, str) for t in tags):
         raise ValueError("Tags must be a string list")
+    if "files" in note and (not isinstance(note["files"], list) or any(not isinstance(f, str) for f in note["files"])):
+        raise ValueError("files must be a list of paths")
     taxonomy = read_json(Path(root or memory_root()) / "tag_taxonomy.json", {"tags": []})
     known = taxonomy.get("tags", []) if isinstance(taxonomy, dict) else taxonomy
     if isinstance(known, dict):

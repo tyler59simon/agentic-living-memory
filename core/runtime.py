@@ -301,6 +301,32 @@ def _scratch_only(args,payload,cwd):
         return True
     except (OSError,ValueError):return False
 
+MAX_TOUCHED=30
+MAX_TOUCHED_SESSION=200
+
+def touched_paths(args,payload,cwd,root,domain,bindings,shell=False):
+    """Files a write tool targets, as notes name them (see display_path). Paths only, never content.
+    Scratchpad and memory-store paths are skipped. Shell text yields loose matches (URLs, flags), so
+    for shell tools only files inside the bound project count."""
+    from .common import domain_prefixes,display_path
+    try:
+        scratch=payload.get('scratchpad_dir') or payload.get('scratchpadDir')
+        base=Path(scratch).resolve() if scratch else None
+        prefixes=domain_prefixes(domain,bindings);store=Path(root).resolve();found=[]
+        for raw in raw_paths(args):
+            if raw.strip().lower() in NULL_SINKS:continue
+            try:
+                p=Path(os.path.expandvars(raw.strip())).expanduser()
+                if not p.is_absolute():p=Path(cwd)/p
+                p=p.resolve()
+            except (OSError,ValueError):continue
+            if (base and p.is_relative_to(base)) or p.is_relative_to(store) or p.is_dir():continue
+            if shell and not any(p.is_relative_to(prefix) for prefix in prefixes):continue
+            shown=display_path(p,prefixes)
+            if shown:found.append(shown)
+        return list(dict.fromkeys(found))
+    except Exception:return []  # provenance is a nicety; never fail the hook
+
 def _pointer(root,session):return root/'.turns'/(hashlib.sha256(session.encode()).hexdigest()+'.current.json')
 
 def _update(root,session,change):
@@ -420,7 +446,11 @@ def _process(harness,event,payload,root=None):
     domain=pinned if pinned and pinned in bindings.get('domains',{}) else resolve_domain(cwd,bindings)
     if event=='session-start' and session!='unknown':
         current=resolve_domain(cwd,bindings) or domain;domain=current
-        state=_update(root,session,lambda s:s.update(domain=current) if current else s.pop('domain',None))
+        def pin(s):
+            s['harness']=harness
+            if current:s['domain']=current
+            else:s.pop('domain',None)
+        state=_update(root,session,pin)
     if event=='user-prompt':
         turn=turn or str(payload.get('timestamp') or now())
         if session!='unknown':
@@ -488,13 +518,19 @@ def _process(harness,event,payload,root=None):
         planning=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()=='plan'
         if (name not in READ_TOOLS and not subcommand and not (name in SHELL_TOOLS and readonly_shell(text))
                 and not _subagent(payload) and not planning and not (name not in SHELL_TOOLS and _scratch_only(args,payload,cwd))
-                and session!='unknown' and not state.get('mutating')):
-            _update(root,session,lambda s:s.update(mutating=True))
+                and session!='unknown'):
+            paths=touched_paths(args,payload,cwd,root,domain,bindings,shell=name in SHELL_TOOLS)
+            if not state.get('mutating') or set(paths)-set(state.get('touched',[])):
+                def touch(s):
+                    s['mutating']=True
+                    s['touched']=list(dict.fromkeys(list(s.get('touched',[]))+paths))[:MAX_TOUCHED]
+                    s['touched_session']=list(dict.fromkeys(list(s.get('touched_session',[]))+paths))[-MAX_TOUCHED_SESSION:]
+                _update(root,session,touch)
     elif event=='stop':
         if session=='unknown':return {}
         turns=list(dict.fromkeys(list(state.get('open_turns',[]))+([turn] if turn else [])))
         def close(s):
-            s.pop('open_turns',None);s.pop('mutating',None);s.pop('signal',None)
+            s.pop('open_turns',None);s.pop('mutating',None);s.pop('signal',None);s.pop('touched',None)
         signal=state.get('signal')
         if any(capture_status(session,t,root) for t in turns) or not (state.get('mutating') or signal) or not turns:
             _update(root,session,close);return {}
