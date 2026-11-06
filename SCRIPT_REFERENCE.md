@@ -33,7 +33,7 @@ Title/body duplicate detection and optional idempotency keys prevent accidental 
 
 Search defaults to active plus configured global domains, then explicitly configured foreign domains only after zero scoped hits. `--scope all` is explicit. Filters use `--filter tag=concern/decision`, prefix/status/type. Stale unfiltered retrieval falls back to canonical BM25; stale filtered retrieval requires `--rebuild`. `score` ranks results; `relevance` is the share of informative query terms found in the note's title or body. SQL is read-only, one statement, at most 100 rows, five-second execution budget.
 
-Mutation plans snapshot all touched files and require their exact digest. `undo` creates a new plan and rejects later conflicting edits. `inspect-plan` bounds each diff at 16,000 characters and marks truncation. Overlay teardown plans are rooted at the vault: inspect/apply them with `--root VAULT`. Installer plans are rooted at CODEX_HOME.
+Mutation plans snapshot all touched files and require their exact digest. `undo` creates a new plan and rejects later conflicting edits. `inspect-plan` bounds each diff at 16,000 characters and marks truncation. Overlay teardown plans are rooted at the vault: inspect/apply them with `--root VAULT`. Package plans are rooted at the install folder (the parent of `app/`), adapter plans at each harness home, and the legacy-copy retirement plan at CODEX_HOME.
 
 With `--session`, capture and update refuse text that repeats a `<private>` span from the session's prompts, with a `private_content` conflict (see PROTOCOL.md).
 

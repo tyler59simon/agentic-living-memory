@@ -17,7 +17,7 @@ flowchart LR
 
 | Component/flow | Implementation | Evidence and qualification |
 | --- | --- | --- |
-| Bootstrap and live hooks | install.py; integrations/setup.py; hooks/*_hooks.py; core/runtime.py | Native adapters for Codex, Claude, Factory, Copilot. Direct Codex install is exercised in temporary targets; other harnesses have payload contracts, not live sessions. |
+| Bootstrap and live hooks | install.py; integrations/setup.py; hooks/*_hooks.py; core/runtime.py | Native adapters for Codex, Claude, Factory, Copilot. Package install, adapter setup and the move from a CODEX_HOME install are exercised in temporary targets; other harnesses have payload contracts, not live sessions. |
 | Domain resolution and scoped read | core/common.py; core/search.py; core/session_start.py | Longest-prefix binding; active/global scopes; foreign fallback only after zero scoped hits; explicit all scope. SessionStart: guidance notes in full plus a budgeted title index (progressive disclosure), 3,500-character cap with cheapest-first degradation. |
 | Snapshots | core/backup.py | Verified zip of the canonical set in STORE/backups, at most daily from session housekeeping, newest 7 kept; restore is an exact-hash plan. |
 | Capture and controlled tagging | core/cli.py; core/notes.py; core/repository.py; core/tag_taxonomy.py | Script-only agent workflow, stable IDs, controlled four facets, subject+concern required for new capture, idempotency and duplicate checks. |

@@ -8,35 +8,43 @@ from core.governance import apply,retag_plan
 class Delivery(StoreFixture):
     @unittest.skipUnless(os.name=='nt','Windows shell launch regression')
     def test_generated_hooks_execute_through_windows_shells(self):
-        import install
+        from integrations.setup import hook_command
         script=Path(__file__).resolve().parents[1]/'hooks/codex_hooks.py'
         env={**os.environ,'LIVING_MEMORY_ROOT':str(self.root)}
         for action in ('session-start','user-prompt','subagent-start','pre-tool-use','stop'):
-            command=install.hook_command(script,action)['commandWindows']
+            command=hook_command(script,action)['commandWindows']
             payload=json.dumps({'cwd':str(self.base/'project'),'session_id':'shell-regression','turn_id':'shell-turn','prompt':'Unicode: λ 漢字'})
             for shell in ('powershell','cmd'):
                 invocation=['powershell.exe','-NoProfile','-NonInteractive','-Command',command] if shell=='powershell' else 'cmd.exe /d /s /c "'+command+'"'
                 result=subprocess.run(invocation,input=payload,encoding='utf-8',capture_output=True,env=env,timeout=30)
                 self.assertEqual(result.returncode,0,(shell,action,result.stderr))
                 if result.stdout.strip():json.loads(result.stdout)
-    def test_direct_install_and_uninstall_preserve_other_hooks(self):
+    def test_package_install_rerun_and_uninstall(self):
         import install
+        home=self.base/'local'/'agentic-living-memory'
+        with patch.multiple(install,INSTALL_HOME=home,INSTALL_DIR=home/'app'):
+            proposed=install.plan_install();self.assertIn('next_steps',proposed['summary']);apply(home,proposed['plan_id'],proposed['digest'])
+            self.assertTrue((home/'app/living_memory.py').exists());self.assertTrue((home/'app/.core-ownership-v1.json').exists())
+            self.assertFalse((home/'app/skills').exists())
+            proposed=install.plan_install();apply(home,proposed['plan_id'],proposed['digest'])   # rerun keeps, never duplicates
+            proposed=install.plan_install(True);apply(home,proposed['plan_id'],proposed['digest'])
+        self.assertFalse((home/'app/living_memory.py').exists());self.assertFalse((home/'app/.core-ownership-v1.json').exists())
+    def test_codex_setup_and_uninstall_preserve_other_hooks(self):
+        from integrations.setup import setup_plan
+        from core.instructions import instruction_block
         home=self.base/'codex';home.mkdir();hooks=home/'hooks.json'
         original={'hooks':{'Stop':[{'hooks':[{'type':'command','command':'other.exe'}]}]},'custom':True}
         hooks.write_text(json.dumps(original));(home/'AGENTS.md').write_text('# my codex rules\n',encoding='utf-8')
-        from core.instructions import instruction_block
-        with patch.multiple(install,CODEX_HOME=home,INSTALL_DIR=home/'agentic-living-memory',HOOKS_FILE=hooks):
-            proposed=install.plan_install();apply(home,proposed['plan_id'],proposed['digest'])
-            self.assertTrue((home/'agentic-living-memory/living_memory.py').exists())
-            self.assertFalse((home/'agentic-living-memory/skills').exists())
-            self.assertEqual(len(read_json(hooks)['hooks']['Stop']),2)
-            agents=(home/'AGENTS.md').read_text(encoding='utf-8')
-            self.assertTrue(agents.startswith('# my codex rules\n'));self.assertIn(instruction_block('codex'),agents)
-            proposed=install.plan_install();apply(home,proposed['plan_id'],proposed['digest'])   # rerun replaces, never duplicates
-            self.assertEqual((home/'AGENTS.md').read_text(encoding='utf-8').count('agentic-living-memory:begin'),1)
-            proposed=install.plan_install(True);apply(home,proposed['plan_id'],proposed['digest'])
-        self.assertEqual(read_json(hooks)['hooks'],original['hooks'])
-        self.assertTrue(read_json(hooks)['custom'])
+        proposed=setup_plan('codex',home);apply(home,proposed['plan_id'],proposed['digest'])
+        config=read_json(hooks);self.assertEqual(len(config['hooks']['Stop']),2);self.assertTrue(config['custom'])
+        self.assertEqual(config['hooks']['SessionStart'][0]['hooks'][0]['additionalContextLimit'],4000)
+        agents=(home/'AGENTS.md').read_text(encoding='utf-8')
+        self.assertTrue(agents.startswith('# my codex rules\n'));self.assertIn(instruction_block('codex'),agents)
+        proposed=setup_plan('codex',home);apply(home,proposed['plan_id'],proposed['digest'])   # rerun replaces, never duplicates
+        self.assertEqual(len(read_json(hooks)['hooks']['Stop']),2)
+        self.assertEqual((home/'AGENTS.md').read_text(encoding='utf-8').count('agentic-living-memory:begin'),1)
+        proposed=setup_plan('codex',home,uninstall=True);apply(home,proposed['plan_id'],proposed['digest'])
+        self.assertEqual(read_json(hooks)['hooks'],original['hooks']);self.assertTrue(read_json(hooks)['custom'])
         self.assertEqual((home/'AGENTS.md').read_text(encoding='utf-8').strip(),'# my codex rules')
         self.assertFalse((home/'.living-memory-ownership.json').exists())
     def test_adapter_rerun_preserves_later_unrelated_changes(self):

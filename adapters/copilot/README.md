@@ -9,4 +9,4 @@ The optional adapter uses personal hooks under `~/.copilot/hooks/` (or `$COPILOT
 
 Status: **experimental**. It has not been exercised in a live Copilot session.
 
-Generate and apply a reviewed setup plan with `py -3.15 ~/.codex/agentic-living-memory/integrations/setup.py copilot`. Running from the installed package keeps live hooks stable. Restart Copilot CLI to load the hook file. Regenerate after moving the package. Project domains still need bindings in the shared memory store. Hook failures exit cleanly with `{}` and write a one-line reason to stderr.
+Generate and apply a reviewed setup plan with `py -3.15 $env:LOCALAPPDATA/agentic-living-memory/app/integrations/setup.py copilot`. Running from the installed package keeps live hooks stable. Restart Copilot CLI to load the hook file. Regenerate after moving the package. Project domains still need bindings in the shared memory store. Hook failures exit cleanly with `{}` and write a one-line reason to stderr.

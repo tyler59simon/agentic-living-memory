@@ -139,11 +139,11 @@ class TitleScorer:
     def _fold(x,y):
         """y with inflections of x's words replaced by them ("using" and "use" are one word; the light
         stemmer keeps short stems apart)."""
-        import os
+        def common(a,b):return next((i for i,(p,q) in enumerate(zip(a,b)) if p!=q),min(len(a),len(b)))
         y=set(y)
         for t in x-y:
             for u in sorted(y-x):
-                if not _identifier(t) and not _identifier(u) and len(os.path.commonprefix([t,u]))>=max(2,min(len(t),len(u))-1):
+                if not _identifier(t) and not _identifier(u) and common(t,u)>=max(2,min(len(t),len(u))-1):
                     y.discard(u);y.add(t);break
         return y
     def score(self,a,b):
