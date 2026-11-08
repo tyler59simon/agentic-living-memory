@@ -306,10 +306,10 @@ class VaultEditing(StoreFixture):
         build_overlay('other', self.vault, self.root)
         real = sync
 
-        def flaky(domain, vault, root=None):
+        def flaky(domain, vault, root=None, trigger=None):
             if domain == 'other':
                 raise ValueError('boom')
-            return real(domain, vault, root)
+            return real(domain, vault, root, trigger)
 
         with patch('core.sync.sync', flaky):
             summary = sync_all(self.root, trigger='test')

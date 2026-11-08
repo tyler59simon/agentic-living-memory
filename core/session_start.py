@@ -6,16 +6,19 @@ from __future__ import annotations
 from pathlib import Path
 from .common import load_bindings,memory_root,resolve_domain,canonical_domain
 from .repository import inventory
-from .search import snippet,stems
+from .search import snippet
 from .notes import short_ref
 
 # Standing guidance first: these shape every turn, while status notes are usually found by prompt search.
 PRIORITY=('policy','preference','decision')
 GUIDANCE=3
 INDEX=20
-# Whole SessionStart context, protocol lines included; Claude Code truncates hook context at 10,000 characters.
+# Target for the whole SessionStart context when the instruction block is installed, protocol lines included.
+# The body never gets less than MIN_BUDGET, so the fallback protocol or a compaction handoff can push the total
+# past BUDGET; HARD_CAP bounds it below Claude Code's 10,000-character hook-context limit.
 BUDGET=3500
 MIN_BUDGET=800
+HARD_CAP=9000
 SESSION_SNIPPET=160
 SHORT_SNIPPET=80
 TITLE_MAX=90
@@ -25,16 +28,9 @@ FOOTER_SEARCH=" · Search: CMD search 'query'"
 def _updated(note):return str(note.get('updated') or note.get('created') or '')
 
 def _collapse(notes):
-    """Newest first; of status/plan notes on one topic (2+ shared title stems), only the newest.
-    Mirrors search._newest_first's clustering; the older ones stay searchable."""
-    kept=[];topics=[]
-    for note in sorted(notes,key=_updated,reverse=True):
-        if note.get('type') in {'status','plan'}:
-            key=stems(note['title'])
-            if any(len(key&topic)>=2 for topic in topics):continue
-            topics.append(key)
-        kept.append(note)
-    return kept
+    """Newest first. Shared title words do not make two notes one workstream; a replaced note is
+    superseded explicitly and is already out of the active inventory."""
+    return sorted(notes,key=_updated,reverse=True)
 
 def _title(text):
     text=' '.join(str(text).split())
@@ -86,7 +82,7 @@ def _last_session_line(active,root,session,notes):
     return [f"Last session ({str(last.get('ended',''))[:10]}, {last.get('harness','unknown')}): "+'; '.join(parts)+'.']
 
 def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|None=None):
-    """(text or None, refs shown in full, whether the title index listed any note)."""
+    """(text or None, {ref: revision key} of guidance shown with its snippet, whether the title index listed any note)."""
     root=(root or memory_root()).resolve();bindings=load_bindings(root);active=resolve_domain(cwd,bindings)
     if not active:return None,[],False
     notes=[]
@@ -135,8 +131,10 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
         elif with_tail and tail:with_tail=False
         else:break
         text=render(listed,opened,width,search,titles_only,with_tail)
-    # Title-only guidance did not show its content, so prompts may still inject it.
-    return _cap(text,budget),[] if titles_only else [f"{n['domain']}:{n['id']}" for n in guidance],bool(listed)
+    # Title-only guidance did not show its content, so prompts may still inject it. Shown guidance maps
+    # ref -> revision key: a later correction of the note is new content and may be injected again.
+    shown={} if titles_only else {f"{n['domain']}:{n['id']}":str(n.get('revision') or '')[:12] for n in guidance}
+    return _cap(text,budget),shown,bool(listed)
 
 def _cap(text,budget):
     """Last resort for the budget: whole lines while they fit, then a hard cut."""

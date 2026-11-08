@@ -7,7 +7,7 @@
 | `Domains/DOMAIN/` | Managed copies of active notes. New notes created here are captured. |
 | `Archive/DOMAIN/` | Managed copies of retired notes. |
 | `Dashboards/` | Home, Taxonomy, Stale Notes, Timeline, Domain Overview, Archive, and one Sync Status page per domain. Links are Obsidian wikilinks. |
-| `Canvas/DOMAIN.canvas` | Four columns of active notes, with edges for shared tags. Obsidian's reformatting on open is not an edit. |
+| `Canvas/DOMAIN.canvas` | Four columns of active notes. An edge means one note links to another with `[[Title]]` (label `link`) or supersedes it; shared tags do not draw edges. Obsidian's reformatting on open is not an edit. |
 | `Templates/` | One template per note type. Seeded once; your edits are kept and the folder is never scanned. |
 | `.living-memory/` | Vault identity (`vault.json`) and the `copies.json`/`generated.json` ownership manifests (hidden by Obsidian). |
 
@@ -15,7 +15,7 @@
 
 The installed Claude Code `SessionEnd` hook runs `overlay-sync-all`, which syncs every domain that has a managed vault, continues past a failing domain, and records the outcome in the store's `hooks/last-sync.json`. Codex has no session-end event, so a Codex session start runs the same sync when the last one is more than 15 minutes old. Any agent write to memory also refreshes that domain's vault. Run `overlay-sync-all` yourself after editing in Obsidian without an agent session. `--primary DOMAIN` chooses which domain the shared dashboards describe; by default it is the domain with the most notes.
 
-Each Sync Status page starts with the last sync time and what it did, or the error if it failed.
+Each Sync Status page starts with the time of the last sync that changed something and what it did, or the error if it failed. A sync that finds nothing to do rewrites no file and journals nothing; the time of the latest run is in `hooks/last-sync.json`. Journals of regenerated views and sync bookkeeping (`overlay_views`, `overlay_sync`, `overlay_state`) are deleted after 14 days by session housekeeping; journals of note edits are kept.
 
 ## Editing in the vault
 

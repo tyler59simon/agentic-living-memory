@@ -32,11 +32,12 @@ class Retrieval(StoreFixture):
         self.assertTrue(line.startswith('- [STATUS 20'), line)
         self.assertIn('demo:' + n['id'][:8] + ' ', line)
 
-    def test_newest_status_on_a_topic_ranks_first(self):
-        capture('Plugin tests: 144 pass', 'Plugin suite has 144 passing tests.', TAGS, 'demo', self.root, type='status')
-        newest = capture('Plugin tests: 155 pass', 'Plugin suite has 155 passing tests.', TAGS, 'demo', self.root, type='status', allow_similar=True)
-        hits = search_domain('plugin tests', 'demo', 5, self.root)
-        self.assertEqual(hits[0]['id'], newest['id'])
+    def test_similar_plan_titles_rank_by_relevance_not_date(self):
+        # Two shared title words do not make the newer plan a replacement for the older one.
+        auth = capture('Payment API authentication', 'Rotate the signing tokens for payment authentication.', TAGS, 'demo', self.root, type='plan')
+        capture('Payment API pagination', 'Cursor pagination for the payment list endpoint.', TAGS, 'demo', self.root, type='plan')
+        hits = search_domain('payment api authentication tokens', 'demo', 5, self.root)
+        self.assertEqual(hits[0]['id'], auth['id'])
 
     def test_notes_are_injected_once_per_session(self):
         self.note()

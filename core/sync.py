@@ -176,7 +176,7 @@ def _session_ids(state,vault):
     fresh={'version':3,'entries':{},'applied':state.get('applied',[])}
     return fresh,bool(state.get('entries'))
 
-def sync(domain,vault,root=None):
+def sync(domain,vault,root=None,trigger=None):
     root=Path(root or memory_root()).resolve();vault=Path(vault).resolve();vault.mkdir(parents=True,exist_ok=True)
     state_path=root/'domains'/domain/'sync-state.json'
     with store_lock(root),store_lock(vault):
@@ -420,11 +420,13 @@ def sync(domain,vault,root=None):
         for rel,value in view_changes.items():
             if value is None:copy_manifest['files'].pop(rel,None)
         view_changes[COPIES]=canonical_json(copy_manifest)
-        transaction(vault,view_changes,'overlay_sync')
-        state['last_sync']={'at':now(),'copied':copied,'applied':len(applied),'approved':len(approved),'conflicts':conflicts,
-                            'deferred':deferred,'restored':restored,'renamed':renamed,'new_vault':new_vault}
+        transaction(vault,view_changes,'overlay_sync',skip_unchanged=True)
+        counts={'copied':copied,'applied':len(applied),'approved':len(approved),'conflicts':conflicts,
+                'deferred':deferred,'restored':restored,'renamed':renamed,'new_vault':new_vault}
+        # Only a sync that did something moves the stamp, so a quiet one rewrites and journals nothing.
+        if any(counts.values()) or not state.get('last_sync'):state['last_sync']={'at':now(),'trigger':trigger,**counts}
         staging_changes[state_path.relative_to(root).as_posix()]=canonical_json(state)
-        transaction(root,staging_changes,'overlay_state')
+        transaction(root,staging_changes,'overlay_state',skip_unchanged=True)
         if wrote_canonical:reconcile(domain,root,sync_overlay=False)
         _prune_legacy_dirs(vault)
         return {'ok':True,'domain':domain,'copied':copied,'staged':staged,'conflicts':conflicts,'plans':plans,'applied':applied,'approved':approved,
@@ -433,7 +435,7 @@ def sync(domain,vault,root=None):
 def _undo_command(domain,operation_id):
     return f'& "{sys.executable}" "{SCRIPT}" --domain {domain} undo {operation_id}'
 
-def _status_page(domain,root,notes,view_conflicts=(),trigger=None,failure=None):
+def _status_page(domain,root,notes,view_conflicts=(),failure=None):
     state=read_json(root/'domains'/domain/'sync-state.json',{'entries':{}});by_id={n['id']:n for n in notes}
     def name(note_id,entry):
         n=by_id.get(note_id);return n['title'] if n else Path(entry.get('overlay','?')).stem
@@ -456,12 +458,13 @@ def _status_page(domain,root,notes,view_conflicts=(),trigger=None,failure=None):
     if failure:header=f"**Last sync failed** at {now()[:16].replace('T',' ')} UTC: {failure}"
     elif last:
         parts=[f"{last.get(k)} {label}" for k,label in (('applied','edits saved'),('approved','approvals'),('conflicts','conflicts'),('deferred','still being edited'),('restored','missing copies restored'),('renamed','renamed files given back their memory names')) if last.get(k)]
-        header=f"Last sync: {last['at'][:16].replace('T',' ')} UTC"+(f" ({trigger})" if trigger else '')+(' — '+', '.join(parts) if parts else ' — no changes')
+        trigger=last.get('trigger')
+        header=f"Last change synced: {last['at'][:16].replace('T',' ')} UTC"+(f" ({trigger})" if trigger else '')+(' — '+', '.join(parts) if parts else ' — copies refreshed')
         if last.get('new_vault'):header+='. This vault was new to memory, so notes were copied and nothing was proposed for deletion.'
     else:header='Not synced yet.'
     section=lambda title,lines,empty:f'## {title}\n\n'+('\n'.join(lines) if lines else f'_{empty}_')+'\n'
     return (f'# Sync Status — {domain}\n\n{header}\n\nTick a box to approve it; the change is applied at the next sync (session end). '
-            'Leave it unticked to wait. This page is regenerated on every sync.\n\n'
+            'Leave it unticked to wait. This page is regenerated whenever a sync changes something.\n\n'
             +section('Waiting for approval',waiting,'Nothing waiting.')+'\n'
             +section("Couldn't save",errors,'No problems.')+'\n'
             +section('Conflicts',conflicts,'No conflicts.')+'\n'
@@ -476,9 +479,22 @@ def _template(note_type):
     parts.append(CALLOUT+'\n> ')
     return '---\n'+'\n'.join(f'{k}: {json.dumps(v)}' for k,v in meta.items())+'\n---\n\n'+'\n\n'.join(parts)+'\n'
 
+WIKILINK=re.compile(r'\[\[([^\]|#]+)')
+
+def _canvas_edges(active):
+    """Edges for relationships the notes state: a [[Title]] link to another note on the canvas, or a
+    supersedes link between two notes on it. Shared tags are not a relationship ("both are project notes")."""
+    by_title={n['title'].strip().casefold():n['id'] for n in active};ids={n['id'] for n in active};found={}
+    for n in active:
+        targets=[(by_title.get(t.strip().casefold()),'link') for t in WIKILINK.findall(n.get('body',''))]
+        targets+=[(str(s).split(':')[-1],'supersedes') for s in n.get('supersedes') or []]
+        for target,label in targets:
+            if target in ids and target!=n['id'] and (n['id'],target) not in found:found[(n['id'],target)]=label
+    return [{'id':hashlib.sha256((a+b).encode()).hexdigest()[:16],'fromNode':a,'toNode':b,'label':label} for (a,b),label in sorted(found.items())]
+
 def build_overlay(domain,vault,root=None,trigger=None):
     root=Path(root or memory_root()).resolve();vault=Path(vault).resolve()
-    try:sync_result=sync(domain,vault,root)
+    try:sync_result=sync(domain,vault,root,trigger)
     except Exception as exc:
         _report_failure(domain,vault,root,exc);raise
     notes=inventory(domain,root,retired=True);active=[n for n in notes if n.get('status')=='active'];changes={}
@@ -497,11 +513,7 @@ def build_overlay(domain,vault,root=None,trigger=None):
     for name,text in pages.items():changes[f'{DASH}/{name}.md']=text+'\n'
     for t in NOTE_TYPES:changes[f'{TEMPLATES}/{t.capitalize()}.md']=_template(t)
     nodes=[{'id':n['id'],'type':'file','file':note_rel(domain,Path(n['path']).name),'x':(i%4)*420,'y':(i//4)*280,'width':380,'height':240} for i,n in enumerate(active)]
-    edges=[]
-    for i,a in enumerate(active):
-        for b in active[i+1:]:
-            shared=set(a.get('tags',[]))&set(b.get('tags',[]))
-            if shared:edges.append({'id':hashlib.sha256((a['id']+b['id']).encode()).hexdigest()[:16],'fromNode':a['id'],'toNode':b['id'],'label':', '.join(sorted(shared))})
+    edges=_canvas_edges(active)
     changes[f'{CANVAS}/{domain}.canvas']=canonical_json({'nodes':nodes,'edges':edges})
     with store_lock(vault):
         manifest=read_json(vault/GENERATED,{'files':{}});semantic=manifest.setdefault('semantic',{})
@@ -528,13 +540,14 @@ def build_overlay(domain,vault,root=None,trigger=None):
                     if _canvas_key(existing)==semantic.get(rel) or (rel not in semantic and _canvas_on_grid(existing)):continue
                 # A user-edited dashboard or canvas is preserved and no longer regenerated (delete it to reset).
                 changes.pop(rel);view_conflicts.append(rel)
-        # The status page is a control surface: ticks were consumed by sync, so it is always rewritten.
-        changes[status_rel(domain)]=_status_page(domain,root,notes,view_conflicts,trigger)
+        # The status page is a control surface: ticks were consumed by sync, so it is always regenerated
+        # (and written only when its text differs).
+        changes[status_rel(domain)]=_status_page(domain,root,notes,view_conflicts)
         for rel,text in changes.items():
             if text is not None and rel.endswith('.canvas'):semantic[rel]=_canvas_key(text)
         manifest['files'].update({rel:digest(text.encode()) for rel,text in changes.items() if text is not None})
         changes[GENERATED]=canonical_json(manifest)
-        transaction(vault,changes,'overlay_views')
+        transaction(vault,changes,'overlay_views',skip_unchanged=True)
     _prune_legacy_dirs(vault)
     return {**sync_result,'dashboards':7,'templates':len(NOTE_TYPES),'canvas_nodes':len(nodes),'canvas_edges':len(edges),'legacy_conflicts':legacy_conflicts,'view_conflicts':view_conflicts}
 

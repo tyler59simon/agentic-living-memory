@@ -4,7 +4,7 @@ import hashlib,json,math,re,sqlite3,struct,tempfile,os
 from collections import Counter
 from pathlib import Path
 from .common import memory_root,safe_domain,canonical_domain
-from .repository import inventory,parse as parse_note,store_lock
+from .repository import inventory,parse as parse_note,store_lock,digest
 
 # Function words plus conversational filler, so "how is the webcam issue going" searches for "webcam".
 STOP=set('''a an the please explain how our works what why when where who which is are was were be been being am do does did done
@@ -68,9 +68,15 @@ def mentions_file(body,path):
     pattern=r'(?<![\w./-])'+re.escape(path)+r'(?![\w/-])'
     return bool(re.search(pattern,body.replace('\\','/'),re.I))
 
+def _unchanged(note_path,revision):
+    """The canonical file still has the exact bytes the index row was built from."""
+    try:return digest(Path(note_path).read_bytes())==revision
+    except OSError:return False
+
 def file_notes(path,domains,root=None,limit=2,ensure_fresh=True):
     """Active notes about a file: those listing it in `files` first, then those naming it in the body;
-    newest first within each group. Hooks pass ensure_fresh=False and get nothing from a missing index."""
+    newest first within each group. Hooks pass ensure_fresh=False: a missing index gives nothing, and a
+    matched row whose canonical file changed since the index was built is skipped rather than trusted."""
     root=Path(root or memory_root()).resolve();ranked=[]
     for domain in dict.fromkeys(domains):
         try:folder=domain_dir(domain,root)
@@ -83,13 +89,14 @@ def file_notes(path,domains,root=None,limit=2,ensure_fresh=True):
         if not db_path.exists():continue
         try:
             db=sqlite3.connect(db_path.as_uri()+'?mode=ro',uri=True)
-            try:rows=db.execute("SELECT id,title,type,updated,files,body FROM notes WHERE status='active'").fetchall()
+            try:rows=db.execute("SELECT id,title,type,updated,files,body,path,revision FROM notes WHERE status='active'").fetchall()
             finally:db.close()
         except sqlite3.Error:continue
-        for note_id,title,kind,updated,files,body in rows:
+        for note_id,title,kind,updated,files,body,note_path,revision in rows:
             try:listed=json.loads(files or '[]')
             except ValueError:listed=[]
             group=0 if file_matches(listed,path) else 1 if mentions_file(body,path) else None
+            if group is not None and not ensure_fresh and not _unchanged(note_path,revision):continue
             if group is not None:
                 ranked.append((group,str(updated or ''),{'id':note_id,'domain':domain,'title':title,'type':kind or 'knowledge','updated':str(updated or '')[:10],
                                'match':'files' if group==0 else 'body','snippet':snippet(body,terms(path))}))
@@ -189,25 +196,6 @@ def snippet(body,tokens,width=SNIPPET):
         if space>start:end=space
     return ('… ' if start else '')+text[start:end]+(' …' if end<len(text) else '')
 
-def _newest_first(ranked):
-    """Status and plan notes on the same topic: the latest one ranks first (it supersedes the others in practice)."""
-    clusters=[]
-    for note,score in ranked:
-        key=stems(note['title'])
-        if note.get('type') in {'status','plan'} and key:
-            for cluster in clusters:
-                lead=cluster[0][0]
-                if lead.get('type') in {'status','plan'} and len(key&stems(lead['title']))>=2:
-                    cluster.append((note,score));break
-            else:clusters.append([(note,score)])
-        else:clusters.append([(note,score)])
-    ordered=[]
-    for cluster in clusters:
-        scores=[s for _,s in cluster]
-        members=sorted((n for n,_ in cluster),key=lambda n:str(n.get('updated') or n.get('created') or ''),reverse=True)
-        ordered.extend(zip(members,scores))
-    return ordered
-
 def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False):
     root=Path(root or memory_root()).resolve();tokens=query_terms(query)
     domain=canonical_domain(domain,root)
@@ -218,7 +206,8 @@ def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False):
         if filters and not fresh:raise ValueError('stale_filtered_index: rebuild required before filtered search')
         active=[n for n in notes if n.get('status','active')=='active']
         if filters:
-            active=[n for n in notes if all((v in n.get('tags',[]) if k=='tag' else file_matches(n.get('files'),v) if k=='file' else n.get(k)==v) for k,v in filters.items())]
+            # Filters narrow the active notes; retired ones need an explicit status filter.
+            active=[n for n in (notes if 'status' in filters else active) if all((v in n.get('tags',[]) if k=='tag' else file_matches(n.get('files'),v) if k=='file' else n.get(k)==v) for k,v in filters.items())]
         ranked=[];engine='canonical_bm25';coverage={};common=set();similarity=None
         if fresh:
             engine='fts5';db=sqlite3.connect((domain_dir(domain,root)/'search.sqlite3').as_uri()+'?mode=ro',uri=True)
@@ -245,7 +234,6 @@ def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False):
         else:
             ranked=_fallback(tokens,active);common=_common_fallback(tokens,notes)
         wanted={stem(t) for t in tokens if t not in common}
-        ranked=_newest_first(ranked)
         output=[]
         for note,score in ranked[:max(1,min(100,limit))]:
             title=stems(note['title'])
@@ -281,12 +269,15 @@ def _fuse(ranked,similarity,ids):
     order=sorted(fused,key=lambda i:(-round(fused[i],12),lexical.get(i,len(ranked)+1),i))
     return [(notes[i],fused[i]) for i in order]
 
-def search_domains(query,domains,limit=3,root=None,filters=None,rebuild=False,weights=None):
-    """Rank-fused results across domains; the first domain counts double unless weights say otherwise."""
+def search_domains(query,domains,limit=3,root=None,filters=None,rebuild=False,weights=None,keep=None):
+    """Rank-fused results across domains; the first domain counts double unless weights say otherwise.
+    keep filters each domain's hits before the merge, so weak local hits cannot crowd out a strong
+    match from another domain before relevance is judged."""
     hits=[]
     for index,domain in enumerate(dict.fromkeys(domains)):
         weight=(weights or {}).get(domain,2 if index==0 else 1)
-        for hit in search_domain(query,domain,max(20,limit),root,filters,rebuild):
+        found=search_domain(query,domain,max(20,limit),root,filters,rebuild)
+        for hit in keep(found) if keep else found:
             hit['score']=weight/(60+hit['rank']);hits.append(hit)
     from . import usage
     if usage.USE_STRENGTH and hits:
