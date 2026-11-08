@@ -30,6 +30,22 @@ Provenance and file hints: PreToolUse records the paths, never the content, of f
 
 Private spans: text the user wraps in `<private>…</private>` may be used for the task but must not be saved. When a prompt has one, the prompt hook adds the line "Content inside <private> must not be saved to memory." It also keeps salted hashes of the span's word shingles in the session state, never the text; an unclosed tag marks nothing. For the rest of the session, a capture or update with `--session` that repeats such a span in its title, context or any body section fails with a `private_content` conflict (exit 5) naming the section. Like the rest of the governance this is cooperative: vault edits and commands without `--session` are not checked (`core/private.py`).
 
+## Compaction
+
+A compaction replaces the conversation with the harness's summary. Claude Code's summary already quotes every user message and lists files, errors, pending tasks and the current work. It also re-attaches recently read files and the plan file, keeps the latest messages verbatim, and points to the raw transcript. Living Memory adds only what that leaves out:
+
+- **PreCompact** (Claude Code and Codex) records the compaction (time and trigger) in the session state. On Claude Code its stdout becomes instructions for the summarizer. The summary is asked to keep three things: the reason behind each decision and the alternatives rejected; the exact paths, commands, error strings, IDs and numbers needed to continue; and, under the heading "Uncaptured for Living Memory", any preference, correction, decision or constraint the user stated that was not saved, in the user's words but never `<private>` text. The instructions also name the notes saved this session. Codex ignores PreCompact stdout, and Copilot has no usable compaction event. Factory documents PreCompact, but its stdout only shows in transcript views, so Factory does not register it. Factory's SessionStart `compact` source still delivers the handoff. Its transcript format is undocumented, so Factory sessions get no recall line and no auto-recall.
+- **SessionStart with `source: "compact"`** puts a handoff of at most 1,200 characters before the usual session context, and the title index gives up the room. The handoff names:
+  - the notes saved this session (the newest five) and the notes prompt retrieval surfaced, by ref and title;
+  - on Claude Code, a reminder to capture what the summary lists as uncaptured;
+  - the recall command.
+
+  It is built from the session state, so it works even if PreCompact did not run.
+- **`recall QUERY --session SESSION`** searches the session's own transcript (Claude Code JSONL or Codex rollout) before the latest compaction. With `--all` it searches the whole transcript. It returns ranked excerpts of user messages, assistant text, tool calls and tool output. Thinking, subagent turns, harness reminders and the summary are skipped. Hooks record only the transcript's path, never its content. The file is read on demand (about 0.15 s for 14 MB) and nothing is copied into the store. Excerpts mask `<private>` spans and redact credentials. An unknown format yields no results, never an error.
+- **Auto-recall:** for the first five prompts after a compaction, the prompt hook also searches the transcript. It injects at most two excerpts, and only when the prompt has two or more informative words and a record contains at least 60% of them (and at least two). Each record is injected once.
+
+PostCompact is not registered. It cannot add context, and its order relative to SessionStart is not documented.
+
 ## Keeping memory current
 
 Memory is only useful if it stays true, so agents keep notes current instead of adding near-copies:

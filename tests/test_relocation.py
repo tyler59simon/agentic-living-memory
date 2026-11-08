@@ -27,7 +27,7 @@ class Relocation(StoreFixture):
         (self.claude/'settings.json').write_text(json.dumps(settings))
         self.apply(self.claude,setup.setup_plan('claude',self.claude))   # no "Modified managed handlers preserved"
         settings=read_json(self.claude/'settings.json');handlers=self.ours(settings,'claude')
-        self.assertEqual(len(handlers),6)
+        self.assertEqual(len(handlers),7)
         self.assertTrue(all(str(setup._script('claude')) in c and str(self.legacy) not in c for c in self.commands(handlers)))
         self.assertIn({'hooks':[{'type':'command','command':'other'}]},settings['hooks']['Stop'])
     def test_codex_handlers_from_the_old_installer_are_replaced(self):
@@ -36,7 +36,7 @@ class Relocation(StoreFixture):
         state=read_json(self.codex/'.living-memory-ownership.json');(self.codex/'.living-memory-ownership.json').write_text(canonical_json({'schema':2,'instruction_hash':state['instruction_hash']}))
         self.apply(self.codex,setup.setup_plan('codex',self.codex))
         config=read_json(self.codex/'hooks.json');handlers=self.ours(config,'codex')
-        self.assertEqual(len(handlers),5);self.assertTrue(all(str(self.legacy) not in c for c in self.commands(handlers)))
+        self.assertEqual(len(handlers),6);self.assertTrue(all(str(self.legacy) not in c for c in self.commands(handlers)))
         self.assertEqual((self.codex/'AGENTS.md').read_text(encoding='utf-8').count('agentic-living-memory:begin'),1)
 
     def test_retire_refuses_while_referenced_then_removes_owned_files(self):

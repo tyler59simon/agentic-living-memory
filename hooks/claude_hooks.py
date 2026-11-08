@@ -3,7 +3,7 @@ import json,sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 
-NAMES={'session-start':'SessionStart','user-prompt':'UserPromptSubmit','subagent-start':'SubagentStart','pre-tool-use':'PreToolUse','session-end':'SessionEnd'}
+NAMES={'session-start':'SessionStart','user-prompt':'UserPromptSubmit','subagent-start':'SubagentStart','pre-tool-use':'PreToolUse','session-end':'SessionEnd','pre-compact':'PreCompact'}
 # Only context-bearing events report an unavailable store; per-tool banners would be noise.
 REPORTING={'session-start','user-prompt'}
 
@@ -30,8 +30,15 @@ def main(harness='claude'):
         raw=sys.stdin.buffer.read().decode('utf-8-sig')
         payload=json.loads(raw) if raw.strip() else {}
         if not isinstance(payload,dict):raise ValueError('Hook payload must be an object')
+        if event=='pre-compact':
+            # PreCompact stdout is not a JSON reply: Claude Code hands it to the summarizer as instructions.
+            from core.runtime import process
+            text=process(harness,event,payload).get('instructions')
+            if text:sys.stdout.write(text+'\n')
+            return 0
         out=handle(event,payload,harness)
     except Exception as exc:  # A memory failure must never break the host session.
+        if event=='pre-compact':return 0  # any stdout would become summary instructions
         out={'systemMessage':'Living Memory unavailable: '+str(exc)[:300]} if event in REPORTING else {}
     sys.stdout.write(json.dumps(out)+'\n');return 0
 

@@ -12,6 +12,7 @@ Use `python living_memory.py COMMAND --help` for exact arguments. Common options
 | Open work | open; check REF 'ITEM TEXT' \| --index N [--undo] [--session S] |
 | Usefulness | stats [--days 30] [--limit 10] |
 | Around a note | timeline [REF \| --date YYYY-MM-DD] [--before 5] [--after 5] [--type TYPE]... [--by updated\|created] [--all] |
+| Before compaction | recall QUERY --session SESSION [--limit 5] [--all]: excerpts from this session's own transcript, before the latest compaction (`--all`: the whole transcript) |
 | End-turn receipt | capture-finalize --session SESSION [--turn TURN] [--note DOMAIN:ID] |
 | Reviewed mutation | plan update|rename|retag|resolve|reopen|archive|supersede|delete REF [--payload-file FILE] |
 | Review/apply | inspect-plan ID; apply ID --expected-plan-sha256 HASH |
