@@ -106,6 +106,8 @@ class Hooks(CompactionFixture):
         self.assertLess(context.index('Before this compaction'),context.index('Living Memory context for domain'))
         self.assertNotIn('Before this compaction',self.start('startup')['context'])
         self.assertNotIn(runtime.UNCAPTURED,self.start(harness='codex')['context'])   # Codex summaries are not steered
+        factory=self.start(harness='factory')['context']   # handoff via SessionStart(compact), but no recall: format unknown
+        self.assertIn('Saved this session',factory);self.assertNotIn('recall',factory)
 
     def test_prompt_injection_is_remembered_as_surfaced_across_session_start(self):
         note=self.note('Upload pipeline','The upload pipeline retries on 307.')

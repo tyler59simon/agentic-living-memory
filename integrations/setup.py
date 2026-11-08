@@ -71,7 +71,9 @@ def hooks(harness):
     groups={}
     for event,action in EVENTS.items():
         if harness=='factory' and event=='SubagentStart':continue  # Factory has no SubagentStart event.
-        if harness=='factory' and event=='PreCompact':continue  # Not verified against Factory's docs.
+        # Factory shows PreCompact stdout only in transcript views and cannot block on it, so the hook would add nothing;
+        # its SessionStart(source=compact) still delivers the handoff.
+        if harness=='factory' and event=='PreCompact':continue
         if harness=='claude':
             # Exec form runs without a shell, so it works with or without Git Bash on Windows.
             handler={'type':'command','command':sys.executable,'args':[str(script),action],'timeout':15}

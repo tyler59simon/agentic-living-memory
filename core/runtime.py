@@ -408,8 +408,10 @@ AUTO_RECALL_PROMPTS=5
 HANDOFF_BUDGET=1200
 HANDOFF_NOTES=5
 MAX_SURFACED=30
-# Hosts that hand PreCompact stdout to the summarizer as instructions (Codex ignores it).
+# Hosts that hand PreCompact stdout to the summarizer as instructions (Codex ignores it; Factory only shows it).
 STEERED={'claude'}
+# Hosts whose transcript format core/recall.py reads (Factory's is undocumented).
+RECALL_HARNESSES={'claude','codex'}
 UNCAPTURED='Uncaptured for Living Memory'
 
 def _transcript(payload):
@@ -453,7 +455,7 @@ def handoff(root,domain,session,state,harness):
     named=_titled(root,surfaced)
     if named:lines.append('- Surfaced earlier this session (read one if it bears on the task): '+'; '.join(named))
     if harness in STEERED:lines.append(f'- Capture or update anything the summary lists under "{UNCAPTURED}".')
-    if state.get('transcript'):
+    if state.get('transcript') and harness in RECALL_HARNESSES:
         lines.append(f"- Exact detail from before the compaction (code, errors, outputs, reasons): {command(root,domain)} recall 'query' --session {session}")
     if not lines:return ''
     return _cap('\n'.join(['Before this compaction (Living Memory adds what the summary does not carry):']+lines),HANDOFF_BUDGET)+'\n'
@@ -654,7 +656,7 @@ def _process(harness,event,payload,root=None):
             from .usage import record
             record(root,'inject',ids,session,'prompt')
         result['context']=f'Living Memory session={session} turn={turn}'+('\n'+hits if hits else '')
-        if state.get('recall_prompts') and session!='unknown' and isinstance(prompt,str) and not MACHINE_PROMPT.match(prompt):
+        if state.get('recall_prompts') and harness in RECALL_HARNESSES and session!='unknown' and isinstance(prompt,str) and not MACHINE_PROMPT.match(prompt):
             from .recall import auto
             recalled,used=auto(state.get('transcript'),prompt,state.get('recalled',[]))
             def spent(s):
