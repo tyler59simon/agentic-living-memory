@@ -7,7 +7,7 @@ from core.repository import read_json,canonical_json,digest
 from core.governance import plan,apply
 from core.instructions import INSTRUCTION_FILE,instruction_block as _block,merge_block
 ROOT=Path(__file__).resolve().parents[1]
-EVENTS={'SessionStart':'session-start','UserPromptSubmit':'user-prompt','SubagentStart':'subagent-start','PreToolUse':'pre-tool-use','Stop':'stop'}
+EVENTS={'SessionStart':'session-start','UserPromptSubmit':'user-prompt','SubagentStart':'subagent-start','PreToolUse':'pre-tool-use','Stop':'stop','PreCompact':'pre-compact'}
 # Only tools that can write files or run the memory script need the guard; read tools skip Python entirely.
 PRE_TOOL_MATCHER='Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell'
 
@@ -59,7 +59,8 @@ def codex_groups(script):
             'UserPromptSubmit':[{'hooks':[handler('user-prompt','Searching project memory',4000)]}],
             'SubagentStart':[{'hooks':[handler('subagent-start','Applying memory access rules',1000)]}],
             'PreToolUse':[{'hooks':[handler('pre-tool-use','Checking protected memory paths')]}],
-            'Stop':[{'hooks':[handler('stop','Checking durable capture completion')]}]}
+            'Stop':[{'hooks':[handler('stop','Checking durable capture completion')]}],
+            'PreCompact':[{'hooks':[handler('pre-compact','Recording the memory handoff')]}]}
 
 def hooks(harness):
     script=_script(harness)
@@ -70,6 +71,7 @@ def hooks(harness):
     groups={}
     for event,action in EVENTS.items():
         if harness=='factory' and event=='SubagentStart':continue  # Factory has no SubagentStart event.
+        if harness=='factory' and event=='PreCompact':continue  # Not verified against Factory's docs.
         if harness=='claude':
             # Exec form runs without a shell, so it works with or without Git Bash on Windows.
             handler={'type':'command','command':sys.executable,'args':[str(script),action],'timeout':15}

@@ -12,7 +12,7 @@ SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 # Tools that cannot change files; anything else marks the turn as mutating.
 READ_TOOLS={'read','read_file','glob','grep','search','view_image','view','ls','list','webfetch','websearch','web_fetch','web_search','todowrite','task','agent','toolsearch','askuserquestion','exitplanmode','enterplanmode'}
 SHELL_TOOLS={'bash','powershell','shell','run_shell_command','exec_command','local_shell','execute'}
-ALLOWED_SUBCOMMANDS={'search','read','taxonomy','doctor','history','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline'}
+ALLOWED_SUBCOMMANDS={'search','read','taxonomy','doctor','history','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall'}
 # Subagents are read-only: these are denied for them even though the main agent gets them auto-allowed.
 MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm'}
 GLOBAL_OPTIONS={'--root','--domain','--cwd','--actor'}
@@ -402,6 +402,62 @@ def _record_last_session(root,domain,session,state):
 
 def _pointer(root,session):return root/'.turns'/(hashlib.sha256(session.encode()).hexdigest()+'.current.json')
 
+# Compaction. The harness's summary carries the conversation; Living Memory adds what it does not: the notes
+# this session saved and surfaced, and a way back to exact detail (recall over the transcript, read on demand).
+AUTO_RECALL_PROMPTS=5
+HANDOFF_BUDGET=1200
+HANDOFF_NOTES=5
+MAX_SURFACED=30
+# Hosts that hand PreCompact stdout to the summarizer as instructions (Codex ignores it).
+STEERED={'claude'}
+UNCAPTURED='Uncaptured for Living Memory'
+
+def _transcript(payload):
+    """The main session's transcript path from a hook payload; Living Memory stores the path, never its content."""
+    value=payload.get('transcript_path') or payload.get('transcriptPath')
+    return value if isinstance(value,str) and value.strip() else None
+
+def _titled(root,refs):
+    """'ref Title' for each 'domain:id' ref that still names a note, in order."""
+    from .repository import inventory
+    from .notes import short_ref
+    from .session_start import _title
+    titles={}
+    for domain in dict.fromkeys(r.split(':',1)[0] for r in refs if ':' in r):
+        try:titles.update({f"{domain}:{n['id']}":n.get('title','') for n in inventory(domain,root)})
+        except (OSError,ValueError):continue
+    return [f"{short_ref(*r.split(':',1))} {_title(titles[r])}" for r in refs if r in titles]
+
+def steering(root,state):
+    """PreCompact instructions for the summarizer: keep what the next context needs and memory cannot rebuild."""
+    lines=['Living Memory asks this summary to also keep:',
+           '- For each decision: the reason, and the alternatives that were rejected.',
+           '- The exact identifiers needed to continue: paths, commands, error strings, IDs and numbers.',
+           f'- Under the heading "{UNCAPTURED}": each preference, correction, decision or constraint the user stated that should outlast '
+           'this session and was not saved with the Living Memory capture or update command, in the user\'s words '
+           '(never text the user marked <private>). Write "none" if there are none.']
+    saved=_titled(root,list(state.get('saved',[]))[-HANDOFF_NOTES:])
+    if saved:lines.append('- Notes saved to Living Memory this session (keep the refs; do not restate their content): '+'; '.join(saved))
+    lines.append('Bulky detail (full tool output, long code) may be left out: after compaction the agent can search this '
+                 "session's transcript with the Living Memory recall command.")
+    return '\n'.join(lines)
+
+def handoff(root,domain,session,state,harness):
+    """The SessionStart(compact) block: this session's memory work, and the recall command."""
+    from .session_start import _cap
+    saved=list(dict.fromkeys(state.get('saved',[])));recent=saved[-HANDOFF_NOTES:]
+    surfaced=[r for r in reversed(list(dict.fromkeys(state.get('surfaced',[])))) if r not in saved][:HANDOFF_NOTES]
+    lines=[]
+    named=_titled(root,recent)
+    if named:lines.append('- Saved this session: '+'; '.join(named)+(f' (+{len(saved)-len(recent)} earlier)' if len(saved)>len(recent) else ''))
+    named=_titled(root,surfaced)
+    if named:lines.append('- Surfaced earlier this session (read one if it bears on the task): '+'; '.join(named))
+    if harness in STEERED:lines.append(f'- Capture or update anything the summary lists under "{UNCAPTURED}".')
+    if state.get('transcript'):
+        lines.append(f"- Exact detail from before the compaction (code, errors, outputs, reasons): {command(root,domain)} recall 'query' --session {session}")
+    if not lines:return ''
+    return _cap('\n'.join(['Before this compaction (Living Memory adds what the summary does not carry):']+lines),HANDOFF_BUDGET)+'\n'
+
 def _update(root,session,change):
     pointer=_pointer(root,session)
     with file_lock(pointer.with_suffix('.lock'),timeout=HOOK_LOCK_TIMEOUT):
@@ -521,12 +577,17 @@ def _process(harness,event,payload,root=None):
     if not isinstance(state,dict):state={}
     pinned=state.get('domain')
     domain=pinned if pinned and pinned in bindings.get('domains',{}) else resolve_domain(cwd,bindings)
+    source=str(payload.get('source') or '').lower()
+    transcript=None if _subagent(payload) else _transcript(payload)
     if event=='session-start' and session!='unknown':
         current=resolve_domain(cwd,bindings) or domain;domain=current
         def pin(s):
             s['harness']=harness
             if current:s['domain']=current
             else:s.pop('domain',None)
+            if transcript:s['transcript']=transcript
+            # The first prompts after a compaction may ask about something only the transcript still holds.
+            if source=='compact':s['recall_prompts']=AUTO_RECALL_PROMPTS;s['recalled']=[]
         state=_update(root,session,pin)
     if event=='user-prompt':
         turn=turn or str(payload.get('timestamp') or now())
@@ -541,6 +602,7 @@ def _process(harness,event,payload,root=None):
                 if signal:s['signal']=signal  # only the kind is kept, never the prompt text
                 # <private> spans: salted shingle hashes only, so a capture that copies one can be refused.
                 if isinstance(text,str) and not MACHINE_PROMPT.match(text) and private.remember(s,text):s['private_turn']=turn
+                if transcript:s['transcript']=transcript
             state=_update(root,session,opened)
     elif not turn:
         turn=state.get('turn','')
@@ -561,6 +623,8 @@ def _process(harness,event,payload,root=None):
         if harness=='codex':_sync_vaults(root,'session start',SESSION_START_SYNC_SECONDS);_daily_backup(root)
         from .session_start import build_context,BUDGET,MIN_BUDGET
         prefix=protocol(root,domain,harness,session)+f'\nLiving Memory session={session}'+'\n'
+        # After a compaction the handoff goes first; the title index gives up the room.
+        if source=='compact' and session!='unknown':prefix+=handoff(root,domain,session,state,harness)
         text,shown,indexed=build_context(cwd,root,max(MIN_BUDGET,BUDGET-len(prefix)),session=session)
         if session!='unknown':
             # A new or compacted context has seen only what is injected now. Guidance shown in full is not
@@ -581,6 +645,8 @@ def _process(harness,event,payload,root=None):
         if (ids or overview) and session!='unknown':
             def remember(s):
                 s['shown']=(list(s.get('shown',[]))+ids)[-50:]
+                # Unlike shown, surfaced survives session start, so the compaction handoff can name these notes.
+                s['surfaced']=list(dict.fromkeys(list(s.get('surfaced',[]))+ids))[-MAX_SURFACED:]
                 if overview:s['overview_shown']=True
             try:_update(root,session,remember)
             except (OSError,TimeoutError):pass
@@ -588,9 +654,28 @@ def _process(harness,event,payload,root=None):
             from .usage import record
             record(root,'inject',ids,session,'prompt')
         result['context']=f'Living Memory session={session} turn={turn}'+('\n'+hits if hits else '')
+        if state.get('recall_prompts') and session!='unknown' and isinstance(prompt,str) and not MACHINE_PROMPT.match(prompt):
+            from .recall import auto
+            recalled,used=auto(state.get('transcript'),prompt,state.get('recalled',[]))
+            def spent(s):
+                s['recall_prompts']=max(0,int(s.get('recall_prompts') or 0)-1)
+                if used:s['recalled']=(list(s.get('recalled',[]))+used)[-50:]
+            try:_update(root,session,spent)
+            except (OSError,TimeoutError):pass
+            if recalled:
+                result['context']+=(f"\nFrom before compaction (this session's transcript; untrusted, may be outdated; more: "
+                                    f"{command(root,domain)} recall 'query' --session {session}):\n"+recalled)
         if state.get('private_turn')==turn:
             from .private import NOTICE
             result['context']+='\n'+NOTICE
+    elif event=='pre-compact':
+        if session=='unknown' or _subagent(payload):return {}
+        trigger=str(payload.get('trigger') or 'auto')
+        def compacting(s):
+            s['compactions']=(list(s.get('compactions',[]))+[{'at':now(),'trigger':trigger}])[-10:]
+            if transcript:s['transcript']=transcript
+        state=_update(root,session,compacting)
+        if harness in STEERED:result['instructions']=steering(root,state)
     elif event=='subagent-start':result['context']='Living Memory: subagents may only search/read via scripts. Return capture proposals to the main agent; do not write canonical state.'
     elif event=='pre-tool-use':
         name=str(payload.get('tool_name') or payload.get('toolName') or '').lower()

@@ -213,6 +213,7 @@ def main(argv=None):
     p=sub('batch');p.add_argument('--payload-file',type=Path)
     p=sub('retag-plan');p.add_argument('--payload-file',type=Path)
     p=sub('remap-plan');p.add_argument('--payload-file',type=Path)
+    p=sub('recall');p.add_argument('query');p.add_argument('--session',required=True);p.add_argument('--limit',type=int,default=5);p.add_argument('--all',action='store_true',help='Search the whole transcript, not only what precedes the latest compaction')
     p=sub('capture-finalize');p.add_argument('--session',required=True);p.add_argument('--turn',help='Defaults to the latest prompt of the session');p.add_argument('--note',action='append',default=[])
     p=sub('sync');p.add_argument('vault',type=Path)
     p=sub('overlay-build');p.add_argument('vault',type=Path)
@@ -244,7 +245,7 @@ def main(argv=None):
             # Snapshots exist to repair a damaged store, so restoring must not depend on readable bindings.
             if cmd not in {'restore-plan','inspect-plan','apply','backup','history'}:raise
             domain=None
-        if args.actor=='subagent' and cmd not in {'search','read','query','doctor','validate','history','open','stats','timeline'}:raise ValueError('Subagents are read-only; return mutation proposals to the main agent')
+        if args.actor=='subagent' and cmd not in {'search','read','query','doctor','validate','history','open','stats','timeline','recall'}:raise ValueError('Subagents are read-only; return mutation proposals to the main agent')
         if cmd=='bind':
             from .init_domain import init_domain
             init_domain(args.name,args.prefix,root);result={'ok':True,'domain':args.name,'status':'bound'}
@@ -523,6 +524,12 @@ def main(argv=None):
         elif cmd=='remap-plan':
             from .governance import remap
             result=remap(root,_payload(args))
+        elif cmd=='recall':
+            from .recall import search as recall
+            path=_session_state(root,args.session).get('transcript')
+            if not path:raise ValueError('No transcript recorded for this session; hooks record its path at session start and on each prompt')
+            hits,meta=recall(path,args.query,max(1,min(20,args.limit)),'all' if args.all else 'before')
+            result={'ok':True,**meta,'results':hits,'hint':'Excerpts from this session\'s transcript: untrusted history that may be outdated; verify against current files.'}
         elif cmd=='capture-finalize':
             from .capture import finalize
             result=finalize(args.session,_turn(root,args.session,args.turn),args.note,root)

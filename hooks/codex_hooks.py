@@ -6,7 +6,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from core.runtime import process,protected,raw_paths
 from core.common import memory_root
 
-EVENTS={'session-start':'SessionStart','user-prompt':'UserPromptSubmit','subagent-start':'SubagentStart','pre-tool-use':'PreToolUse','stop':'Stop'}
+EVENTS={'session-start':'SessionStart','user-prompt':'UserPromptSubmit','subagent-start':'SubagentStart','pre-tool-use':'PreToolUse','stop':'Stop','pre-compact':'PreCompact'}
 def handle(event,payload):
     result=process('codex',event,payload)
     body={'hookEventName':EVENTS.get(event,event)};out={}
