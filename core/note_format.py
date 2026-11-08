@@ -30,6 +30,7 @@ ORDER = [key for key, _ in SECTIONS] + ['important']
 ACTION_TYPES = frozenset({'plan', 'bug', 'risk'})
 
 _H2 = re.compile(r'^##\s+(.*?)\s*$')
+_FENCE = re.compile(r'^ {0,3}(`{3,}|~{3,})')
 _CALLOUT = re.compile(r'^>\s*(?:ℹ️|ℹ|\[!\w+\])?\s*\**\s*Important Note:?\s*\**:?\s*(.*)$', re.I)
 # Markup that carries no content: bullets, checkboxes, a bare "**Label:**", quote markers.
 _EMPTY_LINE = re.compile(r'^\s*(?:>\s*)?(?:[-*+]\s*)?(?:\[[ xX]\]\s*)?(?:\*\*[^*]*:?\*\*:?|\*[^*]*:\*)?\s*$')
@@ -55,11 +56,21 @@ def _trim(lines):
 
 def split(body):
     """Ordered (key, heading, text) sections. Key is None for a heading this layout does not define.
-    Text before the first heading is returned under key 'preamble'."""
+    Text before the first heading is returned under key 'preamble'. Lines inside a fenced code block
+    are text, so an example heading in a fence is kept where it was written."""
     body = strip_title(body or '')
     sections = [['preamble', None, []]]
+    fence = None
     for line in body.replace('\r\n', '\n').split('\n'):
-        heading = _H2.match(line)
+        mark = _FENCE.match(line)
+        if fence:
+            sections[-1][2].append(line)
+            if mark and mark[1][0] == fence[0] and len(mark[1]) >= len(fence) and not line.strip().strip(fence[0]):
+                fence = None
+            continue
+        if mark:
+            fence = mark[1]
+        heading = None if mark else _H2.match(line)
         callout = _CALLOUT.match(line)
         if heading:
             sections.append([_key(heading[1]), heading[1], []])

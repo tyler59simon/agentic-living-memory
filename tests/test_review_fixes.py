@@ -152,10 +152,10 @@ class VaultCaptureReplay(StoreFixture):
         draft.write_text('---\ntitle: "Vault idea"\ntype: "knowledge"\ntags: ["subject/project", "concern/architecture"]\n---\n\n'
                          '## 📌 Executive Summary\nA note written in Obsidian.\n', encoding='utf-8')
         real = sync.transaction
-        def crash(root, changes, kind, *rest):
+        def crash(root, changes, kind, *rest, **options):
             # The vault write follows the canonical capture; stop there, as a crash would.
             if kind == 'overlay_sync':raise RuntimeError('interrupted after the canonical write')
-            return real(root, changes, kind, *rest)
+            return real(root, changes, kind, *rest, **options)
         with patch.object(sync, 'transaction', crash):
             with self.assertRaises(RuntimeError):
                 sync.build_overlay('demo', vault, self.root)

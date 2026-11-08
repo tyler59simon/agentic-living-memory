@@ -39,7 +39,7 @@ class SessionIndex(StoreFixture):
         self.assertRegex(index_line, r'\(~\d+t\)$')
         self.assertNotIn('Likely hardware', text)  # index lines carry no snippet
         self.assertIn('Read: CMD read REF', text)
-        self.assertEqual(shown, ['demo:' + pref['id']])
+        self.assertEqual(list(shown), ['demo:' + pref['id']])
         self.assertTrue(indexed)
         self.assertIn('demo:' + other['id'][:8], index_line)
 
@@ -54,14 +54,15 @@ class SessionIndex(StoreFixture):
         self.assertEqual(len(index), 20)
         self.assertEqual(sum(1 for l in index if l.startswith('- DECISION')), 2)  # extra guidance falls into the index
 
-    def test_newest_first_and_status_topics_collapse(self):
+    def test_newest_first_and_similar_titles_stay_listed(self):
+        # Shared title words are not proof that one note replaced another; supersede does that explicitly.
         capture('Plugin tests: 144 pass', 'Older.', TAGS, 'demo', self.root, type='status')
         capture('Plugin tests: 155 pass', 'Newer.', TAGS, 'demo', self.root, type='status', allow_similar=True)
         capture('Webcam conclusion', 'Hardware.', TAGS, 'demo', self.root)
         text = self.build()[0]
-        self.assertIn('Plugin tests: 155 pass', text)
-        self.assertNotIn('Plugin tests: 144 pass', text)
+        self.assertIn('Plugin tests: 144 pass', text)
         self.assertLess(text.index('Webcam conclusion'), text.index('Plugin tests: 155'))
+        self.assertLess(text.index('Plugin tests: 155'), text.index('Plugin tests: 144'))
 
     def test_budget_degrades_cheapest_first(self):
         capture('Prefer small commits', 'Keep commits small. ' * 20, TAGS, 'demo', self.root, type='preference')
@@ -78,7 +79,7 @@ class SessionIndex(StoreFixture):
         self.assertNotIn('Search: CMD', tiny)
         self.assertNotIn('— Keep', tiny)  # last resort: guidance titles only
         self.assertIn('Prefer small commits', tiny)
-        self.assertEqual(self.build(budget=260)[1], [])  # title-only guidance stays eligible for prompts
+        self.assertEqual(self.build(budget=260)[1], {})  # title-only guidance stays eligible for prompts
 
     def test_session_start_stays_within_the_whole_budget(self):
         capture('Prefer small commits', 'Keep commits small. ' * 20, TAGS, 'demo', self.root, type='preference')

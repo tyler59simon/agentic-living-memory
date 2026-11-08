@@ -411,8 +411,11 @@ def _write(path, data):
         os.chmod(path, mode)
 
 
-def transaction(root, changes, kind, expected=None, operation_id=None):
-    """Durable intent precedes every write. Recovery accepts only known states."""
+def transaction(root, changes, kind, expected=None, operation_id=None, skip_unchanged=False):
+    """Durable intent precedes every write. Recovery accepts only known states.
+
+    skip_unchanged (derived files only): leave out files that already hold these exact bytes, and
+    write no journal at all when nothing is left, so a sync that changed nothing leaves no trace."""
     root = Path(root).resolve()
     operation_id = operation_id or uuid.uuid4().hex
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", operation_id):
@@ -435,8 +438,12 @@ def transaction(root, changes, kind, expected=None, operation_id=None):
             if expected is not None and str(rel) in expected and digest(before) != expected[str(rel)]:
                 raise ValueError(f"Stale revision: {rel}")
             after = content.encode() if isinstance(content, str) else content
+            if skip_unchanged and before == after:
+                continue
             effects.append({"path": str(Path(rel).as_posix()), "before": _encode(before), "after": _encode(after),
                             "before_hash": digest(before), "after_hash": digest(after)})
+        if skip_unchanged and not effects:
+            return {"ok": True, "operation_id": None, "state": "unchanged", "kind": kind}
         journal = {"schema": 1, "id": operation_id, "kind": kind, "created": now(), "state": "prepared", "effects": effects}
         atomic_write(journal_path, canonical_json(journal))
         atomic_write(journal_path.with_name(PENDING), "pending\n")
@@ -444,6 +451,35 @@ def transaction(root, changes, kind, expected=None, operation_id=None):
 
 
 PENDING = "pending"
+# Journals of regenerated vault views and sync bookkeeping. Nothing undoes them, so old ones only take space.
+# Journals of note edits (including overlay_capture, overlay_auto_update, overlay_delete) are never pruned.
+BOOKKEEPING_KINDS = frozenset({"overlay_sync", "overlay_state", "overlay_views"})
+
+
+def prune_journals(root, days=14, kinds=BOOKKEEPING_KINDS):
+    """Delete committed journals of the given kinds older than `days`; returns how many were removed."""
+    from datetime import timedelta
+    import shutil
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    removed = 0
+    with store_lock(Path(root).resolve()):
+        for journal_path in sorted(Path(root).glob(".operations/*/journal.json")):
+            folder = journal_path.parent
+            if (folder / PENDING).exists():
+                continue
+            value = read_json(journal_path, None)
+            if not isinstance(value, dict) or value.get("kind") not in kinds or value.get("state") != "committed":
+                continue
+            try:
+                created = datetime.fromisoformat(str(value.get("created")))
+            except ValueError:
+                continue
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            if created < cutoff:
+                shutil.rmtree(folder, ignore_errors=True)
+                removed += 1
+    return removed
 
 
 def roll_forward_pending(root):

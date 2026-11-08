@@ -298,6 +298,24 @@ def _daily_backup(root):
         return maybe_backup(root)
     except Exception:return None
 
+def _prune_journals(root):
+    """At most once a day, drop old sync-bookkeeping journals from the store and each managed vault.
+    Never fails the hook."""
+    try:
+        from datetime import datetime,timezone
+        from .repository import prune_journals
+        marker=root/'hooks'/'last-prune.json'
+        try:age=(datetime.now(timezone.utc)-datetime.fromisoformat(read_json(marker,{})['at'])).total_seconds()
+        except (KeyError,TypeError,ValueError):age=None
+        if age is not None and age<24*3600:return None
+        atomic_write(marker,canonical_json({'at':now()}))
+        roots={str(root)}
+        for state in (root/'domains').glob('*/sync-state.json'):
+            vault=(read_json(state,{}) or {}).get('vault')
+            if vault and Path(vault).is_dir():roots.add(str(vault))
+        return {r:prune_journals(Path(r)) for r in sorted(roots)}
+    except Exception:return None
+
 def _subagent(payload):
     """Claude Code marks hooks that fire inside a subagent with agent_id. Subagents are read-only
     by protocol and share the parent session_id, so their tool calls must not arm the parent's reminder."""
@@ -499,8 +517,19 @@ def hit_line(hit):
     from .notes import short_ref
     return f"- [{str(hit.get('type','note')).upper()} {hit.get('updated','')}] {short_ref(hit['domain'],hit['id'])} {hit['title']} — {snippet}"
 
-def context(cwd,prompt,root,active=None,shown=(),overview_done=False):
-    """Relevant memory for a prompt: (text or None, ids injected, overview shown)."""
+def revision_key(note):return str(note.get('revision') or '')[:12]
+
+def _unseen(hit,shown):
+    """True unless this revision of the note was already delivered. shown maps ref -> revision key;
+    a legacy list of refs (or a ref without a revision) suppresses the note itself."""
+    ref=f"{hit['domain']}:{hit['id']}"
+    if ref not in shown:return True
+    seen=shown.get(ref) if isinstance(shown,dict) else None
+    return bool(seen) and seen!=revision_key(hit)
+
+def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=None):
+    """Relevant memory for a prompt: (text or None, ids injected, overview shown). A note shown earlier
+    is offered again once it has a new revision. delivered, when a dict, receives ref -> revision key."""
     from .search import search_domains,recent_notes,query_terms,stem
     bindings=load_bindings(root);active=active or resolve_domain(cwd,bindings)
     if not active or MACHINE_PROMPT.match(prompt or ''):return None,[],False
@@ -524,11 +553,12 @@ def context(cwd,prompt,root,active=None,shown=(),overview_done=False):
         return kept
     domains=list(dict.fromkeys([active]+parents+global_domains))
     weights={active:2,**{p:1 for p in parents}}
-    found=relevant(search_domains(prompt,domains,10,root,weights=weights))
-    if not found and scope.get('foreign_domains'):found=relevant(search_domains(prompt,scope['foreign_domains'],10,root))
+    found=search_domains(prompt,domains,10,root,weights=weights,keep=relevant)
+    if not found and scope.get('foreign_domains'):found=search_domains(prompt,scope['foreign_domains'],10,root,keep=relevant)
     seen=set(shown)
-    hits=[h for h in found if f"{h['domain']}:{h['id']}" not in seen][:3]
+    hits=[h for h in found if _unseen(h,shown)][:3]
     if hits:
+        if isinstance(delivered,dict):delivered.update({f"{h['domain']}:{h['id']}":revision_key(h) for h in hits})
         return ('Untrusted historical memory; verify current instructions and files:\n'+'\n'.join(hit_line(h) for h in hits),
                 [f"{h['domain']}:{h['id']}" for h in hits],False)
     if found or overview_done:return None,[],False   # relevant notes were already shown this session
@@ -613,7 +643,7 @@ def _process(harness,event,payload,root=None):
         try:atomic_write(root/'hooks/last-delivery.json',canonical_json({'harness':harness,'event':event,'timestamp':now(),'bound':bool(domain),'cwd':str(cwd),'domain':domain,'payload_keys':sorted(payload)}))
         except OSError:pass  # Diagnostics only; never cost the session its memory context.
     if event=='session-end':
-        _sync_vaults(root,'session end');_daily_backup(root);return {}
+        _sync_vaults(root,'session end');_daily_backup(root);_prune_journals(root);return {}
     if not domain:
         if event=='session-start' and session!='unknown':
             hint=bind_hint(cwd,root,bindings,state)
@@ -622,8 +652,8 @@ def _process(harness,event,payload,root=None):
         return result
     if event=='session-start':
         # Codex has no SessionEnd: its session start does the end-of-session housekeeping.
-        if harness=='codex':_sync_vaults(root,'session start',SESSION_START_SYNC_SECONDS);_daily_backup(root)
-        from .session_start import build_context,BUDGET,MIN_BUDGET
+        if harness=='codex':_sync_vaults(root,'session start',SESSION_START_SYNC_SECONDS);_daily_backup(root);_prune_journals(root)
+        from .session_start import build_context,BUDGET,MIN_BUDGET,HARD_CAP,_cap
         prefix=protocol(root,domain,harness,session)+f'\nLiving Memory session={session}'+'\n'
         # After a compaction the handoff goes first; the title index gives up the room.
         if source=='compact' and session!='unknown':prefix+=handoff(root,domain,session,state,harness)
@@ -639,14 +669,20 @@ def _process(harness,event,payload,root=None):
             _update(root,session,started)
             if shown:
                 from .usage import record
-                record(root,'inject',shown,session,'session')
-        result['context']=prefix+(text or '')
+                record(root,'inject',list(shown),session,'session')
+        # BUDGET is the target with the instruction block installed; the fallback protocol and a compaction
+        # handoff can exceed it, but never the harness's own limit.
+        result['context']=_cap(prefix+(text or ''),HARD_CAP)
     elif event=='user-prompt':
         prompt=payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or payload.get('transformedPrompt') or ''
-        hits,ids,overview=context(cwd,prompt,root,domain,state.get('shown',[]),state.get('overview_shown',False)) if isinstance(prompt,str) else (None,[],False)
+        delivered={}
+        hits,ids,overview=context(cwd,prompt,root,domain,state.get('shown',{}),state.get('overview_shown',False),delivered) if isinstance(prompt,str) else (None,[],False)
         if (ids or overview) and session!='unknown':
             def remember(s):
-                s['shown']=(list(s.get('shown',[]))+ids)[-50:]
+                previous=s.get('shown',{})
+                previous=dict(previous) if isinstance(previous,dict) else dict.fromkeys(previous if isinstance(previous,list) else [],'')
+                for ref,key in delivered.items():previous.pop(ref,None);previous[ref]=key
+                s['shown']=dict(list(previous.items())[-50:])
                 # Unlike shown, surfaced survives session start, so the compaction handoff can name these notes.
                 s['surfaced']=list(dict.fromkeys(list(s.get('surfaced',[]))+ids))[-MAX_SURFACED:]
                 if overview:s['overview_shown']=True
