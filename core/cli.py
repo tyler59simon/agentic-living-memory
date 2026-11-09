@@ -163,7 +163,7 @@ def _sectioned(args,body=''):
     from .note_format import render
     return render(args.summary or '',args.detail or (),args.link or (),args.action or (),args.done or (),args.important or '',body)
 
-READ_ONLY={'search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version'}
+READ_ONLY={'search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links'}
 # Viewer: a human-facing app browsing the store. Read-only, and its reads are not usage evidence for the diary.
 VIEWER=READ_ONLY|{'taxonomy','review','diff','inspect-plan'}
 SERVE_API=1
@@ -194,6 +194,53 @@ def list_domains(root):
     scope=config.get('search_scope',{}) if isinstance(config.get('search_scope'),dict) else {}
     return {'ok':True,'domains':[{'name':n,'bound':n in bound,'prefixes':(bound.get(n) or {}).get('prefixes',[]),'active':count(n,'notes'),'archived':count(n,'archive')} for n in names],
             'aliases':config.get('domain_aliases',{}),'global_domains':scope.get('global_domains',['_global']),'foreign_domains':scope.get('foreign_domains',[])}
+
+def note_links(root,domains,status):
+    """The link graph of these domains: [[Title]] links (resolved like a title REF: the note's own domain, then its
+    parent domains, then the global domains; case-insensitive) and supersedes, with links that match no note."""
+    from .sync import WIKILINK
+    from .runtime import parent_domains
+    from .common import global_domains
+    config=load_bindings(root);globals_=global_domains(root);notes={};titles={}
+    def notes_of(d):
+        if d not in notes:notes[d]=inventory(d,root,retired=status!='active') if (root/'domains'/d/'notes').is_dir() else []
+        return notes[d]
+    def by_title(d):
+        if d not in titles:
+            # An active note wins a title over a retired one that shares it.
+            titles[d]={n['title'].strip().casefold():n for n in sorted(notes_of(d),key=lambda n:n.get('status','active')=='active')}
+        return titles[d]
+    nodes={};edges={};unresolved={}
+    def node(d,n):
+        ref=f"{d}:{n['id']}"
+        nodes.setdefault(ref,{'ref':ref,'id':n['id'],'domain':d,'title':n.get('title'),'type':n.get('type'),'status':n.get('status','active'),'tags':n.get('tags') or []})
+        return ref
+    for d in domains:
+        order=list(dict.fromkeys([d]+parent_domains(d,config)+globals_))
+        ids={n['id']:n for n in notes_of(d)}
+        for n in notes_of(d):
+            source=node(d,n)
+            for target in WIKILINK.findall(n.get('body','')):
+                key=target.strip().casefold()
+                hit=next(((o,by_title(o)[key]) for o in order if key in by_title(o)),None)
+                if hit is None:unresolved.setdefault((source,target.strip()),None);continue
+                found=node(*hit)
+                if found!=source:edges.setdefault((source,found),'link')
+            # Newer note -> the note it replaced, from either side of the pair; a link between the two wins.
+            pairs=[(n,ids.get(str(s).split(':')[-1])) for s in n.get('supersedes') or []]
+            pairs.append((ids.get(str(n.get('superseded_by') or '').split(':')[-1]),n))
+            for newer,older in pairs:
+                if newer and older and newer['id']!=older['id']:edges.setdefault((node(d,newer),node(d,older)),'supersedes')
+    return {'ok':True,'domains':domains,'nodes':sorted(nodes.values(),key=lambda r:r['ref']),
+            'edges':[{'from':a,'to':b,'kind':k} for (a,b),k in sorted(edges.items())],
+            'unresolved':[{'from':a,'target':t} for a,t in sorted(unresolved)]}
+
+def error_code(message):
+    """stale, conflict or invalid, from the message's own wording: the text before any quoted value or ': detail',
+    so a note title, tag or path inside the message cannot change the code."""
+    import re
+    head=re.split(r''': |["']''',message,maxsplit=1)[0].lower()
+    return 'stale' if 'stale' in head else 'conflict' if 'conflict' in head else 'invalid'
 
 def serve(root,cwd,commands):
     """JSON lines on stdin: {"id", "argv", "stdin"?} -> one {"id", "exit_code", "result", "error"} line each, run in-process."""
@@ -299,6 +346,7 @@ def main(argv=None):
     p=sub('capture-finalize');p.add_argument('--session',required=True);p.add_argument('--turn',help='Defaults to the latest prompt of the session');p.add_argument('--note',action='append',default=[])
     p=sub('list');p.add_argument('--status',choices=['active','resolved','archived','superseded','any'],default='active');p.add_argument('--type',choices=NOTE_TYPES,action='append');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)');p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--offset',type=int,default=0);p.add_argument('--limit',type=int,default=200)
     p=sub('domains')
+    p=sub('links');p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--status',choices=['active','any'],default='active',help='any: include archived, resolved and superseded notes')
     p=sub('version')
     p=sub('serve');p.add_argument('--stdio',action='store_true',required=True,help='JSON-lines requests on stdin, one reply line each on stdout')
     p=sub('sync');p.add_argument('vault',type=Path)
@@ -450,6 +498,11 @@ def main(argv=None):
             else:raise ValueError('unbound_project')
             result=list_notes(root,domains,args.status,args.type or (),args.tag,max(0,args.offset),max(1,min(1000,args.limit)))
         elif cmd=='domains':result=list_domains(root)
+        elif cmd=='links':
+            if args.all_domains:domains=[d['name'] for d in list_domains(root)['domains'] if (root/'domains'/d['name']/'notes').is_dir()]
+            elif domain:domains=[domain]
+            else:raise ValueError('unbound_project')
+            result=note_links(root,domains,args.status)
         elif cmd=='version':result={'ok':True,'api':SERVE_API,'python':sys.version.split()[0],'commands':sorted(subs.choices)}
         elif cmd=='update':
             from .notes import change
@@ -674,7 +727,7 @@ def main(argv=None):
         else:raise ValueError('Unsupported command')
         print(json.dumps(result,ensure_ascii=False,separators=(',',':')));return 0
     except (OSError,ValueError,TimeoutError,KeyError,TypeError) as exc:
-        message=str(exc);code='stale' if 'stale' in message.lower() else 'conflict' if 'conflict' in message.lower() else 'invalid'
+        message=str(exc);code=error_code(message)
         print(json.dumps({'ok':False,'error':{'code':code,'message':message}},separators=(',',':')),file=sys.stderr)
         invocation.update(code=6 if code=='stale' else 5 if code=='conflict' else 2,error={'code':code,'message':message});return invocation['code']
     except BaseException as exc:
