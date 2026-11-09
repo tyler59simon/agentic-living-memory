@@ -4,7 +4,7 @@ Projects are created and changed only through project-plan (hash-approved, journ
 from __future__ import annotations
 import os,re,uuid
 from pathlib import Path
-from .common import canonical_domain,global_domain,load_bindings,resolve_domain
+from .common import canonical_domain,domain_prefixes,global_domain,load_bindings,resolve_domain
 from .repository import read_json,canonical_json,find_secrets,store_lock,now
 
 STATUSES=('active','paused','archived')
@@ -33,6 +33,28 @@ def match_path(path,projects):
             prefix=_norm(repo)
             if target.is_relative_to(prefix) and len(prefix.parts)>size:best,size=project,len(prefix.parts)
     return best
+
+MAX_AUTO=2
+
+def resolve_file(value,domain,root):
+    """Absolute candidates for a file a note names: itself when absolute, else joined to each prefix of the domain (notes store files relative to the bound folder)."""
+    if Path(str(value).replace(chr(92),'/')).is_absolute():return [str(value)]
+    return [str(prefix/value) for prefix in domain_prefixes(domain,load_bindings(root))]
+
+def infer(item,domain,root,touched=(),cwd=None):
+    """(project tags to add, candidate slugs) for a capture. The first level that matches wins: the note's files, then this
+    turn's touched files, then cwd (callers pass touched and cwd only for a session capture). More than MAX_AUTO matches
+    add nothing and return the slugs as candidates. Only active projects with a registered tag count; a broken registry infers nothing."""
+    if any(str(t).startswith('project/') for t in item.get('tags') or []):return [],[]
+    try:registry=load(root)['projects']
+    except ValueError:return [],[]
+    from .notes import taxonomy
+    known=taxonomy(root);eligible=[p for p in registry if p.get('status')=='active' and tag(p['slug']) in known]
+    if not eligible:return [],[]
+    for level in ([f for v in item.get('files') or [] for f in resolve_file(v,domain,root)],[f for v in touched for f in resolve_file(v,domain,root)],[str(cwd)] if cwd else []):
+        found=sorted({m['slug'] for m in (match_path(f,eligible) for f in level) if m})
+        if found:return ([tag(s) for s in found],[]) if len(found)<=MAX_AUTO else ([],found)
+    return [],[]
 
 def _text(value,field,low,high):
     if not isinstance(value,str) or not low<=len(value.strip())<=high:raise ValueError(f'{field} must be {low}..{high} characters')

@@ -478,7 +478,9 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
         folder=root/'domains'/domain/'archive'
     elif action!='delete':raise ValueError('Unknown note action')
     target=path if action=='delete' else folder/f"{note['prefix']} - {slug(note['title'])}-{note_id[:8]}.md"
-    if action!='confirm':note['updated']=now()  # `updated` means the content changed; it drives recency
+    # `updated` means the content changed; it drives recency and review age. A tag-, snooze- or files-only edit
+    # (triage, backfill) must not reorder recency lists or reset the review clock; confirm never bumps it either.
+    if action!='confirm' and not (action=='update' and set(values)<={'tags','review_by','files'}):note['updated']=now()
     note['path']=str(target)
     if target.parent!=path.parent and action!='delete':
         # Moving between notes/ and archive/: the note's own relative links must still reach their files.
@@ -539,16 +541,16 @@ def change(note_id,domain,action,root=None,expected_revision=None,plan_only=Fals
             if warnings:result['quality_warnings']=warnings
         return result
 
-def open_work(domains,root=None):
+def open_work(domains,root=None,tags=()):
     """[(domain, note, [(1-based index, text) of unchecked Action Items])] for active plan, bug and risk
-    notes with open items, newest first."""
+    notes with open items, newest first. tags: only notes carrying all of them."""
     from .note_format import action_items
     found=[]
     for domain in dict.fromkeys(domains):
         try:notes=inventory(domain,root)
         except (OSError,ValueError):continue
         for note in notes:
-            if note.get('type') not in ACTION_TYPES:continue
+            if note.get('type') not in ACTION_TYPES or any(t not in (note.get('tags') or []) for t in tags):continue
             items=[(i+1,text) for i,(done,text) in enumerate(action_items(note.get('body',''))) if not done and text]
             if items:found.append((domain,note,items))
     return sorted(found,key=lambda f:str(f[1].get('updated') or ''),reverse=True)
