@@ -1,6 +1,6 @@
 ﻿"""Unified compact script interface. Compatibility scripts delegate here."""
 from __future__ import annotations
-import argparse,json,os,sys,hashlib
+import argparse,json,os,sys,hashlib,time
 from pathlib import Path
 from .common import memory_root,load_bindings,resolve_domain,canonical_domain
 from .repository import read_json,inventory,parse,store_lock,canonical_json,now
@@ -133,6 +133,9 @@ def doctor(root,cwd,explicit=None,domain=None):
     from .backup import staleness_warning
     stale=staleness_warning(root)
     if stale:warnings.append(stale)
+    from .logs import summary as log_summary
+    logged=log_summary(root)
+    if logged['errors_7d']:warnings.append(f"{logged['errors_7d']} errors logged in the last 7 days; run logs --level error --days 7")
     if domain:index='fresh' if _fresh(domain,root,inventory(domain,root,retired=True)) else 'dirty_or_missing'
     last=read_json(root/'hooks/last-delivery.json',{})
     domain_exists=bool(domain and (root/'domains'/domain/'notes').is_dir())
@@ -141,7 +144,7 @@ def doctor(root,cwd,explicit=None,domain=None):
     location = diagnostics(explicit)
     semantic=semantic_status(root)
     if semantic.get('error'):warnings.append(f"semantic model {semantic['model']} cannot be read ({semantic['error']}); search is lexical-only until it is reinstalled or removed")
-    return {'semantic':{k:semantic[k] for k in ('enabled','model') if k in semantic},'ok':fts and not pending and not unreadable and (not domain or domain_exists),'problems':unreadable,'interpreter':sys.executable,'python':sys.version.split()[0],'fts5':fts,'root':str(root),'location':location,'domain':domain,'binding':'bound' if domain else 'unbound','domain_data':'present' if domain_exists else 'missing' if domain else 'unbound','index':index,'pending_recovery':pending,'hooks':{'trust':'unknown','last_delivery':last},'capture':'main_agent_via_scripts','protection':'cooperating_agent_governance','notes':counts,'warnings':warnings}
+    return {'semantic':{k:semantic[k] for k in ('enabled','model') if k in semantic},'ok':fts and not pending and not unreadable and (not domain or domain_exists),'problems':unreadable,'interpreter':sys.executable,'python':sys.version.split()[0],'fts5':fts,'root':str(root),'location':location,'domain':domain,'binding':'bound' if domain else 'unbound','domain_data':'present' if domain_exists else 'missing' if domain else 'unbound','index':index,'pending_recovery':pending,'hooks':{'trust':'unknown','last_delivery':last},'logs':logged,'capture':'main_agent_via_scripts','protection':'cooperating_agent_governance','notes':counts,'warnings':warnings}
 
 SECTION_ARGS=('summary','detail','link','action','done','important')
 
@@ -160,7 +163,7 @@ def _sectioned(args,body=''):
     from .note_format import render
     return render(args.summary or '',args.detail or (),args.link or (),args.action or (),args.done or (),args.important or '',body)
 
-READ_ONLY={'search','read','query','doctor','validate','history','open','stats','timeline','recall','list','domains','version'}
+READ_ONLY={'search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version'}
 # Viewer: a human-facing app browsing the store. Read-only, and its reads are not usage evidence for the diary.
 VIEWER=READ_ONLY|{'taxonomy','review','diff','inspect-plan'}
 SERVE_API=1
@@ -221,6 +224,8 @@ def serve(root,cwd,commands):
                 try:code=main(['--root',str(root),'--cwd',str(cwd)]+argv)
                 except SystemExit as exc:code=exc.code if isinstance(exc.code,int) else 2
         except Exception as exc:  # one failing request must not end the session
+            from .logs import swallowed
+            swallowed('cli.serve',exc,root)
             code=1;error=io.StringIO(json.dumps({'ok':False,'error':{'code':'internal','message':f'{type(exc).__name__}: {exc}'}}))
         finally:sys.stdin=real_in
         def decode(text):
@@ -266,6 +271,7 @@ def main(argv=None):
     p=sub('import-plan');p.add_argument('file',type=Path)
     p=sub('confirm');p.add_argument('reference');p.add_argument('--session');p.add_argument('--turn')
     p=sub('stats');p.add_argument('--days',type=int,default=30,help='Window, at most 30 (the diary keeps 30 days)');p.add_argument('--limit',type=int,default=10)
+    p=sub('logs');p.add_argument('--level',choices=['debug','info','warning','error'],default='info',help='Lowest level shown');p.add_argument('--kind',choices=['hook','command','internal']);p.add_argument('--event',help='Hook event, command name or internal call site');p.add_argument('--days',type=int,default=1,help='Window, at most 30 (logs keep 30 days)');p.add_argument('--limit',type=int,default=50)
     p=sub('plan');p.add_argument('action',choices=['update','rename','retag','resolve','reopen','archive','supersede','delete']);p.add_argument('reference');p.add_argument('--payload-file',type=Path)
     p=sub('apply');p.add_argument('plan_id');p.add_argument('--expected-plan-sha256',required=True)
     p=sub('inspect-plan');p.add_argument('plan_id')
@@ -300,6 +306,7 @@ def main(argv=None):
     p=sub('overlay-teardown-plan');p.add_argument('vault',type=Path)
     p=sub('overlay-sync-all');p.add_argument('--primary',help='Domain whose view the shared dashboards show (built last)')
     args=parser.parse_args(argv);cwd=args.cwd or os.getcwd()
+    invocation={'start':time.perf_counter()}
     try:
         if args.command=='setup':
             from .storage import setup,apply_relocation,inspect_relocation
@@ -317,10 +324,13 @@ def main(argv=None):
             print(json.dumps(result,ensure_ascii=False,separators=(',',':')));return 0
         from .storage import resolve_root
         root=resolve_root(args.root)[0]
+        from . import logs
+        logs.use(root);invocation['root']=root
         cmd=args.command
         try:
             domain=args.domain or _session_domain(root,getattr(args,'session',None)) or resolve_domain(cwd,load_bindings(root))
             if domain:domain=canonical_domain(domain,root)
+            invocation['domain']=domain
         except ValueError:
             # Snapshots exist to repair a damaged store, so restoring must not depend on readable bindings.
             if cmd not in {'restore-plan','inspect-plan','apply','backup','history'}:raise
@@ -581,6 +591,9 @@ def main(argv=None):
                 before=base64.b64decode(e['before']).decode() if e['before'] else '';after=base64.b64decode(e['after']).decode() if e['after'] else ''
                 result.append({'path':e['path'],'diff':''.join(difflib.unified_diff(before.splitlines(True),after.splitlines(True)))[:8000]})
         elif cmd=='doctor':result=doctor(root,cwd,args.root,domain)
+        elif cmd=='logs':
+            rows,matched=logs.entries(root,args.level,args.kind,args.event,max(1,min(30,args.days)),max(1,min(1000,args.limit)))
+            result={'ok':True,'level_setting':logs.setting(),'matched':matched,'entries':rows}
         elif cmd=='backup':
             from .backup import backup
             result=backup(root,max(1,min(100,args.keep)))
@@ -662,5 +675,22 @@ def main(argv=None):
         print(json.dumps(result,ensure_ascii=False,separators=(',',':')));return 0
     except (OSError,ValueError,TimeoutError,KeyError,TypeError) as exc:
         message=str(exc);code='stale' if 'stale' in message.lower() else 'conflict' if 'conflict' in message.lower() else 'invalid'
-        print(json.dumps({'ok':False,'error':{'code':code,'message':message}},separators=(',',':')),file=sys.stderr);return 6 if code=='stale' else 5 if code=='conflict' else 2
+        print(json.dumps({'ok':False,'error':{'code':code,'message':message}},separators=(',',':')),file=sys.stderr)
+        invocation.update(code=6 if code=='stale' else 5 if code=='conflict' else 2,error={'code':code,'message':message});return invocation['code']
+    except BaseException as exc:
+        invocation.update(code=exc.code if isinstance(exc,SystemExit) and isinstance(exc.code,int) else 1,crash=None if isinstance(exc,SystemExit) else exc);raise
+    finally:_log_command(invocation,args)
+
+def _log_command(run,args):
+    """One line per command in the operational log (core/logs.py): name, actor, domain, exit code and
+    duration, never the arguments. Viewer (app) reads are debug so polling does not flood the log."""
+    root=run.get('root')
+    if root is None or args.command in {'logs','serve'}:return
+    from . import logs
+    from .runtime import session_hash
+    code=run.get('code',0);crash=run.get('crash');session=getattr(args,'session',None)
+    error=logs.error_fields(crash) if crash is not None else dict(run['error'],message=logs.message(run['error']['message'])) if run.get('error') else None
+    level='error' if crash is not None else 'warning' if code else 'debug' if args.actor=='viewer' else 'info'
+    logs.write(level,'command',args.command,root,actor=args.actor,domain=run.get('domain'),session=session_hash(session) if session else None,
+               ms=round((time.perf_counter()-run['start'])*1000,1),exit_code=code,error=error)
 if __name__=='__main__':raise SystemExit(main())

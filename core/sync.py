@@ -556,7 +556,9 @@ def _report_failure(domain,vault,root,exc):
     try:
         notes=inventory(domain,root,retired=True)
         atomic_write(confined(vault,status_rel(domain)),_status_page(domain,root,notes,failure=str(exc)[:500]))
-    except Exception:pass
+    except Exception as failure:
+        from .logs import swallowed
+        swallowed('sync.report_failure',failure,root)
 
 def sync_all(root=None,trigger='manual',primary=None):
     """Sync every domain that has a managed vault. Continues past failures and records the outcome."""
@@ -574,6 +576,8 @@ def sync_all(root=None,trigger='manual',primary=None):
             r=build_overlay(domain,vault,root,trigger)
             results.append({'domain':domain,'vault':vault,'ok':True,'applied':len(r['applied']),'approved':len(r['approved']),'conflicts':r['conflicts'],'plans':len(r['plans'])})
         except Exception as exc:
+            from .logs import swallowed
+            swallowed('sync.sync_all',exc,root)
             results.append({'domain':domain,'vault':vault,'ok':False,'error':str(exc)[:500]})
     summary={'ok':all(r['ok'] for r in results),'at':now(),'trigger':trigger,'results':results}
     try:atomic_write(root/'hooks'/'last-sync.json',canonical_json(summary))

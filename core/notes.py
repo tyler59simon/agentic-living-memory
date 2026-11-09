@@ -79,6 +79,8 @@ def _commit_many(domains,changes,kind,root,expected=None):
     for domain in domains:
         try:reconcile(domain,root)
         except Exception as exc:
+            from .logs import swallowed
+            swallowed('notes.reconcile',exc,root)
             receipt['warning']='canonical_committed_index_dirty';receipt['detail']=str(exc)
     return receipt
 
