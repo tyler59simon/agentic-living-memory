@@ -844,7 +844,7 @@ def _process(harness,event,payload,root=None,info=None):
             detail['reason']=quiet;_update(root,session,close);return {}
         latest=turns[-1];reminder=root/'.turns'/(turn_key(session,latest)+'.reminded')
         if payload.get('stop_hook_active') or payload.get('stopHookActive') or reminder.exists():
-            detail['reason']='already_reminded' if reminder.exists() else 'stop_active';_update(root,session,close);return {}
+            detail['reason']='stop_active' if payload.get('stop_hook_active') or payload.get('stopHookActive') else 'already_reminded';_update(root,session,close);return {}
         atomic_write(reminder,'reminded\n')
         from .usage import record
         kind=signal if signal in SIGNAL_TEXT else 'mutating';detail['reason']='reminded:'+kind
