@@ -107,9 +107,12 @@ def shell_command(args):
 
 # Outside quotes these run, chain, redirect or expand. Parentheses open a subshell in Bash and evaluate an
 # expression in PowerShell: `search (Remove-Item x)` runs the cmdlet before the script sees its arguments.
-SHELL_META=frozenset(';|&<>`$()\r\n')
-# PowerShell only: script blocks, splatting and array expressions.
-POWERSHELL_META=frozenset('{}@')
+# Braces are a script block in PowerShell and expand in Bash ({a,/etc/passwd} becomes two arguments).
+SHELL_META=frozenset(';|&<>`$(){}\r\n')
+# PowerShell only: splatting, array expressions and here-strings.
+POWERSHELL_META=frozenset('@')
+# PowerShell's stop-parsing token: what follows is no longer read by the rules tracked here.
+STOP_PARSING='--%'
 # PowerShell reads these as quotation marks too, so a curly quote can close a string an ASCII quote opened.
 POWERSHELL_QUOTES=frozenset('\u2018\u2019\u201a\u201b\u201c\u201d\u201e')
 SHELL_GRAMMARS=('posix','powershell')
@@ -152,7 +155,7 @@ def _words(rest,grammar):
         i+=1
     if state is not None:return None
     if word is not None:words.append(word)
-    return words
+    return None if ps and STOP_PARSING in words else words
 
 def _parsed(text,grammar=None):
     """The argument words of an exact, unchained living_memory.py invocation, once per shell grammar that
@@ -207,7 +210,7 @@ def auto_allowed(text,grammar,root,cwd,scratch=None):
                 path=(path if path.is_absolute() else bases[0]/path).resolve()
                 if not any(path.is_relative_to(base) for base in bases):return False
         return True
-    except (OSError,ValueError):return False
+    except (OSError,ValueError,RuntimeError):return False   # RuntimeError: ~user with no such user
 
 READONLY_SIMPLE={'ls','dir','cat','type','head','tail','wc','grep','egrep','fgrep','cut','tr','echo','printf','pwd','which','where','whoami','stat','file','du','df','tree','diff','cmp','basename','dirname','realpath','readlink','test','[','true','false','sleep','cd','pushd','popd','set-location','gci','gc','printenv',
  'select-string','select-object','where-object','sort-object','measure-object','format-table','format-list','test-path','resolve-path','split-path','join-path','convertto-json','write-output','write-host',

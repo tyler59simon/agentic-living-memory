@@ -62,7 +62,7 @@ class AutoAllow(Cli):
 
     def test_powershell_expressions_and_curly_quotes_are_not_inert(self):
         for rest in ('search (Remove-Item -Recurse C:\\important)', 'search @(Remove-Item C:\\important)', 'search {Remove-Item x}',
-                     "search 'abc\u2019 ; Remove-Item x ; \u2018def'"):
+                     "search 'abc\u2019 ; Remove-Item x ; \u2018def'", "search --% 'a | calc.exe'"):
             with self.subTest(rest=rest):
                 command = '& ' + self.cmd(rest)
                 self.assertIsNone(runtime.memory_subcommand(command, 'powershell'))
@@ -102,6 +102,9 @@ class AutoAllow(Cli):
             with self.subTest(flag=flag):
                 self.assertNotIn('allow', self.decision('Bash', capture(outside / 'secret.txt', flag)))
         self.assertNotIn('allow', self.decision('Bash', self.cmd(f"update demo:x --body-file='{(outside / 'secret.txt').as_posix()}'")))
+        # Bash would expand the braces into two arguments, the last one outside the project.
+        self.assertNotIn('allow', self.decision('Bash', self.cmd('capture --title t --content-file={body.md,' + (outside / 'secret.txt').as_posix() + '}')))
+        self.assertNotIn('allow', self.decision('Bash', self.cmd('capture --title t --content-file ~nosuchuser/secret.txt')))
 
 
 class BoldContent(unittest.TestCase):
