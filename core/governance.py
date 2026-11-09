@@ -133,7 +133,15 @@ def undo(root,operation_id):
         for effect in value['effects']:
             p=confined(root,effect['path']);current=digest(p.read_bytes()) if p.exists() else None
             if current!=effect['after_hash']:raise ValueError('Undo conflicts with later edits')
-        return plan(root,changes,'undo:'+operation_id,domains)
+        # Restoring an older taxonomy drops tags; notes tagged since (outside this undo) would then fail validation.
+        guards=None
+        if 'tag_taxonomy.json' in changes:
+            tags_of=lambda t:set((t.get('tags',[]) if isinstance(t,dict) else t) or [])
+            dropped=tags_of(read_json(root/'tag_taxonomy.json',{'tags':[]}))-tags_of(json.loads(changes['tag_taxonomy.json']) if changes['tag_taxonomy.json'] else {})
+            guards={'unused_tags':dropped}
+            try:_check_guards(root,{'guards':{'unused_tags':sorted(dropped)},'domains':sorted(domains),'changes':changes})
+            except ValueError as exc:raise ValueError('Undo would remove tags that notes still use; retag those notes first ('+str(exc).split(': ',1)[-1]+')') from None
+        return plan(root,changes,'undo:'+operation_id,domains,guards=guards)
 
 def remap(root,mappings):
     from .notes import find_note

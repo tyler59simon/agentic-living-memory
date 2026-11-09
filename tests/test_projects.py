@@ -59,6 +59,19 @@ class Projects(StoreFixture):
         self.create()
         self.assertEqual(len(self.registry()['projects']),1)
 
+    def test_undo_refused_while_notes_use_the_tag(self):
+        receipt,_=self.create()
+        code,made=self.cli('--domain','demo','capture','--title','Use the cache','--summary','We cache reads.','--type','decision','--concern','decision','--project','demo-app')
+        self.assertEqual(code,0,made)
+        code,undo=self.cli('undo',receipt['operation_id']);self.assertNotEqual(code,0,undo);self.assertIn('retag those notes first',json.dumps(undo))
+        self.assertIn('project/demo-app',json.loads((self.root/'tag_taxonomy.json').read_text())['tags'])
+
+    def test_undo_guard_catches_tags_added_after_the_undo_plan(self):
+        receipt,_=self.create()
+        code,undo=self.cli('undo',receipt['operation_id']);self.assertEqual(code,0,undo)
+        self.cli('--domain','demo','capture','--title','Use the cache','--summary','We cache reads.','--type','decision','--concern','decision','--project','demo-app')
+        code,result=self.cli('apply',undo['plan_id'],'--expected-plan-sha256',undo['digest']);self.assertNotEqual(code,0,result);self.assertIn('stale plan',json.dumps(result))
+
     def test_refusals(self):
         self.create()
         for value,message in ((self.payload(),'already exists'),(self.payload(slug='Bad Slug'),'slug'),(self.payload(slug='x',repos=['rel/path']),'absolute'),
