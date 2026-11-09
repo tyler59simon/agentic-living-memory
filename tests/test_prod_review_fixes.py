@@ -1,12 +1,14 @@
 """Regression tests for the 2026-11-09 production review (fix IDs as in the review's fix report)."""
-import contextlib, io, json, os, sys, unittest
+import contextlib, io, json, os, sys, time, unittest, zipfile
 from pathlib import Path
 
 from test_core import StoreFixture
-from core import note_format, runtime
+from core import backup as snap
+from core import note_format, runtime, usage
 from core.capture import status as receipt
 from core.cli import main as cli
-from core.notes import change, find_note
+from core.governance import apply, undo
+from core.notes import capture, change, find_note
 from core.repository import inventory
 
 TAGS = ['subject/project', 'concern/architecture']
@@ -222,6 +224,167 @@ class CaseOnlyRename(StoreFixture):
         change(created['id'], 'demo', 'update', self.root, body='The cache is rebuilt on start.')
         self.assertIn('rebuilt on start', find_note(created['id'], 'demo', self.root)[1]['body'])
         self.assertEqual([p.name for p in path.parent.glob('*.md')], [path.name])
+
+
+class FinishedWork(Cli):
+    """LIFE-1: a plan, bug or risk note whose work is done leaves the active set in one undoable step."""
+
+    def plan(self):
+        return self.ok('capture', '--type', 'plan', '--concern', 'architecture', '--title', 'Ship the importer', '--summary', 'Importer rollout.',
+                       '--action', 'Write the importer', '--done', 'Agree the schema')['id']
+
+    def start(self):
+        project = self.base / 'project'
+        project.mkdir(exist_ok=True)
+        return runtime.process('claude', 'session-start', {'cwd': str(project), 'session_id': 'fin'}, self.root)['context']
+
+    def test_ticking_the_last_item_points_at_resolve_and_resolve_clears_the_note_from_context(self):
+        note = self.plan()
+        self.assertNotIn('every Action Item done', self.start())
+        ticked = self.ok('check', note, 'Write the importer')
+        self.assertEqual(ticked['open'], 0)
+        self.assertIn('resolve demo:' + note[:8], ticked['hint'])
+        self.assertIn('1 note(s) have every Action Item done', self.start())
+        resolved = self.ok('resolve', note)
+        path, stored = find_note(note, 'demo', self.root)
+        self.assertEqual((stored['status'], path.parent.name), ('resolved', 'archive'))
+        self.assertEqual(inventory('demo', self.root), [])
+        self.assertNotIn('Ship the importer', self.start())
+        # Journaled like any update: undo brings it back, and so does reopen.
+        proposed = undo(self.root, resolved['operation_id'])
+        apply(self.root, proposed['plan_id'], proposed['digest'])
+        self.assertEqual(find_note(note, 'demo', self.root)[1]['status'], 'active')
+        self.ok('resolve', note)
+        self.ok('reopen', note)
+        self.assertEqual(find_note(note, 'demo', self.root)[0].parent.name, 'notes')
+
+    def test_only_notes_that_track_work_can_be_resolved(self):
+        for kind in ('bug', 'risk'):
+            with self.subTest(kind=kind):
+                created = self.ok('capture', '--type', kind, '--concern', 'architecture', '--title', f'A {kind} to close', '--summary', 'Tracked.')
+                self.ok('resolve', created['id'])
+        fact = self.note('A lasting fact', 'Still true.')
+        code, _, err = self.run_cli('resolve', fact['id'])
+        self.assertEqual(code, 2)
+        self.assertIn('plan, bug and risk', err['error']['message'])
+
+    def test_resolve_is_auto_allowed_for_the_main_agent_and_denied_to_subagents(self):
+        project = self.base / 'project'
+        project.mkdir(exist_ok=True)
+        command = f'"{sys.executable}" "{runtime.SCRIPT}" --root "{self.root}" --domain demo resolve demo:abcdef12'
+        payload = {'cwd': str(project), 'session_id': 'fin', 'tool_name': 'Bash', 'tool_input': {'command': command}}
+        self.assertIn('allow', runtime.process('claude', 'pre-tool-use', payload, self.root))
+        self.assertIn('deny', runtime.process('claude', 'pre-tool-use', {**payload, 'agent_id': 'sub-1'}, self.root))
+
+
+class MapsPerRepo(Cli):
+    """LIFE-2: maps are one per repo, whatever their titles look like."""
+
+    def setUp(self):
+        super().setUp()
+        self.repos = [self.base / 'project' / name for name in ('billing-api-service', 'billing-api-gateway')]
+        for repo in self.repos:
+            (repo / '.git').mkdir(parents=True)
+
+    def map(self, repo, title=None):
+        return self.run_cli('capture', '--type', 'map', '--file', str(repo), '--title', title or f'{repo.name} codebase map',
+                            '--summary', f'What {repo.name} is.', '--detail', '**Layout:** src/ and tests/.')
+
+    def test_a_second_repo_gets_its_map_although_the_titles_are_alike(self):
+        self.assertEqual(self.map(self.repos[0])[0], 0)
+        code, _, err = self.map(self.repos[1])
+        self.assertEqual(code, 0, err)
+        code, _, err = self.map(self.repos[1], 'Gateway internals')
+        self.assertNotEqual(code, 0)
+        self.assertIn('map_exists', err['error']['message'])
+
+    def test_an_update_cannot_make_a_second_map_for_a_repo(self):
+        self.assertEqual(self.map(self.repos[0])[0], 0)
+        other = self.note('Service layout notes', 'Loose notes about the service.')
+        code, _, err = self.run_cli('update', other['id'], '--type', 'map', '--file', str(self.repos[0]))
+        self.assertNotEqual(code, 0)
+        self.assertIn('map_exists', err['error']['message'])
+        self.assertEqual(find_note(other['id'], 'demo', self.root)[1]['type'], 'knowledge')
+
+
+class NoisyNotes(StoreFixture):
+    """LIFE-3: standing context that nobody reads is not noise."""
+
+    def test_session_guidance_and_maps_do_not_count_as_noisy(self):
+        standing = capture('Prefer small commits', 'Keep commits small.', TAGS, 'demo', self.root, type='preference')
+        retrieved = capture('Webcam conclusion', 'Hardware fault.', TAGS, 'demo', self.root)
+        for i in range(3):
+            usage.record(self.root, 'inject', ['demo:' + standing['id']], f's{i}', 'session')
+            usage.record(self.root, 'inject', ['demo:' + standing['id']], f's{i}', 'prompt-map')
+            usage.record(self.root, 'inject', ['demo:' + retrieved['id']], f's{i}', 'prompt')
+        stats = usage.stats(self.root, ['demo'])
+        self.assertEqual([n['ref'] for n in stats['noisy']], ['demo:' + retrieved['id']])
+        self.assertEqual(stats['noisy'][0]['counts'], {'inject': 3})
+
+
+class Backups(StoreFixture):
+    """DATA-5: one damaged file must not stop backups, and rotation must not discard the last good copy."""
+
+    def stray(self):
+        path = self.root / 'domains/demo/notes/Untitled.md'
+        path.write_text('no frontmatter here', encoding='utf-8')
+        return path.relative_to(self.root).as_posix()
+
+    def test_an_unreadable_note_is_saved_as_it_is_and_reported(self):
+        self.note()
+        stray = self.stray()
+        result = snap.backup(self.root)
+        self.assertEqual([p['member'] for p in result['unreadable']], [stray])
+        self.assertIn('not readable', result['warning'])
+        with zipfile.ZipFile(result['backup']) as archive:
+            self.assertEqual(archive.read(stray), b'no frontmatter here')
+
+    def test_the_daily_hook_backup_survives_an_unreadable_note(self):
+        self.note()
+        self.stray()
+        self.assertIsNotNone(snap.maybe_backup(self.root))
+
+    def test_restore_neither_writes_nor_deletes_for_an_unreadable_member(self):
+        kept = self.note()
+        stray = self.stray()
+        saved = snap.backup(self.root)['backup']
+        (self.root / stray).write_text('edited since the snapshot', encoding='utf-8')
+        change(kept['id'], 'demo', 'update', self.root, body='Changed after the snapshot.')
+        proposed = snap.restore_plan(self.root, saved)
+        self.assertEqual(proposed['summary']['skipped_unreadable'], [stray])
+        apply(self.root, proposed['plan_id'], proposed['digest'])
+        self.assertIn('rebuildable', find_note(kept['id'], 'demo', self.root)[1]['body'])
+        self.assertEqual((self.root / stray).read_text(encoding='utf-8'), 'edited since the snapshot')
+
+    def test_rotation_keeps_snapshots_from_before_the_store_shrank(self):
+        notes = [self.note(f'Fact number {i} about system {i}', f'Body {i}.', allow_similar=True) for i in range(12)]
+        for _ in range(2):
+            snap.backup(self.root, keep=2)
+        for note in notes[2:]:
+            Path(note['path']).unlink()          # a sync tool removing files behind the store's back
+        results = [snap.backup(self.root, keep=2) for _ in range(3)]
+        self.assertTrue(results[-1]['retained'])
+        self.assertIn('far fewer', results[-1]['warning'])
+        counts = sorted(snap._note_count(p) for p in snap.snapshots(self.root))
+        self.assertEqual(counts, [2, 2, 12, 12])
+
+    def test_a_corrupt_marker_does_not_stop_the_daily_backup(self):
+        self.note()
+        marker = self.root / 'hooks/last-backup.json'
+        marker.parent.mkdir(exist_ok=True)
+        marker.write_text('{broken', encoding='utf-8')
+        self.assertIsNotNone(snap.maybe_backup(self.root))
+
+    def test_session_start_says_when_the_newest_backup_is_stale(self):
+        self.note()
+        project = self.base / 'project'
+        project.mkdir(exist_ok=True)
+        start = lambda: runtime.process('claude', 'session-start', {'cwd': str(project), 'session_id': 'bk'}, self.root)['context']
+        newest = Path(snap.backup(self.root)['backup'])
+        self.assertNotIn('Living Memory backup:', start())
+        old = time.time() - 72 * 3600
+        os.utime(newest, (old, old))
+        self.assertIn('Living Memory backup: newest backup', start())
 
 
 if __name__ == '__main__':

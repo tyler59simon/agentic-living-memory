@@ -348,8 +348,8 @@ def validate(note, domain, root=None, new=False, extra_tags=()):
         prefix = prefix_for(note.get('type'), legacy=not new)
         if note.get('schema_version') != 3 or note.get('prefix') != prefix:
             raise ValueError('Prefix must be derived from type; use capture or the note-type-plan migration')
-        if note.get('status') == 'resolved' and note['type'] != 'bug':
-            raise ValueError('Only bug notes may have resolved status')
+        if note.get('status') == 'resolved' and note['type'] not in ('plan', 'bug', 'risk'):
+            raise ValueError('Only plan, bug and risk notes may have resolved status')
         if note.get('path'):
             from .notes import slug
             expected = f"{prefix} - {slug(note['title'])}-{note['id'][:8]}.md"

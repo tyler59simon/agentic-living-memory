@@ -86,7 +86,7 @@ One or two sentences: the fact, decision or problem.
 
 ## Type, lifecycle status and tags
 
-Type answers “what kind of information is this?” Lifecycle `status` answers “is this note active, resolved, archived or superseded?” They are independent. For example, `type: "status"` with `status: "active"` means an active current-state note. A resolved bug remains `type: "bug"`, with a `BUG` filename prefix and `status: "resolved"`.
+Type answers “what kind of information is this?” Lifecycle `status` answers “is this note active, resolved, archived or superseded?” They are independent. For example, `type: "status"` with `status: "active"` means an active current-state note. Notes that track work (plan, bug and risk) are resolved when the work is finished: `resolve REF` moves the note to the archive in one journaled, undoable step, and `reopen REF` brings it back. A resolved bug remains `type: "bug"`, with a `BUG` filename prefix and `status: "resolved"`; the same holds for plan and risk notes. Other types leave the active set through an archive plan.
 
 Tags describe the subject and concern, optionally the platform and technology. Every new note still requires registered `subject/` and `concern/` tags. Type names do not automatically become tags; use `taxonomy` to inspect the existing vocabulary. A knowledge note correcting an earlier misunderstanding can use `subject/project` and `concern/correction`.
 

@@ -136,7 +136,7 @@ def doctor(root,cwd,explicit=None,domain=None):
     from .projects import listing
     try:warnings+=['projects: '+w for w in listing(root)['warnings']]
     except ValueError as exc:warnings.append(f'projects.json: {exc}')
-    stale=staleness_warning(root)
+    stale=staleness_warning(root,sum(counts.values()))
     if stale:warnings.append(stale)
     from .logs import summary as log_summary
     logged=log_summary(root)
@@ -368,6 +368,7 @@ def main(argv=None):
     p=sub('export');p.add_argument('--out',type=Path,required=True,help='New .zip file, outside the store');p.add_argument('--type',choices=NOTE_TYPES,action='append');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)');p.add_argument('--all',action='store_true',help='Include superseded, archived and resolved notes')
     p=sub('import-plan');p.add_argument('file',type=Path)
     p=sub('confirm');p.add_argument('reference');p.add_argument('--session');p.add_argument('--turn')
+    for name in ('resolve','reopen'):p=sub(name);p.add_argument('reference',help='A plan, bug or risk note');p.add_argument('--session');p.add_argument('--turn')
     p=sub('stats');p.add_argument('--days',type=int,default=30,help='Window, at most 30 (the diary keeps 30 days)');p.add_argument('--limit',type=int,default=10)
     p=sub('logs');p.add_argument('--level',choices=['debug','info','warning','error'],default='info',help='Lowest level shown');p.add_argument('--kind',choices=['hook','command','internal']);p.add_argument('--event',help='Hook event, command name or internal call site');p.add_argument('--days',type=int,default=1,help='Window, at most 30 (logs keep 30 days)');p.add_argument('--limit',type=int,default=50)
     p=sub('plan');p.add_argument('action',choices=['update','rename','retag','resolve','reopen','archive','supersede','delete']);p.add_argument('reference');p.add_argument('--payload-file',type=Path)
@@ -683,6 +684,13 @@ def main(argv=None):
             d,n=_reference(args.reference,domain,root)
             result=confirm(n,d,root);result.pop('path',None)
             if result.get('status')!='unchanged':_receipt(args,d,n,root,'confirm')
+        elif cmd in {'resolve','reopen'}:
+            # Finished work leaves the active set in one journaled, undoable step; reopen brings it back.
+            from .notes import change,short_ref
+            d,n=_reference(args.reference,domain,root)
+            result=change(n,d,cmd,root);result.pop('path',None)
+            if cmd=='resolve':result['hint']=f'Resolved notes leave session context and search. `reopen {short_ref(d,n)}` brings it back.'
+            _receipt(args,d,n,root,cmd)
         elif cmd=='stats':
             from .usage import stats
             from .runtime import parent_domains
