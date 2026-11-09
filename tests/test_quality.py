@@ -32,12 +32,12 @@ class Quality(StoreFixture):
     def test_protocol_and_reminder_steer_away_from_moment_notes(self):
         self.assertIn('most turns do not', runtime.PROTOCOL)
         self.assertIn('Skip progress snapshots, test counts', runtime.PROTOCOL)
-        payload = {'cwd': str(self.base / 'project'), 'session_id': 'q', 'prompt': 'edit'}
+        payload = {'cwd': str(self.base / 'project'), 'session_id': 'q', 'prompt': 'from now on, edit in place'}
         runtime.process('claude', 'user-prompt', payload, self.root)
         runtime.process('claude', 'pre-tool-use', {**payload, 'tool_name': 'Edit', 'tool_input': {'file_path': str(self.base / 'project/x.py')}}, self.root)
         reminder = runtime.process('claude', 'stop', payload, self.root)['continue_reason']
-        self.assertTrue(reminder.index('capture-finalize') < reminder.index(' capture --session'))
-        self.assertIn('Usually nothing here is durable', reminder)
+        self.assertIn('CMD capture-finalize --session q', reminder)
+        self.assertNotIn('--turn', reminder); self.assertNotIn('living_memory.py', reminder)  # one short line in the terminal
 
 
 if __name__ == '__main__':

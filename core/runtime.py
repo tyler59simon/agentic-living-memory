@@ -838,8 +838,10 @@ def _process(harness,event,payload,root=None,info=None):
         def close(s):
             s.pop('open_turns',None);s.pop('mutating',None);s.pop('signal',None);s.pop('touched',None)
         signal=state.get('signal');detail.update(turns=len(turns),mutating=bool(state.get('mutating')),signal=signal)
+        # File changes alone end the turn quietly: the agent already decides silently at the end of each turn,
+        # and Claude Code prints every Stop continuation in the user's terminal.
         quiet=('receipt' if any(capture_status(session,t,root) for t in turns) else 'no_change' if not (state.get('mutating') or signal)
-               else 'no_turns' if not turns else None)
+               else 'no_turns' if not turns else 'files_only' if signal not in SIGNAL_TEXT else None)
         if quiet:
             detail['reason']=quiet;_update(root,session,close);return {}
         latest=turns[-1];reminder=root/'.turns'/(turn_key(session,latest)+'.reminded')
@@ -854,16 +856,12 @@ def _process(harness,event,payload,root=None,info=None):
             s['reminded']={'turn':latest,'signal':signal}
         _update(root,session,reminded)
         from .usage import record
-        kind=signal if signal in SIGNAL_TEXT else 'mutating';detail['reason']='reminded:'+kind
-        record(root,'reminder',session=session,kind=kind)
-        cmd=command(root,domain)
-        finalize=f"{cmd} capture-finalize --session {session} --turn {latest}"
-        if signal in SIGNAL_TEXT:
-            said,hint=SIGNAL_TEXT[signal]
-            result['continue_reason']=(f"Living Memory: the user {said} this turn{' (and files changed)' if state.get('mutating') else ''}. "
-                                       f"If it should shape future sessions, update the matching note or run {cmd} capture --session {session} --turn {latest} {hint} --subject SUBJECT --title 'Title' --summary '...'; "
-                                       f"if it only mattered for this task, run {finalize}.")
-        else:
-            result['continue_reason']=(f"Living Memory: this turn changed files. Usually nothing here is durable: then run {finalize}. "
-                                       f"Only if a future session needs it (a decision, preference, constraint or non-obvious fix), update the workstream's note or run {cmd} capture --session {session} --turn {latest} --type TYPE --subject SUBJECT --concern CONCERN 'Title' 'Body'.")
+        detail['reason']='reminded:'+signal
+        record(root,'reminder',session=session,kind=signal)
+        # Short on purpose: Claude Code shows it in the terminal. CMD is defined by the session context, and
+        # --turn defaults to the session's latest prompt, which is this one.
+        said,hint=SIGNAL_TEXT[signal]
+        result['continue_reason']=(f"Living Memory: the user {said}{' (files changed too)' if state.get('mutating') else ''}. "
+                                   f"Durable: update its note or CMD capture --session {session} {hint} --title '...' --summary '...'; "
+                                   f"otherwise CMD capture-finalize --session {session}.")
     return result

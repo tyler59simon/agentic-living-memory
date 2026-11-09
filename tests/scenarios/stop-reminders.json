@@ -1,6 +1,6 @@
 {
  "name": "stop-reminders",
- "description": "When Stop asks for a capture decision: file changes, each durable statement, plan mode, the harness's stop-hook loop guard, one reminder per turn, a receipt that settles the turn, and an ignored reminder that does not carry into later turns.",
+ "description": "When Stop asks for a capture decision: each durable statement (file changes alone end quietly), plan mode, the harness's stop-hook loop guard, one reminder per turn, a receipt that settles the turn, and an ignored reminder that does not carry into later turns.",
  "notes": [
   {"key": "cache", "title": "Cache eviction policy", "body": "LRU eviction."}
  ],
@@ -10,9 +10,9 @@
   {"hook": "stop", "expect": {"stop_reason": "no_change", "reminder": null}},
   {"hook": "user-prompt", "payload": {"prompt": "fix the parser bug"}},
   {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/parser.py"}}, "expect": {"mutation": "tracked"}},
-  {"hook": "stop", "expect": {"reminder": "mutating"}},
+  {"hook": "stop", "expect": {"stop_reason": "files_only", "reminder": null}},
   {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/parser.py"}}, "expect": {"mutation": "tracked"}},
-  {"hook": "stop", "expect": {"stop_reason": "already_reminded", "reminder": null}},
+  {"hook": "stop", "expect": {"stop_reason": "files_only", "reminder": null}},
   {"hook": "user-prompt", "payload": {"prompt": "from now on, always run the tests before committing"}, "expect": {"detail": {"signal": "preference"}}},
   {"hook": "stop", "expect": {"reminder": "preference"}},
   {"hook": "stop", "payload": {"stop_hook_active": true}, "expect": {"stop_reason": "no_change", "reminder": null}},
@@ -22,7 +22,7 @@
   {"hook": "user-prompt", "payload": {"prompt": "from now on, plan the parser refactor", "permission_mode": "plan"}, "expect": {"detail": {"signal": null}}},
   {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/parser.py"}, "permission_mode": "plan"}, "expect": {"mutation": "skipped:plan_mode"}},
   {"hook": "stop", "expect": {"stop_reason": "no_change", "reminder": null}},
-  {"hook": "user-prompt", "payload": {"prompt": "fix another bug"}},
+  {"hook": "user-prompt", "payload": {"prompt": "from now on, fix bugs with a regression test"}},
   {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/lexer.py"}}},
   {"hook": "stop", "payload": {"stop_hook_active": true}, "expect": {"stop_reason": "stop_active", "reminder": null}},
   {"hook": "user-prompt", "payload": {"prompt": "fix it once more"}},
@@ -35,7 +35,7 @@
   {"hook": "stop", "expect": {"stop_reason": "no_change", "reminder": null}},
   {"hook": "user-prompt", "payload": {"prompt": "fix the flaky test"}},
   {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/test_flaky.py"}}},
-  {"hook": "stop", "expect": {"reminder": "mutating"}},
+  {"hook": "stop", "expect": {"stop_reason": "files_only", "reminder": null}},
   {"hook": "user-prompt", "payload": {"prompt": "summarize what changed"}},
   {"hook": "stop", "expect": {"stop_reason": "no_change", "reminder": null}}
  ]

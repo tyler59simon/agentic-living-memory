@@ -19,7 +19,7 @@ There is no prompt text, injected context, title, body or command argument. Exce
 - **user-prompt:** `path` is one of `injected`, `all_shown`, `overview_done`, `overview`, `too_short`, `no_overview`, `no_terms` or `machine_prompt`. It also records `terms`, and up to 20 `candidates`, each `{ref, rank, engine, engine_score, relevance, similarity, gate}` where `gate` is `kept:coverage|title|semantic` or `dropped:weak|one_word_no_title|no_informative`. Then `injected`, `suppressed_shown` and `cut_by_cap` refs, `overview`, `signal`, `private_spans`, and after a compaction `recall` `{terms, compacted, candidates, hits, used}`.
 - **session-start:** `shown`, `indexed`, `degrade` (how far the text was trimmed to fit: `listed`/`of`, `opened`/`open_of`, `width`, `search`, `titles_only`, `tail`, `capped`), `handoff_chars` and `bind_hint`.
 - **pre-tool-use:** `tool`, `subcommand`, `decision` (`deny:protected:domains|config|vault`, `deny:subagent`, `allow` or `none`), `mutation` (`tracked`, or `skipped:read_tool|memory_cmd|readonly_shell|subagent|plan_mode|scratch|unknown_session`), `touched` and file-hint refs as `hints`.
-- **stop:** `reason` is one of `unbound`, `unknown_session`, `receipt`, `no_change`, `no_turns`, `stop_active`, `already_reminded` or `reminded:<kind>`. It also records `turns`, `mutating` and `signal`.
+- **stop:** `reason` is one of `unbound`, `unknown_session`, `receipt`, `no_change`, `no_turns`, `files_only`, `stop_active`, `already_reminded` or `reminded:<kind>`. It also records `turns`, `mutating` and `signal`.
 - **pre-compact:** `trigger` and `steered`.
 - **session-end:** `housekeeping`.
 
