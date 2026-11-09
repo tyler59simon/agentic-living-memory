@@ -120,11 +120,15 @@ def doctor(root,cwd,explicit=None,domain=None):
     if (root/'improvement').is_dir():warnings.append('improvement/ holds data from a removed feature; nothing reads it and it is safe to delete')
     warnings+=[f'{name}: {count} notes; capture and freshness checks scale linearly and may slow hooks' for name,count in counts.items() if count>1500]
     scope=config.get('search_scope',{}) if isinstance(config.get('search_scope',{}),dict) else {}
-    for kind,names,effect in (('global_domains',scope.get('global_domains',['_global']),'the no-match title fallback uses the active domain instead'),
+    from .common import GLOBAL
+    for kind,names,effect in (('global_domains',scope.get('global_domains',['_global']),'no note can be saved there and the no-match title fallback uses the active domain instead; migration-plan points it at _global'),
                               ('foreign_domains',scope.get('foreign_domains',[]),'it is never searched')):
         for name in names:
-            try:missing=not (root/'domains'/canonical_domain(name,root)).is_dir()
-            except ValueError:missing=True
+            try:canonical=canonical_domain(name,root);missing=not (root/'domains'/canonical).is_dir()
+            except ValueError:canonical=None;missing=True
+            # `capture --global` creates _global's folder on first use; an older name without a folder still
+            # warns, because migration-plan points it at _global.
+            if kind=='global_domains' and canonical==GLOBAL:missing=False
             if missing:warnings.append(f"search_scope.{kind} names '{name}', which has no domain folder; {effect}")
     from .backup import staleness_warning
     stale=staleness_warning(root)
@@ -171,7 +175,7 @@ def main(argv=None):
     def sub(name):p=subs.add_parser(name);common(p,True);return p
     p=sub('setup');p.add_argument('--location',type=Path);p.add_argument('--non-interactive',action='store_true');p.add_argument('--source',type=Path);p.add_argument('--apply-plan');p.add_argument('--inspect-plan');p.add_argument('--expected-plan-sha256')
     p=sub('bind');p.add_argument('name');p.add_argument('prefix',nargs='+')
-    p=sub('capture');p.add_argument('items',nargs='*');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='');p.add_argument('--prefix',help='Compatibility assertion only; must equal the uppercase type');p.add_argument('--type',choices=NOTE_TYPES,default='knowledge');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help='REF of a note this one replaces; it is retired in the same transaction');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk notes get a default')
+    p=sub('capture');p.add_argument('items',nargs='*');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='');p.add_argument('--prefix',help='Compatibility assertion only; must equal the uppercase type');p.add_argument('--type',choices=NOTE_TYPES,default='knowledge');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help='REF of a note this one replaces; it is retired in the same transaction');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk notes get a default')
     for facet in FACET_FLAGS:p.add_argument('--'+facet,action='append',default=[])
     p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
     sections_args(p);_file_flags(p)
@@ -213,6 +217,7 @@ def main(argv=None):
     p=sub('batch');p.add_argument('--payload-file',type=Path)
     p=sub('retag-plan');p.add_argument('--payload-file',type=Path)
     p=sub('remap-plan');p.add_argument('--payload-file',type=Path)
+    p=sub('promote-plan');p.add_argument('refs',nargs='*',help='Project notes to move to the global domain');p.add_argument('--suggest',action='store_true',help='List candidates with reasons; writes nothing');p.add_argument('--only',help='With --suggest: one domain instead of all')
     p=sub('recall');p.add_argument('query');p.add_argument('--session',required=True);p.add_argument('--limit',type=int,default=5);p.add_argument('--all',action='store_true',help='Search the whole transcript, not only what precedes the latest compaction')
     p=sub('capture-finalize');p.add_argument('--session',required=True);p.add_argument('--turn',help='Defaults to the latest prompt of the session');p.add_argument('--note',action='append',default=[])
     p=sub('sync');p.add_argument('vault',type=Path)
@@ -276,6 +281,9 @@ def main(argv=None):
             with store_lock(root):
                 for item in batch:
                     item=dict(item);selected=item.pop('domain',domain);session=item.pop('session_id',None);turn=item.pop('turn_id',None)
+                    if getattr(args,'to_global',False):
+                        from .common import global_domain
+                        selected=global_domain(root)
                     if session and not turn:turn=_turn(root,session,None)
                     if not selected:raise ValueError('Project is unbound; pass --domain or bind it')
                     inferred=_infer_tags(item,root);redacted=_redact(item) if args.redact else []
@@ -283,18 +291,20 @@ def main(argv=None):
                         from .private import check as private_check
                         private_check(_session_state(root,session),item);item['origin']=_origin(root,session)
                     outcome=capture(domain=selected,root=root,**item);outcome.pop('path',None)
+                    # A duplicate found in, or promoted to, another domain is that domain's note.
+                    landed=outcome.get('domain') or selected
                     if inferred:outcome['inferred_tags']=inferred
                     if redacted:outcome['redacted']=redacted
                     suggested=[t for t in _session_state(root,session).get('touched',[]) if t not in (item.get('files') or [])] if session else []
                     if suggested and outcome.get('status')=='created':outcome['suggested_files']=suggested
                     results.append(outcome)
-                    if outcome.get('status') in {'duplicate','existing'}:
+                    if outcome.get('status') in {'duplicate','existing','promoted'}:
                         # Re-stating a saved fact is evidence it still holds (#9 reinforcement).
                         from .usage import record
-                        record(root,'duplicate',[selected+':'+outcome['id']],session)
+                        record(root,'duplicate',[landed+':'+outcome['id']],session)
                     if session and turn:
                         from .capture import finalize
-                        finalize(session,turn,[selected+':'+outcome['id']],root)
+                        finalize(session,turn,[landed+':'+outcome['id']],root)
             result=results if isinstance(data,list) else results[0]
         elif cmd=='search':
             from .search import search_domains,search_domain
@@ -524,6 +534,13 @@ def main(argv=None):
         elif cmd=='remap-plan':
             from .governance import remap
             result=remap(root,_payload(args))
+        elif cmd=='promote-plan':
+            from .governance import promote_suggest,promote_plan
+            if args.suggest:
+                if args.refs:raise ValueError('--suggest takes no references')
+                result=promote_suggest(root,canonical_domain(args.only,root) if args.only else None)
+            elif not args.refs:raise ValueError('Name the notes to promote, or pass --suggest')
+            else:result=promote_plan(root,args.refs)
         elif cmd=='recall':
             from .recall import search as recall
             path=_session_state(root,args.session).get('transcript')

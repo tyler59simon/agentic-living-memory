@@ -73,6 +73,23 @@ def canonical_domain(name,root=None):
         seen.add(name);name=aliases[name]
     return safe_domain(name)
 
+# Notes that hold beyond any one project. Not bound to a folder: every session searches it.
+GLOBAL='_global'
+
+def global_domains(root=None) -> list[str]:
+    """The configured global domains (search_scope.global_domains), aliases resolved; [_global] by default."""
+    scope=load_bindings(root).get('search_scope',{})
+    names=scope.get('global_domains',[GLOBAL]) if isinstance(scope,dict) else [GLOBAL]
+    found=[]
+    for name in names if isinstance(names,list) else []:
+        try:found.append(canonical_domain(name,root))
+        except ValueError:continue
+    return list(dict.fromkeys(found)) or [GLOBAL]
+
+def global_domain(root=None) -> str:
+    """Where `capture --global` and promotion write: the first configured global domain."""
+    return global_domains(root)[0]
+
 @contextmanager
 def file_lock(path: Path, timeout: float=10.0):
     """Cross-platform exclusive lock using OS file locking (no stale-lock guessing)."""

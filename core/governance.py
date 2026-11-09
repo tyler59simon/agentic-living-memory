@@ -148,13 +148,83 @@ def remap(root,mappings):
             try:find_note(after['id'],after['domain'],root)
             except ValueError:pass
             else:raise ValueError('Remap target already exists')
-            if after['domain'] not in read_json(root/'bindings.json',{}).get('domains',{}):raise ValueError('Target domain is unregistered')
+            from .common import global_domains
+            if after['domain'] not in read_json(root/'bindings.json',{}).get('domains',{}) and after['domain'] not in global_domains(root):
+                raise ValueError('Target domain is unregistered')
             target=confined(root,Path('domains')/after['domain']/('notes' if note['status']=='active' else 'archive')/path.name)
             if target.exists():raise ValueError('Remap filename collision')
             note['domain']=after['domain'];note['updated']=now()
             changes[path.relative_to(root).as_posix()]=None;changes[target.relative_to(root).as_posix()]=serialize(note)
             domains.update((before['domain'],after['domain']))
         return plan(root,changes,'reference_remap',domains,{'mappings':mappings,'files':len(changes)})
+
+PROMOTE_PAIR=0.8   # title score at which notes in two projects look like one piece of knowledge
+
+def promote_suggest(root,domain=None):
+    """Project notes that may belong in the global domain, with reasons. Writes nothing.
+    Candidates: notes that appear in two unrelated projects, notes that repeat a global note, and notes whose
+    tags or type suggest they hold beyond their project. The agent or user picks; promote-plan moves them."""
+    from .common import global_domains
+    from .notes import domain_folders,related,scope_hint,TitleScorer,short_ref
+    from .repository import inventory
+    root=Path(root).resolve();globals_=set(global_domains(root))
+    projects=[d for d in domain_folders(root) if d not in globals_]
+    active={d:[n for n in inventory(d,root) if n.get('status','active')=='active'] for d in domain_folders(root)}
+    found={}
+    def add(d,n,reason,**extra):
+        row=found.setdefault(f"{d}:{n['id']}",{'ref':short_ref(d,n['id']),'title':n['title'],'type':n.get('type','knowledge'),'domain':d,'reasons':[]})
+        row['reasons'].append(reason);row.update(extra)
+    everything=[n for notes in active.values() for n in notes];scorer=TitleScorer(everything)
+    for i,a in enumerate(projects):
+        for b in projects[i+1:]:
+            if related(a,b,root):continue
+            for x in active[a]:
+                for y in active[b]:
+                    if x.get('type')==y.get('type') and scorer.score(x['title'],y['title'])>=PROMOTE_PAIR:
+                        add(a,x,f"also in project {b}: {short_ref(b,y['id'])}",pair=short_ref(b,y['id']));add(b,y,f"also in project {a}: {short_ref(a,x['id'])}",pair=short_ref(a,x['id']))
+    for d in projects:
+        for n in active[d]:
+            for g in globals_:
+                twin=next((m for m in active.get(g,[]) if m.get('type')==n.get('type') and scorer.score(n['title'],m['title'])>=PROMOTE_PAIR),None)
+                if twin:add(d,n,f"repeats global note {short_ref(g,twin['id'])}: update that one and archive this")
+            reason=scope_hint(n)
+            if reason:add(d,n,reason)
+    if domain:found={k:v for k,v in found.items() if v['domain']==domain}
+    rows=sorted(found.values(),key=lambda r:(r['domain'],r['title'].casefold()))
+    return {'ok':True,'candidates':rows,'next':'Promote the ones that hold beyond their project: promote-plan REF [REF ...], then inspect-plan and apply.'}
+
+def promote_plan(root,refs):
+    """A reviewed plan moving project notes to the global domain. Stable IDs and filenames are kept and
+    relative links follow. Two of the notes that are the same knowledge (same type, similar titles) become
+    one: the newer supersedes the older inside the global domain."""
+    from .common import global_domains
+    from .notes import resolve_ref,find_note,_move_set,ensure_global,TitleScorer,domain_folders
+    root=Path(root).resolve()
+    if not isinstance(refs,list) or not 1<=len(refs)<=20:raise ValueError('promote-plan takes 1..20 note references')
+    target=ensure_global(root);globals_=set(global_domains(root))
+    with store_lock(root):
+        notes=[]
+        for ref in refs:
+            d,note_id=resolve_ref(ref,None,root,[f for f in domain_folders(root) if f not in globals_])
+            if d in globals_:raise ValueError(f'{ref} is already in the global domain')
+            note=find_note(note_id,d,root)[1]
+            if note.get('status','active')!='active':raise ValueError(f'{ref} is not active; only active notes are promoted')
+            if any(n['id']==note['id'] for n in notes):raise ValueError(f'{ref} is listed twice')
+            notes.append(note)
+        scorer=TitleScorer(notes);moves={n['id']:{'note':n,'target':target} for n in notes};superseded=[]
+        ordered=sorted(notes,key=lambda n:str(n.get('updated') or ''),reverse=True)
+        for i,newer in enumerate(ordered):
+            if moves[newer['id']].get('status'):continue
+            for older in ordered[i+1:]:
+                move=moves[older['id']]
+                if move.get('status') or older.get('type')!=newer.get('type') or scorer.score(newer['title'],older['title'])<PROMOTE_PAIR:continue
+                move.update(status='superseded',superseded_by=newer['id'])
+                moves[newer['id']].setdefault('supersedes',[]).append(older['id'])
+                superseded.append({'ref':f"{older['domain']}:{older['id']}",'by':f"{target}:{newer['id']}"})
+        changes,_=_move_set(list(moves.values()),root)
+        domains=sorted({n['domain'] for n in notes}|{target})
+        summary={'target':target,'moves':[f"{n['domain']}:{n['id']}" for n in notes],'superseded':superseded,'files':len(changes)}
+        return plan(root,changes,'promote',domains,summary,guards={'absent_ids':[n['id'] for n in notes]})
 
 def retag_plan(root,mappings,domains=None):
     from .repository import inventory,serialize,FACETS

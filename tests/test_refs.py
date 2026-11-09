@@ -92,7 +92,8 @@ class TitleLookup(StoreFixture):
     def test_duplicate_titles_are_ambiguous(self):
         init_domain('child', [str(self.base / 'project' / 'child')], self.root)
         self.note('Shared title', 'In the parent.')
-        capture('Shared title', 'In the child.', TAGS, 'child', self.root)
+        # The child already sees the parent's note, so a second one needs allow_similar.
+        capture('Shared title', 'In the child.', TAGS, 'child', self.root, allow_similar=True)
         with self.assertRaisesRegex(ValueError, 'ambiguous_ref'):
             resolve_ref('Shared title', 'child', self.root, ['demo'])
 

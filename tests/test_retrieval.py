@@ -82,11 +82,16 @@ class Retrieval(StoreFixture):
         self.assertNotIn('Webcam conclusion', context)
 
     def test_doctor_warns_about_missing_scope_domains(self):
-        out = io.StringIO()
-        with redirect_stdout(out):
-            cli(['--root', str(self.root), 'doctor', '--cwd', str(self.base / 'project')])
-        warnings = json.loads(out.getvalue())['warnings']
-        self.assertTrue(any("global_domains names '_global'" in w for w in warnings), warnings)
+        def warnings():
+            out = io.StringIO()
+            with redirect_stdout(out):
+                cli(['--root', str(self.root), 'doctor', '--cwd', str(self.base / 'project')])
+            return json.loads(out.getvalue())['warnings']
+        # _global's folder is created by the first `capture --global`, so its absence is expected.
+        self.assertFalse(any('global_domains' in w for w in warnings()))
+        config = json.loads((self.root / 'bindings.json').read_text());config['search_scope']['global_domains'] = ['shared']
+        (self.root / 'bindings.json').write_text(json.dumps(config))
+        self.assertTrue(any("global_domains names 'shared'" in w and 'migration-plan' in w for w in warnings()))
 
     def test_snippets_respect_word_boundaries(self):
         body = ('filler words here ' * 40) + 'the important latest result is here ' + ('more filler text ' * 40)

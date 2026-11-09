@@ -14,6 +14,15 @@ def migration_plan(root=None):
     scope.setdefault('global_domains',['_global']);scope.setdefault('foreign_domains',[])
     if (root/'domains/global').exists() and not (root/'domains/_global').exists():
         config.setdefault('domain_aliases',{})['_global']='global';warnings.append('Legacy global directory retained as the _global alias')
+    # A configured global domain with no folder and no alias (e.g. "global" from an older default) would never
+    # hold a note: point it at _global and keep the old name working as an alias.
+    aliases=config.setdefault('domain_aliases',{});names=scope.get('global_domains')
+    if isinstance(names,list):
+        for i,name in enumerate(names):
+            if isinstance(name,str) and name!='_global' and name not in aliases and not (root/'domains'/name).exists():
+                aliases[name]='_global';names[i]='_global';warnings.append(f"Global domain '{name}' had no folder; it is now an alias of _global")
+        scope['global_domains']=list(dict.fromkeys(names))
+    if not aliases:config.pop('domain_aliases')
     changes['bindings.json']=canonical_json(config)
     if not (root/'tag_taxonomy.json').exists():changes['tag_taxonomy.json']=canonical_json({'version':2,'facets':['subject','concern','platform','technology'],'tags':DEFAULT_TAGS})
     else:
