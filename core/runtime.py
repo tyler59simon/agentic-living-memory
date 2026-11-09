@@ -55,17 +55,21 @@ def protocol(root,domain=None,harness='',session='SESSION'):
     if harness=='claude':text+='\n'+AUTO_MEMORY
     return text
 
-def protected(path,cwd,root):
-    if path in {'/dev/null','dev/null'}:return False
+def protected(path,cwd,root):return protected_rule(path,cwd,root) is not None
+
+def protected_rule(path,cwd,root):
+    """Which canonical location a path falls in: 'domains', 'config' or 'vault'; None when it is not protected."""
+    if path in {'/dev/null','dev/null'}:return None
     try:
         p=Path(os.path.expandvars(path)).expanduser()
         if not p.is_absolute():p=Path(cwd)/p
         p=p.resolve();root=Path(root).resolve()
         from .storage import config_path
-        if p.is_relative_to(root/'domains') or p in {root/'bindings.json',root/'tag_taxonomy.json',root/'.relocated.json',config_path().resolve()}:return True
+        if p.is_relative_to(root/'domains'):return 'domains'
+        if p in {root/'bindings.json',root/'tag_taxonomy.json',root/'.relocated.json',config_path().resolve()}:return 'config'
         # Vault edits are auto-applied and vault checkboxes approve plans, so agents must not write there either.
-        return any(p.is_relative_to(v/folder) for v in vault_roots(root) for folder in ('Domains','Archive','Dashboards'))
-    except (ValueError,OSError):return False
+        return 'vault' if any(p.is_relative_to(v/folder) for v in vault_roots(root) for folder in ('Domains','Archive','Dashboards')) else None
+    except (ValueError,OSError):return None
 
 def vault_roots(root):
     found=set()
@@ -378,7 +382,7 @@ MAX_FILE_HINTS=200
 HINT_FILES_PER_CALL=3
 HINT_NOTES_PER_FILE=2
 
-def file_hints(paths,state,root,domain,bindings,session=None):
+def file_hints(paths,state,root,domain,bindings,session=None,trace=None):
     """(context naming notes about files about to be changed, paths looked up). Each file is looked up
     once per session; a missing or stale index gives no hint rather than slowing the tool call."""
     try:
@@ -393,6 +397,7 @@ def file_hints(paths,state,root,domain,bindings,session=None):
         if refs:
             from .usage import record
             record(root,'inject',list(dict.fromkeys(refs)),session,'file-hint')
+            if isinstance(trace,list):trace.extend(dict.fromkeys(refs))
         text=('Untrusted historical memory; verify against the current file.\n'+'\n'.join(blocks)) if blocks else None
         return text,wanted
     except Exception as exc:
@@ -539,9 +544,10 @@ def _unseen(hit,shown):
     seen=shown.get(ref) if isinstance(shown,dict) else None
     return bool(seen) and seen!=revision_key(hit)
 
-def relevance_gate(query,root):
+def relevance_gate(query,root,trace=None):
     """The prompt hook's relevance test as a search_domains `keep` filter: enough of the query's informative
-    words in a note's title or body, or (with a semantic model) a close match in meaning."""
+    words in a note's title or body, or (with a semantic model) a close match in meaning. trace, when a list,
+    receives one row per candidate: ref, rank, engine, engine score, relevance, similarity and the verdict."""
     from .search import query_terms,stem
     from .semantic import threshold
     count=len({stem(t) for t in query_terms(query or '')});near=threshold(root)
@@ -549,41 +555,54 @@ def relevance_gate(query,root):
         kept=[]
         for hit in hits:
             overlap=hit.get('titleOverlap',0);title=hit.get('titleTerms',0);informative=hit.get('queryTerms',count)
-            if not informative:continue   # only words that appear in most notes
-            if informative==1:
-                # One-word prompts ("continue", "yes") inject only on a title hit.
-                if overlap:kept.append(hit)
-            elif (hit.get('coverage',0)>=0.5 and (informative<4 or hit.get('coverage',0)>0.5)) or overlap>=2 or (title and overlap/title>=0.5):kept.append(hit)
+            if not informative:gate='dropped:no_informative'   # only words that appear in most notes
+            # One-word prompts ("continue", "yes") inject only on a title hit.
+            elif informative==1:gate='kept:title' if overlap else 'dropped:one_word_no_title'
+            elif hit.get('coverage',0)>=0.5 and (informative<4 or hit.get('coverage',0)>0.5):gate='kept:coverage'
+            elif overlap>=2 or (title and overlap/title>=0.5):gate='kept:title'
             # Same meaning in other words ("laid out" for "layout"): only a close semantic match counts.
-            elif near is not None and hit.get('similarity',0)>=near:kept.append(hit)
+            elif near is not None and hit.get('similarity',0)>=near:gate='kept:semantic'
+            else:gate='dropped:weak'
+            if gate.startswith('kept'):kept.append(hit)
+            if isinstance(trace,list):
+                # keep runs before search_domains replaces score with the fused rank score
+                trace.append({'ref':f"{hit['domain']}:{hit['id']}",'rank':hit.get('rank'),'engine':hit.get('engine'),
+                              'engine_score':round(hit['score'],4) if isinstance(hit.get('score'),(int,float)) else None,
+                              'relevance':hit.get('relevance'),'similarity':hit.get('similarity'),'gate':gate})
         return kept
     return relevant
 
-def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=None):
+def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=None,trace=None):
     """Relevant memory for a prompt: (text or None, ids injected, overview shown). A note shown earlier
-    is offered again once it has a new revision. delivered, when a dict, receives ref -> revision key."""
+    is offered again once it has a new revision. delivered, when a dict, receives ref -> revision key.
+    trace, when a dict, receives the decision: the path taken, the gate's candidates and the refs injected,
+    suppressed as already shown, or cut by the cap (refs and numbers only)."""
     from .search import search_domains,recent_notes,query_terms,stem
+    trace=trace if isinstance(trace,dict) else {}
     bindings=load_bindings(root);active=active or resolve_domain(cwd,bindings)
-    if not active or MACHINE_PROMPT.match(prompt or ''):return None,[],False
-    query={stem(t) for t in query_terms(prompt)}
-    if not query:return None,[],False
+    if not active or MACHINE_PROMPT.match(prompt or ''):trace['path']='machine_prompt' if active else 'unbound';return None,[],False
+    query={stem(t) for t in query_terms(prompt)};trace['terms']=len(query)
+    if not query:trace['path']='no_terms';return None,[],False
     scope=bindings.get('search_scope',{});global_domains=[canonical_domain(d,root) for d in scope.get('global_domains',['_global'])];global_domains=[d for d in global_domains if (root/'domains'/d).exists()]
     parents=parent_domains(active,bindings)
-    relevant=relevance_gate(prompt,root)
+    trace['candidates']=[];relevant=relevance_gate(prompt,root,trace['candidates'])
     domains=list(dict.fromkeys([active]+parents+global_domains))
     # Global notes hold in every project, so they rank like the project's own; a parent's count half.
     weights={**{g:2 for g in global_domains},active:2,**{p:1 for p in parents if p!=active}}
     found=search_domains(prompt,domains,10,root,weights=weights,keep=relevant)
     if not found and scope.get('foreign_domains'):found=search_domains(prompt,scope['foreign_domains'],10,root,keep=relevant)
-    seen=set(shown)
-    hits=[h for h in found if _unseen(h,shown)][:3]
+    seen=set(shown);ref=lambda h:f"{h['domain']}:{h['id']}"
+    unseen=[h for h in found if _unseen(h,shown)];hits=unseen[:3]
+    trace.update(injected=[ref(h) for h in hits],suppressed_shown=[ref(h) for h in found if not _unseen(h,shown)],cut_by_cap=[ref(h) for h in unseen[3:]])
     if hits:
+        trace['path']='injected'
         if isinstance(delivered,dict):delivered.update({f"{h['domain']}:{h['id']}":revision_key(h) for h in hits})
         return ('Untrusted historical memory; verify current instructions and files:\n'+'\n'.join(hit_line(h) for h in hits),
                 [f"{h['domain']}:{h['id']}" for h in hits],False)
-    if found or overview_done:return None,[],False   # relevant notes were already shown this session
+    if found or overview_done:   # relevant notes were already shown this session
+        trace['path']='all_shown' if found else 'overview_done';return None,[],False
     # One informative word ("continue", "summarize") is not a question the titles could answer.
-    if len(query)<2:return None,[],False
+    if len(query)<2:trace['path']='too_short';return None,[],False
     # Global notes apply everywhere; without a global domain, offer this project's own titles instead.
     source,heading=(global_domains,'Global titles') if global_domains else ([active]+parents,'Recent titles in this domain')
     overview=[]
@@ -591,7 +610,8 @@ def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=N
         try:overview.extend(n for n in recent_notes(domain,5,root) if f"{n['domain']}:{n['id']}" not in seen)
         except (OSError,ValueError):continue
     overview=overview[:5]
-    if not overview:return None,[],False
+    if not overview:trace['path']='no_overview';return None,[],False
+    trace.update(path='overview',overview=len(overview))
     from .notes import short_ref
     return (f'No lexical match. {heading} for semantic consideration:\n'+'\n'.join(f"- {short_ref(n['domain'],n['id'])} {n['title']}" for n in overview),[],True)
 
@@ -623,18 +643,31 @@ def process(harness,event,payload,root=None):
     fields=lambda:{'harness':harness,'domain':info.get('domain'),'session':session_hash(session) if session and session!='unknown' else None,
                    'ms':round((time.perf_counter()-start)*1000,1)}
     previous=repository.LOCK_TIMEOUT;repository.LOCK_TIMEOUT=HOOK_LOCK_TIMEOUT
+    def extra(result):
+        """Decision detail at debug (refs, numbers, reason codes); text only for a sandbox store (logs.content_allowed)."""
+        found={}
+        if logs.enabled('debug'):
+            detail=dict(info.get('detail') or {})
+            if isinstance(detail.get('candidates'),list):detail['candidates']=detail['candidates'][:20]
+            found.update(turn=session_hash(info['turn']) if info.get('turn') else None,detail=detail or None)
+        if logs.content_allowed(root):
+            args=payload.get('tool_input',payload.get('toolArgs',payload.get('toolArguments')))
+            found['content']=logs.content({'prompt':payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or payload.get('transformedPrompt'),
+                                           'tool_input':args,**{k:result.get(k) for k in ('context','deny','allow','continue_reason','warning','instructions')}})
+        return found
     try:result=_process(harness,event,payload,root,info)
     except Exception as exc:
-        logs.write('error','hook',event,root,**fields(),error=logs.error_fields(exc));raise
+        logs.write('error','hook',event,root,**fields(),**extra({}),error=logs.error_fields(exc));raise
     finally:repository.LOCK_TIMEOUT=previous
     context=result.get('context') or result.get('instructions')
     logs.write('warning' if result.get('warning') else 'info','hook',event,root,**fields(),
                outcome=sorted(k for k in ('context','deny','allow','continue_reason','warning','instructions') if result.get(k)),
-               context_chars=len(context) if isinstance(context,str) else None)
+               context_chars=len(context) if isinstance(context,str) else None,**extra(result))
     return result
 
 def _process(harness,event,payload,root=None,info=None):
     info=info if info is not None else {}
+    detail=info.setdefault('detail',{})  # why this hook did what it did: refs, numbers and reason codes only
     root=Path(root or memory_root()).resolve();cwd=payload.get('cwd') or payload.get('workingDirectory') or os.getcwd()
     session=str(payload.get('session_id') or payload.get('sessionId') or 'unknown');turn=str(payload.get('turn_id') or payload.get('turnId') or '')
     bindings=load_bindings(root)
@@ -663,6 +696,7 @@ def _process(harness,event,payload,root=None,info=None):
             text=payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or payload.get('transformedPrompt') or ''
             signal=None if planning else durable_signal(text)
             from . import private
+            detail.update(signal=signal,private_spans=len(private.spans(text)) if isinstance(text,str) and not MACHINE_PROMPT.match(text) else 0)
             def opened(s):
                 s['turn']=turn;s['open_turns']=(list(s.get('open_turns',[]))+[turn])[-20:]
                 if signal:s['signal']=signal  # only the kind is kept, never the prompt text
@@ -672,15 +706,19 @@ def _process(harness,event,payload,root=None,info=None):
             state=_update(root,session,opened)
     elif not turn:
         turn=state.get('turn','')
+    info['turn']=turn
     result={}
     if event in {'session-start','user-prompt','stop'}:
         try:atomic_write(root/'hooks/last-delivery.json',canonical_json({'harness':harness,'event':event,'timestamp':now(),'bound':bool(domain),'cwd':str(cwd),'domain':domain,'payload_keys':sorted(payload)}))
         except OSError:pass  # Diagnostics only; never cost the session its memory context.
     if event=='session-end':
-        _sync_vaults(root,'session end');_daily_backup(root);_prune_journals(root);return {}
+        synced=_sync_vaults(root,'session end');backup=_daily_backup(root);pruned=_prune_journals(root)
+        detail['housekeeping']={'synced':len(synced.get('results',[])) if isinstance(synced,dict) else None,'backup':bool(backup),'pruned':pruned is not None}
+        return {}
     if not domain:
+        if event=='stop':detail['reason']='unbound'
         if event=='session-start' and session!='unknown':
-            hint=bind_hint(cwd,root,bindings,state)
+            hint=bind_hint(cwd,root,bindings,state);detail['bind_hint']=bool(hint)
             if hint:
                 _update(root,session,lambda s:s.update(bind_hint=True));result['context']=hint
         return result
@@ -690,8 +728,10 @@ def _process(harness,event,payload,root=None,info=None):
         from .session_start import build_context,BUDGET,MIN_BUDGET,HARD_CAP,_cap
         prefix=protocol(root,domain,harness,session)+f'\nLiving Memory session={session}'+'\n'
         # After a compaction the handoff goes first; the title index gives up the room.
-        if source=='compact' and session!='unknown':prefix+=handoff(root,domain,session,state,harness)
-        text,shown,indexed=build_context(cwd,root,max(MIN_BUDGET,BUDGET-len(prefix)),session=session)
+        if source=='compact' and session!='unknown':
+            handed=handoff(root,domain,session,state,harness);prefix+=handed;detail['handoff_chars']=len(handed)
+        text,shown,indexed=build_context(cwd,root,max(MIN_BUDGET,BUDGET-len(prefix)),session=session,trace=detail)
+        detail.update(shown=list(shown),indexed=indexed)
         if session!='unknown':
             # A new or compacted context has seen only what is injected now. Guidance shown in full is not
             # re-injected by prompts; index lines are titles, so those notes stay eligible. Once the index has
@@ -710,7 +750,8 @@ def _process(harness,event,payload,root=None,info=None):
     elif event=='user-prompt':
         prompt=payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or payload.get('transformedPrompt') or ''
         delivered={}
-        hits,ids,overview=context(cwd,prompt,root,domain,state.get('shown',{}),state.get('overview_shown',False),delivered) if isinstance(prompt,str) else (None,[],False)
+        if isinstance(prompt,str):hits,ids,overview=context(cwd,prompt,root,domain,state.get('shown',{}),state.get('overview_shown',False),delivered,detail)
+        else:hits,ids,overview=None,[],False;detail['path']='not_text'
         if (ids or overview) and session!='unknown':
             def remember(s):
                 previous=s.get('shown',{})
@@ -728,7 +769,7 @@ def _process(harness,event,payload,root=None,info=None):
         result['context']=f'Living Memory session={session} turn={turn}'+('\n'+hits if hits else '')
         if state.get('recall_prompts') and harness in RECALL_HARNESSES and session!='unknown' and isinstance(prompt,str) and not MACHINE_PROMPT.match(prompt):
             from .recall import auto
-            recalled,used=auto(state.get('transcript'),prompt,state.get('recalled',[]))
+            gate={};recalled,used=auto(state.get('transcript'),prompt,state.get('recalled',[]),gate);detail['recall']=dict(gate,used=len(used))
             def spent(s):
                 s['recall_prompts']=max(0,int(s.get('recall_prompts') or 0)-1)
                 if used:s['recalled']=(list(s.get('recalled',[]))+used)[-50:]
@@ -741,13 +782,14 @@ def _process(harness,event,payload,root=None,info=None):
             from .private import NOTICE
             result['context']+='\n'+NOTICE
     elif event=='pre-compact':
-        if session=='unknown' or _subagent(payload):return {}
-        trigger=str(payload.get('trigger') or 'auto')
+        if session=='unknown' or _subagent(payload):detail['skipped']='unknown_session' if session=='unknown' else 'subagent';return {}
+        trigger=str(payload.get('trigger') or 'auto');detail['trigger']=trigger
         def compacting(s):
             s['compactions']=(list(s.get('compactions',[]))+[{'at':now(),'trigger':trigger}])[-10:]
             if transcript:s['transcript']=transcript
         state=_update(root,session,compacting)
         if harness in STEERED:result['instructions']=steering(root,state)
+        detail['steered']=bool(result.get('instructions'))
     elif event=='subagent-start':result['context']='Living Memory: subagents may only search/read via scripts. Return capture proposals to the main agent; do not write canonical state.'
     elif event=='pre-tool-use':
         name=str(payload.get('tool_name') or payload.get('toolName') or '').lower()
@@ -755,24 +797,32 @@ def _process(harness,event,payload,root=None,info=None):
         if isinstance(args,str):
             try:args=json.loads(args)
             except json.JSONDecodeError:pass
+        detail['tool']=name
         # Shell text is not checked: a regex over commands is trivially bypassed and blocks harmless reads.
-        if name not in READ_TOOLS and name not in SHELL_TOOLS and any(protected(p,cwd,root) for p in raw_paths(args)):
+        rule=next((r for r in (protected_rule(p,cwd,root) for p in raw_paths(args)) if r),None) if name not in READ_TOOLS and name not in SHELL_TOOLS else None
+        if rule:
+            detail['decision']='deny:protected:'+rule
             result['deny']='Use Living Memory scripts for canonical mutations; direct file edits bypass revision checks and receipts.'
             return result
         text=shell_command(args) if name in SHELL_TOOLS else ''
-        subcommand=memory_subcommand(text) if text else None
+        subcommand=memory_subcommand(text) if text else None;detail['subcommand']=subcommand
         if subcommand in MUTATING_SUBCOMMANDS and _subagent(payload):
+            detail['decision']='deny:subagent'
             result['deny']='Living Memory: subagents are read-only. Return the proposed note to the main agent instead of running '+subcommand+'.'
             return result
         if subcommand in ALLOWED_SUBCOMMANDS:
             result['allow']='Living Memory read/capture script command.'
+        detail['decision']='allow' if result.get('allow') else 'none'
         # Plan mode only permits writing the harness's own plan file, so it never changes project files.
         planning=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()=='plan'
-        if (name not in READ_TOOLS and not subcommand and not (name in SHELL_TOOLS and readonly_shell(text))
-                and not _subagent(payload) and not planning and not (name not in SHELL_TOOLS and _scratch_only(args,payload,cwd))
-                and session!='unknown'):
+        skip=('read_tool' if name in READ_TOOLS else 'memory_cmd' if subcommand else 'readonly_shell' if name in SHELL_TOOLS and readonly_shell(text)
+              else 'subagent' if _subagent(payload) else 'plan_mode' if planning else 'scratch' if name not in SHELL_TOOLS and _scratch_only(args,payload,cwd)
+              else 'unknown_session' if session=='unknown' else None)
+        detail['mutation']='skipped:'+skip if skip else 'tracked'
+        if not skip:
             paths=touched_paths(args,payload,cwd,root,domain,bindings,shell=name in SHELL_TOOLS)
-            hints,looked=file_hints(paths,state,root,domain,bindings,session) if harness in FILE_HINT_HARNESSES else (None,[])
+            detail['touched']=len(paths);detail['hints']=[]
+            hints,looked=file_hints(paths,state,root,domain,bindings,session,detail['hints']) if harness in FILE_HINT_HARNESSES else (None,[])
             if hints:result['context']=hints
             if not state.get('mutating') or set(paths)-set(state.get('touched',[])) or looked:
                 def touch(s):
@@ -782,20 +832,23 @@ def _process(harness,event,payload,root=None,info=None):
                     if looked:s['file_hints']=list(dict.fromkeys(list(s.get('file_hints',[]))+looked))[-MAX_FILE_HINTS:]
                 _update(root,session,touch)
     elif event=='stop':
-        if session=='unknown':return {}
+        if session=='unknown':detail['reason']='unknown_session';return {}
         _record_last_session(root,domain,session,state)
         turns=list(dict.fromkeys(list(state.get('open_turns',[]))+([turn] if turn else [])))
         def close(s):
             s.pop('open_turns',None);s.pop('mutating',None);s.pop('signal',None);s.pop('touched',None)
-        signal=state.get('signal')
-        if any(capture_status(session,t,root) for t in turns) or not (state.get('mutating') or signal) or not turns:
-            _update(root,session,close);return {}
+        signal=state.get('signal');detail.update(turns=len(turns),mutating=bool(state.get('mutating')),signal=signal)
+        quiet=('receipt' if any(capture_status(session,t,root) for t in turns) else 'no_change' if not (state.get('mutating') or signal)
+               else 'no_turns' if not turns else None)
+        if quiet:
+            detail['reason']=quiet;_update(root,session,close);return {}
         latest=turns[-1];reminder=root/'.turns'/(turn_key(session,latest)+'.reminded')
         if payload.get('stop_hook_active') or payload.get('stopHookActive') or reminder.exists():
-            _update(root,session,close);return {}
+            detail['reason']='stop_active' if payload.get('stop_hook_active') or payload.get('stopHookActive') else 'already_reminded';_update(root,session,close);return {}
         atomic_write(reminder,'reminded\n')
         from .usage import record
-        record(root,'reminder',session=session,kind=signal if signal in SIGNAL_TEXT else 'mutating')
+        kind=signal if signal in SIGNAL_TEXT else 'mutating';detail['reason']='reminded:'+kind
+        record(root,'reminder',session=session,kind=kind)
         cmd=command(root,domain)
         finalize=f"{cmd} capture-finalize --session {session} --turn {latest}"
         if signal in SIGNAL_TEXT:

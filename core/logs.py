@@ -73,6 +73,43 @@ def swallowed(event,exc,root=None):
     """An exception a call site deliberately absorbs (fail-open housekeeping)."""
     write('warning','internal',event,root,error=error_fields(exc))
 
+CONTENT_ENV='LIVING_MEMORY_LOG_CONTENT'
+CONTENT_CHARS=20000
+MARKER='sandbox.json'
+_refused=set()
+
+def content_state(root):
+    """'off', 'on' or 'refused'. Text is logged only for a store marked {"sandbox": true} in sandbox.json that
+    is not the configured data root, and only when LIVING_MEMORY_LOG_CONTENT asks for it. Only the simulation
+    harness writes the marker; a marker copied into the real store still does nothing."""
+    if os.environ.get(CONTENT_ENV,'').strip().lower() not in {'1','true','yes','on'}:return 'off'
+    try:
+        root=Path(root).resolve();marker=json.loads((root/MARKER).read_text(encoding='utf-8'))
+        if not (isinstance(marker,dict) and marker.get('sandbox') is True):return 'refused'
+        from .runtime import _configured_root
+        return 'refused' if _configured_root()==root else 'on'
+    except (OSError,ValueError):return 'refused'
+
+def content_allowed(root):
+    """True when this store may log text; a refusal is logged once per process and store."""
+    state=content_state(root)
+    if state=='refused' and str(root) not in _refused:
+        _refused.add(str(root));write('warning','internal','content_logging_refused',root)
+    return state=='on'
+
+def content(fields):
+    """Text fields for a sandbox store's log line: credentials redacted, each capped; empty ones left out."""
+    out={}
+    for key,value in fields.items():
+        if value in (None,'',[],{}):continue
+        text=value if isinstance(value,str) else json.dumps(value,ensure_ascii=False,default=str)
+        try:
+            from .repository import redact
+            text=redact(text)[0]
+        except Exception:text='<unredactable>'
+        out[key]=text[:CONTENT_CHARS]
+    return out
+
 def _day(path):
     try:return datetime.strptime(path.stem[4:],'%Y-%m-%d').date()
     except ValueError:return None
@@ -99,7 +136,7 @@ def summary(root,days=7):
     problems,_=entries(root,'warning',days=days,limit=10**6)
     errors=[r for r in problems if r.get('level')=='error']
     last=errors[0] if errors else None
-    return {'level':setting(),'dir':str(_dir(root)),'files':len(list(_dir(root).glob('log-*.jsonl'))),
+    return {'level':setting(),'content':content_state(root),'dir':str(_dir(root)),'files':len(list(_dir(root).glob('log-*.jsonl'))),
             f'errors_{days}d':len(errors),f'warnings_{days}d':len(problems)-len(errors),
             'last_error':{k:last.get(k) for k in ('ts','kind','event','error')} if last else None}
 

@@ -82,8 +82,9 @@ def _last_session_line(active,root,session,notes):
     if not parts:return []
     return [f"Last session ({str(last.get('ended',''))[:10]}, {last.get('harness','unknown')}): "+'; '.join(parts)+'.']
 
-def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|None=None):
-    """(text or None, {ref: revision key} of guidance shown with its snippet, whether the title index listed any note)."""
+def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|None=None,trace: dict|None=None):
+    """(text or None, {ref: revision key} of guidance shown with its snippet, whether the title index listed any note).
+    trace, when a dict, receives how far the text degraded to fit the budget (counts and flags only)."""
     root=(root or memory_root()).resolve();bindings=load_bindings(root);active=resolve_domain(cwd,bindings)
     if not active:return None,[],False
     notes=[]
@@ -135,6 +136,9 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
     # Title-only guidance did not show its content, so prompts may still inject it. Shown guidance maps
     # ref -> revision key: a later correction of the note is new content and may be injected again.
     shown={} if titles_only else {f"{n['domain']}:{n['id']}":str(n.get('revision') or '')[:12] for n in guidance}
+    if isinstance(trace,dict):
+        trace['degrade']={'listed':listed,'of':len(index),'opened':opened,'open_of':len(open_lines),'width':width,'search':search,
+                          'titles_only':titles_only,'tail':with_tail,'capped':len(text)>budget}
     return _cap(text,budget),shown,bool(listed)
 
 def _cap(text,budget):
