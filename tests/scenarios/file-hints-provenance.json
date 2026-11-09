@@ -1,0 +1,18 @@
+{
+ "name": "file-hints-provenance",
+ "description": "Editing a file surfaces the notes about it once per session, and a capture with --files auto records the files the turn changed.",
+ "harnesses": ["claude", "codex"],
+ "notes": [
+  {"key": "parser", "title": "Parser error handling", "body": "Errors in src/parser.py are collected and reported together, not raised one by one."}
+ ],
+ "steps": [
+  {"hook": "session-start"},
+  {"hook": "user-prompt", "payload": {"prompt": "make the tokenizer faster"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/src/parser.py"}}, "expect": {"hints": ["@parser"], "mutation": "tracked", "context_contains": ["{short:@parser}"]}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/src/parser.py"}}, "expect": {"hints": [], "mutation": "tracked"}},
+  {"cli": ["capture", "--session", "{session}", "--title", "Tokenizer uses a precompiled regex table", "--summary", "The tokenizer compiles its patterns once at import.", "--type", "decision", "--files", "auto"], "as": "tokenizer", "expect": {"exit": 0, "status": "created"}},
+  {"cli": ["read", "@tokenizer", "--metadata-only"], "expect": {"exit": 0, "result": {"files": ["src/parser.py"]}}},
+  {"cli": ["search", "--file", "src/parser.py"], "expect": {"exit": 0}},
+  {"hook": "stop", "expect": {"stop_reason": "receipt"}}
+ ]
+}

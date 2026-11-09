@@ -1,0 +1,21 @@
+{
+ "name": "protected-paths",
+ "description": "Direct writes to canonical notes and store configuration are denied with the rule that matched; reads, read-only shell, scratchpad files and project files are not.",
+ "notes": [
+  {"key": "cache", "title": "Cache eviction policy", "body": "LRU eviction."}
+ ],
+ "steps": [
+  {"hook": "session-start"},
+  {"hook": "user-prompt", "payload": {"prompt": "tidy up the project"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{path:@cache}"}}, "expect": {"deny": "protected:domains"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Write", "tool_input": {"file_path": "{store}/bindings.json"}}, "expect": {"deny": "protected:config"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "MultiEdit", "tool_input": {"file_path": "{store}/tag_taxonomy.json"}}, "expect": {"deny": "protected:config"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Read", "tool_input": {"file_path": "{path:@cache}"}}, "expect": {"deny": false, "mutation": "skipped:read_tool"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Bash", "tool_input": {"command": "git status"}}, "expect": {"deny": false, "mutation": "skipped:readonly_shell"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Write", "tool_input": {"file_path": "{base}/scratch/todo.txt"}, "scratchpad_dir": "{base}/scratch"}, "expect": {"deny": false, "mutation": "skipped:scratch"}},
+  {"hook": "stop", "expect": {"stop_reason": "no_change"}},
+  {"hook": "user-prompt", "payload": {"prompt": "now change main"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Write", "tool_input": {"file_path": "{project}/main.py"}}, "expect": {"deny": false, "mutation": "tracked", "detail": {"touched": 1}}},
+  {"hook": "stop", "expect": {"reminder": "mutating"}}
+ ]
+}

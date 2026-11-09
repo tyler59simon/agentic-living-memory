@@ -1,0 +1,16 @@
+{
+ "name": "private-spans",
+ "description": "A <private> span in a prompt: the notice is injected, only salted hashes are kept, a capture that repeats the span is refused and an unrelated capture is not.",
+ "secrets": ["foxtrot", "juliet"],
+ "notes": [
+  {"key": "deploy", "title": "Deploy steps", "body": "Run install.py."}
+ ],
+ "steps": [
+  {"hook": "session-start"},
+  {"hook": "user-prompt", "payload": {"prompt": "deploy with this token <private>alpha bravo charlie delta echo foxtrot golf hotel india juliet</private> please"}, "expect": {"private_notice": true, "detail": {"private_spans": 1}}},
+  {"cli": ["capture", "--session", "{session}", "--title", "Deploy token", "--summary", "alpha bravo charlie delta echo foxtrot golf hotel india juliet", "--type", "decision"], "expect": {"exit": 5, "reason": "private_content"}},
+  {"cli": ["capture", "--session", "{session}", "--title", "Deploys go through the release pipeline", "--summary", "Every deploy runs through the release pipeline.", "--type", "decision"], "expect": {"exit": 0, "status": "created"}},
+  {"hook": "stop", "expect": {"stop_reason": "receipt"}},
+  {"hook": "user-prompt", "payload": {"prompt": "what are the deploy steps"}, "expect": {"private_notice": false}}
+ ]
+}

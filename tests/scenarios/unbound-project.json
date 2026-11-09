@@ -1,0 +1,15 @@
+{
+ "name": "unbound-project",
+ "description": "A session in a git repository no domain covers: one bind hint, no memory injected, a Stop that stays quiet, and no hint again in the same session.",
+ "folders": ["elsewhere/.git"],
+ "notes": [
+  {"key": "cache", "title": "Cache eviction policy", "body": "LRU eviction."}
+ ],
+ "steps": [
+  {"hook": "session-start", "payload": {"cwd": "{base}/elsewhere"}, "expect": {"detail": {"bind_hint": true}, "context_contains": ["bind"]}},
+  {"hook": "user-prompt", "payload": {"cwd": "{base}/elsewhere", "prompt": "what is our cache eviction policy"}, "expect": {"inject": [], "context_excludes": ["{short:@cache}"]}},
+  {"hook": "pre-tool-use", "payload": {"cwd": "{base}/elsewhere", "tool_name": "Edit", "tool_input": {"file_path": "{base}/elsewhere/app.py"}}, "expect": {"deny": false}},
+  {"hook": "stop", "payload": {"cwd": "{base}/elsewhere"}, "expect": {"stop_reason": "unbound", "reminder": null}},
+  {"hook": "session-start", "payload": {"cwd": "{base}/elsewhere"}, "expect": {"detail": {"bind_hint": false}}}
+ ]
+}

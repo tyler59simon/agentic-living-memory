@@ -1,0 +1,19 @@
+{
+ "name": "global-domain",
+ "description": "Knowledge that holds everywhere: capture --global, a project capture that repeats it is reported as a duplicate, promotion of a project note by reviewed plan, and prompts that inject global notes.",
+ "harnesses": ["claude"],
+ "notes": [
+  {"key": "parser", "title": "Parser uses recursive descent", "body": "The parser is hand-written recursive descent with one token of lookahead."}
+ ],
+ "steps": [
+  {"cli": ["capture", "--global", "--title", "Prefer ripgrep over grep", "--summary", "Use rg for code search; it respects .gitignore and is faster.", "--type", "preference", "--subject", "user", "--concern", "preference"], "as": "rg", "expect": {"exit": 0, "status": "created", "result": {"domain": "_global"}}},
+  {"cli": ["capture", "--title", "Prefer ripgrep over grep", "--summary", "Use rg for code search; it respects .gitignore and is faster.", "--type", "preference", "--subject", "user", "--concern", "preference"], "expect": {"exit": 0, "status": "duplicate"}},
+  {"cli": ["promote-plan", "--suggest"], "expect": {"exit": 0}},
+  {"cli": ["promote-plan", "@parser"], "save": {"plan": "plan_id", "digest": "digest"}, "expect": {"exit": 0}},
+  {"cli": ["inspect-plan", "{plan}"], "expect": {"exit": 0}},
+  {"cli": ["apply", "{plan}", "--expected-plan-sha256", "{digest}"], "expect": {"exit": 0}},
+  {"cli": ["read", "demo:{id:@parser}", "--metadata-only"], "expect": {"exit": 0, "result": {"domain": "_global"}}},
+  {"hook": "session-start", "expect": {"detail": {"shown": ["@rg"]}}},
+  {"hook": "user-prompt", "payload": {"prompt": "should I search the code with ripgrep or grep"}, "expect": {"inject": [], "path": "all_shown", "detail": {"suppressed_shown": ["@rg"]}}}
+ ]
+}

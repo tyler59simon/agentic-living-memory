@@ -1,0 +1,25 @@
+{
+ "name": "compaction-recall",
+ "description": "Around a compaction: PreCompact steering (Claude), the handoff naming the notes saved this session, auto-recall from the transcript before the boundary, and the recall command.",
+ "harnesses": ["claude", "codex"],
+ "notes": [
+  {"key": "cache", "title": "Cache eviction policy", "body": "LRU eviction."}
+ ],
+ "transcript": [
+  {"type": "user", "timestamp": "2026-11-08T10:00:00Z", "message": {"role": "user", "content": "Why does the flux capacitor calibration drift after restarts?"}},
+  {"type": "assistant", "timestamp": "2026-11-08T10:01:00Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "The flux capacitor calibration drifts because the baseline is read before the gigawatt sensor warms up."}]}},
+  {"type": "user", "timestamp": "2026-11-08T10:02:00Z", "message": {"role": "user", "content": "Then delay the baseline read by thirty seconds."}},
+  {"type": "system", "subtype": "compact_boundary", "content": "Conversation compacted", "timestamp": "2026-11-08T11:00:00Z"},
+  {"type": "user", "timestamp": "2026-11-08T11:01:00Z", "message": {"role": "user", "content": "continue with the release notes"}}
+ ],
+ "steps": [
+  {"hook": "session-start", "payload": {"transcript_path": "{transcript}", "source": "startup"}},
+  {"hook": "user-prompt", "payload": {"prompt": "fix the calibration drift", "transcript_path": "{transcript}"}},
+  {"cli": ["capture", "--session", "{session}", "--title", "Calibration baseline waits for sensor warm-up", "--summary", "The baseline read is delayed thirty seconds after start.", "--type", "decision"], "as": "baseline", "expect": {"exit": 0, "status": "created"}},
+  {"hook": "pre-compact", "payload": {"trigger": "auto", "transcript_path": "{transcript}"}, "expect": {"instructions": true, "detail": {"trigger": "auto", "steered": true}}, "expect_by_harness": {"codex": {"instructions": false, "detail": {"trigger": "auto", "steered": false}}}},
+  {"hook": "session-start", "payload": {"transcript_path": "{transcript}", "source": "compact"}, "expect": {"context_contains": ["{short:@baseline}"]}},
+  {"hook": "user-prompt", "payload": {"prompt": "why did the flux capacitor calibration drift", "transcript_path": "{transcript}"}, "expect": {"recall": 2, "context_contains": ["From before compaction", "gigawatt sensor"]}},
+  {"hook": "user-prompt", "payload": {"prompt": "why did the flux capacitor calibration drift", "transcript_path": "{transcript}"}, "expect": {"recall": 0}},
+  {"cli": ["recall", "baseline read", "--session", "{session}"], "expect": {"exit": 0}}
+ ]
+}
