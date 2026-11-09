@@ -64,9 +64,10 @@ def _file_flags(p):
     p.add_argument('--files',choices=['auto','none'],help="auto: add the files changed this turn (needs --session); none: clear the list")
 
 FACET_FLAGS=('subject','concern','platform','technology')
-def _facet_tags(args):
+CAPTURE_FACETS=FACET_FLAGS+('project',)
+def _facet_tags(args,facets=FACET_FLAGS):
     """--subject x and --subject subject/x both mean subject/x."""
-    return [v if v.startswith(f+'/') else f+'/'+v for f in FACET_FLAGS for v in (getattr(args,f) or [])]
+    return [v if v.startswith(f+'/') else f+'/'+v for f in facets for v in (getattr(args,f) or [])]
 
 # Defaults when a capture names no subject/ or concern/ tag; used only if the tag is in the taxonomy.
 SUBJECT_BY_TYPE={'preference':'subject/user'}
@@ -131,6 +132,9 @@ def doctor(root,cwd,explicit=None,domain=None):
             if kind=='global_domains' and canonical==GLOBAL:missing=False
             if missing:warnings.append(f"search_scope.{kind} names '{name}', which has no domain folder; {effect}")
     from .backup import staleness_warning
+    from .projects import listing
+    try:warnings+=['projects: '+w for w in listing(root)['warnings']]
+    except ValueError as exc:warnings.append(f'projects.json: {exc}')
     stale=staleness_warning(root)
     if stale:warnings.append(stale)
     from .logs import summary as log_summary
@@ -163,7 +167,7 @@ def _sectioned(args,body=''):
     from .note_format import render
     return render(args.summary or '',args.detail or (),args.link or (),args.action or (),args.done or (),args.important or '',body)
 
-READ_ONLY={'search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links'}
+READ_ONLY={'search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects'}
 # Viewer: a human-facing app browsing the store. Read-only, and its reads are not usage evidence for the diary.
 VIEWER=READ_ONLY|{'taxonomy','review','diff','inspect-plan'}
 SERVE_API=1
@@ -299,7 +303,7 @@ def main(argv=None):
     p=sub('setup');p.add_argument('--location',type=Path);p.add_argument('--non-interactive',action='store_true');p.add_argument('--source',type=Path);p.add_argument('--apply-plan');p.add_argument('--inspect-plan');p.add_argument('--expected-plan-sha256')
     p=sub('bind');p.add_argument('name');p.add_argument('prefix',nargs='+')
     p=sub('capture');p.add_argument('items',nargs='*');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='');p.add_argument('--prefix',help='Compatibility assertion only; must equal the uppercase type');p.add_argument('--type',choices=NOTE_TYPES,default='knowledge');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help='REF of a note this one replaces; it is retired in the same transaction');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk notes get a default')
-    for facet in FACET_FLAGS:p.add_argument('--'+facet,action='append',default=[])
+    for facet in CAPTURE_FACETS:p.add_argument('--'+facet,action='append',default=[])
     p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
     sections_args(p);_file_flags(p)
     p=sub('search');p.add_argument('query',nargs='?',default='');p.add_argument('--file',help='Notes about this file or folder: listed in their files property, or named in the body');p.add_argument('--scope',choices=['active','fallback','all'],default='fallback');p.add_argument('--limit',type=int,default=5);p.add_argument('--filter',action='append',default=[]);p.add_argument('--rebuild',action='store_true')
@@ -338,6 +342,8 @@ def main(argv=None):
     p=sub('query');p.add_argument('sql')
     p=sub('taxonomy-plan');p.add_argument('tags',nargs='+')
     p=sub('taxonomy')
+    p=sub('project-plan');p.add_argument('action',choices=['create','update','archive']);p.add_argument('--payload-file',type=Path)
+    p=sub('projects');p.add_argument('--status',choices=['active','paused','archived','any'],default='any')
     p=sub('batch');p.add_argument('--payload-file',type=Path)
     p=sub('retag-plan');p.add_argument('--payload-file',type=Path)
     p=sub('remap-plan');p.add_argument('--payload-file',type=Path)
@@ -400,7 +406,7 @@ def main(argv=None):
                 else:raise ValueError('Use title body, domain title body, --title with --summary/--detail, or a JSON payload')
                 body=_sectioned(args,body) or body
                 tags=args.tag+[t.strip() for t in args.tags.split(',') if t.strip()]
-                tags += _facet_tags(args)
+                tags += _facet_tags(args,CAPTURE_FACETS)
                 data={'title':title,'body':body,'tags':tags,'prefix':args.prefix,'type':args.type,'context':args.context,'idempotency_key':args.idempotency_key,'domain':domain}
                 if args.turn and not args.session:raise ValueError('--turn needs --session')
                 if args.session:data.update(session_id=args.session,turn_id=_turn(root,args.session,args.turn))
@@ -678,6 +684,13 @@ def main(argv=None):
         elif cmd=='taxonomy-plan':
             from .tag_taxonomy import plan_update
             result=plan_update(args.tags,root)
+        elif cmd=='project-plan':
+            from .projects import project_plan
+            result=project_plan(root,args.action,_payload(args))
+            result['hint']='Review with inspect-plan PLAN_ID, then apply PLAN_ID --expected-plan-sha256 DIGEST.'
+        elif cmd=='projects':
+            from .projects import listing
+            result=listing(root,args.status)
         elif cmd=='taxonomy':result=read_json(root/'tag_taxonomy.json',{'tags':[]})
         elif cmd=='batch':
             import contextlib,io

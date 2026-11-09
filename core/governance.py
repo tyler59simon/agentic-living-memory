@@ -234,6 +234,11 @@ def retag_plan(root,mappings,domains=None):
     root=Path(root).resolve();changes={};affected=[]
     if not isinstance(mappings,dict) or not mappings:raise ValueError('Provide old-tag to new-tag mappings')
     if any('/' not in tag or tag.split('/',1)[0] not in FACETS for tag in mappings.values()):raise ValueError('New tags require controlled facets')
+    wanted=sorted({t.split('/',1)[1] for t in mappings.values() if t.startswith('project/')})
+    if wanted:
+        from .projects import load
+        missing=[s for s in wanted if s not in {p['slug'] for p in load(root)['projects']}]
+        if missing:raise ValueError('Unregistered project tags: '+', '.join('project/'+s for s in missing)+'; create projects with project-plan')
     with store_lock(root):
         # The taxonomy is store-wide, so a retag must cover every domain directory
         # (including _global and domains no longer bound), or it strands other notes.

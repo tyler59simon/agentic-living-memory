@@ -267,7 +267,7 @@ def near_titles(title,notes,low=0.6,high=0.8):
     scored=sorted(((scorer.score(title,n['title']),n) for n in notes),key=lambda s:-s[0])
     return [n for s,n in scored if low<=s<high][:3]
 
-def build_note(title,body,tags,domain,root,note_type='knowledge',context='',key=None,review_by=None,supersedes=(),files=None,origin=None,note_id=None):
+def build_note(title,body,tags,domain,root,note_type='knowledge',context='',key=None,review_by=None,supersedes=(),files=None,origin=None,note_id=None,extra_tags=()):
     """(path, note, file text) for a new active note, validated like every capture. Writes nothing; capture and
     ingest-plan both create notes through it."""
     stamp=now()
@@ -278,7 +278,7 @@ def build_note(title,body,tags,domain,root,note_type='knowledge',context='',key=
     files=clean_files(files)
     if files:note['files']=files
     if origin:note['origin']=str(origin)
-    validate(note,domain,root,new=True)
+    validate(note,domain,root,new=True,extra_tags=extra_tags)
     path=Path(root)/'domains'/domain/'notes'/f"{note['prefix']} - {slug(title)}-{note['id'][:8]}.md"
     return path,note,serialize(note)
 

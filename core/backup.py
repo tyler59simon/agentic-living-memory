@@ -15,7 +15,7 @@ INTERVAL_HOURS=24
 STALE_HOURS=48
 # Hooks skip automatic snapshots of very large stores; doctor already flags that size.
 AUTO_MAX_NOTES=1500
-TOP_LEVEL=('bindings.json','tag_taxonomy.json','schema-version.json')
+TOP_LEVEL=('bindings.json','tag_taxonomy.json','projects.json','schema-version.json')
 MEMBER=re.compile(r'domains/[A-Za-z0-9_.-]+/(?:notes|archive)/(?:[^/\\]+/)*[^/\\]+\.md')
 NAME=re.compile(r'lm-(\d{8}-\d{6})(?:-(\d+))?\.zip')
 

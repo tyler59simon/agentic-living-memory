@@ -88,6 +88,8 @@ Type answers “what kind of information is this?” Lifecycle `status` answers 
 
 Tags describe the subject and concern, optionally the platform and technology. Every new note still requires registered `subject/` and `concern/` tags. Type names do not automatically become tags; use `taxonomy` to inspect the existing vocabulary. A knowledge note correcting an earlier misunderstanding can use `subject/project` and `concern/correction`.
 
+A project's charter is a `context` note tagged `project/<slug>` (with `subject/project` and `concern/knowledge`); `project-plan create` writes it and `projects.json` links to it.
+
 Date status snapshots in the body and preserve the information needed to interpret them later. When a snapshot becomes misleading, use an approved update, archive or supersession plan. The system does not automatically expire status notes or treat a plan, risk or policy as an executable instruction.
 
 ## Capture and existing-note conversion
