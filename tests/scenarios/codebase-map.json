@@ -1,0 +1,37 @@
+{
+ "name": "codebase-map",
+ "description": "A prompt that names a mapped repo injects its map once per revision; reads of that repo then add nothing and repeat reads take the fast path; an unmapped repo gets one line, its exploration earns one Stop reminder, and a subagent spawn is pointed at the map.",
+ "folders": ["project/suite-plugin/.git", "project/suite-plugin/runtime", "project/hivemind/.git"],
+ "notes": [
+  {"key": "suitemap", "type": "map", "files": ["suite-plugin"], "tags": ["subject/project", "concern/architecture"], "title": "suite-plugin codebase map",
+   "body": "A demo diagram plugin built from one runtime.\n\n* **Layout:** runtime/ holds the CLI; skills/ is generated from it.\n* **Build/test/run:** py -m unittest discover -s tests."}
+ ],
+ "steps": [
+  {"hook": "session-start"},
+  {"hook": "user-prompt", "payload": {"prompt": "add a feature to the suite plugin"},
+   "expect": {"context_contains": ["Codebase map for suite-plugin", "{short:@suitemap}", "runtime/ holds the CLI"], "detail": {"maps": {"injected": ["@suitemap"]}}}},
+  {"hook": "user-prompt", "payload": {"prompt": "another suite plugin change"}, "expect": {"context_excludes": ["Codebase map for suite-plugin"]}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Read", "tool_input": {"file_path": "{project}/suite-plugin/runtime/cli.py"}}, "expect": {"context_excludes": ["Codebase map"]}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Grep", "tool_input": {"pattern": "def main", "path": "{project}/suite-plugin"}},
+   "expect_by_harness": {"claude": {"fast": true}, "factory": {"fast": true}, "codex": {"fast": false}, "copilot": {"fast": false}}},
+  {"hook": "stop", "expect": {"stop_reason": "no_change", "reminder": null}},
+  {"hook": "user-prompt", "payload": {"prompt": "explore the hivemind app"}, "expect": {"context_contains": ["hivemind has no codebase map yet"]}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Read", "tool_input": {"file_path": "{project}/hivemind/app.py"}}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Glob", "tool_input": {"pattern": "**/*.py", "path": "{project}/hivemind"}}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Read", "tool_input": {"file_path": "{project}/hivemind/db.py"}}},
+  {"hook": "stop", "expect": {"reminder": "explored"}},
+  {"hook": "user-prompt", "payload": {"prompt": "more hivemind reading"}, "expect": {"context_excludes": ["no codebase map yet"]}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Read", "tool_input": {"file_path": "{project}/hivemind/ui.py"}},
+   "expect_by_harness": {"claude": {"fast": true}, "factory": {"fast": true}}},
+  {"hook": "stop", "expect": {"stop_reason": "no_change", "reminder": null}},
+  {"hook": "user-prompt", "payload": {"prompt": "look into the runtime"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Agent", "tool_input": {"description": "Explore runtime", "prompt": "Map the suite plugin runtime"}},
+   "expect_by_harness": {"claude": {"context_contains": ["subagent's brief", "{short:@suitemap}"]}, "codex": {"context_contains": ["subagent's brief"]}}},
+  {"hook": "subagent-start", "payload": {"agent_id": "sub1", "agent_type": "Explore"}, "expect": {"context_contains": ["{short:@suitemap}"]}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Read", "tool_input": {"file_path": "{project}/suite-plugin/runtime/cli.py"}, "agent_id": "sub1"},
+   "expect_by_harness": {"claude": {"context_contains": ["Codebase map for suite-plugin"]}, "codex": {"context_contains": ["Codebase map for suite-plugin"]}}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Write", "tool_input": {"file_path": "{project}/suite-plugin/exporters/vsdx.py", "content": "x"}},
+   "expect": {"mutation": "tracked", "detail": {"created_top_level": {"suite-plugin": ["exporters"]}}}},
+  {"hook": "stop", "expect": {"reminder": "grown", "detail": {"explore_pending": [["suite-plugin", "grown"]]}}}
+ ]
+}

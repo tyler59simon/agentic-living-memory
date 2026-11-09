@@ -12,7 +12,7 @@ Each scenario runs once per harness it lists (default: all four) against a fresh
 
 Steps are sent in each harness's own wire format:
 - Copilot gets camelCase names and JSON-string tool arguments; only Codex gets a `turn_id`.
-- Claude and Factory send only `Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell` tool calls to the hook.
+- Claude and Factory send only `Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|Read|Glob|Grep|Agent|Task` tool calls to the hook. Repeat Read, Glob and Grep calls are answered by `core/hookfast.py` without loading the runtime.
 - Events a harness does not wire are skipped, not failed.
 
 **Expectations** are checked against the adapter's parsed reply and the debug log's decision detail (see MAINTENANCE.md). Hook steps can expect `inject`, `inject_includes`, `path`, `gates`, `context_contains`, `context_excludes`, `deny` (a rule such as `protected:domains`, or `subagent`), `allow`, `reminder`, `stop_reason`, `mutation`, `hints`, `recall`, `private_notice`, `instructions`, `system_message`, `internal`, `level` and a `detail` subset. CLI steps can expect `exit`, `status`, `reason` and a `result` subset. `save`/`as` keep values and new notes for later steps.
