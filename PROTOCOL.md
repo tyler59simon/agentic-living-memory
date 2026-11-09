@@ -17,7 +17,7 @@ Prompt retrieval:
 - Notes containing every term rank first. When they do not fill the candidate list, notes containing some of the terms follow, so one weak all-terms match cannot hide a note whose title carries most of the prompt.
 - Each revision of a note is injected at most once per session (session start resets this); a note corrected since it was shown is offered again. Long pasted prompts keep their first and last 16 terms. Subagent hand-backs and task notifications are not searched.
 - Notes that share title words are ranked by relevance, not date; a note replaced by a newer one is superseded explicitly.
-- A project bound inside another bound folder also searches the parent domain. Every project searches the global domain (`_global`, not bound to any folder), and relevance is judged within each domain before the results are merged.
+- A project bound inside another bound folder also searches the parent domain. Every project searches the global domain (`_global`, not bound to any folder), and relevance is judged within each domain before the results are merged. Global notes rank like the project's own; a parent domain's count half. Open work at session start and `open` include the global domain.
 - When a prompt of two or more informative terms matches nothing and the session-start index has not already listed titles, up to five recent titles are listed once per session for the agent to judge: from the global domains if one exists, otherwise from the active and parent domains. `doctor` warns when `search_scope` names a domain that has no folder.
 
 The explicit `search` command is unfiltered and returns five results with a 0-1 `relevance`.

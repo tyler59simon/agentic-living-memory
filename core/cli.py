@@ -331,13 +331,24 @@ def main(argv=None):
                     print(json.dumps(result,ensure_ascii=False,separators=(',',':')));return 0
                 filters['file']=wanted
             if not args.query.strip():raise ValueError('search needs a query, or --file PATH')
+            from .runtime import relevance_gate
+            gate=relevance_gate(args.query,root);gated=True
+            # As for prompts: global notes rank like the project's own, a parent's count half.
+            weights={**{g:2 for g in globals_},domain:2,**{p:1 for p in parent_domains(domain,config) if p!=domain}}
             def run(domains):
-                return search_domains(args.query,domains,args.limit,root,filters or None,args.rebuild)
-            domains=sorted(load_bindings(root).get('domains',{})) if args.scope=='all' else primary
+                # Relevance is judged within each domain before the merge, as for prompts, so weak local hits
+                # cannot bury a strong match in a parent or global domain. An explicit search still answers:
+                # when nothing passes the gate, the best ungated matches are returned and marked.
+                nonlocal gated
+                hits=search_domains(args.query,domains,args.limit,root,filters or None,args.rebuild,weights=weights,keep=gate)
+                if hits:gated=True;return hits
+                gated=False;return search_domains(args.query,domains,args.limit,root,filters or None,args.rebuild,weights=weights)
+            domains=list(dict.fromkeys(sorted(load_bindings(root).get('domains',{}))+globals_)) if args.scope=='all' else primary
             hits=run(domains);fallback=False
             if not hits and args.scope=='fallback' and foreign:domains=foreign;hits=run(domains);fallback=True
             for hit in hits:hit['sourceScope']='active' if hit['domain']==domain else 'global' if hit['domain'] in globals_ else 'foreign';hit.pop('path',None)
-            result={'ok':True,'mode':args.scope,'domains':domains,'fallback':fallback,'results':hits}
+            result={'ok':True,'mode':args.scope,'domains':domains,'fallback':fallback,'relevant':gated,'results':hits}
+            if hits and not gated:result['hint']='No note passed the relevance check; these are the closest matches, least likely to apply.'
         elif cmd=='read':
             from .notes import find_note
             d,n=_reference(args.reference,domain,root);path,note=find_note(n,d,root)
@@ -394,7 +405,8 @@ def main(argv=None):
             from .notes import open_work,short_ref
             from .runtime import parent_domains
             if not domain:raise ValueError('unbound_project')
-            found=open_work([domain]+parent_domains(domain,load_bindings(root)),root)
+            from .common import global_domains
+            found=open_work(list(dict.fromkeys([domain]+parent_domains(domain,load_bindings(root))+global_domains(root))),root)
             items=[{'ref':f"{d}:{n['id']}",'short_ref':short_ref(d,n['id']),'title':n['title'],'type':n['type'],'updated':str(n.get('updated',''))[:10],'index':i,'item':text}
                    for d,n,listed in found for i,text in listed]
             result={'ok':True,'domain':domain,'notes':len(found),'count':len(items),'items':items[:max(1,min(500,args.limit))],
@@ -449,7 +461,8 @@ def main(argv=None):
             from .usage import stats
             from .runtime import parent_domains
             if not domain:raise ValueError('unbound_project')
-            result=stats(root,[domain]+parent_domains(domain,load_bindings(root)),max(1,min(30,args.days)),max(1,min(100,args.limit)))
+            from .common import global_domains
+            result=stats(root,list(dict.fromkeys([domain]+parent_domains(domain,load_bindings(root))+global_domains(root))),max(1,min(30,args.days)),max(1,min(100,args.limit)))
         elif cmd=='plan':
             from .notes import change
             d,n=_reference(args.reference,domain,root);values=_payload(args) if args.payload_file or args.action in {'update','rename','retag','supersede'} else {}
