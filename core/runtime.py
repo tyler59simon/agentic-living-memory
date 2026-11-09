@@ -846,6 +846,13 @@ def _process(harness,event,payload,root=None,info=None):
         if payload.get('stop_hook_active') or payload.get('stopHookActive') or reminder.exists():
             detail['reason']='stop_active' if payload.get('stop_hook_active') or payload.get('stopHookActive') else 'already_reminded';_update(root,session,close);return {}
         atomic_write(reminder,'reminded\n')
+        def reminded(s):
+            # The reminder settles these turns: a later turn is not reminded again about this one's statement
+            # or changes, even when the harness sends no stop_hook_active follow-up. The turn's touched files
+            # stay for a capture that answers the reminder, and `reminded` lets that capture count as a signal capture.
+            s.pop('open_turns',None);s.pop('mutating',None);s.pop('signal',None)
+            s['reminded']={'turn':latest,'signal':signal}
+        _update(root,session,reminded)
         from .usage import record
         kind=signal if signal in SIGNAL_TEXT else 'mutating';detail['reason']='reminded:'+kind
         record(root,'reminder',session=session,kind=kind)

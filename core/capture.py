@@ -59,7 +59,10 @@ def _signal_capture(root,session,turn,notes):
     try:
         from .runtime import _pointer
         state=read_json(_pointer(root,session),{}) or {}
-        if state.get('signal') and turn in list(state.get('open_turns') or [])+[state.get('turn')]:
+        signal=state.get('signal');reminded=state.get('reminded') or {}
+        # A capture that answers a Stop reminder: the reminder already cleared the turn's signal.
+        if not signal and reminded.get('turn')==turn:signal=reminded.get('signal')
+        if signal and turn in list(state.get('open_turns') or [])+[state.get('turn'),reminded.get('turn')]:
             from .usage import record
-            record(root,'signal-capture',notes,session,state['signal'])
+            record(root,'signal-capture',notes,session,signal)
     except (OSError,ValueError):pass
