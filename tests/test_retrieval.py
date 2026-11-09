@@ -114,7 +114,11 @@ class SessionContext(StoreFixture):
         self.assertIn('concern/{architecture,decision}', text)
         self.assertIn('--session sess', text)
         self.assertNotIn('--subject project --concern knowledge', text)
-        self.assertLess(len(text.replace(str(self.root), '')), 3500)
+        # Measure the protocol, not this machine's paths: the store, the interpreter and the script all appear
+        # in the command line, and a longer checkout or Python path must not decide whether this passes.
+        for path in (str(self.root), sys.executable, str(runtime.SCRIPT)):
+            text = text.replace(path, '')
+        self.assertLess(len(text), 3500)
 
     def test_guidance_notes_come_first(self):
         capture('Prefer small commits', 'Keep commits small.', TAGS, 'demo', self.root, type='preference')
