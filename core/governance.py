@@ -133,7 +133,15 @@ def undo(root,operation_id):
         for effect in value['effects']:
             p=confined(root,effect['path']);current=digest(p.read_bytes()) if p.exists() else None
             if current!=effect['after_hash']:raise ValueError('Undo conflicts with later edits')
-        return plan(root,changes,'undo:'+operation_id,domains)
+        # Restoring an older taxonomy drops tags; notes tagged since (outside this undo) would then fail validation.
+        guards=None
+        if 'tag_taxonomy.json' in changes:
+            tags_of=lambda t:set((t.get('tags',[]) if isinstance(t,dict) else t) or [])
+            dropped=tags_of(read_json(root/'tag_taxonomy.json',{'tags':[]}))-tags_of(json.loads(changes['tag_taxonomy.json']) if changes['tag_taxonomy.json'] else {})
+            guards={'unused_tags':dropped}
+            try:_check_guards(root,{'guards':{'unused_tags':sorted(dropped)},'domains':sorted(domains),'changes':changes})
+            except ValueError as exc:raise ValueError('Undo would remove tags that notes still use; retag those notes first ('+str(exc).split(': ',1)[-1]+')') from None
+        return plan(root,changes,'undo:'+operation_id,domains,guards=guards)
 
 def remap(root,mappings):
     from .notes import find_note
@@ -234,6 +242,11 @@ def retag_plan(root,mappings,domains=None):
     root=Path(root).resolve();changes={};affected=[]
     if not isinstance(mappings,dict) or not mappings:raise ValueError('Provide old-tag to new-tag mappings')
     if any('/' not in tag or tag.split('/',1)[0] not in FACETS for tag in mappings.values()):raise ValueError('New tags require controlled facets')
+    wanted=sorted({t.split('/',1)[1] for t in mappings.values() if t.startswith('project/')})
+    if wanted:
+        from .projects import load
+        missing=[s for s in wanted if s not in {p['slug'] for p in load(root)['projects']}]
+        if missing:raise ValueError('Unregistered project tags: '+', '.join('project/'+s for s in missing)+'; create projects with project-plan')
     with store_lock(root):
         # The taxonomy is store-wide, so a retag must cover every domain directory
         # (including _global and domains no longer bound), or it strands other notes.

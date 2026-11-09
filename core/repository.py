@@ -15,7 +15,7 @@ from pathlib import Path
 from .common import atomic_write, file_lock, memory_root, retry_sharing
 
 STATUSES = {"active", "resolved", "archived", "superseded"}
-FACETS = ("subject", "concern", "platform", "technology")
+FACETS = ("subject", "concern", "platform", "technology", "project")
 _locks = threading.local()
 # Hook processes lower this so they fail fast inside the host's hook timeout.
 LOCK_TIMEOUT = 30
@@ -336,7 +336,7 @@ def problems(domain, root=None):
     return _scan(domain, root, True)[1]
 
 
-def validate(note, domain, root=None, new=False):
+def validate(note, domain, root=None, new=False, extra_tags=()):
     if not isinstance(note.get("id"), str) or not note["id"]:
         raise ValueError("Note requires a stable ID")
     if not note.get("title", "").strip() or not note.get("body", "").strip():
@@ -368,12 +368,14 @@ def validate(note, domain, root=None, new=False):
     known = taxonomy.get("tags", []) if isinstance(taxonomy, dict) else taxonomy
     if isinstance(known, dict):
         known = list(known)
+    if known and extra_tags:
+        known = list(known) + list(extra_tags)
     if new:
         for required in ("subject", "concern"):
             if not any(t.startswith(required + "/") for t in tags):
                 raise ValueError(f"Capture requires a registered {required}/ tag")
         if any(t.split("/", 1)[0] not in FACETS or "/" not in t for t in tags):
-            raise ValueError("Tags must use subject/, concern/, platform/, or technology/ facets")
+            raise ValueError("Tags must use subject/, concern/, platform/, technology/, or project/ facets")
     if known and set(tags) - set(known):
         raise ValueError("Unknown tags require an approved taxonomy plan: " + ", ".join(sorted(set(tags) - set(known))))
     if new and not known:

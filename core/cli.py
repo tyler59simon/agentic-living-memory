@@ -65,9 +65,10 @@ def _file_flags(p):
     p.add_argument('--files',choices=['auto','none'],help="auto: add the files changed this turn (needs --session); none: clear the list")
 
 FACET_FLAGS=('subject','concern','platform','technology')
-def _facet_tags(args):
+CAPTURE_FACETS=FACET_FLAGS+('project',)
+def _facet_tags(args,facets=FACET_FLAGS):
     """--subject x and --subject subject/x both mean subject/x."""
-    return [v if v.startswith(f+'/') else f+'/'+v for f in FACET_FLAGS for v in (getattr(args,f) or [])]
+    return [v if v.startswith(f+'/') else f+'/'+v for f in facets for v in (getattr(args,f) or [])]
 
 # Defaults when a capture names no subject/ or concern/ tag; used only if the tag is in the taxonomy.
 SUBJECT_BY_TYPE={'preference':'subject/user'}
@@ -132,6 +133,9 @@ def doctor(root,cwd,explicit=None,domain=None):
             if kind=='global_domains' and canonical==GLOBAL:missing=False
             if missing:warnings.append(f"search_scope.{kind} names '{name}', which has no domain folder; {effect}")
     from .backup import staleness_warning
+    from .projects import listing
+    try:warnings+=['projects: '+w for w in listing(root)['warnings']]
+    except ValueError as exc:warnings.append(f'projects.json: {exc}')
     stale=staleness_warning(root)
     if stale:warnings.append(stale)
     from .logs import summary as log_summary
@@ -164,17 +168,17 @@ def _sectioned(args,body=''):
     from .note_format import render
     return render(args.summary or '',args.detail or (),args.link or (),args.action or (),args.done or (),args.important or '',body)
 
-READ_ONLY={'search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links'}
+READ_ONLY={'search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects'}
 # Viewer: a human-facing app browsing the store. Read-only, and its reads are not usage evidence for the diary.
 VIEWER=READ_ONLY|{'taxonomy','review','diff','inspect-plan'}
-SERVE_API=1
+SERVE_API=2
 SERVE_LIMIT=2*1024*1024
 
 def _relative(root,path):
     try:return Path(path).resolve().relative_to(Path(root).resolve()).as_posix()
     except ValueError:return str(path)
 
-def list_notes(root,domains,status,types,tags,offset,limit):
+def list_notes(root,domains,status,types,tags,offset,limit,summary=False):
     """One page of notes across domains, newest update first, with the revision a later update must expect."""
     rows=[]
     for d in domains:
@@ -184,8 +188,17 @@ def list_notes(root,domains,status,types,tags,offset,limit):
             if any(t not in (n.get('tags') or []) for t in tags):continue
             rows.append({'ref':f"{d}:{n['id']}",'id':n['id'],'domain':d,'title':n.get('title'),'type':n.get('type'),'status':n.get('status','active'),
                          'tags':n.get('tags') or [],'created':str(n.get('created') or ''),'updated':str(n.get('updated') or ''),'revision':n['revision'],'path':_relative(root,n['path'])})
+            if summary:rows[-1].update(_summary_fields(n))
     rows.sort(key=lambda r:(r['updated'],r['id']),reverse=True)
     return {'ok':True,'domains':domains,'total':len(rows),'offset':offset,'notes':rows[offset:offset+limit]}
+
+def _summary_fields(note):
+    """list --with-summary: the Executive Summary as plain text (300 characters at most), the files, and Action Item counts for plan, bug and risk notes."""
+    from .note_format import sections,plain,action_items,ACTION_TYPES
+    body=note.get('body') or '';text=sections(body).get('summary') or ''
+    out={'summary':plain(text)[:300],'files':list(note.get('files') or [])}
+    if note.get('type') in ACTION_TYPES:items=action_items(body);out['actions']={'open':sum(1 for d,_ in items if not d),'done':sum(1 for d,_ in items if d)}
+    return out
 
 def list_domains(root):
     """Bound domains plus any domain folder on disk, with note counts and the search scope settings."""
@@ -300,7 +313,7 @@ def main(argv=None):
     p=sub('setup');p.add_argument('--location',type=Path);p.add_argument('--non-interactive',action='store_true');p.add_argument('--source',type=Path);p.add_argument('--apply-plan');p.add_argument('--inspect-plan');p.add_argument('--expected-plan-sha256')
     p=sub('bind');p.add_argument('name');p.add_argument('prefix',nargs='+')
     p=sub('capture');p.add_argument('items',nargs='*');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='');p.add_argument('--prefix',help='Compatibility assertion only; must equal the uppercase type');p.add_argument('--type',choices=NOTE_TYPES,default='knowledge');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help='REF of a note this one replaces; it is retired in the same transaction');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk/map notes get a default')
-    for facet in FACET_FLAGS:p.add_argument('--'+facet,action='append',default=[])
+    for facet in CAPTURE_FACETS:p.add_argument('--'+facet,action='append',default=[])
     p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
     sections_args(p);_file_flags(p)
     p=sub('search');p.add_argument('query',nargs='?',default='');p.add_argument('--file',help='Notes about this file or folder: listed in their files property, or named in the body');p.add_argument('--scope',choices=['active','fallback','all'],default='fallback');p.add_argument('--limit',type=int,default=5);p.add_argument('--filter',action='append',default=[]);p.add_argument('--rebuild',action='store_true')
@@ -310,8 +323,8 @@ def main(argv=None):
     p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
     sections_args(p);_file_flags(p)
     p=sub('supersede');p.add_argument('reference');p.add_argument('--by',required=True,help='REF of the note that replaces it');p.add_argument('--session');p.add_argument('--turn')
-    p=sub('review');p.add_argument('--limit',type=int,default=20)
-    p=sub('open');p.add_argument('--limit',type=int,default=50)
+    p=sub('review');p.add_argument('--limit',type=int,default=20);p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)')
+    p=sub('open');p.add_argument('--limit',type=int,default=50);p.add_argument('--all-domains',action='store_true',help='Every domain folder, not parents and global only');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)')
     p=sub('check');p.add_argument('reference');p.add_argument('item',nargs='?',help='Text of the Action Item: exact, or a unique part of it');p.add_argument('--index',type=int,help='1-based position among the note\'s Action Items, as open lists it');p.add_argument('--undo',action='store_true',help='Untick instead');p.add_argument('--session');p.add_argument('--turn')
     p=sub('timeline');p.add_argument('reference',nargs='?',help='Anchor note; default: the newest note');p.add_argument('--date',help='YYYY-MM-DD: anchor at the first note on or after this date');p.add_argument('--before',type=int,default=5);p.add_argument('--after',type=int,default=5);p.add_argument('--type',choices=NOTE_TYPES,action='append');p.add_argument('--by',choices=['updated','created'],default='updated');p.add_argument('--all',action='store_true',help='Include superseded, archived and resolved notes')
     p=sub('ingest-plan');p.add_argument('--source',type=Path,help="Auto-memory folder; default: Claude Code's folder for --cwd");p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of skipping the file");p.add_argument('--allow-similar',action='store_true')
@@ -339,13 +352,15 @@ def main(argv=None):
     p=sub('query');p.add_argument('sql')
     p=sub('taxonomy-plan');p.add_argument('tags',nargs='+')
     p=sub('taxonomy')
+    p=sub('project-plan');p.add_argument('action',choices=['create','update','archive']);p.add_argument('--payload-file',type=Path)
+    p=sub('projects');p.add_argument('--status',choices=['active','paused','archived','any'],default='any')
     p=sub('batch');p.add_argument('--payload-file',type=Path)
     p=sub('retag-plan');p.add_argument('--payload-file',type=Path)
     p=sub('remap-plan');p.add_argument('--payload-file',type=Path)
     p=sub('promote-plan');p.add_argument('refs',nargs='*',help='Project notes to move to the global domain');p.add_argument('--suggest',action='store_true',help='List candidates with reasons; writes nothing');p.add_argument('--only',help='With --suggest: one domain instead of all')
     p=sub('recall');p.add_argument('query');p.add_argument('--session',required=True);p.add_argument('--limit',type=int,default=5);p.add_argument('--all',action='store_true',help='Search the whole transcript, not only what precedes the latest compaction')
     p=sub('capture-finalize');p.add_argument('--session',required=True);p.add_argument('--turn',help='Defaults to the latest prompt of the session');p.add_argument('--note',action='append',default=[])
-    p=sub('list');p.add_argument('--status',choices=['active','resolved','archived','superseded','any'],default='active');p.add_argument('--type',choices=NOTE_TYPES,action='append');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)');p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--offset',type=int,default=0);p.add_argument('--limit',type=int,default=200)
+    p=sub('list');p.add_argument('--status',choices=['active','resolved','archived','superseded','any'],default='active');p.add_argument('--type',choices=NOTE_TYPES,action='append');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)');p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--with-summary',action='store_true',help='Add summary, files and actions {open, done} to each row');p.add_argument('--offset',type=int,default=0);p.add_argument('--limit',type=int,default=200)
     p=sub('domains')
     p=sub('links');p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--status',choices=['active','any'],default='active',help='any: include archived, resolved and superseded notes')
     p=sub('version')
@@ -401,7 +416,7 @@ def main(argv=None):
                 else:raise ValueError('Use title body, domain title body, --title with --summary/--detail, or a JSON payload')
                 body=_sectioned(args,body) or body
                 tags=args.tag+[t.strip() for t in args.tags.split(',') if t.strip()]
-                tags += _facet_tags(args)
+                tags += _facet_tags(args,CAPTURE_FACETS)
                 data={'title':title,'body':body,'tags':tags,'prefix':args.prefix,'type':args.type,'context':args.context,'idempotency_key':args.idempotency_key,'domain':domain}
                 if args.turn and not args.session:raise ValueError('--turn needs --session')
                 if args.session:data.update(session_id=args.session,turn_id=_turn(root,args.session,args.turn))
@@ -423,6 +438,10 @@ def main(argv=None):
                     if session and not turn:turn=_turn(root,session,None)
                     if not selected:raise ValueError('Project is unbound; pass --domain or bind it')
                     inferred=_infer_tags(item,root);redacted=_redact(item) if args.redact else []
+                    # Project attribution: capture only. cwd counts only for a session (serve passes the app's own cwd to every request).
+                    from . import projects
+                    ptags,candidates=projects.infer(item,selected,root,_session_state(root,session).get('touched',[]) if session else (),cwd if session else None)
+                    if ptags:item['tags']=list(item.get('tags') or [])+ptags;inferred=inferred+ptags
                     if session:
                         from .private import check as private_check
                         private_check(_session_state(root,session),item);item['origin']=_origin(root,session)
@@ -430,6 +449,7 @@ def main(argv=None):
                     # A duplicate found in, or promoted to, another domain is that domain's note.
                     landed=outcome.get('domain') or selected
                     if inferred:outcome['inferred_tags']=inferred
+                    if candidates:outcome['project_candidates']=candidates
                     if redacted:outcome['redacted']=redacted
                     suggested=[t for t in _session_state(root,session).get('touched',[]) if t not in (item.get('files') or [])] if session else []
                     if suggested and outcome.get('status')=='created':outcome['suggested_files']=suggested
@@ -497,7 +517,7 @@ def main(argv=None):
             if args.all_domains:domains=list_domains(root)['domains'];domains=[d['name'] for d in domains if (root/'domains'/d['name']/'notes').is_dir()]
             elif domain:domains=[domain]
             else:raise ValueError('unbound_project')
-            result=list_notes(root,domains,args.status,args.type or (),args.tag,max(0,args.offset),max(1,min(1000,args.limit)))
+            result=list_notes(root,domains,args.status,args.type or (),args.tag,max(0,args.offset),max(1,min(1000,args.limit)),args.with_summary)
         elif cmd=='domains':result=list_domains(root)
         elif cmd=='links':
             if args.all_domains:domains=[d['name'] for d in list_domains(root)['domains'] if (root/'domains'/d['name']/'notes').is_dir()]
@@ -546,19 +566,25 @@ def main(argv=None):
         elif cmd=='review':
             from .note_types import review_due,review_order,last_confirmed
             from .usage import used_refs
-            if not domain:raise ValueError('unbound_project')
-            due=review_order([n for n in inventory(domain,root) if review_due(n)],used_refs(root),domain)
-            result={'ok':True,'domain':domain,'due':len(due),'notes':[{'ref':f"{domain}:{n['id']}",'title':n['title'],'type':n.get('type'),'updated':str(n.get('updated',''))[:10],'review_by':n.get('review_by'),'confirmed':last_confirmed(n)} for n in due[:max(1,min(100,args.limit))]],
+            if args.all_domains:domains=[d['name'] for d in list_domains(root)['domains'] if (root/'domains'/d['name']/'notes').is_dir()]
+            elif domain:domains=[domain]
+            else:raise ValueError('unbound_project')
+            pool=[dict(n,domain=d) for d in domains for n in inventory(d,root) if all(t in (n.get('tags') or []) for t in args.tag)]
+            due=review_order([n for n in pool if review_due(n)],used_refs(root),None if args.all_domains else domain)
+            result={'ok':True,'domain':None if args.all_domains else domain,'due':len(due),'notes':[{'ref':f"{n['domain']}:{n['id']}",'title':n['title'],'type':n.get('type'),'updated':str(n.get('updated',''))[:10],'review_by':n.get('review_by'),'confirmed':last_confirmed(n),'revision':n['revision'],'domain':n['domain']} for n in due[:max(1,min(100,args.limit))]],
                     'hint':'For each note: still true -> confirm REF; changed -> update REF; replaced -> supersede it; obsolete -> ask for an archive plan. Never-confirmed notes nobody has read lately come first.'}
         elif cmd=='open':
             from .notes import open_work,short_ref
             from .runtime import parent_domains
-            if not domain:raise ValueError('unbound_project')
-            from .common import global_domains
-            found=open_work(list(dict.fromkeys([domain]+parent_domains(domain,load_bindings(root))+global_domains(root))),root)
+            if args.all_domains:scope=[d['name'] for d in list_domains(root)['domains'] if (root/'domains'/d['name']/'notes').is_dir()]
+            elif domain:
+                from .common import global_domains
+                scope=[domain]+parent_domains(domain,load_bindings(root))+global_domains(root)
+            else:raise ValueError('unbound_project')
+            found=open_work(list(dict.fromkeys(scope)),root,args.tag)
             items=[{'ref':f"{d}:{n['id']}",'short_ref':short_ref(d,n['id']),'title':n['title'],'type':n['type'],'updated':str(n.get('updated',''))[:10],'index':i,'item':text}
                    for d,n,listed in found for i,text in listed]
-            result={'ok':True,'domain':domain,'notes':len(found),'count':len(items),'items':items[:max(1,min(500,args.limit))],
+            result={'ok':True,'domain':None if args.all_domains else domain,'notes':len(found),'count':len(items),'items':items[:max(1,min(500,args.limit))],
                     'hint':"Tick one when done: check REF 'item text' (or --index N); --undo unticks."}
         elif cmd=='check':
             from .notes import check_action
@@ -679,6 +705,13 @@ def main(argv=None):
         elif cmd=='taxonomy-plan':
             from .tag_taxonomy import plan_update
             result=plan_update(args.tags,root)
+        elif cmd=='project-plan':
+            from .projects import project_plan
+            result=project_plan(root,args.action,_payload(args))
+            result['hint']='Review with inspect-plan PLAN_ID, then apply PLAN_ID --expected-plan-sha256 DIGEST.'
+        elif cmd=='projects':
+            from .projects import listing
+            result=listing(root,args.status)
         elif cmd=='taxonomy':result=read_json(root/'tag_taxonomy.json',{'tags':[]})
         elif cmd=='batch':
             import contextlib,io

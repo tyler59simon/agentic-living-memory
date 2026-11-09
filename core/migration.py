@@ -1,7 +1,7 @@
 """Separate reviewed plans for configuration upgrades and note-type normalization."""
 from pathlib import Path
 from .common import memory_root
-from .repository import read_json,canonical_json,inventory
+from .repository import read_json,canonical_json,inventory,FACETS
 from .governance import plan
 
 DEFAULT_TAGS=['subject/project','subject/user','concern/architecture','concern/decision','concern/correction','concern/workflow','concern/preference','concern/knowledge','platform/codex','platform/claude','platform/copilot','platform/factory','technology/python','technology/sqlite']
@@ -24,7 +24,7 @@ def migration_plan(root=None):
         scope['global_domains']=list(dict.fromkeys(names))
     if not aliases:config.pop('domain_aliases')
     changes['bindings.json']=canonical_json(config)
-    if not (root/'tag_taxonomy.json').exists():changes['tag_taxonomy.json']=canonical_json({'version':2,'facets':['subject','concern','platform','technology'],'tags':DEFAULT_TAGS})
+    if not (root/'tag_taxonomy.json').exists():changes['tag_taxonomy.json']=canonical_json({'version':2,'facets':list(FACETS),'tags':DEFAULT_TAGS})
     else:
         taxonomy=read_json(root/'tag_taxonomy.json');tags=taxonomy.get('tags',[]) if isinstance(taxonomy,dict) else taxonomy
         if any('/' not in tag for tag in tags):warnings.append('Legacy tags retained; use a reviewed retag-plan to migrate existing values')
