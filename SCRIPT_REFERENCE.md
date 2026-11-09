@@ -7,7 +7,7 @@ Use `python living_memory.py COMMAND --help` for exact arguments. Common options
 | Setup/health | setup [--location PATH] [--non-interactive] [--source PATH]; bind, doctor, migration-plan, note-type-plan, taxonomy, validate, rebuild |
 | Semantic search | semantic status; semantic install [--model NAME] [--from DIR]; semantic remove |
 | Retrieval | search QUERY [--limit 5] --scope active|fallback|all [--file PATH]; search --file PATH; read REF --max-chars N; query SQL |
-| New notes | capture TITLE BODY [--subject SUBJECT] [--concern CONCERN] [--supersedes REF] [--review-by DATE] [--redact] [--file PATH]... [--files auto]; capture --title TITLE --summary TEXT [--detail TEXT]... [--link TEXT]... [--action TEXT]... [--done TEXT]... [--important TEXT]; capture --payload-file FILE |
+| New notes | capture TITLE BODY [--global] [--subject SUBJECT] [--concern CONCERN] [--supersedes REF] [--review-by DATE] [--redact] [--file PATH]... [--files auto]; capture --title TITLE --summary TEXT [--detail TEXT]... [--link TEXT]... [--action TEXT]... [--done TEXT]... [--important TEXT]; capture --payload-file FILE |
 | Keep current | update REF [--title] [--body/--body-file] [--summary/--detail/--link/--action/--done/--important] [--tag] [--type] [--context] [--review-by] [--redact] [--file PATH]... [--files auto|none]; supersede REF --by REF; confirm REF [--session S]; review |
 | Open work | open; check REF 'ITEM TEXT' \| --index N [--undo] [--session S] |
 | Usefulness | stats [--days 30] [--limit 10] |
@@ -19,6 +19,7 @@ Use `python living_memory.py COMMAND --help` for exact arguments. Common options
 | History/recovery | history; diff OPERATION; undo OPERATION; recover OPERATION --direction forward|backward |
 | Snapshots | backup [--keep 7]; restore-plan FILE (then inspect-plan and apply) |
 | Bulk governance | merge-plan, retag-plan, taxonomy-plan, remap-plan |
+| Global domain | promote-plan --suggest [--only DOMAIN] (writes nothing); promote-plan REF... (then inspect-plan and apply); see [PROTOCOL.md](PROTOCOL.md) for `capture --global` and duplicates across domains |
 | Import/export | ingest-plan [--source DIR] [--redact] [--allow-similar]; export --out FILE [--type T]... [--tag TAG]... [--all]; import-plan FILE [--domain D] |
 | Derived views | sync VAULT; overlay-build VAULT; overlay-teardown-plan VAULT |
 

@@ -46,4 +46,6 @@ The vault is your own editing surface, so routine edits need no approval:
 
 Every vault edit is also kept under the canonical store's staged directory. The PreToolUse hook denies agent file edits under the vault's `Domains/`, `Archive/` and `Dashboards/` folders, so agent changes go through scripts. Overlay ownership is logical, not enforced by OS permissions. Vaults built with the earlier single `Living Memory/` folder migrate on the next sync or build.
 
+The global domain gets its own folder once you run `overlay-build VAULT --domain _global`; from then on it syncs like any other domain. When a note is promoted to the global domain, the next sync of its old domain removes the old copy if you had not edited it (an edited copy is kept and reported as a conflict), and the global domain's sync writes the new copy under `Domains/_global/`.
+
 A vault's six shared dashboards describe the most recently built domain, and each domain also has its own Sync Status page; per-domain notes and canvases coexist. Sync across the canonical store and vault uses separate durable transactions; a failed second phase is repaired by rerunning sync.

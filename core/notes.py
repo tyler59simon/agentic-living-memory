@@ -61,12 +61,93 @@ def resolve_ref(value,domain=None,root=None,search_domains=()):
     if not titled:raise ValueError(f'No note with ID, ID prefix or exact title {value!r}')
     return titled[0][0],titled[0][1]['id']
 def _commit(domain,changes,kind,root,expected=None):
-    changes=dict(changes);changes[f'domains/{domain}/.derived-dirty']='dirty\n'
+    return _commit_many([domain],changes,kind,root,expected)
+
+def _commit_many(domains,changes,kind,root,expected=None):
+    """One journaled transaction across domains (a promotion moves a note between two), then each
+    domain's derived state."""
+    domains=list(dict.fromkeys(domains));changes=dict(changes)
+    for domain in domains:changes[f'domains/{domain}/.derived-dirty']='dirty\n'
     receipt=transaction(root,changes,kind,expected)
-    try:reconcile(domain,root)
-    except Exception as exc:
-        receipt['warning']='canonical_committed_index_dirty';receipt['detail']=str(exc)
+    for domain in domains:
+        try:reconcile(domain,root)
+        except Exception as exc:
+            receipt['warning']='canonical_committed_index_dirty';receipt['detail']=str(exc)
     return receipt
+
+def ensure_global(root):
+    """The global domain's folders, created on first use; returns its name."""
+    from .common import global_domain
+    root=Path(root);name=global_domain(root);folder=root/'domains'/name
+    if not (folder/'notes').is_dir():
+        (folder/'notes').mkdir(parents=True,exist_ok=True);(folder/'archive').mkdir(exist_ok=True)
+        reconcile(name,root)
+    return name
+
+def related(a,b,root):
+    """Two domains whose notes already reach each other's sessions: the same domain, or parent and child."""
+    if a==b:return True
+    from .runtime import parent_domains
+    bindings=read_json(Path(root)/'bindings.json',{})
+    return a in parent_domains(b,bindings) or b in parent_domains(a,bindings)
+
+def domain_folders(root):
+    folder=Path(root)/'domains'
+    return sorted(p.name for p in folder.iterdir() if (p/'notes').is_dir()) if folder.is_dir() else []
+
+def _shingles(text,size=3):
+    from .note_format import plain
+    words=re.findall(r'[^\W_]+',plain(text or '').casefold())
+    return {tuple(words[i:i+size]) for i in range(max(1,len(words)-size+1))} if words else set()
+
+NEAR_TITLE=0.9
+NEAR_BODY=0.7
+
+def near_identical(title,body,note_type,other,scorer=None):
+    """The same note written twice: same type, near-equal title and mostly the same body (3-word shingles).
+    Strong enough to merge on without asking; mere title similarity is not."""
+    if effective_type(other)!=note_type:return False
+    if (scorer or TitleScorer([other])).score(title,other['title'])<NEAR_TITLE:return False
+    a,b=_shingles(body),_shingles(other.get('body',''))
+    return bool(a and b) and len(a&b)/len(a|b)>=NEAR_BODY
+
+def scope_hint(note):
+    """Why a project note may hold beyond its project, or None. Advisory: the agent decides."""
+    tags=set(note.get('tags',[]))
+    if 'subject/user' in tags:return 'tagged subject/user'
+    if 'subject/tooling' in tags:return 'tagged subject/tooling'
+    if note.get('type')=='preference' and not note.get('files'):return 'a preference that names no project files'
+    return None
+
+def _move_set(moves,root):
+    """(changes, expected) moving notes to other domains in one step. Each move is {'note', 'target',
+    and optionally 'status', 'superseded_by', 'supersedes'}. IDs and filenames are kept; relative Markdown
+    links in the moved notes and in the notes left behind follow the move."""
+    from .migration import rewrite_type_links
+    root=Path(root);targets={};steps=[];changes={};expected={}
+    for move in moves:
+        note=move['note'];source=Path(note['path']);status=move.get('status') or note.get('status','active')
+        destination=root/'domains'/move['target']/('notes' if status=='active' else 'archive')/source.name
+        if destination.exists() or destination in targets.values():
+            raise ValueError('Promotion filename collision: '+destination.relative_to(root).as_posix())
+        targets[source.resolve()]=destination;steps.append((move,source,destination,status))
+    moved={move['note']['id'] for move in moves}
+    for move,source,destination,status in steps:
+        note={**move['note'],'domain':move['target'],'status':status,'updated':now(),'path':str(destination)}
+        if move.get('superseded_by'):note['superseded_by']=move['superseded_by']
+        if move.get('supersedes'):note['supersedes']=sorted(set(note.get('supersedes',[]))|set(move['supersedes']))
+        note['body']=rewrite_type_links(note['body'],destination,targets,moved_from=source)
+        validate(note,move['target'],root)
+        rel=source.relative_to(root).as_posix();changes[rel]=None;expected[rel]=move['note']['revision']
+        changes[destination.relative_to(root).as_posix()]=serialize(note)
+    for domain in sorted({move['note']['domain'] for move in moves}):
+        for referring in inventory(domain,root,retired=True):
+            if referring['id'] in moved:continue
+            new=rewrite_type_links(referring['body'],Path(referring['path']),targets)
+            if new!=referring['body']:
+                rel=Path(referring['path']).relative_to(root).as_posix()
+                changes[rel]=serialize({**referring,'body':new,'updated':now()});expected[rel]=referring['revision']
+    return changes,expected
 
 def _review_date(value):
     if value in (None,''):return None
@@ -192,6 +273,53 @@ def build_note(title,body,tags,domain,root,note_type='knowledge',context='',key=
     path=Path(root)/'domains'/domain/'notes'/f"{note['prefix']} - {slug(title)}-{note['id'][:8]}.md"
     return path,note,serialize(note)
 
+def _cross_domain(title,body,domain,root):
+    """An exact copy of a new note outside its own domain, as (action, domain, note), or None.
+
+    Global and parent/child domains are already visible from here, so a copy there is a duplicate. A copy
+    in an unrelated project means the knowledge holds beyond one project, so it is promoted ('promote').
+    _cross_similar handles title-similar notes: a near-identical one in an unrelated project is promoted, a
+    similar one seen while capturing to global is superseded by the new global note ('supersede'), and
+    anything else is refused with the way to update or promote it."""
+    from .common import global_domains
+    globals_=set(global_domains(root))
+    others=[d for d in domain_folders(root) if d!=domain]
+    order=lambda d:(0 if d in globals_ else 1 if related(d,domain,root) else 2,d)
+    wanted=title.strip().casefold()
+    for other in sorted(others,key=order):
+        notes=[n for n in inventory(other,root) if n.get('status','active')=='active']
+        if not notes:continue
+        visible=other in globals_ or related(other,domain,root)
+        exact=next((n for n in notes if n['title'].strip().casefold()==wanted and n['body'].strip()==body.strip()),None)
+        if exact:return ('duplicate' if visible else 'promote'),other,exact
+    return None
+
+def _cross_similar(title,body,note_type,domain,root):
+    """Like _cross_domain, for title-similar notes (skipped with allow_similar)."""
+    from .common import global_domains
+    globals_=set(global_domains(root));to_global=domain in globals_
+    order=lambda d:(0 if d in globals_ else 1 if related(d,domain,root) else 2,d)
+    for other in sorted((d for d in domain_folders(root) if d!=domain),key=order):
+        notes=[n for n in inventory(other,root) if n.get('status','active')=='active']
+        similar=similar_title(title,notes) if notes else None
+        if not similar:continue
+        if other in globals_ or related(other,domain,root):return 'visible',other,similar
+        if to_global:return ('supersede' if effective_type(similar)==note_type else 'promotable'),other,similar
+        if near_identical(title,body,note_type,similar,TitleScorer(notes)):return 'promote',other,similar
+        return 'promotable',other,similar
+    return None
+
+def _promote_existing(note,source,root,origin_ref=None):
+    """Move one active project note into the global domain as it is (journaled, undoable)."""
+    target=ensure_global(root)
+    changes,expected=_move_set([{'note':note,'target':target}],root)
+    receipt=_commit_many([source,target],changes,'promote',root,expected)
+    ref=f"{target}:{note['id']}"
+    receipt.update(id=note['id'],domain=target,ref=ref,status='promoted',promoted_from=f"{source}:{note['id']}",
+                   hint=f'The same note was already in project {source}, so it now lives in the global domain, '
+                        f'where every project sees it. If your version adds detail, run `update {ref}`.')
+    return receipt
+
 def capture(title,body,tags,domain,root=None,**metadata):
     root=Path(root or memory_root()).resolve();domain=canonical_domain(domain,root)
     with store_lock(root):
@@ -199,8 +327,10 @@ def capture(title,body,tags,domain,root=None,**metadata):
         supplied_prefix=metadata.pop('prefix',None)
         if supplied_prefix is not None and supplied_prefix!=derived:
             raise ValueError('Prefix is derived from type; use --type '+selected_type+' and omit --prefix')
+        from .common import global_domains
         registered=read_json(root/'bindings.json',{}).get('domains',{})
-        if domain not in registered and domain not in {'global','_global'}:raise ValueError('Domain is not registered; run bind first')
+        if domain==global_domains(root)[0]:ensure_global(root)
+        elif domain not in registered and domain not in {'global','_global'}:raise ValueError('Domain is not registered; run bind first')
         body=format_body(body)
         key=metadata.pop('idempotency_key',None);allow_similar=bool(metadata.pop('allow_similar',False))
         supersedes=metadata.pop('supersedes',None) or []
@@ -230,17 +360,44 @@ def capture(title,body,tags,domain,root=None,**metadata):
                 raise ValueError(f"possible_duplicate conflict: similar to {ref} \"{similar['title']}\". If it is the same subject, "
                                  f"run `update {ref}` (the fact moved on) or capture with `--supersedes {ref}` (it was replaced); "
                                  "pass allow_similar only for a genuinely distinct note")
+        # Other domains: global and parent/child notes are already visible here; an unrelated project's copy
+        # of the same knowledge belongs in the global domain.
+        absorbed=None
+        found=_cross_domain(title,body,domain,root) or (None if allow_similar else _cross_similar(title,body,selected_type,domain,root))
+        if found:
+            action,other,match=found;ref=f"{other}:{match['id']}"
+            if action in {'duplicate','promote'} and effective_type(match)!=selected_type:
+                raise ValueError(f'Existing note {ref} has a different type; update that note instead')
+            if action=='duplicate':return {'ok':True,'id':match['id'],'domain':other,'ref':ref,'status':'duplicate','path':match['path']}
+            if action=='promote':return _promote_existing(match,other,root)
+            if action=='visible':
+                raise ValueError(f"possible_duplicate conflict: similar to {ref} \"{match['title']}\", which this domain already sees. "
+                                 f"If it is the same subject, run `update {ref}`; pass allow_similar only for a genuinely distinct note")
+            if action=='promotable':
+                raise ValueError(f"possible_duplicate conflict: similar to {ref} \"{match['title']}\" in another project. If it holds for both "
+                                 f"projects, run `promote-plan {ref}` and then update it; pass allow_similar only for a genuinely distinct note")
+            absorbed=(other,match)   # 'supersede': the new global note replaces the project one
         review_by=metadata.pop('review_by',None);context=metadata.pop('context','');files=metadata.pop('files',None);origin=metadata.pop('origin',None)
         if metadata:raise ValueError('Unsupported capture metadata: '+', '.join(metadata))
-        path,note,text=build_note(title,body,tags,domain,root,selected_type,context=context,key=key,review_by=review_by,supersedes=supersedes,files=files,origin=origin)
+        replaces=supersedes+([absorbed[1]['id']] if absorbed else [])
+        path,note,text=build_note(title,body,tags,domain,root,selected_type,context=context,key=key,review_by=review_by,supersedes=replaces,files=files,origin=origin)
         changes={path.relative_to(root).as_posix():text};expected={}
         for old in supersedes:
             # The new note and the retirement of what it replaces commit together.
             old_changes,old_expected,_=_change_set(old,domain,'supersede',root,successor=note,pending=changes)
             changes.update(old_changes)
             for rel,revision in old_expected.items():expected.setdefault(rel,revision)
-        result=_commit(domain,changes,'capture_supersede' if supersedes else 'capture',root,expected or None)
-        result.update(id=note['id'],status='created',path=str(path))
+        if absorbed:
+            # The project note moves into the global archive as superseded, so its history stays with its successor.
+            moved,moved_expected=_move_set([{'note':absorbed[1],'target':domain,'status':'superseded','superseded_by':note['id']}],root)
+            changes.update(moved);expected.update(moved_expected)
+            result=_commit_many([domain,absorbed[0]],changes,'capture_promote',root,expected)
+            result['promoted']=[f"{absorbed[0]}:{absorbed[1]['id']}"]
+        else:
+            result=_commit(domain,changes,'capture_supersede' if supersedes else 'capture',root,expected or None)
+        result.update(id=note['id'],domain=domain,status='created',path=str(path))
+        hint=None if domain in global_domains(root) else scope_hint(note)
+        if hint:result['scope_hint']={'reason':hint,'next':f'If this holds beyond this project, run `promote-plan {domain}:{note["id"]}`.'}
         near=near_titles(title,[n for n in existing if n.get('status','active')=='active' and n['id'] not in set(supersedes)])
         if near:result['similar']=[{'ref':f"{domain}:{n['id']}",'title':n['title']} for n in near]
         warnings=quality_warnings(note)
