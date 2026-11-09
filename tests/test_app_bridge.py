@@ -24,7 +24,7 @@ class AppBridge(StoreFixture):
 
     def test_version_lists_commands(self):
         code,result=self.cli('version')
-        self.assertEqual(code,0);self.assertEqual(result['api'],1)
+        self.assertEqual(code,0);self.assertEqual(result['api'],2)
         self.assertTrue({'serve','list','domains','version'}<=set(result['commands']))
 
     def test_list_pages_filters_and_reports_revisions(self):
@@ -76,7 +76,7 @@ class AppBridge(StoreFixture):
                            {'id':7,'argv':['capture','--domain','demo'],'stdin':payload},
                            {'id':8,'argv':['list','--domain','demo','--actor','viewer']})
         self.assertEqual([r['id'] for r in replies],[1,None,3,4,5,6,7,8])
-        self.assertEqual((replies[0]['exit_code'],replies[0]['result']['api']),(0,1))
+        self.assertEqual((replies[0]['exit_code'],replies[0]['result']['api']),(0,2))
         self.assertEqual([r['exit_code'] for r in replies[1:4]],[2,2,2])
         self.assertEqual((replies[4]['exit_code'],replies[4]['error']['code']),(6,'stale'))
         self.assertEqual((replies[5]['exit_code'],replies[5]['error']),(0,None))
