@@ -1,10 +1,10 @@
 # Note types and use cases
 
-Living Memory has eleven note types. Each note has one primary type, selected by what the note is meant to preserve. The lowercase `type` value determines the uppercase filename prefix: `type: "decision"` produces `DECISION - ...`. New canonical notes do not store an independent prefix field.
+Living Memory has twelve note types. Each note has one primary type, selected by what the note is meant to preserve. The lowercase `type` value determines the uppercase filename prefix: `type: "decision"` produces `DECISION - ...`. New canonical notes do not store an independent prefix field.
 
 `STATUS` includes progress, completed milestones and meaningful current-state snapshots. `PROGRESS` is no longer a separate type. Corrections belong in `KNOWLEDGE`, with the existing `concern/correction` tag.
 
-## The eleven types
+## The twelve types
 
 | Type / prefix | What it records | Use case and example |
 | --- | --- | --- |
@@ -18,6 +18,7 @@ Living Memory has eleven note types. Each note has one primary type, selected by
 | **RISK** | A possible future problem, its consequences and potential mitigation. | Preserve an uncertainty before it becomes an incident: “An older harness could keep writing to the retired store; upgrade clients before migration.” Describe the trigger, impact and mitigation, and the owner if known. |
 | **RESEARCH** | Investigations, sources, experiments, competing explanations and open questions. | Preserve evidence and uncertainty: “Compare shared configuration files and environment variables for root discovery.” Cite the sources or experiments, separate observations from inference, and state unresolved questions. |
 | **MAP** | One repo's codebase orientation: purpose, layout, entry points, key modules, data flow, build/test/run, conventions. | Spare the next session a re-exploration: “runtime/ holds the CLI; skills/ is generated from it by build.py.” One per repo, keyed by `--file REPO`; Key Details bullets labelled **Purpose**, **Layout**, **Entry points**, **Key modules**, **Data flow**, **Build/test/run** and **Conventions**, plus links to the repo's gotcha and decision notes; at most about 3,000 characters. Synthesize, don't copy code. Reviewed every 90 days. |
+| **RUNBOOK** | An operational procedure for a system: when to use it, preconditions, steps, verification and rollback. | Let the next person (or agent) carry out a known operation safely: “Restart the billing worker: drain the queue, restart, confirm the lag metric recovers.” Tag it with the system (`--system SLUG`). Number the steps, say how to check each worked and how to back out. Reviewed every 90 days. |
 | **POLICY** | A mandatory rule or constraint, its authority and where it applies. | Preserve a requirement: “Existing-note mutations require an approved plan digest.” Record the authoritative source and scope. A retrieved policy note remains historical evidence; verify that the rule is current and applicable. |
 
 The suggested contents above guide authoring; they are not additional required metadata fields or automatic workflow engines.
@@ -29,6 +30,7 @@ The suggested contents above guide authoring; they are not additional required m
 - **DECISION vs PLAN:** use decision for a choice already made and why; use plan for the intended work. Link the plan to decisions it implements.
 - **PLAN vs STATUS:** use plan for what is intended; use status for what is true or accomplished as of a particular time. Completing a step does not automatically change a plan note's type.
 - **MAP vs KNOWLEDGE or CONTEXT:** a map is the whole-repo orientation, one per repo; a single fact about one module is knowledge, and the circumstances around a project are context.
+- **RUNBOOK vs KNOWLEDGE or PLAN:** a runbook is a repeatable procedure someone will follow again; a fact about how something works is knowledge, and one-off intended work is a plan.
 - **PREFERENCE vs POLICY:** use preference for a desired default that permits exceptions; use policy for a requirement backed by an identified authority. Do not promote a preference into a requirement without an explicit decision.
 - **BUG vs RISK:** use bug for an observed defect; use risk for a potential problem. Link a bug to risks arising from it, or a risk to a bug that later demonstrates it.
 
@@ -91,6 +93,8 @@ Type answers “what kind of information is this?” Lifecycle `status` answers 
 Tags describe the subject and concern, optionally the platform and technology. Every new note still requires registered `subject/` and `concern/` tags. Type names do not automatically become tags; use `taxonomy` to inspect the existing vocabulary. A knowledge note correcting an earlier misunderstanding can use `subject/project` and `concern/correction`.
 
 A project's charter is a `context` note tagged `project/<slug>` (with `subject/project` and `concern/knowledge`); `project-plan create` writes it and `projects.json` links to it.
+
+A system's passport is a `context` note tagged `system/<slug>` (with `subject/project` and `concern/architecture`); `system-plan create` writes it and `systems.json` links to it.
 
 Date status snapshots in the body and preserve the information needed to interpret them later. When a snapshot becomes misleading, use an approved update, archive or supersession plan. The system does not automatically expire status notes or treat a plan, risk or policy as an executable instruction.
 
