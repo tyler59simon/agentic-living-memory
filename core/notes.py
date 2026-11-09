@@ -388,6 +388,11 @@ def capture(title,body,tags,domain,root=None,**metadata):
             absorbed=(other,match)   # 'supersede': the new global note replaces the project one
         review_by=metadata.pop('review_by',None);context=metadata.pop('context','');files=metadata.pop('files',None);origin=metadata.pop('origin',None)
         if metadata:raise ValueError('Unsupported capture metadata: '+', '.join(metadata))
+        if selected_type=='map':
+            # One map per repo: a second capture would split what the next session reads.
+            from .maps import capture_conflict
+            conflict=capture_conflict(clean_files(files),domain,root,read_json(root/'bindings.json',{}),set(supersedes))
+            if conflict:raise ValueError(conflict)
         replaces=supersedes+([absorbed[1]['id']] if absorbed else [])
         path,note,text=build_note(title,body,tags,domain,root,selected_type,context=context,key=key,review_by=review_by,supersedes=replaces,files=files,origin=origin)
         changes={path.relative_to(root).as_posix():text};expected={}

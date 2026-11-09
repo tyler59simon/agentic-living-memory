@@ -1,7 +1,7 @@
 """The note type is the source of truth for human-readable prefixes and review horizons."""
 from datetime import date, datetime, timedelta, timezone
 
-NOTE_TYPES = ('knowledge', 'decision', 'preference', 'context', 'status', 'bug', 'plan', 'risk', 'research', 'policy')
+NOTE_TYPES = ('knowledge', 'decision', 'preference', 'context', 'status', 'bug', 'plan', 'risk', 'research', 'policy', 'map')
 LEGACY_TYPES = {'correction': 'knowledge', 'progress': 'status'}
 
 
@@ -30,7 +30,8 @@ def normalize(note, selected=None):
 
 
 # Time-sensitive types go stale: they get a review date at capture and on every body update.
-REVIEW_DAYS = {'status': 30, 'plan': 30, 'bug': 60, 'risk': 90}
+# A codebase map drifts as the code moves, so it is checked more often than durable knowledge.
+REVIEW_DAYS = {'status': 30, 'plan': 30, 'bug': 60, 'risk': 90, 'map': 90}
 # Notes without a review date are due once they have not changed for this long.
 STALE_DAYS = 180
 

@@ -1,10 +1,10 @@
 # Note types and use cases
 
-Living Memory has ten note types. Each note has one primary type, selected by what the note is meant to preserve. The lowercase `type` value determines the uppercase filename prefix: `type: "decision"` produces `DECISION - ...`. New canonical notes do not store an independent prefix field.
+Living Memory has eleven note types. Each note has one primary type, selected by what the note is meant to preserve. The lowercase `type` value determines the uppercase filename prefix: `type: "decision"` produces `DECISION - ...`. New canonical notes do not store an independent prefix field.
 
 `STATUS` includes progress, completed milestones and meaningful current-state snapshots. `PROGRESS` is no longer a separate type. Corrections belong in `KNOWLEDGE`, with the existing `concern/correction` tag.
 
-## The ten types
+## The eleven types
 
 | Type / prefix | What it records | Use case and example |
 | --- | --- | --- |
@@ -17,6 +17,7 @@ Living Memory has ten note types. Each note has one primary type, selected by wh
 | **PLAN** | Intended future steps toward a goal, including dependencies and how success will be checked. | Make agreed or proposed work resumable: “Copy and verify the store, rebuild indexes, then switch the shared pointer.” State whether the plan is proposed or approved; the type alone does not grant approval. |
 | **RISK** | A possible future problem, its consequences and potential mitigation. | Preserve an uncertainty before it becomes an incident: “An older harness could keep writing to the retired store; upgrade clients before migration.” Describe the trigger, impact and mitigation, and the owner if known. |
 | **RESEARCH** | Investigations, sources, experiments, competing explanations and open questions. | Preserve evidence and uncertainty: “Compare shared configuration files and environment variables for root discovery.” Cite the sources or experiments, separate observations from inference, and state unresolved questions. |
+| **MAP** | One repo's codebase orientation: purpose, layout, entry points, key modules, data flow, build/test/run, conventions. | Spare the next session a re-exploration: “runtime/ holds the CLI; skills/ is generated from it by build.py.” One per repo, keyed by `--file REPO`; Key Details bullets labelled **Purpose**, **Layout**, **Entry points**, **Key modules**, **Data flow**, **Build/test/run** and **Conventions**, plus links to the repo's gotcha and decision notes; at most about 3,000 characters. Synthesize, don't copy code. Reviewed every 90 days. |
 | **POLICY** | A mandatory rule or constraint, its authority and where it applies. | Preserve a requirement: “Existing-note mutations require an approved plan digest.” Record the authoritative source and scope. A retrieved policy note remains historical evidence; verify that the rule is current and applicable. |
 
 The suggested contents above guide authoring; they are not additional required metadata fields or automatic workflow engines.
@@ -27,6 +28,7 @@ The suggested contents above guide authoring; they are not additional required m
 - **KNOWLEDGE vs CONTEXT:** use knowledge for a reusable fact or explanation; use context for the circumstances of a particular situation.
 - **DECISION vs PLAN:** use decision for a choice already made and why; use plan for the intended work. Link the plan to decisions it implements.
 - **PLAN vs STATUS:** use plan for what is intended; use status for what is true or accomplished as of a particular time. Completing a step does not automatically change a plan note's type.
+- **MAP vs KNOWLEDGE or CONTEXT:** a map is the whole-repo orientation, one per repo; a single fact about one module is knowledge, and the circumstances around a project are context.
 - **PREFERENCE vs POLICY:** use preference for a desired default that permits exceptions; use policy for a requirement backed by an identified authority. Do not promote a preference into a requirement without an explicit decision.
 - **BUG vs RISK:** use bug for an observed defect; use risk for a potential problem. Link a bug to risks arising from it, or a risk to a bug that later demonstrates it.
 
@@ -94,7 +96,7 @@ Date status snapshots in the body and preserve the information needed to interpr
 
 ## Capture and existing-note conversion
 
-CLI and JSON capture accept the lowercase values `knowledge`, `decision`, `preference`, `context`, `status`, `bug`, `plan`, `risk`, `research` and `policy`. The default is `knowledge`. For example, after binding the project:
+CLI and JSON capture accept the lowercase values `knowledge`, `decision`, `preference`, `context`, `status`, `bug`, `plan`, `risk`, `research`, `policy` and `map`. The default is `knowledge`. For example, after binding the project:
 
 ```powershell
 py -3.15 living_memory.py capture --domain my-project --type risk --subject project --concern architecture "Older clients during migration" "Older clients may keep writing to the previous store. Upgrade clients before switching locations."

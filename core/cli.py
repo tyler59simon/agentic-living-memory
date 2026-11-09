@@ -53,7 +53,8 @@ def _file_args(args,domain,root,existing=()):
     prefixes=domain_prefixes(domain,load_bindings(root));files=[] if args.files=='none' else list(existing)
     for value in args.file or []:
         path=Path(value).expanduser()
-        files.append(display_path(path.resolve(),prefixes) or value if path.is_absolute() else value)
+        # The bound folder itself (a repo's codebase map) is stored as '.', like any other project-relative path.
+        files.append((display_path(path.resolve(),prefixes) or '.') if path.is_absolute() else value)
     if args.files=='auto':files+=touched
     from .repository import clean_files
     files=clean_files(files)
@@ -71,7 +72,7 @@ def _facet_tags(args,facets=FACET_FLAGS):
 
 # Defaults when a capture names no subject/ or concern/ tag; used only if the tag is in the taxonomy.
 SUBJECT_BY_TYPE={'preference':'subject/user'}
-CONCERN_BY_TYPE={'decision':'concern/decision','preference':'concern/preference','bug':'concern/bug','knowledge':'concern/knowledge','policy':'concern/workflow'}
+CONCERN_BY_TYPE={'decision':'concern/decision','preference':'concern/preference','bug':'concern/bug','knowledge':'concern/knowledge','policy':'concern/workflow','map':'concern/architecture'}
 def _infer_tags(item,root):
     from .notes import taxonomy
     known=taxonomy(root);tags=list(item.get('tags') or []);kind=item.get('type') or 'knowledge';added=[]
@@ -311,7 +312,7 @@ def main(argv=None):
     def sub(name):p=subs.add_parser(name);common(p,True);return p
     p=sub('setup');p.add_argument('--location',type=Path);p.add_argument('--non-interactive',action='store_true');p.add_argument('--source',type=Path);p.add_argument('--apply-plan');p.add_argument('--inspect-plan');p.add_argument('--expected-plan-sha256')
     p=sub('bind');p.add_argument('name');p.add_argument('prefix',nargs='+')
-    p=sub('capture');p.add_argument('items',nargs='*');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='');p.add_argument('--prefix',help='Compatibility assertion only; must equal the uppercase type');p.add_argument('--type',choices=NOTE_TYPES,default='knowledge');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help='REF of a note this one replaces; it is retired in the same transaction');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk notes get a default')
+    p=sub('capture');p.add_argument('items',nargs='*');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='');p.add_argument('--prefix',help='Compatibility assertion only; must equal the uppercase type');p.add_argument('--type',choices=NOTE_TYPES,default='knowledge');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help='REF of a note this one replaces; it is retired in the same transaction');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk/map notes get a default')
     for facet in CAPTURE_FACETS:p.add_argument('--'+facet,action='append',default=[])
     p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
     sections_args(p);_file_flags(p)

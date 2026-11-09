@@ -32,7 +32,7 @@ class Features(StoreFixture):
             b=copilot_hooks.handle('sessionStart',{'cwd':cwd,'sessionId':'s'});self.assertIn('additionalContext',b)
             c=copilot_hooks.handle('userPromptTransformed',{'cwd':cwd,'sessionId':'s','prompt':'cache','transformedPrompt':'original','timestamp':1});self.assertTrue(c['modifiedTransformedPrompt'].startswith('original'))
         self.assertEqual(runtime.process('codex','stop',payload,self.root),{})  # conversational turn: no receipt demanded
-        runtime.process('codex','user-prompt',payload,self.root)
+        runtime.process('codex','user-prompt',{**payload,'prompt':'From now on, explain the cache first'},self.root)
         runtime.process('codex','pre-tool-use',{**payload,'tool_name':'Edit','tool_input':{'file_path':str(self.base/'project/x.py')}},self.root)
         first=runtime.process('codex','stop',payload,self.root);second=runtime.process('codex','stop',payload,self.root)
         self.assertIn('continue_reason',first);self.assertNotIn('continue_reason',second)
@@ -209,7 +209,7 @@ class ClaudeIntegrationFixes(StoreFixture):
         text=(home/'settings.json').read_text();settings=json.loads(text)
         self.assertIn('\n  "hooks"',text);self.assertEqual(settings['theme'],'dark')
         pre=settings['hooks']['PreToolUse'][0];handler=pre['hooks'][0]
-        self.assertEqual(pre['matcher'],'Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell')
+        self.assertEqual(pre['matcher'],'Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|Read|Glob|Grep|Agent|Task')
         self.assertEqual(handler['command'],sys.executable);self.assertEqual(handler['args'][1],'pre-tool-use')
         end=settings['hooks']['SessionEnd'][0]['hooks'][0];self.assertEqual((end['args'][1],end['timeout']),('session-end',60))
         claude_md=(home/'CLAUDE.md').read_text();self.assertIn('applies only when',claude_md);self.assertIn('Subagents are read-only',claude_md)

@@ -16,6 +16,6 @@
   {"hook": "stop", "expect": {"stop_reason": "no_change"}},
   {"hook": "user-prompt", "payload": {"prompt": "now change main"}},
   {"hook": "pre-tool-use", "payload": {"tool_name": "Write", "tool_input": {"file_path": "{project}/main.py"}}, "expect": {"deny": false, "mutation": "tracked", "detail": {"touched": 1}}},
-  {"hook": "stop", "expect": {"reminder": "mutating"}}
+  {"hook": "stop", "expect": {"stop_reason": "files_only", "reminder": null}}
  ]
 }
