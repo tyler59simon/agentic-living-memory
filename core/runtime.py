@@ -105,43 +105,109 @@ def shell_command(args):
         return value if isinstance(value,str) else ''
     return args if isinstance(args,str) else ''
 
-SINGLE_QUOTED=re.compile(r"'(?:[^']|'')*'")
+# Outside quotes these run, chain, redirect or expand. Parentheses open a subshell in Bash and evaluate an
+# expression in PowerShell: `search (Remove-Item x)` runs the cmdlet before the script sees its arguments.
+SHELL_META=frozenset(';|&<>`$()\r\n')
+# PowerShell only: script blocks, splatting and array expressions.
+POWERSHELL_META=frozenset('{}@')
+# PowerShell reads these as quotation marks too, so a curly quote can close a string an ASCII quote opened.
+POWERSHELL_QUOTES=frozenset('\u2018\u2019\u201a\u201b\u201c\u201d\u201e')
+SHELL_GRAMMARS=('posix','powershell')
 
-def _inert(rest):
-    """True when the arguments cannot run anything: shell metacharacters appear only inside single quotes
-    (literal in Bash and PowerShell). A single quote inside double quotes is an ordinary character, so the
-    quote state is tracked rather than stripping '...' spans. Double-quoted text may not expand ($, `) or
-    escape (a backslash before $ ` " \\ or a newline); other backslashes, as in Windows paths, are literal."""
-    state=None
-    for i,ch in enumerate(rest):
+def shell_grammar(tool):
+    """The quoting rules a shell tool's command follows: 'posix', 'powershell', or None when the tool does not say."""
+    return 'posix' if tool=='bash' else 'powershell' if tool=='powershell' else None
+
+def _words(rest,grammar):
+    """The argument words of a command line that cannot run or expand anything, else None.
+
+    Quote state is tracked per shell, because the two disagree. In Bash a backslash outside quotes makes the
+    next character literal, so \\' does not open a string and '\\'' is a quote inside single-quoted text. In
+    PowerShell a backslash is an ordinary character and '' is the quote inside single-quoted text.
+    Single-quoted text is literal in both, so note text there may hold anything (->, |, $, newlines).
+    Double-quoted text may not expand ($, `) or, in Bash, escape (a backslash before $ ` " \\ or a newline);
+    other backslashes, as in Windows paths, are literal."""
+    words=[];word=None;state=None;i=0;ps=grammar=='powershell'
+    while i<len(rest):
+        ch=rest[i];nxt=rest[i+1:i+2]
+        if ps and ch in POWERSHELL_QUOTES:return None
         if state=="'":
-            if ch=="'":state=None
+            if ch!="'":word+=ch
+            elif ps and nxt=="'":word+="'";i+=1
+            else:state=None
         elif state=='"':
-            if ch=='"':state=None
-            elif ch in '$`' or (ch=='\\' and rest[i+1:i+2] in ('$','`','"','\\','\n','\r')):return False
-        elif ch in "'\"":state=ch
-        elif ch in ';|&<>`$\r\n':return False
-    return state is None
+            if ch=='"':
+                if ps and nxt=='"':word+='"';i+=1
+                else:state=None
+            elif ch in '$`' or (not ps and ch=='\\' and nxt in ('$','`','"','\\','\n','\r','')):return None
+            else:word+=ch
+        elif ch in "'\"":state=ch;word=word or ''
+        elif ch=='\\' and not ps:
+            if nxt in ('','\n','\r'):return None
+            word=(word or '')+nxt;i+=1
+        elif ch in SHELL_META or (ps and ch in POWERSHELL_META):return None
+        elif ch.isspace():
+            if word is not None:words.append(word);word=None
+        else:word=(word or '')+ch
+        i+=1
+    if state is not None:return None
+    if word is not None:words.append(word)
+    return words
 
-def memory_subcommand(text):
-    """Subcommand of an exact, unchained living_memory.py invocation, else None.
-
-    Single-quoted arguments are literal in Bash and PowerShell, so note text inside them may
-    contain anything (->, |, $, newlines). Outside them, any shell metacharacter disqualifies."""
+def _parsed(text,grammar=None):
+    """The argument words of an exact, unchained living_memory.py invocation, once per shell grammar that
+    may apply, else None. A tool that does not name its shell must be inert under both grammars."""
     match=re.match(r'\s*(?:&\s*)?"([^"]+)"\s+"([^"]+)"(.*)\Z',text,re.S)
     if not match or _norm(match[1])!=_norm(sys.executable) or _norm(match[2])!=_norm(SCRIPT):return None
-    rest=match[3]
-    if not _inert(rest):return None
-    rest=SINGLE_QUOTED.sub("'x'",rest)
-    try:tokens=shlex.split(rest,posix=True)
-    except ValueError:return None
+    found=[_words(match[3],g) for g in ((grammar,) if grammar in SHELL_GRAMMARS else SHELL_GRAMMARS)]
+    return None if any(words is None for words in found) else found
+
+def _subcommand(words):
     index=0
-    while index<len(tokens):
-        token=tokens[index]
+    while index<len(words):
+        token=words[index]
         if token in GLOBAL_OPTIONS:index+=2;continue
         if token=='--json':index+=1;continue
         return token
     return None
+
+def memory_subcommand(text,grammar=None):
+    """Subcommand of an exact, unchained living_memory.py invocation, else None. grammar: see shell_grammar."""
+    parsed=_parsed(text,grammar)
+    if not parsed:return None
+    found={_subcommand(words) for words in parsed}
+    return found.pop() if len(found)==1 else None
+
+# Options that read a file into a note. Auto-approval covers only files the session could already see.
+FILE_OPTIONS=('--content-file','--body-file','--payload-file')
+
+def _option_values(words,names):
+    """Values given to these options as `--opt VALUE` or `--opt=VALUE`, including argparse abbreviations (--content)."""
+    found=[]
+    for index,word in enumerate(words):
+        if not word.startswith('--') or len(word)<4:continue
+        name,sep,value=word.partition('=')
+        if any(option.startswith(name) for option in names):found.append(value if sep else words[index+1] if index+1<len(words) else '')
+    return found
+
+def auto_allowed(text,grammar,root,cwd,scratch=None):
+    """True when an allow-listed memory command may skip the permission prompt: it uses the hook's own store
+    and reads input files only from the working directory or the session scratchpad. Anything else is left to
+    the harness's normal permission prompt (this never denies)."""
+    parsed=_parsed(text,grammar)
+    if not parsed:return False
+    try:
+        store=Path(root).resolve();bases=[Path(cwd).resolve()]+([Path(scratch).resolve()] if scratch else [])
+        for words in parsed:
+            for value in _option_values(words,('--root',)):
+                if not value or Path(os.path.expandvars(value)).expanduser().resolve()!=store:return False
+            for value in _option_values(words,FILE_OPTIONS):
+                if not value:return False
+                path=Path(os.path.expandvars(value)).expanduser()
+                path=(path if path.is_absolute() else bases[0]/path).resolve()
+                if not any(path.is_relative_to(base) for base in bases):return False
+        return True
+    except (OSError,ValueError):return False
 
 READONLY_SIMPLE={'ls','dir','cat','type','head','tail','wc','grep','egrep','fgrep','cut','tr','echo','printf','pwd','which','where','whoami','stat','file','du','df','tree','diff','cmp','basename','dirname','realpath','readlink','test','[','true','false','sleep','cd','pushd','popd','set-location','gci','gc','printenv',
  'select-string','select-object','where-object','sort-object','measure-object','format-table','format-list','test-path','resolve-path','split-path','join-path','convertto-json','write-output','write-host',
@@ -958,14 +1024,17 @@ def _process(harness,event,payload,root=None,info=None):
             detail['decision']='deny:protected:'+rule
             result['deny']='Use Living Memory scripts for canonical mutations; direct file edits bypass revision checks and receipts.'
             return result
-        text=shell_command(args) if name in SHELL_TOOLS else ''
-        subcommand=memory_subcommand(text) if text else None;detail['subcommand']=subcommand
+        text=shell_command(args) if name in SHELL_TOOLS else '';grammar=shell_grammar(name)
+        subcommand=memory_subcommand(text,grammar) if text else None;detail['subcommand']=subcommand
         if subcommand in MUTATING_SUBCOMMANDS and _subagent(payload):
             detail['decision']='deny:subagent'
             result['deny']='Living Memory: subagents are read-only. Return the proposed note to the main agent instead of running '+subcommand+'.'
             return result
         if subcommand in ALLOWED_SUBCOMMANDS:
-            result['allow']='Living Memory read/capture script command.'
+            # Another store, or an input file from outside the project, is the user's call: no auto-approval.
+            if auto_allowed(text,grammar,root,cwd,payload.get('scratchpad_dir') or payload.get('scratchpadDir')):
+                result['allow']='Living Memory read/capture script command.'
+            else:detail['unconfined']=True
         detail['decision']='allow' if result.get('allow') else 'none'
         # Plan mode only permits writing the harness's own plan file, so it never changes project files.
         planning=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()=='plan'
@@ -1083,7 +1152,7 @@ def map_sentence(key,kind,data,session):
                 "--detail '**Layout:** ...' (and Entry points, Key modules, Data flow, Build/test/run, Conventions).")
     ref,names=data;short=short_ref(*ref.split(':',1))
     return (f"new top-level paths in {name} ({', '.join(names)}): if they change its layout, update map {short} "
-            f"(CMD read {short}, then CMD update {short} --session {session} with every --detail bullet).")
+            f"(CMD read {short}, then CMD update {short} --session {session} --set-detail '**Layout:** ...' for each bullet that changed).")
 
 def session_map(cwd,root,bindings):
     """A pointer to the map of the repo holding cwd, else None; never fails the hook."""

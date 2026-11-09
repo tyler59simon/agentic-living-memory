@@ -81,7 +81,7 @@ One or two sentences: the fact, decision or problem.
 - **Action Items are only for `plan`, `bug` and `risk` notes.** Capturing them on another type, or changing a note to another type while they exist, is refused. Lasting facts go in Key Details.
 - A plain-text body, from an older note or a quick capture, becomes the Executive Summary the next time the note is written.
 - Text inside a section is kept as written, and `##` sections of your own are kept in place.
-- Build the body from flags (`--summary`, `--detail`, `--link`, `--action`, `--done`, `--important`) on `capture` or `update`. Each flag replaces only its own section. You can also pass formatted Markdown with `--content-file` / `--body-file`.
+- Build the body from flags (`--summary`, `--detail`, `--link`, `--action`, `--done`, `--important`) on `capture` or `update`. Each flag replaces only its own section; on `update`, `--add-detail`, `--add-link` and `--add-action` append to a section and `--set-detail` replaces one labelled bullet, so the rest need not be restated. You can also pass formatted Markdown with `--content-file` / `--body-file`.
 - Search and session-start snippets show the text without headings or list markup.
 
 ## Type, lifecycle status and tags

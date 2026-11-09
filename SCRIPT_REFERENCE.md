@@ -8,7 +8,7 @@ Use `python living_memory.py COMMAND --help` for exact arguments. Common options
 | Semantic search | semantic status; semantic install [--model NAME] [--from DIR]; semantic remove |
 | Retrieval | search QUERY [--limit 5] --scope active|fallback|all [--file PATH]; search --file PATH; read REF --max-chars N; query SQL |
 | New notes | capture TITLE BODY [--global] [--subject SUBJECT] [--concern CONCERN] [--supersedes REF] [--review-by DATE] [--redact] [--file PATH]... [--files auto]; capture --title TITLE --summary TEXT [--detail TEXT]... [--link TEXT]... [--action TEXT]... [--done TEXT]... [--important TEXT]; capture --payload-file FILE |
-| Keep current | update REF [--title] [--body/--body-file] [--summary/--detail/--link/--action/--done/--important] [--tag] [--type] [--context] [--review-by] [--redact] [--file PATH]... [--files auto|none]; supersede REF --by REF; confirm REF [--session S]; review [--all-domains] [--tag TAG]... ; open [--all-domains] [--tag TAG]... |
+| Keep current | update REF [--title] [--body/--body-file] [--summary/--detail/--link/--action/--done/--important] [--add-detail TEXT]... [--set-detail '**Label:** TEXT']... [--add-link TEXT]... [--add-action TEXT]... [--replace-actions] [--tag] [--type] [--context] [--review-by] [--redact] [--file PATH]... [--files auto|none]; supersede REF --by REF; confirm REF [--session S]; review [--all-domains] [--tag TAG]... ; open [--all-domains] [--tag TAG]... |
 | Open work | open; check REF 'ITEM TEXT' \| --index N [--undo] [--session S] |
 | Usefulness | stats [--days 30] [--limit 10] |
 | Operational log | logs [--level debug\|info\|warning\|error] [--kind hook\|command\|internal] [--event NAME] [--days 1] [--limit 50] |
