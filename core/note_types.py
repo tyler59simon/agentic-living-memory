@@ -56,7 +56,9 @@ def effective_date(note):
         updated = None
     if updated is not None and updated.tzinfo is None:
         updated = updated.replace(tzinfo=timezone.utc)
-    found = updated.date() if updated else None
+    # Review dates, confirmations and `today` are local calendar days, so the note's age is counted in
+    # local days too; its UTC date runs a day ahead in the evening west of Greenwich.
+    found = updated.astimezone().date() if updated else None
     confirmed = last_confirmed(note)
     if confirmed:
         try:
