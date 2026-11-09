@@ -527,6 +527,26 @@ def _unseen(hit,shown):
     seen=shown.get(ref) if isinstance(shown,dict) else None
     return bool(seen) and seen!=revision_key(hit)
 
+def relevance_gate(query,root):
+    """The prompt hook's relevance test as a search_domains `keep` filter: enough of the query's informative
+    words in a note's title or body, or (with a semantic model) a close match in meaning."""
+    from .search import query_terms,stem
+    from .semantic import threshold
+    count=len({stem(t) for t in query_terms(query or '')});near=threshold(root)
+    def relevant(hits):
+        kept=[]
+        for hit in hits:
+            overlap=hit.get('titleOverlap',0);title=hit.get('titleTerms',0);informative=hit.get('queryTerms',count)
+            if not informative:continue   # only words that appear in most notes
+            if informative==1:
+                # One-word prompts ("continue", "yes") inject only on a title hit.
+                if overlap:kept.append(hit)
+            elif (hit.get('coverage',0)>=0.5 and (informative<4 or hit.get('coverage',0)>0.5)) or overlap>=2 or (title and overlap/title>=0.5):kept.append(hit)
+            # Same meaning in other words ("laid out" for "layout"): only a close semantic match counts.
+            elif near is not None and hit.get('similarity',0)>=near:kept.append(hit)
+        return kept
+    return relevant
+
 def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=None):
     """Relevant memory for a prompt: (text or None, ids injected, overview shown). A note shown earlier
     is offered again once it has a new revision. delivered, when a dict, receives ref -> revision key."""
@@ -537,22 +557,10 @@ def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=N
     if not query:return None,[],False
     scope=bindings.get('search_scope',{});global_domains=[canonical_domain(d,root) for d in scope.get('global_domains',['_global'])];global_domains=[d for d in global_domains if (root/'domains'/d).exists()]
     parents=parent_domains(active,bindings)
-    from .semantic import threshold
-    near=threshold(root)
-    def relevant(hits):
-        kept=[]
-        for hit in hits:
-            overlap=hit.get('titleOverlap',0);title=hit.get('titleTerms',0);informative=hit.get('queryTerms',len(query))
-            if not informative:continue   # only words that appear in most notes
-            if informative==1:
-                # One-word prompts ("continue", "yes") inject only on a title hit.
-                if overlap:kept.append(hit)
-            elif (hit.get('coverage',0)>=0.5 and (informative<4 or hit.get('coverage',0)>0.5)) or overlap>=2 or (title and overlap/title>=0.5):kept.append(hit)
-            # Same meaning in other words ("laid out" for "layout"): only a close semantic match counts.
-            elif near is not None and hit.get('similarity',0)>=near:kept.append(hit)
-        return kept
+    relevant=relevance_gate(prompt,root)
     domains=list(dict.fromkeys([active]+parents+global_domains))
-    weights={active:2,**{p:1 for p in parents}}
+    # Global notes hold in every project, so they rank like the project's own; a parent's count half.
+    weights={**{g:2 for g in global_domains},active:2,**{p:1 for p in parents if p!=active}}
     found=search_domains(prompt,domains,10,root,weights=weights,keep=relevant)
     if not found and scope.get('foreign_domains'):found=search_domains(prompt,scope['foreign_domains'],10,root,keep=relevant)
     seen=set(shown)

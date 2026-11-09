@@ -56,10 +56,11 @@ ITEM_MAX=100
 LAST_NOTES=3
 
 def _open_lines(active,root,bindings):
-    """(header line, one line per note with open Action Items) for the active and parent domains."""
+    """(header line, one line per note with open Action Items) for the active, parent and global domains."""
     from .runtime import parent_domains
     from .notes import open_work
-    found=open_work([active]+parent_domains(active,bindings),root)
+    from .common import global_domains
+    found=open_work(list(dict.fromkeys([active]+parent_domains(active,bindings)+global_domains(root))),root)
     if not found:return None,[]
     count=sum(len(items) for _,_,items in found)
     header=f"Open work ({count} item{'s' if count!=1 else ''} in {len(found)} note{'s' if len(found)!=1 else ''}; CMD open lists them, CMD check REF 'item' ticks one):"

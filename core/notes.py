@@ -51,6 +51,13 @@ def resolve_ref(value,domain=None,root=None,search_domains=()):
         found=_by_id(lookup[1],inventory(lookup[0],root,retired=True))
         if len(found)>1:raise _ambiguous(lookup[0],found)
         if found:return lookup[0],found[0]['id']
+    if sep and ID_PREFIX.fullmatch(tail.strip()):
+        # IDs are unique across the store, and a promoted or remapped note keeps its ID while its domain
+        # changes, so an older DOMAIN:ID still finds it wherever it now lives.
+        elsewhere=[(d,n) for d in domain_folders(root or memory_root()) if not lookup or d!=lookup[0]
+                   for n in _by_id(tail.strip(),inventory(d,root,retired=True))]
+        if len(elsewhere)>1:raise ValueError('ambiguous_ref: '+', '.join(f"{d}:{n['id']} \"{n['title']}\"" for d,n in elsewhere[:10]))
+        if elsewhere:return elsewhere[0][0],elsewhere[0][1]['id']
     domains=list(dict.fromkeys([d for d in (domain,*search_domains) if d]))
     if not domains:raise ValueError('Pass domain:id, --domain, or --cwd for a bound project')
     wanted=value.casefold();titled=[]
