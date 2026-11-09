@@ -148,4 +148,6 @@ def auto(path,prompt,exclude=()):
         hits=[h for h in hits if h['coverage']>=AUTO_COVERAGE and h['coverage']*meta['terms']>=2][:AUTO_HITS]
         if not hits:return None,[]
         return '\n'.join(line(h) for h in hits),[h['i'] for h in hits]
-    except Exception:return None,[]  # recall is a nicety; never fail the prompt hook
+    except Exception as exc:  # recall is a nicety; never fail the prompt hook
+        from .logs import swallowed
+        swallowed('recall.auto',exc);return None,[]

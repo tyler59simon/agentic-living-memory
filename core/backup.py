@@ -102,7 +102,9 @@ def maybe_backup(root):
         result=backup(root)
         atomic_write(marker,canonical_json({'at':datetime.now(timezone.utc).isoformat(),'backup':Path(result['backup']).name}))
         return result
-    except Exception:return None
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('backup.maybe_backup',exc,root);return None
 
 def staleness_warning(root):
     found=snapshots(root)
