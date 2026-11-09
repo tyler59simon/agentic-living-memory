@@ -139,13 +139,17 @@ def search(path,query,limit=5,scope='before',exclude=(),width=EXCERPT):
 
 def line(hit):return f"- [{hit['role']} {hit['t']}] {hit['excerpt']}"
 
-def auto(path,prompt,exclude=()):
+def auto(path,prompt,exclude=(),trace=None):
     """(context block or None, record indices used): strict, for prompts right after a compaction.
-    Needs two or more informative prompt words, most of them in one record."""
+    Needs two or more informative prompt words, most of them in one record. trace, when a dict, receives
+    the gate's numbers: informative terms, whether the transcript was compacted, candidate and kept hits."""
+    trace=trace if isinstance(trace,dict) else {}
     try:
         hits,meta=search(path,prompt,AUTO_HITS*3,'before',exclude,240)
+        trace.update(terms=meta.get('terms',0),compacted=bool(meta.get('compacted')),candidates=len(hits),hits=0)
         if meta.get('terms',0)<2 or not meta.get('compacted'):return None,[]
         hits=[h for h in hits if h['coverage']>=AUTO_COVERAGE and h['coverage']*meta['terms']>=2][:AUTO_HITS]
+        trace['hits']=len(hits)
         if not hits:return None,[]
         return '\n'.join(line(h) for h in hits),[h['i'] for h in hits]
     except Exception as exc:  # recall is a nicety; never fail the prompt hook

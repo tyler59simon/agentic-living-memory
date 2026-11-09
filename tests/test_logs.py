@@ -1,5 +1,5 @@
 """Operational log (logs/log-*.jsonl): hook runs, command runs and swallowed exceptions; metadata only."""
-import contextlib, io, json, os, unittest
+import contextlib, io, json, os, sys, unittest
 from unittest.mock import patch
 from test_core import StoreFixture
 from core import logs, runtime
@@ -10,10 +10,10 @@ TAGS = ['subject/project', 'concern/decision']
 SECRET_WORDS = ('zebra', 'quokka')
 
 
-class Log(StoreFixture):
+class LogFixture(StoreFixture):
     def setUp(self):
         super().setUp()
-        level = patch.dict(os.environ, {'LIVING_MEMORY_LOG_LEVEL': ''})
+        level = patch.dict(os.environ, {'LIVING_MEMORY_LOG_LEVEL': '', 'LIVING_MEMORY_LOG_CONTENT': ''})
         level.start(); self.addCleanup(level.stop)
         logs.use(self.root)
 
@@ -32,6 +32,8 @@ class Log(StoreFixture):
     def rows(self, **filters):
         return logs.entries(self.root, filters.pop('level', 'debug'), limit=1000, **filters)[0]
 
+
+class Log(LogFixture):
     def test_lines_are_json_and_levels_filter(self):
         logs.write('debug', 'internal', 'a')
         logs.write('info', 'internal', 'b')
@@ -135,6 +137,153 @@ class Log(StoreFixture):
         self.assertEqual(report['logs']['last_error']['event'], 'site.b')
         self.assertTrue(any('errors logged' in w for w in report['warnings']), report['warnings'])
 
+
+class Decisions(LogFixture):
+    """At debug, each hook line carries why the hook did what it did: refs, numbers and reason codes, never text."""
+    def setUp(self):
+        super().setUp()
+        debug = patch.dict(os.environ, {'LIVING_MEMORY_LOG_LEVEL': 'debug'})
+        debug.start(); self.addCleanup(debug.stop)
+        self.project = self.base / 'project'
+
+    def hook(self, event, **extra):
+        result = runtime.process('claude', event, self.payload(**extra), self.root)
+        return result, self.rows(kind='hook')[0]
+
+    def edit(self, path, **extra):
+        return self.hook('pre-tool-use', tool_name='Edit', tool_input={'file_path': str(path)}, **extra)
+
+    def memory(self, rest):
+        return f'"{sys.executable}" "{runtime.SCRIPT}" --root "{self.root}" --domain demo {rest}'
+
+    def test_prompt_detail(self):
+        cache = capture('Cache eviction policy', 'The cache uses LRU eviction.', TAGS, 'demo', self.root)
+        capture('Deploy steps', 'Run install.py then the hook setup.', TAGS, 'demo', self.root)
+        ref = 'demo:' + cache['id']
+        _, row = self.hook('session-start')
+        self.assertEqual(row['detail']['indexed'], True); self.assertIn('degrade', row['detail'])
+        self.assertNotIn('turn', row)  # no prompt yet; None fields are left out
+        _, row = self.hook('user-prompt', prompt=f'what is our cache eviction policy {SECRET_WORDS[0]}')
+        detail = row['detail']
+        self.assertEqual((detail['path'], detail['injected']), ('injected', [ref]))
+        self.assertEqual(row['turn'], runtime.session_hash(json.loads(runtime._pointer(self.root, 's1').read_text())['turn']))
+        kept = [c for c in detail['candidates'] if c['ref'] == ref][0]
+        self.assertTrue(kept['gate'].startswith('kept:'), kept)
+        self.assertEqual(kept['rank'], 1); self.assertIsInstance(kept['engine_score'], float)
+        _, row = self.hook('user-prompt', prompt='cache eviction policy again')
+        self.assertEqual((row['detail']['path'], row['detail']['suppressed_shown']), ('all_shown', [ref]))
+        _, row = self.hook('user-prompt', prompt='please explain cache layout database migration rollout')
+        self.assertIn('dropped:weak', [c['gate'] for c in row['detail']['candidates']])
+        self.assertEqual(row['detail']['path'], 'overview_done')
+        for word in (SECRET_WORDS[0], 'Cache eviction', 'LRU', 'migration'):
+            self.assertNotIn(word, self.text())
+
+    def test_no_detail_at_info(self):
+        capture('Cache eviction policy', 'LRU.', TAGS, 'demo', self.root)
+        with patch.dict(os.environ, {'LIVING_MEMORY_LOG_LEVEL': 'info'}):
+            runtime.process('claude', 'user-prompt', self.payload(prompt='cache eviction policy'), self.root)
+        row = self.rows(kind='hook')[0]
+        self.assertNotIn('detail', row); self.assertNotIn('turn', row)
+
+    def test_stop_reasons(self):
+        reason = lambda **extra: self.hook('stop', **extra)[1]['detail']['reason']
+        file = self.project / 'a.py'
+        self.assertEqual(self.hook('stop', cwd=str(self.base / 'elsewhere'))[1]['detail']['reason'], 'unbound')
+        self.assertEqual(runtime.process('claude', 'stop', {'cwd': str(self.project)}, self.root), {})
+        self.assertEqual(self.rows(kind='hook')[0]['detail']['reason'], 'unknown_session')
+        self.edit(file, session='early')   # a change before any prompt: nothing to remind about yet
+        self.assertEqual(reason(session='early'), 'no_turns')
+        self.hook('user-prompt', prompt='summarize the file')
+        self.assertEqual(reason(), 'no_change')
+        self.hook('user-prompt', prompt='fix the bug'); self.edit(file)
+        self.assertEqual(reason(stop_hook_active=True), 'stop_active')
+        self.hook('user-prompt', prompt='fix the next bug'); self.edit(file)
+        self.assertEqual(reason(), 'reminded:mutating')
+        self.edit(file)
+        self.assertEqual(reason(), 'already_reminded')
+        self.hook('user-prompt', prompt='from now on, use tabs')
+        self.assertEqual(reason(), 'reminded:preference')
+        self.hook('user-prompt', prompt='edit again'); self.edit(file)
+        self.assertEqual(self.cli('capture-finalize', '--session', 's1')[0], 0)
+        self.assertEqual(reason(), 'receipt')
+
+    def test_tool_decisions(self):
+        note = capture('Cache eviction policy', 'LRU.', TAGS, 'demo', self.root)
+        self.hook('user-prompt', prompt='work on it')
+        detail = lambda result_row: result_row[1]['detail']
+        result, row = self.edit(note['path'])
+        self.assertIn('deny', result); self.assertEqual(row['detail']['decision'], 'deny:protected:domains')
+        self.assertEqual(detail(self.edit(self.root / 'bindings.json'))['decision'], 'deny:protected:config')
+        self.assertEqual(detail(self.hook('pre-tool-use', tool_name='Read', tool_input={'file_path': str(self.project / 'a.py')}))['mutation'], 'skipped:read_tool')
+        shell = lambda command, **extra: detail(self.hook('pre-tool-use', tool_name='Bash', tool_input={'command': command}, **extra))
+        found = shell(self.memory('search cache'))
+        self.assertEqual((found['decision'], found['subcommand'], found['mutation']), ('allow', 'search', 'skipped:memory_cmd'))
+        self.assertEqual(shell(self.memory("capture 'T' 'B'"), agent_id='sub')['decision'], 'deny:subagent')
+        self.assertEqual(shell('git status')['mutation'], 'skipped:readonly_shell')
+        self.assertEqual(detail(self.edit(self.project / 'a.py', permission_mode='plan'))['mutation'], 'skipped:plan_mode')
+        self.assertEqual(detail(self.edit(self.project / 'a.py', agent_id='sub'))['mutation'], 'skipped:subagent')
+        tracked = detail(self.edit(self.project / 'a.py'))
+        self.assertEqual((tracked['decision'], tracked['mutation'], tracked['touched']), ('none', 'tracked', 1))
+
+    def test_command_detail_and_reason(self):
+        code, made = self.cli('capture', 'Cache eviction policy', 'LRU.', '--tag', 'subject/project', '--tag', 'concern/decision')
+        self.assertEqual(code, 0, made)
+        row = self.rows(kind='command')[0]
+        self.assertEqual((row['status'], row['operation_id'], row['ref']), ('created', made['operation_id'], 'demo:' + made['id']))
+        code, _ = self.cli('update', 'demo:' + made['id'], '--body', 'TTL.', '--expected-revision', '0' * 64)
+        self.assertEqual(self.rows(kind='command')[0]['error']['reason'], 'stale_revision')
+        with patch.dict(os.environ, {'LIVING_MEMORY_LOG_LEVEL': 'info'}):
+            self.cli('read', 'demo:' + made['id'])
+        self.assertNotIn('status', self.rows(kind='command')[0])
+
+
+class Content(LogFixture):
+    """Text in the log only for a store marked as a sandbox that is not the configured data root."""
+    def setUp(self):
+        super().setUp()
+        on = patch.dict(os.environ, {'LIVING_MEMORY_LOG_CONTENT': '1'})
+        on.start(); self.addCleanup(on.stop)
+        capture('Cache eviction policy', 'The cache uses LRU eviction.', TAGS, 'demo', self.root)
+
+    def prompt(self):
+        return runtime.process('claude', 'user-prompt', self.payload(prompt='what is our cache eviction policy'), self.root)
+
+    def mark(self):
+        (self.root / 'sandbox.json').write_text('{"sandbox": true}', encoding='utf-8')
+
+    def test_refused_without_the_marker(self):
+        self.prompt()
+        self.assertNotIn('content', self.rows(kind='hook')[0])
+        self.assertEqual([r['event'] for r in self.rows(kind='internal')], ['content_logging_refused'])
+        self.assertEqual(logs.content_state(self.root), 'refused')
+        self.assertNotIn('LRU', self.text())
+
+    def test_refused_on_the_configured_root(self):
+        self.mark()
+        with patch('core.runtime._configured_root', return_value=self.root.resolve()):
+            self.prompt()
+            self.assertEqual(logs.content_state(self.root), 'refused')
+        self.assertNotIn('content', self.rows(kind='hook')[0])
+        self.assertNotIn('LRU', self.text())
+
+    def test_off_without_the_env_var(self):
+        self.mark()
+        with patch.dict(os.environ, {'LIVING_MEMORY_LOG_CONTENT': ''}):
+            self.prompt()
+            self.assertEqual(logs.content_state(self.root), 'off')
+        self.assertNotIn('content', self.rows(kind='hook')[0]); self.assertFalse(self.rows(kind='internal'))
+
+    def test_logged_in_a_sandbox(self):
+        self.mark()
+        with patch('core.runtime._configured_root', return_value=None):
+            result = self.prompt()
+            code, _ = self.cli('search', 'cache')
+            self.assertEqual(self.cli('doctor')[1]['logs']['content'], 'on')
+        hook = self.rows(kind='hook')[0]['content']
+        self.assertEqual(hook['context'], result['context'])
+        self.assertEqual(hook['prompt'], 'what is our cache eviction policy')
+        command = [r for r in self.rows(kind='command') if r['event'] == 'search'][0]['content']
+        self.assertIn('"search"', command['argv']); self.assertIn('Cache eviction policy', command['result'])
 
 if __name__ == '__main__':
     unittest.main()

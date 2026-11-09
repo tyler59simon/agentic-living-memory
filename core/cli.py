@@ -354,7 +354,7 @@ def main(argv=None):
     p=sub('overlay-teardown-plan');p.add_argument('vault',type=Path)
     p=sub('overlay-sync-all');p.add_argument('--primary',help='Domain whose view the shared dashboards show (built last)')
     args=parser.parse_args(argv);cwd=args.cwd or os.getcwd()
-    invocation={'start':time.perf_counter()}
+    invocation={'start':time.perf_counter(),'argv':list(argv) if argv is not None else sys.argv[1:]}
     try:
         if args.command=='setup':
             from .storage import setup,apply_relocation,inspect_relocation
@@ -463,7 +463,7 @@ def main(argv=None):
                     hits=file_notes(wanted,domains,root,max(1,min(100,args.limit)));fallback=False
                     if not hits and args.scope=='fallback' and foreign:domains=foreign;hits=file_notes(wanted,domains,root,max(1,min(100,args.limit)));fallback=True
                     result={'ok':True,'mode':'file','file':wanted,'domains':domains,'fallback':fallback,'results':hits}
-                    print(json.dumps(result,ensure_ascii=False,separators=(',',':')));return 0
+                    invocation['result']=result;print(json.dumps(result,ensure_ascii=False,separators=(',',':')));return 0
                 filters['file']=wanted
             if not args.query.strip():raise ValueError('search needs a query, or --file PATH')
             from .runtime import relevance_gate
@@ -725,7 +725,7 @@ def main(argv=None):
             from .sync import sync,build_overlay
             result=sync(domain,args.vault,root) if cmd=='sync' else build_overlay(domain,args.vault,root)
         else:raise ValueError('Unsupported command')
-        print(json.dumps(result,ensure_ascii=False,separators=(',',':')));return 0
+        invocation['result']=result;print(json.dumps(result,ensure_ascii=False,separators=(',',':')));return 0
     except (OSError,ValueError,TimeoutError,KeyError,TypeError) as exc:
         message=str(exc);code=error_code(message)
         print(json.dumps({'ok':False,'error':{'code':code,'message':message}},separators=(',',':')),file=sys.stderr)
@@ -736,14 +736,30 @@ def main(argv=None):
 
 def _log_command(run,args):
     """One line per command in the operational log (core/logs.py): name, actor, domain, exit code and
-    duration, never the arguments. Viewer (app) reads are debug so polling does not flood the log."""
+    duration, never the arguments. Viewer (app) reads are debug so polling does not flood the log. At debug
+    the line also carries the result's status, operation and counts; a sandbox store may log the text too."""
     root=run.get('root')
     if root is None or args.command in {'logs','serve'}:return
+    import re
     from . import logs
     from .runtime import session_hash
-    code=run.get('code',0);crash=run.get('crash');session=getattr(args,'session',None)
-    error=logs.error_fields(crash) if crash is not None else dict(run['error'],message=logs.message(run['error']['message'])) if run.get('error') else None
+    code=run.get('code',0);crash=run.get('crash');session=getattr(args,'session',None);error=None
+    if crash is not None:error=logs.error_fields(crash)
+    elif run.get('error'):
+        # The message's leading snake_case token (stale_revision, possible_duplicate, private_content, ...) is
+        # finer than the exit code's invalid/conflict/stale.
+        reason=re.match(r'[a-z]+_[a-z_]+(?=$|[: ])',run['error']['message'])
+        error=dict(run['error'],message=logs.message(run['error']['message']),reason=reason[0] if reason else None)
     level='error' if crash is not None else 'warning' if code else 'debug' if args.actor=='viewer' else 'info'
+    extra={};result=run.get('result')
+    if logs.enabled('debug') and isinstance(result,dict):
+        count=lambda key:len(result[key]) if isinstance(result.get(key),(list,dict)) else None
+        ref=f"{result['domain']}:{result['id']}" if result.get('domain') and result.get('id') else result.get('ref')
+        extra.update(status=result.get('status'),operation_id=result.get('operation_id'),ref=ref if isinstance(ref,str) else None,
+                     inferred_tags=count('inferred_tags'),redacted=count('redacted'),similar=count('similar'),
+                     suggested_files=count('suggested_files'),warning=result.get('warning') if isinstance(result.get('warning'),str) else None)
+    if logs.content_allowed(root):
+        extra['content']=logs.content({'argv':run.get('argv'),'result':result,'error':(run.get('error') or {}).get('message')})
     logs.write(level,'command',args.command,root,actor=args.actor,domain=run.get('domain'),session=session_hash(session) if session else None,
-               ms=round((time.perf_counter()-run['start'])*1000,1),exit_code=code,error=error)
+               ms=round((time.perf_counter()-run['start'])*1000,1),exit_code=code,error=error,**extra)
 if __name__=='__main__':raise SystemExit(main())
