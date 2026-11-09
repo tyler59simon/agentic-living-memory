@@ -130,6 +130,42 @@ class AcrossDomains(GlobalFixture):
         self.assertIn(old['id'], self.ids('demo'));self.assertEqual(self.ids('_global', retired=True), {})
 
 
+class GlobalEverywhere(GlobalFixture):
+    def test_open_work_includes_global_notes(self):
+        code, out = self.cli('--domain', 'demo', 'capture', '--global', '--type', 'plan', '--concern', 'decision', '--title', 'Laptop webcam follow-up',
+                             '--summary', 'Check the camera registry keys.', '--action', 'Export the Device Parameters key')
+        self.assertEqual(code, 0)
+        code, listed = self.cli('--domain', 'demo', 'open')
+        self.assertEqual([i['item'] for i in listed['items']], ['Export the Device Parameters key'])
+        self.assertIn('Export the Device Parameters key', session_start.build_context(str(self.base / 'project'), self.root)[0])
+
+    def test_search_does_not_bury_a_global_match_under_weak_local_hits(self):
+        for word in ('amber', 'basil', 'cedar', 'delta', 'ember', 'fjord', 'garnet', 'harbor'):
+            capture(f'{word.title()} notes', f'About {word}; mentions a webcam once.', TAGS, 'demo', self.root)
+        g = capture('Webcam diagnosis conclusion', 'The webcam diagnosis points to hardware.', TAGS, '_global', self.root)
+        code, out = self.cli('--domain', 'demo', 'search', 'webcam diagnosis', '--limit', '3')
+        self.assertEqual((code, out['relevant']), (0, True))
+        self.assertEqual(out['results'][0]['id'], g['id'])
+        self.assertEqual(out['results'][0]['sourceScope'], 'global')
+
+    def test_a_global_note_ranks_like_a_local_one_among_relevant_hits(self):
+        # Three relevant local notes must not push the best global match out of the three injected.
+        for topic in ('branch', 'pull request', 'diff'):
+            capture(f'Codex review of a {topic}', f'Codex can review a {topic} when asked.', TAGS, 'demo', self.root, allow_similar=True)
+        g = capture('Claude calling Codex for code review', 'Run codex exec for whole-repo code review with a brief.', TAGS, '_global', self.root)
+        _, ids, _ = runtime.context(str(self.base / 'project'), 'can codex do a code review of this?', self.root, 'demo')
+        self.assertIn('_global:' + g['id'], ids)
+
+    def test_search_answers_even_when_nothing_is_relevant_and_all_scope_includes_global(self):
+        capture('Amber notes', 'About amber; mentions a webcam once.', TAGS, 'demo', self.root)
+        g = capture('Prefer forward slashes', 'Use forward slashes in shell paths.', TAGS, '_global', self.root)
+        code, out = self.cli('--domain', 'demo', 'search', 'webcam color calibration profile', '--limit', '3')
+        self.assertEqual((code, out['relevant']), (0, False))
+        self.assertTrue(out['results']);self.assertIn('hint', out)
+        code, out = self.cli('--domain', 'demo', 'search', 'forward slashes', '--scope', 'all')
+        self.assertIn('_global', out['domains']);self.assertEqual(out['results'][0]['id'], g['id'])
+
+
 class NearIdentical(GlobalFixture):
     def test_rules(self):
         note = lambda title, body, kind='plan': {'title': title, 'body': body, 'type': kind}
@@ -189,6 +225,14 @@ class Promotion(GlobalFixture):
         proposed = promote_plan(self.root, ['demo:' + a['id']]);apply(self.root, proposed['plan_id'], proposed['digest'])
         build_overlay('demo', vault, self.root);build_overlay('_global', vault, self.root)
         self.assertEqual((copies('demo'), copies('_global')), ([], [Path(a['path']).name]))
+
+    def test_an_old_ref_still_finds_a_promoted_note(self):
+        from core.notes import resolve_ref
+        a = capture('Deploy with install.py', 'Use install.py to deploy.', TAGS, 'demo', self.root)
+        proposed = promote_plan(self.root, ['demo:' + a['id']]);apply(self.root, proposed['plan_id'], proposed['digest'])
+        self.assertEqual(resolve_ref('demo:' + a['id'][:8], 'demo', self.root), ('_global', a['id']))
+        code, out = self.cli('--domain', 'demo', 'read', 'demo:' + a['id'][:8])
+        self.assertEqual((code, out['domain']), (0, '_global'))
 
     def test_global_notes_cannot_be_promoted_again(self):
         g = capture('Prefer forward slashes', 'Use forward slashes.', TAGS, '_global', self.root)
