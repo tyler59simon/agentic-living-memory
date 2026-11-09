@@ -160,6 +160,77 @@ def _sectioned(args,body=''):
     from .note_format import render
     return render(args.summary or '',args.detail or (),args.link or (),args.action or (),args.done or (),args.important or '',body)
 
+READ_ONLY={'search','read','query','doctor','validate','history','open','stats','timeline','recall','list','domains','version'}
+# Viewer: a human-facing app browsing the store. Read-only, and its reads are not usage evidence for the diary.
+VIEWER=READ_ONLY|{'taxonomy','review','diff','inspect-plan'}
+SERVE_API=1
+SERVE_LIMIT=2*1024*1024
+
+def _relative(root,path):
+    try:return Path(path).resolve().relative_to(Path(root).resolve()).as_posix()
+    except ValueError:return str(path)
+
+def list_notes(root,domains,status,types,tags,offset,limit):
+    """One page of notes across domains, newest update first, with the revision a later update must expect."""
+    rows=[]
+    for d in domains:
+        for n in inventory(d,root,retired=status!='active'):
+            if status!='any' and n.get('status','active')!=status:continue
+            if types and n.get('type') not in types:continue
+            if any(t not in (n.get('tags') or []) for t in tags):continue
+            rows.append({'ref':f"{d}:{n['id']}",'id':n['id'],'domain':d,'title':n.get('title'),'type':n.get('type'),'status':n.get('status','active'),
+                         'tags':n.get('tags') or [],'created':str(n.get('created') or ''),'updated':str(n.get('updated') or ''),'revision':n['revision'],'path':_relative(root,n['path'])})
+    rows.sort(key=lambda r:(r['updated'],r['id']),reverse=True)
+    return {'ok':True,'domains':domains,'total':len(rows),'offset':offset,'notes':rows[offset:offset+limit]}
+
+def list_domains(root):
+    """Bound domains plus any domain folder on disk, with note counts and the search scope settings."""
+    config=load_bindings(root);bound=config.get('domains',{});folder=root/'domains'
+    names=sorted(set(bound)|{p.name for p in folder.iterdir() if p.is_dir()} if folder.is_dir() else set(bound))
+    count=lambda name,sub:sum(1 for _ in (folder/name/sub).rglob('*.md')) if (folder/name/sub).is_dir() else 0
+    scope=config.get('search_scope',{}) if isinstance(config.get('search_scope'),dict) else {}
+    return {'ok':True,'domains':[{'name':n,'bound':n in bound,'prefixes':(bound.get(n) or {}).get('prefixes',[]),'active':count(n,'notes'),'archived':count(n,'archive')} for n in names],
+            'aliases':config.get('domain_aliases',{}),'global_domains':scope.get('global_domains',['_global']),'foreign_domains':scope.get('foreign_domains',[])}
+
+def serve(root,cwd,commands):
+    """JSON lines on stdin: {"id", "argv", "stdin"?} -> one {"id", "exit_code", "result", "error"} line each, run in-process."""
+    import contextlib,io
+    real_in,real_out=sys.stdin,sys.stdout
+    if hasattr(real_in,'reconfigure'):
+        try:real_in.reconfigure(encoding='utf-8')
+        except (ValueError,OSError):pass
+    def reply(value):real_out.write(json.dumps(value,ensure_ascii=False,separators=(',',':'))+'\n');real_out.flush()
+    while True:
+        line=real_in.readline()
+        if not line:return 0
+        if not line.strip():continue
+        ident=None
+        try:
+            if len(line.encode())>SERVE_LIMIT:raise ValueError('Request exceeds 2 MiB')
+            request=json.loads(line)
+            if not isinstance(request,dict):raise ValueError('Request must be a JSON object')
+            ident=request.get('id');argv=request.get('argv');stdin=request.get('stdin','')
+            # The command comes first so it can be checked; its options follow it.
+            if not isinstance(argv,list) or not argv or any(not isinstance(v,str) for v in argv) or argv[0] not in commands:raise ValueError('argv must start with a command: '+', '.join(sorted(commands)))
+            if not isinstance(stdin,str):raise ValueError('stdin must be a string')
+        except ValueError as exc:
+            reply({'id':ident,'exit_code':2,'result':None,'error':{'code':'invalid','message':str(exc)}});continue
+        out=io.StringIO();error=io.StringIO();sys.stdin=io.StringIO(stdin)
+        try:
+            with contextlib.redirect_stdout(out),contextlib.redirect_stderr(error):
+                try:code=main(['--root',str(root),'--cwd',str(cwd)]+argv)
+                except SystemExit as exc:code=exc.code if isinstance(exc.code,int) else 2
+        except Exception as exc:  # one failing request must not end the session
+            code=1;error=io.StringIO(json.dumps({'ok':False,'error':{'code':'internal','message':f'{type(exc).__name__}: {exc}'}}))
+        finally:sys.stdin=real_in
+        def decode(text):
+            try:return json.loads(text) if text.strip() else None
+            except ValueError:return {'text':text[:16000]}
+        failure=decode(error.getvalue())
+        if isinstance(failure,dict) and 'text' in failure:failure={'code':'invalid','message':failure['text'][:2000]}
+        elif isinstance(failure,dict) and 'error' in failure:failure=failure['error']
+        reply({'id':ident,'exit_code':code,'result':decode(out.getvalue()),'error':failure if code else None})
+
 def main(argv=None):
     for stream in (sys.stdout,sys.stderr):
         if hasattr(stream,'reconfigure') and (stream.encoding or '').lower().replace('-','')!='utf8':
@@ -170,7 +241,7 @@ def main(argv=None):
         default=argparse.SUPPRESS if suppress else None
         p.add_argument('--root',type=Path,default=default);p.add_argument('--domain',default=default);p.add_argument('--cwd',default=default)
         p.add_argument('--json',action='store_true',default=argparse.SUPPRESS if suppress else False)
-        p.add_argument('--actor',choices=['main','subagent'],default=argparse.SUPPRESS if suppress else os.environ.get('LIVING_MEMORY_ACTOR','main'))
+        p.add_argument('--actor',choices=['main','subagent','viewer'],default=argparse.SUPPRESS if suppress else os.environ.get('LIVING_MEMORY_ACTOR','main'))
     common(parser);subs=parser.add_subparsers(dest='command',required=True)
     def sub(name):p=subs.add_parser(name);common(p,True);return p
     p=sub('setup');p.add_argument('--location',type=Path);p.add_argument('--non-interactive',action='store_true');p.add_argument('--source',type=Path);p.add_argument('--apply-plan');p.add_argument('--inspect-plan');p.add_argument('--expected-plan-sha256')
@@ -220,6 +291,10 @@ def main(argv=None):
     p=sub('promote-plan');p.add_argument('refs',nargs='*',help='Project notes to move to the global domain');p.add_argument('--suggest',action='store_true',help='List candidates with reasons; writes nothing');p.add_argument('--only',help='With --suggest: one domain instead of all')
     p=sub('recall');p.add_argument('query');p.add_argument('--session',required=True);p.add_argument('--limit',type=int,default=5);p.add_argument('--all',action='store_true',help='Search the whole transcript, not only what precedes the latest compaction')
     p=sub('capture-finalize');p.add_argument('--session',required=True);p.add_argument('--turn',help='Defaults to the latest prompt of the session');p.add_argument('--note',action='append',default=[])
+    p=sub('list');p.add_argument('--status',choices=['active','resolved','archived','superseded','any'],default='active');p.add_argument('--type',choices=NOTE_TYPES,action='append');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)');p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--offset',type=int,default=0);p.add_argument('--limit',type=int,default=200)
+    p=sub('domains')
+    p=sub('version')
+    p=sub('serve');p.add_argument('--stdio',action='store_true',required=True,help='JSON-lines requests on stdin, one reply line each on stdout')
     p=sub('sync');p.add_argument('vault',type=Path)
     p=sub('overlay-build');p.add_argument('vault',type=Path)
     p=sub('overlay-teardown-plan');p.add_argument('vault',type=Path)
@@ -228,7 +303,7 @@ def main(argv=None):
     try:
         if args.command=='setup':
             from .storage import setup,apply_relocation,inspect_relocation
-            if args.actor=='subagent':raise ValueError('Subagents are read-only')
+            if args.actor in {'subagent','viewer'}:raise ValueError('Subagents are read-only' if args.actor=='subagent' else 'Viewers are read-only')
             if args.inspect_plan:
                 if args.apply_plan or args.location or args.source or args.expected_plan_sha256:raise ValueError('Inspection takes only a plan ID')
                 result=inspect_relocation(args.inspect_plan)
@@ -250,7 +325,9 @@ def main(argv=None):
             # Snapshots exist to repair a damaged store, so restoring must not depend on readable bindings.
             if cmd not in {'restore-plan','inspect-plan','apply','backup','history'}:raise
             domain=None
-        if args.actor=='subagent' and cmd not in {'search','read','query','doctor','validate','history','open','stats','timeline','recall'}:raise ValueError('Subagents are read-only; return mutation proposals to the main agent')
+        if args.actor=='subagent' and cmd not in READ_ONLY:raise ValueError('Subagents are read-only; return mutation proposals to the main agent')
+        if args.actor=='viewer' and cmd not in VIEWER:raise ValueError('Viewers are read-only; run changes as --actor main')
+        if cmd=='serve':return serve(root,cwd,set(subs.choices)-{'serve','setup'})
         if cmd=='bind':
             from .init_domain import init_domain
             init_domain(args.name,args.prefix,root);result={'ok':True,'domain':args.name,'status':'bound'}
@@ -343,8 +420,16 @@ def main(argv=None):
             d,n=_reference(args.reference,domain,root);path,note=find_note(n,d,root)
             result={k:v for k,v in note.items() if k not in {'body','path','digest'}}
             if not args.metadata_only:result.update(body=note['body'][:max(0,min(64000,args.max_chars))],truncated=len(note['body'])>args.max_chars)
-            from .usage import record
-            record(root,'read',[f'{d}:{n}'])
+            if args.actor!='viewer':
+                from .usage import record
+                record(root,'read',[f'{d}:{n}'])
+        elif cmd=='list':
+            if args.all_domains:domains=list_domains(root)['domains'];domains=[d['name'] for d in domains if (root/'domains'/d['name']/'notes').is_dir()]
+            elif domain:domains=[domain]
+            else:raise ValueError('unbound_project')
+            result=list_notes(root,domains,args.status,args.type or (),args.tag,max(0,args.offset),max(1,min(1000,args.limit)))
+        elif cmd=='domains':result=list_domains(root)
+        elif cmd=='version':result={'ok':True,'api':SERVE_API,'python':sys.version.split()[0],'commands':sorted(subs.choices)}
         elif cmd=='update':
             from .notes import change
             d,n=_reference(args.reference,domain,root)
