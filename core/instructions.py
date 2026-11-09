@@ -28,7 +28,7 @@ def usage(session='SESSION'):
             "\n  Use single quotes, literal in Bash and PowerShell (write ' as '' in PowerShell, '\\'' in Bash). Long body: --content-file FILE."
             f"\nKeep current: CMD update REF --session {session} --body '...' [--title '...']; replaced: capture ... --supersedes REF; still true: CMD confirm REF; due notes: CMD review."
             f"\nTo resume work, check Open work first (CMD open); tick a done item: CMD check REF 'item' --session {session}."
-            f'\nChanged files, nothing durable: CMD capture-finalize --session {session}. Conversational turns need no receipt unless a reminder asks.')
+            f'\nNo per-turn receipt is needed unless a Stop reminder asks (then: CMD capture-finalize --session {session}).')
 
 def static_protocol(harness):
     """Machine-independent protocol text for instruction files: no interpreter paths, domains or sessions."""

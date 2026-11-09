@@ -1,4 +1,5 @@
-"""Stop-hook reminder: real file changes by the main agent, or a durable statement by the user, arm it."""
+"""Stop hook: real file changes by the main agent are tracked but end the turn quietly; a durable statement
+by the user arms the reminder."""
 import json
 
 from test_core import StoreFixture
@@ -17,6 +18,15 @@ class StopFixture(StoreFixture):
             runtime.process(harness, 'pre-tool-use', {**self.payload, **tool}, self.root)
         return runtime.process(harness, 'stop', self.payload, self.root)
 
+    def mutated(self, *tools):
+        """Whether the turn's tool calls marked it as changing files (read before Stop clears it)."""
+        runtime.process('claude', 'user-prompt', self.payload, self.root)
+        for tool in tools:
+            runtime.process('claude', 'pre-tool-use', {**self.payload, **tool}, self.root)
+        state = json.loads(runtime._pointer(self.root, 'session').read_text(encoding='utf-8'))
+        self.assertEqual(runtime.process('claude', 'stop', self.payload, self.root), {})  # file changes alone end quietly
+        return bool(state.get('mutating'))
+
     @staticmethod
     def shell(command, tool='Bash'):
         return {'tool_name': tool, 'tool_input': {'command': command}}
@@ -27,10 +37,10 @@ class StopHook(StopFixture):
         for command in ['ls -la', 'git status --short', 'git log --oneline -5 | head -3',
                         'grep -n x file.py 2>/dev/null', 'cat a.txt && wc -l a.txt']:
             with self.subTest(command=command):
-                self.assertEqual(self.turn(self.shell(command)), {})
+                self.assertFalse(self.mutated(self.shell(command)))
         for command in ['Get-ChildItem', 'Get-Content x.txt | Select-String foo']:
             with self.subTest(command=command):
-                self.assertEqual(self.turn(self.shell(command, 'PowerShell')), {})
+                self.assertFalse(self.mutated(self.shell(command, 'PowerShell')))
 
     def test_research_pipelines_do_not_arm(self):
         """Read-only shapes that agents use to survey a codebase: sed/awk/xargs, loops, subshells."""
@@ -48,12 +58,12 @@ class StopHook(StopFixture):
                         'uniq -c sorted.txt',
                         'git for-each-ref --format=x refs/remotes', 'git stash list | head', 'git reflog -5', 'git show-ref']:
             with self.subTest(command=command):
-                self.assertEqual(self.turn(self.shell(command)), {})
+                self.assertFalse(self.mutated(self.shell(command)))
 
     def test_redirection_substitution_and_unknown_commands_arm(self):
         for command in ['echo x > out.txt', 'cat $(ls)', 'touch x', 'git commit -m x', 'sed -i s/a/b/ f']:
             with self.subTest(command=command):
-                self.assertIn('continue_reason', self.turn(self.shell(command)))
+                self.assertTrue(self.mutated(self.shell(command)))
 
     def test_writing_forms_of_research_commands_arm(self):
         for command in ['sed -i.bak s/a/b/ f', 'sed -ni p f', "sed 's/a/b/w out' f", 'sed -f x.sed f',
@@ -63,16 +73,16 @@ class StopHook(StopFixture):
                         'for f in *; do rm $f; done', 'uniq in out', '(rm x)', 'cd x && (touch y)',
                         'git stash', 'git stash pop', 'git reflog expire --all', 'git reflog delete HEAD@{1}']:
             with self.subTest(command=command):
-                self.assertIn('continue_reason', self.turn(self.shell(command)))
+                self.assertTrue(self.mutated(self.shell(command)))
 
     def test_plan_mode_writes_do_not_arm(self):
         plan_write = {'tool_name': 'Write', 'tool_input': {'file_path': self.cwd + '/plan.md'}, 'permission_mode': 'plan'}
-        self.assertEqual(self.turn(plan_write), {})
+        self.assertFalse(self.mutated(plan_write))
 
     def test_subagent_tool_calls_do_not_arm(self):
         write = {'tool_name': 'Write', 'tool_input': {'file_path': self.cwd + '/x.py'},
                  'agent_id': 'agent-1', 'agent_type': 'Explore'}
-        self.assertEqual(self.turn(write, self.shell('touch y') | {'agent_id': 'agent-1'}), {})
+        self.assertFalse(self.mutated(write, self.shell('touch y') | {'agent_id': 'agent-1'}))
 
     def test_scratchpad_writes_do_not_arm(self):
         scratch = self.base / 'scratch'
@@ -80,17 +90,13 @@ class StopHook(StopFixture):
         payload = {'scratchpad_dir': str(scratch)}
         inside = {'tool_name': 'Write', 'tool_input': {'file_path': str(scratch / 'a.py')}, **payload}
         outside = {'tool_name': 'Write', 'tool_input': {'file_path': self.cwd + '/a.py'}, **payload}
-        self.assertEqual(self.turn(inside), {})
-        self.assertIn('continue_reason', self.turn(outside))
+        self.assertFalse(self.mutated(inside))
+        self.assertTrue(self.mutated(outside))
 
-    def test_main_agent_write_arms_one_reminder_per_turn(self):
+    def test_main_agent_write_ends_the_turn_quietly(self):
         write = {'tool_name': 'Edit', 'tool_input': {'file_path': self.cwd + '/x.py'}}
-        runtime.process('claude', 'user-prompt', self.payload, self.root)
-        runtime.process('claude', 'pre-tool-use', {**self.payload, **write}, self.root)
-        first = runtime.process('claude', 'stop', self.payload, self.root)
-        second = runtime.process('claude', 'stop', self.payload, self.root)
-        self.assertIn('continue_reason', first)
-        self.assertEqual(second, {})
+        self.assertTrue(self.mutated(write))
+        self.assertNotIn('mutating', json.loads(runtime._pointer(self.root, 'session').read_text(encoding='utf-8')))
 
 
 
@@ -148,7 +154,7 @@ class ConversationalSignal(StopFixture):
         self.payload = {**self.payload, 'prompt': 'From now on use tabs'}
         write = {'tool_name': 'Edit', 'tool_input': {'file_path': self.cwd + '/x.py'}}
         reason = self.turn(write)['continue_reason']
-        self.assertIn('stated a preference this turn (and files changed)', reason)
+        self.assertIn('stated a preference (files changed too)', reason)
 
 
 
@@ -168,7 +174,9 @@ class ReminderSettlesTheTurn(StopFixture):
     edit = {'tool_name': 'Edit', 'tool_input': {'file_path': 'src/app.py'}}
 
     def test_ignored_reminders_do_not_carry_over(self):
+        self.payload['prompt'] = 'from now on, use tabs'
         self.assertIn('continue_reason', self.turn(self.edit))   # the agent ignores it
+        self.payload['prompt'] = 'work on it'
         self.assertEqual(self.turn(), {})                          # an unrelated turn ends quietly
         self.payload['prompt'] = 'remember that the staging server was retired'
         self.assertIn('remember', self.turn()['continue_reason'])
