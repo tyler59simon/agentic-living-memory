@@ -209,7 +209,7 @@ class ClaudeIntegrationFixes(StoreFixture):
         text=(home/'settings.json').read_text();settings=json.loads(text)
         self.assertIn('\n  "hooks"',text);self.assertEqual(settings['theme'],'dark')
         pre=settings['hooks']['PreToolUse'][0];handler=pre['hooks'][0]
-        self.assertEqual(pre['matcher'],'Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell')
+        self.assertEqual(pre['matcher'],'Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|Read|Glob|Grep|Agent|Task')
         self.assertEqual(handler['command'],sys.executable);self.assertEqual(handler['args'][1],'pre-tool-use')
         end=settings['hooks']['SessionEnd'][0]['hooks'][0];self.assertEqual((end['args'][1],end['timeout']),('session-end',60))
         claude_md=(home/'CLAUDE.md').read_text();self.assertIn('applies only when',claude_md);self.assertIn('Subagents are read-only',claude_md)

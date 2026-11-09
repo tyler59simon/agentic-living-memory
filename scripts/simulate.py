@@ -57,7 +57,8 @@ class Sim:
         for note in s.get('notes',[]):
             domain=note.get('domain','demo')
             if domain=='_global':ensure_global(self.root)
-            made=capture(note['title'],note.get('body',''),note.get('tags',DEFAULT_TAGS),domain,self.root,type=note.get('type','knowledge'),allow_similar=True)
+            extra={'files':note['files']} if note.get('files') else {}   # e.g. a codebase map's repo folder
+            made=capture(note['title'],note.get('body',''),note.get('tags',DEFAULT_TAGS),domain,self.root,type=note.get('type','knowledge'),allow_similar=True,**extra)
             self.keys[note['key']]={'domain':domain,'id':made['id'],'path':made['path']}
         if s.get('transcript'):
             path=self.base/'transcript.jsonl'
@@ -249,6 +250,10 @@ class Sim:
         detail={}
         if kind=='hook':
             event=record['event']
+            # Claude and Factory answer settled Read/Glob/Grep calls in core/hookfast.py: an empty reply and no log line.
+            fast=event=='pre-tool-use' and not mine and not record.get('reply') and self.harness in {'claude','factory'}
+            if 'fast' in expect and expect['fast']!=fast:fail(f"fast: expected {expect['fast']!r}, got {fast!r}")
+            if fast:record['fast']=True;return
             if len(mine)!=1 or mine[0].get('event')!=event:fail(f'expected one hook line for {event}, got {[r.get("event") for r in mine]}');return
             line=mine[0];detail=line.get('detail') or {};record['detail']=detail;record['level']=line.get('level')
             reply=record.get('reply',{});outcome=set(line.get('outcome') or [])
@@ -264,6 +269,11 @@ class Sim:
                     if short_ref(domain,note_id) not in context:fail(f'{ref} is logged as injected but is not in the delivered context')
                 prompted={r['ref'] for r in diary if r.get('e')=='inject' and r.get('k')=='prompt'}
                 if prompted!=set(injected):fail(f'usage diary injected {sorted(prompted)}, log says {sorted(injected)}')
+                maps=(detail.get('maps') or {}).get('injected') or []
+                for ref in maps:
+                    if short_ref(*ref.split(':',1)) not in context:fail(f'map {ref} is logged as injected but is not in the delivered context')
+                mapped={r['ref'] for r in diary if r.get('e')=='inject' and r.get('k')=='prompt-map'}
+                if mapped!=set(maps):fail(f'usage diary injected maps {sorted(mapped)}, log says {sorted(maps)}')
             if self.content:
                 logged=(line.get('content') or {});delivered={'context':reply.get('context') if event!='pre-compact' else None,'continue_reason':reply.get('reminder')}
                 for key,value in delivered.items():

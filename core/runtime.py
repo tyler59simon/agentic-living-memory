@@ -404,11 +404,133 @@ def file_hints(paths,state,root,domain,bindings,session=None,trace=None):
         from .logs import swallowed
         swallowed('runtime.file_hints',exc,root);return None,[]
 
-def git_root(cwd):
-    """The enclosing git work tree (a .git folder, or a .git file for worktrees and submodules), else None."""
-    try:here=Path(cwd).resolve()
-    except (OSError,ValueError):return None
-    return next((p for p in (here,*here.parents) if (p/'.git').exists()),None)
+from .common import git_root  # re-exported: older callers import it from here
+
+# Codebase maps (core/maps.py). Exploration is tracked per repo in session state['repos'][repo path]:
+# reads (counted to EXPLORE_READS), map (ref once found), done (agent keys with nothing left to do; '*' for all),
+# explored, reminded, created (new top-level paths in a mapped repo) and told (the "no map yet" line was shown).
+EXPLORE_TOOLS={'read','read_file','view','glob','grep','search','ls','list'}
+SPAWN_TOOLS={'agent','task'}
+EXPLORE_READS=3
+MAX_REPOS=20
+MAX_CREATED=10
+PATH_KEYS=('file_path','path','notebook_path','filepath')
+
+def _repos(state):
+    repos=state.get('repos')
+    return repos if isinstance(repos,dict) else {}
+
+def _track_repos(root,session,change):
+    """Apply change(repos) to the session's per-repo state under its lock; never fails the hook."""
+    if session=='unknown':return
+    def apply(s):
+        repos=_repos(s);change(repos)
+        s['repos']=dict(list(repos.items())[-MAX_REPOS:])
+    try:_update(root,session,apply)
+    except (OSError,TimeoutError):pass
+
+def _agent_key(payload):return str(payload.get('agent_id') or payload.get('agentId') or '')
+
+def _target_repos(name,args,cwd,bindings):
+    """Repos a read-type tool call explores: the repo holding each path argument (else cwd's); for a subagent
+    spawn, the repos its description and prompt name, plus cwd's."""
+    from .maps import named_repos,candidate_repos
+    args=args if isinstance(args,dict) else {}
+    found=[]
+    if name in SPAWN_TOOLS:
+        text=' '.join(str(args.get(k) or '') for k in ('description','prompt'))
+        found+=named_repos(text,candidate_repos(cwd,bindings),bindings.get('repo_aliases'))
+    else:
+        for key in PATH_KEYS:
+            value=args.get(key)
+            if isinstance(value,str) and value.strip():
+                path=Path(os.path.expandvars(value.strip())).expanduser()
+                found.append(git_root(path if path.is_absolute() else Path(cwd)/path))
+    here=git_root(cwd)
+    if here and (name in SPAWN_TOOLS or not found):found.append(here)
+    # Only repos under a bound folder: a map for any other repo would be stored where no lookup finds it.
+    return [r for r in dict.fromkeys(r.resolve() for r in found if r) if resolve_domain(r,bindings)][:2]
+
+def explore(name,args,payload,cwd,root,bindings,state,session,hints=True):
+    """Track a read-type call against the repos it explores: (hint text or None, detail rows).
+    A mapped repo gets one hint per agent (none for the main agent once the map was injected); an unmapped
+    one counts reads until it counts as explored, which arms the Stop reminder."""
+    from .maps import find_map,pointer_line
+    from .notes import short_ref
+    # A spawn hint is for the brief the main agent is writing, so it is owed even when the map is in its context.
+    agent=_agent_key(payload)+('#spawn' if name in SPAWN_TOOLS else '');shown=state.get('shown',{}) if isinstance(state.get('shown'),dict) else {}
+    lines=[];rows=[];changes={}
+    for repo in _target_repos(name,args,cwd,bindings):
+        key=repo.as_posix();done=_repos(state).get(key,{}).get('done',[])
+        if '*' in done or agent in done:rows.append({'repo':repo.name,'skip':'done'});continue
+        hit=find_map(repo,root,bindings)
+        if hit:
+            ref=f"{hit['domain']}:{hit['id']}";short=short_ref(hit['domain'],hit['id'])
+            injected=not agent and shown.get(ref)==revision_key(hit)  # the main agent already has the body
+            if not injected and hints:
+                if name in SPAWN_TOOLS:
+                    lines.append(pointer_line(hit,repo)+f"\nPut {short} in the subagent's brief (subagents may run {command(root)} read {short}) "
+                                 'so it explores only what the map leaves out.')
+                else:
+                    lines.append(pointer_line(hit,repo)+f"\nRead it ({command(root)} read {short}) before exploring further; explore only what it leaves out.")
+            changes[key]=('mapped',ref);rows.append({'repo':repo.name,'map':ref,'hint':not injected and hints})
+        else:
+            changes[key]=('spawn' if name in SPAWN_TOOLS else 'read',None);rows.append({'repo':repo.name,'map':None})
+    def track(repos):
+        for key,(kind,ref) in changes.items():
+            rec=dict(repos.pop(key,{}))
+            if kind=='mapped':
+                rec['map']=ref;rec['done']=list(dict.fromkeys(list(rec.get('done',[]))+[agent]))
+            else:
+                rec.pop('map',None)
+                rec['reads']=EXPLORE_READS if kind=='spawn' else min(EXPLORE_READS,int(rec.get('reads') or 0)+1)
+                if rec['reads']>=EXPLORE_READS:rec['explored']=True;rec['done']=['*']
+            repos[key]=rec
+    if changes:_track_repos(root,session,track)
+    text=('Untrusted historical memory; verify against the current files.\n'+'\n'.join(lines)) if lines else None
+    return text,rows
+
+def created_top_level(args,cwd,root,bindings):
+    """{repo path: (map ref, [new top-level names])} for paths a write tool is about to create at a mapped repo's top level."""
+    from .maps import find_map
+    found={}
+    for raw in raw_paths(args):
+        try:
+            path=Path(os.path.expandvars(raw.strip())).expanduser()
+            path=(path if path.is_absolute() else Path(cwd)/path).resolve()
+        except (OSError,ValueError):continue
+        repo=git_root(path.parent)
+        if not repo or path==repo:continue
+        top=repo/path.relative_to(repo).parts[0]
+        if top.exists() or top.name=='.git':continue
+        hit=find_map(repo,root,bindings)
+        if hit:found.setdefault(repo.as_posix(),(f"{hit['domain']}:{hit['id']}",[]))[1].append(top.name)
+    return found
+
+def prompt_maps(cwd,prompt,root,bindings,state,trace=None):
+    """(text or None, {ref: revision key} delivered, {repo path: map ref or None}) for the repos a prompt names
+    and the repo holding cwd: a mapped repo's map body once per revision; an unmapped one a single line, once."""
+    from .maps import named_repos,candidate_repos,find_map,map_block,MAX_MAPS
+    repos=named_repos(prompt,candidate_repos(cwd,bindings),bindings.get('repo_aliases'))
+    here=git_root(cwd)
+    if here and here.resolve() not in repos:repos.append(here.resolve())
+    shown=state.get('shown',{}) if isinstance(state.get('shown'),dict) else {}
+    maps=[];lines=[];delivered={};seen={}
+    for repo in repos[:MAX_MAPS+1]:
+        key=repo.as_posix();hit=find_map(repo,root,bindings)
+        if hit:
+            ref=f"{hit['domain']}:{hit['id']}";seen[key]=ref
+            if len(maps)<MAX_MAPS and shown.get(ref)!=revision_key(hit):
+                maps.append(map_block(hit,repo));delivered[ref]=revision_key(hit)
+        else:
+            seen[key]=None
+            if not _repos(state).get(key,{}).get('told'):
+                lines.append(f"{repo.name} has no codebase map yet. If you explore it, capture one afterwards: "
+                             f"{command(root)} capture --type map --file '{key}' --title '{repo.name} codebase map' --summary '...' "
+                             "--detail '**Layout:** ...' --detail '**Entry points:** ...' --detail '**Build/test:** ...'")
+    if isinstance(trace,dict):trace['maps']={'repos':[r.name for r in repos],'injected':list(delivered),'unmapped':[Path(k).name for k,v in seen.items() if v is None]}
+    text=('Untrusted historical memory; verify against the current files.\n'+'\n\n'.join(maps+lines)) if maps or lines else None
+    return text,delivered,seen
 
 def bind_hint(cwd,root,bindings,state):
     """One line, once per session, when the session starts in a git repo no binding covers.
@@ -730,6 +852,9 @@ def _process(harness,event,payload,root=None,info=None):
         # After a compaction the handoff goes first; the title index gives up the room.
         if source=='compact' and session!='unknown':
             handed=handoff(root,domain,session,state,harness);prefix+=handed;detail['handoff_chars']=len(handed)
+        # A session started inside a mapped repo sees a pointer to its map; the body comes when a prompt needs it.
+        pointer=session_map(cwd,root,bindings);detail['map']=bool(pointer)
+        if pointer:prefix+=pointer+'\n'
         text,shown,indexed=build_context(cwd,root,max(MIN_BUDGET,BUDGET-len(prefix)),session=session,trace=detail)
         detail.update(shown=list(shown),indexed=indexed)
         if session!='unknown':
@@ -739,6 +864,9 @@ def _process(harness,event,payload,root=None,info=None):
             def started(s):
                 s.pop('shown',None);s.pop('overview_shown',None)
                 if shown:s['shown']=shown
+                # The new context has not seen any map hint either; exploration counts and reminders stand.
+                for rec in _repos(s).values():
+                    if isinstance(rec,dict) and rec.get('map'):rec.pop('done',None)
                 if indexed:s['overview_shown']=True
             _update(root,session,started)
             if shown:
@@ -749,9 +877,27 @@ def _process(harness,event,payload,root=None,info=None):
         result['context']=_cap(prefix+(text or ''),HARD_CAP)
     elif event=='user-prompt':
         prompt=payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or payload.get('transformedPrompt') or ''
-        delivered={}
-        if isinstance(prompt,str):hits,ids,overview=context(cwd,prompt,root,domain,state.get('shown',{}),state.get('overview_shown',False),delivered,detail)
+        delivered={};maps_text,map_refs,mapped=None,{},{}
+        if isinstance(prompt,str) and not MACHINE_PROMPT.match(prompt):
+            try:maps_text,map_refs,mapped=prompt_maps(cwd,prompt,root,bindings,state,detail)
+            except Exception as exc:
+                from .logs import swallowed
+                swallowed('runtime.prompt_maps',exc,root)
+        # A map injected now counts as shown, so the note search below does not repeat it as a hit.
+        shown_now=state.get('shown',{})
+        shown_now=dict(shown_now) if isinstance(shown_now,dict) else dict.fromkeys(shown_now if isinstance(shown_now,list) else [],'')
+        shown_now.update(map_refs)
+        if isinstance(prompt,str):hits,ids,overview=context(cwd,prompt,root,domain,shown_now,state.get('overview_shown',False),delivered,detail)
         else:hits,ids,overview=None,[],False;detail['path']='not_text'
+        delivered.update(map_refs);ids=list(map_refs)+ids
+        if mapped:
+            def noted(repos):
+                for key,ref in mapped.items():
+                    rec=dict(repos.pop(key,{}))
+                    if ref:rec['map']=ref
+                    else:rec['told']=True
+                    repos[key]=rec
+            _track_repos(root,session,noted)
         if (ids or overview) and session!='unknown':
             def remember(s):
                 previous=s.get('shown',{})
@@ -765,8 +911,9 @@ def _process(harness,event,payload,root=None,info=None):
             except (OSError,TimeoutError):pass
         if ids:
             from .usage import record
-            record(root,'inject',ids,session,'prompt')
-        result['context']=f'Living Memory session={session} turn={turn}'+('\n'+hits if hits else '')
+            if map_refs:record(root,'inject',list(map_refs),session,'prompt-map')
+            if ids[len(map_refs):]:record(root,'inject',ids[len(map_refs):],session,'prompt')
+        result['context']=f'Living Memory session={session} turn={turn}'+('\n'+maps_text if maps_text else '')+('\n'+hits if hits else '')
         if state.get('recall_prompts') and harness in RECALL_HARNESSES and session!='unknown' and isinstance(prompt,str) and not MACHINE_PROMPT.match(prompt):
             from .recall import auto
             gate={};recalled,used=auto(state.get('transcript'),prompt,state.get('recalled',[]),gate);detail['recall']=dict(gate,used=len(used))
@@ -790,7 +937,14 @@ def _process(harness,event,payload,root=None,info=None):
         state=_update(root,session,compacting)
         if harness in STEERED:result['instructions']=steering(root,state)
         detail['steered']=bool(result.get('instructions'))
-    elif event=='subagent-start':result['context']='Living Memory: subagents may only search/read via scripts. Return capture proposals to the main agent; do not write canonical state.'
+    elif event=='subagent-start':
+        result['context']='Living Memory: subagents may only search/read via scripts. Return capture proposals to the main agent; do not write canonical state.'
+        # Maps of the repos this session works in, so a subagent starts from them instead of exploring from scratch.
+        maps=list(dict.fromkeys(r['map'] for r in _repos(state).values() if isinstance(r,dict) and r.get('map')))[-3:]
+        named=_titled(root,maps) if maps else []
+        detail['maps']=maps
+        if named:result['context']+=(f"\nCodebase maps for the repos this session is working in (read the one for your repo before exploring it: "
+                                     f"{command(root,domain)} read REF): "+'; '.join(named))
     elif event=='pre-tool-use':
         name=str(payload.get('tool_name') or payload.get('toolName') or '').lower()
         args=payload.get('tool_input',payload.get('toolArgs',payload.get('toolArguments',{})))
@@ -819,6 +973,26 @@ def _process(harness,event,payload,root=None,info=None):
               else 'subagent' if _subagent(payload) else 'plan_mode' if planning else 'scratch' if name not in SHELL_TOOLS and _scratch_only(args,payload,cwd)
               else 'unknown_session' if session=='unknown' else None)
         detail['mutation']='skipped:'+skip if skip else 'tracked'
+        # Reads, searches and subagent spawns explore a repo: point them at its map, or count toward a map reminder.
+        if session!='unknown' and ((skip=='read_tool' and (name in EXPLORE_TOOLS or name in SPAWN_TOOLS)) or skip=='readonly_shell'):
+            try:
+                hint,detail['explore']=explore(name,args if skip=='read_tool' else {},payload,cwd,root,bindings,state,session,hints=harness in FILE_HINT_HARNESSES)
+                if hint:result['context']=hint
+            except Exception as exc:
+                from .logs import swallowed
+                swallowed('runtime.explore',exc,root)
+        if not skip and name not in SHELL_TOOLS:
+            try:created=created_top_level(args,cwd,root,bindings)
+            except Exception as exc:
+                from .logs import swallowed
+                swallowed('runtime.created_top_level',exc,root);created={}
+            if created:
+                detail['created_top_level']={Path(k).name:names for k,(_,names) in created.items()}
+                def grew(repos):
+                    for key,(ref,names) in created.items():
+                        rec=dict(repos.pop(key,{}));rec['map']=ref
+                        rec['created']=list(dict.fromkeys(list(rec.get('created',[]))+names))[:MAX_CREATED];repos[key]=rec
+                _track_repos(root,session,grew)
         if not skip:
             paths=touched_paths(args,payload,cwd,root,domain,bindings,shell=name in SHELL_TOOLS)
             detail['touched']=len(paths);detail['hints']=[]
@@ -838,10 +1012,18 @@ def _process(harness,event,payload,root=None,info=None):
         def close(s):
             s.pop('open_turns',None);s.pop('mutating',None);s.pop('signal',None);s.pop('touched',None)
         signal=state.get('signal');detail.update(turns=len(turns),mutating=bool(state.get('mutating')),signal=signal)
+        # Plan mode cannot save, so a repo explored there is reminded about at the next Stop outside plan mode.
+        planning=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()=='plan'
+        try:pending=[] if planning else explore_pending(root,bindings,state)
+        except Exception as exc:
+            from .logs import swallowed
+            swallowed('runtime.explore_pending',exc,root);pending=[]
+        detail['explore_pending']=[(Path(k).name,kind) for k,kind,_ in pending]
         # File changes alone end the turn quietly: the agent already decides silently at the end of each turn,
-        # and Claude Code prints every Stop continuation in the user's terminal.
-        quiet=('receipt' if any(capture_status(session,t,root) for t in turns) else 'no_change' if not (state.get('mutating') or signal)
-               else 'no_turns' if not turns else 'files_only' if signal not in SIGNAL_TEXT else None)
+        # and Claude Code prints every Stop continuation in the user's terminal. A repo explored without a codebase
+        # map (or grown at its top level) is the exception: rebuilding that orientation costs a whole exploration.
+        quiet=('receipt' if any(capture_status(session,t,root) for t in turns) else 'no_change' if not (state.get('mutating') or signal or pending)
+               else 'no_turns' if not turns else 'files_only' if signal not in SIGNAL_TEXT and not pending else None)
         if quiet:
             detail['reason']=quiet;_update(root,session,close);return {}
         latest=turns[-1];reminder=root/'.turns'/(turn_key(session,latest)+'.reminded')
@@ -855,13 +1037,61 @@ def _process(harness,event,payload,root=None,info=None):
             s.pop('open_turns',None);s.pop('mutating',None);s.pop('signal',None)
             s['reminded']={'turn':latest,'signal':signal}
         _update(root,session,reminded)
+        if pending:
+            def settled(repos):
+                # One map reminder per repo per session; the new top-level paths it named are settled too.
+                for key,kind,_ in pending:
+                    rec=dict(repos.pop(key,{}))
+                    if kind=='unmapped':rec['reminded']=True
+                    else:rec.pop('created',None)
+                    repos[key]=rec
+            _track_repos(root,session,settled)
         from .usage import record
-        detail['reason']='reminded:'+signal
-        record(root,'reminder',session=session,kind=signal)
+        kind=signal if signal in SIGNAL_TEXT else 'explored' if any(k=='unmapped' for _,k,_ in pending) else 'grown'
+        detail['reason']='reminded:'+kind
+        record(root,'reminder',session=session,kind=kind)
         # Short on purpose: Claude Code shows it in the terminal. CMD is defined by the session context, and
         # --turn defaults to the session's latest prompt, which is this one.
-        said,hint=SIGNAL_TEXT[signal]
-        result['continue_reason']=(f"Living Memory: the user {said}{' (files changed too)' if state.get('mutating') else ''}. "
-                                   f"Durable: update its note or CMD capture --session {session} {hint} --title '...' --summary '...'; "
-                                   f"otherwise CMD capture-finalize --session {session}.")
+        maps=' '.join(map_sentence(key,k,data,session) for key,k,data in pending)
+        finalize=f"otherwise CMD capture-finalize --session {session}."
+        if signal in SIGNAL_TEXT:
+            said,hint=SIGNAL_TEXT[signal]
+            result['continue_reason']=(f"Living Memory: the user {said}{' (files changed too)' if state.get('mutating') else ''}. "
+                                       f"Durable: update its note or CMD capture --session {session} {hint} --title '...' --summary '...'; "
+                                       +finalize+(' Also: '+maps if maps else ''))
+        else:result['continue_reason']=f"Living Memory: {maps} {finalize[0].upper()+finalize[1:]}"
     return result
+
+def explore_pending(root,bindings,state):
+    """[(repo path, 'unmapped' | 'grown', data)] the Stop reminder should raise: a repo explored without a map
+    (one captured since quiets it), or new top-level paths in a mapped repo."""
+    from .maps import find_map
+    pending=[]
+    for key,rec in _repos(state).items():
+        if not isinstance(rec,dict):continue
+        if rec.get('explored') and not rec.get('reminded') and not rec.get('map') and not find_map(Path(key),root,bindings):
+            pending.append((key,'unmapped',None))
+        elif rec.get('created') and rec.get('map'):pending.append((key,'grown',(rec['map'],list(rec['created']))))
+    return pending[:3]
+
+def map_sentence(key,kind,data,session):
+    from .notes import short_ref
+    name=Path(key).name
+    if kind=='unmapped':
+        return (f"this turn explored {name}, which has no codebase map. If that would spare a future session re-exploring it: "
+                f"CMD capture --session {session} --type map --file '{key}' --title '{name} codebase map' --summary '...' "
+                "--detail '**Layout:** ...' (and Entry points, Key modules, Data flow, Build/test/run, Conventions).")
+    ref,names=data;short=short_ref(*ref.split(':',1))
+    return (f"new top-level paths in {name} ({', '.join(names)}): if they change its layout, update map {short} "
+            f"(CMD read {short}, then CMD update {short} --session {session} with every --detail bullet).")
+
+def session_map(cwd,root,bindings):
+    """A pointer to the map of the repo holding cwd, else None; never fails the hook."""
+    try:
+        from .maps import find_map,pointer_line
+        here=git_root(cwd)
+        hit=find_map(here,root,bindings) if here else None
+        return pointer_line(hit,here) if hit else None
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('runtime.session_map',exc,root);return None

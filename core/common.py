@@ -61,6 +61,12 @@ def display_path(path: Path, prefixes: list[Path]) -> str|None:
             return None if rel=='.' else rel
     return path.as_posix()
 
+def git_root(cwd) -> Path|None:
+    """The enclosing git work tree (a .git folder, or a .git file for worktrees and submodules), else None."""
+    try:here=Path(cwd).resolve()
+    except (OSError,ValueError):return None
+    return next((p for p in (here,*here.parents) if (p/'.git').exists()),None)
+
 def safe_domain(name: str) -> str:
     if not isinstance(name,str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]*",name) or name in {".",".."}:
         raise ValueError("invalid domain")

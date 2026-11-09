@@ -30,6 +30,11 @@ def main(harness='claude'):
         raw=sys.stdin.buffer.read().decode('utf-8-sig')
         payload=json.loads(raw) if raw.strip() else {}
         if not isinstance(payload,dict):raise ValueError('Hook payload must be an object')
+        if event=='pre-tool-use':
+            # Read, Glob and Grep reach this hook only to find codebase maps; once a repo needs nothing, skip the runtime.
+            from core.hookfast import quick
+            fast=quick(payload)
+            if fast is not None:sys.stdout.write(json.dumps(fast)+'\n');return 0
         if event=='pre-compact':
             # PreCompact stdout is not a JSON reply: Claude Code hands it to the summarizer as instructions.
             from core.runtime import process

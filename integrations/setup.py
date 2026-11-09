@@ -8,8 +8,9 @@ from core.governance import plan,apply
 from core.instructions import INSTRUCTION_FILE,instruction_block as _block,merge_block
 ROOT=Path(__file__).resolve().parents[1]
 EVENTS={'SessionStart':'session-start','UserPromptSubmit':'user-prompt','SubagentStart':'subagent-start','PreToolUse':'pre-tool-use','Stop':'stop','PreCompact':'pre-compact'}
-# Only tools that can write files or run the memory script need the guard; read tools skip Python entirely.
-PRE_TOOL_MATCHER='Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell'
+# Tools that can write files or run the memory script need the guard. Read, Glob, Grep and subagent spawns
+# (Agent, formerly Task) come for codebase maps; hooks/claude_hooks.py answers repeat reads from core/hookfast.py.
+PRE_TOOL_MATCHER='Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|Read|Glob|Grep|Agent|Task'
 
 CONFIG={'claude':'settings.json','codex':'hooks.json','copilot':'hooks/agentic-living-memory.json','factory':'hooks.json'}
 # Claude and Codex nest the event map under "hooks"; Factory's hooks.json is the event map itself.
