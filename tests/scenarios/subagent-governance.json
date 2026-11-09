@@ -1,0 +1,19 @@
+{
+ "name": "subagent-governance",
+ "description": "Subagents may search and read, never write: their start context, a denied capture, an allowed search, edits that do not arm Stop, and the CLI's own actor check.",
+ "notes": [
+  {"key": "cache", "title": "Cache eviction policy", "body": "LRU eviction."}
+ ],
+ "steps": [
+  {"hook": "session-start"},
+  {"hook": "subagent-start", "payload": {"agent_id": "sub1"}, "expect": {"context_contains": ["subagents may only search/read"]}},
+  {"hook": "user-prompt", "payload": {"prompt": "investigate the cache"}},
+  {"hook": "pre-tool-use", "payload": {"agent_id": "sub1", "tool_name": "Bash", "tool_input": {"command": "{memory} capture 'Cache notes' 'Found something.'"}}, "expect": {"deny": "subagent"}},
+  {"hook": "pre-tool-use", "payload": {"agent_id": "sub1", "tool_name": "Bash", "tool_input": {"command": "{memory} search cache"}}, "expect": {"allow": true, "mutation": "skipped:memory_cmd", "detail": {"subcommand": "search"}}},
+  {"hook": "pre-tool-use", "payload": {"agent_id": "sub1", "tool_name": "Edit", "tool_input": {"file_path": "{project}/cache.py"}}, "expect": {"mutation": "skipped:subagent", "deny": false}},
+  {"hook": "stop", "expect": {"stop_reason": "no_change", "reminder": null}},
+  {"cli": ["--actor", "subagent", "capture", "Cache notes", "Found something."], "expect": {"exit": 2}},
+  {"cli": ["--actor", "subagent", "search", "cache"], "expect": {"exit": 0}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Bash", "tool_input": {"command": "{memory} capture 'Cache notes' 'Main agent capture.'"}}, "expect": {"allow": true, "mutation": "skipped:memory_cmd"}}
+ ]
+}

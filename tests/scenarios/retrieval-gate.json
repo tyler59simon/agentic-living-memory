@@ -1,0 +1,25 @@
+{
+ "name": "retrieval-gate",
+ "description": "Which notes a prompt injects: a relevant match, dedupe within a session, a new revision offered again, a one-word prompt without a title hit, machine-generated text, the title overview and a too-short prompt.",
+ "secrets": ["zebra"],
+ "notes": [
+  {"key": "cache", "title": "Cache eviction policy", "body": "The cache uses LRU eviction with a 500 entry cap."},
+  {"key": "deploy", "title": "Deploy steps", "body": "Run install.py, then the hook setup for each harness."},
+  {"key": "db", "title": "Database migration plan", "body": "Migrations run in a transaction and are reversible."}
+ ],
+ "steps": [
+  {"hook": "session-start", "expect": {"detail": {"shown": [], "indexed": true}}},
+  {"hook": "user-prompt", "payload": {"prompt": "what is our cache eviction policy zebra"}, "expect": {"inject": ["@cache"], "path": "injected", "gates": {"@cache": "kept:coverage"}}},
+  {"hook": "user-prompt", "payload": {"prompt": "remind me about the cache eviction policy"}, "expect": {"inject": [], "path": "all_shown", "detail": {"suppressed_shown": ["@cache"]}}},
+  {"hook": "user-prompt", "payload": {"prompt": "lru"}, "expect": {"inject": [], "gates": {"@cache": "dropped:one_word_no_title"}, "path": "overview_done"}},
+  {"hook": "user-prompt", "payload": {"prompt": "<task-notification>cache eviction policy finished</task-notification>"}, "expect": {"inject": [], "path": "machine_prompt"}},
+  {"cli": ["update", "@cache", "--summary", "LRU eviction, now with a ten minute TTL."], "expect": {"exit": 0, "status": "update"}},
+  {"hook": "user-prompt", "payload": {"prompt": "cache eviction policy details"}, "expect": {"inject": ["@cache"], "path": "injected"}},
+  {"hook": "user-prompt", "payload": {"prompt": "what are the deploy steps for the hook setup"}, "expect": {"inject": ["@deploy"], "gates": {"@db": null}}},
+  {"hook": "user-prompt", "payload": {"prompt": "banana orchard harvest schedule"}, "expect": {"inject": [], "path": "overview_done"}},
+  {"session": "s2"},
+  {"hook": "user-prompt", "payload": {"prompt": "banana orchard harvest schedule"}, "expect": {"inject": [], "path": "overview", "context_contains": ["Recent titles in this domain", "{short:@db}"]}},
+  {"session": "s3"},
+  {"hook": "user-prompt", "payload": {"prompt": "banana"}, "expect": {"inject": [], "path": "too_short"}}
+ ]
+}

@@ -1,0 +1,26 @@
+{
+ "name": "lifecycle",
+ "description": "Keeping notes current: update, history and diff, undo by reviewed plan, confirm, ticking an action item, supersede, and a stale revision refused.",
+ "harnesses": ["claude"],
+ "notes": [
+  {"key": "cache", "title": "Cache eviction policy", "body": "LRU eviction with a 500 entry cap."},
+  {"key": "deploy", "title": "Deploy steps", "body": "Run install.py, then the hook setup."}
+ ],
+ "steps": [
+  {"cli": ["update", "@cache", "--summary", "LRU eviction with a 1000 entry cap."], "save": {"op": "operation_id"}, "expect": {"exit": 0, "status": "update"}},
+  {"cli": ["history", "--note", "{id:@cache}"], "expect": {"exit": 0}},
+  {"cli": ["diff", "{op}"], "expect": {"exit": 0}},
+  {"cli": ["undo", "{op}"], "save": {"plan": "plan_id", "digest": "digest"}, "expect": {"exit": 0}},
+  {"cli": ["apply", "{plan}", "--expected-plan-sha256", "{digest}"], "expect": {"exit": 0}},
+  {"cli": ["confirm", "@deploy"], "expect": {"exit": 0, "status": "confirm"}},
+  {"cli": ["confirm", "@deploy"], "expect": {"exit": 0, "status": "unchanged"}},
+  {"cli": ["capture", "--title", "Ship the cache rewrite", "--summary", "Replace the cache layer.", "--type", "plan", "--action", "Write the tests", "--action", "Roll out behind a flag", "--concern", "workflow"], "as": "plan", "expect": {"exit": 0, "status": "created"}},
+  {"cli": ["open"], "expect": {"exit": 0}},
+  {"cli": ["check", "@plan", "Write the tests"], "expect": {"exit": 0, "status": "update", "result": {"open": 1}}},
+  {"cli": ["check", "@plan", "Roll"], "expect": {"exit": 0, "status": "update", "result": {"open": 0}}},
+  {"cli": ["capture", "--title", "Cache uses a two-tier LRU", "--summary", "A small hot tier sits in front of the main LRU.", "--type", "decision", "--supersedes", "@cache"], "expect": {"exit": 0, "status": "created"}},
+  {"cli": ["read", "@cache", "--metadata-only"], "expect": {"exit": 0, "result": {"status": "superseded"}}},
+  {"cli": ["update", "@deploy", "--body", "Run install.py only.", "--expected-revision", "0000000000000000000000000000000000000000000000000000000000000000"], "expect": {"exit": 6, "reason": "stale_revision"}},
+  {"cli": ["timeline", "--all"], "expect": {"exit": 0}}
+ ]
+}

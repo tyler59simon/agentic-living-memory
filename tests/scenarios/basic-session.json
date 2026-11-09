@@ -1,0 +1,18 @@
+{
+ "name": "basic-session",
+ "description": "A normal working session: guidance at start, a relevant note on a prompt, a read, a capture with the turn's receipt, a file edit, a quiet Stop and session-end housekeeping.",
+ "secrets": ["zebra"],
+ "notes": [
+  {"key": "style", "title": "Use tabs for indentation", "body": "The user prefers tabs over spaces in every file.", "type": "preference", "tags": ["subject/user", "concern/preference"]},
+  {"key": "cache", "title": "Cache eviction policy", "body": "The cache uses LRU eviction with a 500 entry cap."}
+ ],
+ "steps": [
+  {"hook": "session-start", "expect": {"context_contains": ["Living Memory session={session}", "{short:@style}"], "detail": {"shown": ["@style"], "indexed": true}}},
+  {"hook": "user-prompt", "payload": {"prompt": "what is our cache eviction policy zebra"}, "expect": {"inject": ["@cache"], "path": "injected", "context_contains": ["{short:@cache}"]}},
+  {"cli": ["read", "@cache"], "expect": {"exit": 0, "result": {"title": "Cache eviction policy"}}},
+  {"cli": ["capture", "--session", "{session}", "--title", "Cache entries expire after ten minutes", "--summary", "A TTL of ten minutes applies on top of LRU.", "--type", "decision"], "as": "ttl", "expect": {"exit": 0, "status": "created"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/cache.py"}}, "expect": {"mutation": "tracked", "deny": false}},
+  {"hook": "stop", "expect": {"stop_reason": "receipt", "reminder": null}},
+  {"hook": "session-end", "expect": {"detail": {"housekeeping": {"backup": true}}}}
+ ]
+}
