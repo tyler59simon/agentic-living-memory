@@ -4,7 +4,7 @@ import json
 import subprocess
 import sys
 from contextlib import redirect_stdout
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
@@ -13,7 +13,7 @@ from core import runtime
 from core.cli import main as cli
 from core.governance import undo, apply
 from core.notes import capture, change, find_note
-from core.note_types import default_review_by, review_due
+from core.note_types import STALE_DAYS, default_review_by, effective_date, review_due
 from core.repository import inventory
 from core.session_start import render_context
 
@@ -89,6 +89,17 @@ class Currency(StoreFixture):
         self.assertTrue(review_due(find_note(decision['id'], 'demo', self.root)[1], date.today() + timedelta(days=181)))
         with self.assertRaisesRegex(ValueError, 'YYYY-MM-DD'):
             capture('Bad date', 'x', TAGS, 'demo', self.root, review_by='next week')
+
+    def test_note_age_counts_local_calendar_days(self):
+        # A UTC timestamp near midnight falls on another local day wherever the offset is not zero: 02:00 UTC
+        # is the previous evening in the Americas, 22:00 UTC the next morning further east. Either way the
+        # age must be counted from the local day, like review dates and `today`.
+        for stamp in ('2026-11-09T02:00:00+00:00', '2026-11-09T22:00:00+00:00'):
+            local = datetime.fromisoformat(stamp).astimezone().date()
+            note = {'status': 'active', 'type': 'decision', 'updated': stamp}
+            self.assertEqual(effective_date(note), local, stamp)
+            self.assertFalse(review_due(note, local + timedelta(days=STALE_DAYS)), stamp)
+            self.assertTrue(review_due(note, local + timedelta(days=STALE_DAYS + 1)), stamp)
 
     def test_overdue_notes_surface_in_review_and_session_start(self):
         old = capture('Build status', 'Green.', TAGS, 'demo', self.root, type='status', review_by='2020-01-01')

@@ -34,7 +34,10 @@ def apply(root,plan_id,expected_digest,sync_overlay=True):
         receipt=transaction(root,value['changes'],value['kind'],value['expected'],value['id'])
         for domain in value['domains']:
             try:reconcile(domain,root,sync_overlay=sync_overlay)
-            except Exception:receipt.setdefault('warnings',[]).append(f'{domain}: derived state requires repair')
+            except Exception as exc:
+                from .logs import swallowed
+                swallowed('governance.reconcile',exc,root)
+                receipt.setdefault('warnings',[]).append(f'{domain}: derived state requires repair')
         return receipt
 
 def _check_guards(root,value):

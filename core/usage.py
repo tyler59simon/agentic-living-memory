@@ -27,7 +27,9 @@ def record(root,event,refs=(None,),session=None,kind=None):
         if not lines:return
         with file_lock(path.with_suffix('.lock'),timeout=LOCK_SECONDS):
             with path.open('a',encoding='utf-8',newline='\n') as out:out.write(lines)
-    except Exception:pass
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('usage.record',exc,root)
 
 def events(root,days=30):
     """Diary rows from the last `days` days, oldest first; unreadable lines are skipped."""

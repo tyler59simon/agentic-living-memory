@@ -1,6 +1,6 @@
 ﻿"""Shared deterministic lifecycle behavior; adapters translate native wire formats."""
 from __future__ import annotations
-import hashlib,json,os,re,shlex,sys
+import hashlib,json,os,re,shlex,sys,time
 from pathlib import Path
 from .common import memory_root,load_bindings,resolve_domain,atomic_write,canonical_domain,file_lock
 from .repository import read_json,canonical_json,now
@@ -12,7 +12,7 @@ SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 # Tools that cannot change files; anything else marks the turn as mutating.
 READ_TOOLS={'read','read_file','glob','grep','search','view_image','view','ls','list','webfetch','websearch','web_fetch','web_search','todowrite','task','agent','toolsearch','askuserquestion','exitplanmode','enterplanmode'}
 SHELL_TOOLS={'bash','powershell','shell','run_shell_command','exec_command','local_shell','execute'}
-ALLOWED_SUBCOMMANDS={'search','read','taxonomy','doctor','history','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','promote-plan'}
+ALLOWED_SUBCOMMANDS={'search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','promote-plan'}
 # Subagents are read-only: these are denied for them even though the main agent gets them auto-allowed.
 MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm'}
 GLOBAL_OPTIONS={'--root','--domain','--cwd','--actor'}
@@ -289,14 +289,18 @@ def _sync_vaults(root,trigger,min_interval=0):
             except (KeyError,TypeError,ValueError):age=None
             if age is not None and age<min_interval:return None
         return sync_all(root,trigger)
-    except Exception:return None
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('runtime.sync_vaults',exc,root);return None
 
 def _daily_backup(root):
     """At most one snapshot a day, taken from session housekeeping. Never fails the hook."""
     try:
         from .backup import maybe_backup
         return maybe_backup(root)
-    except Exception:return None
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('runtime.daily_backup',exc,root);return None
 
 def _prune_journals(root):
     """At most once a day, drop old sync-bookkeeping journals from the store and each managed vault.
@@ -309,12 +313,16 @@ def _prune_journals(root):
         except (KeyError,TypeError,ValueError):age=None
         if age is not None and age<24*3600:return None
         atomic_write(marker,canonical_json({'at':now()}))
+        from .logs import prune
+        prune(root)
         roots={str(root)}
         for state in (root/'domains').glob('*/sync-state.json'):
             vault=(read_json(state,{}) or {}).get('vault')
             if vault and Path(vault).is_dir():roots.add(str(vault))
         return {r:prune_journals(Path(r)) for r in sorted(roots)}
-    except Exception:return None
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('runtime.prune_journals',exc,root);return None
 
 def _subagent(payload):
     """Claude Code marks hooks that fire inside a subagent with agent_id. Subagents are read-only
@@ -359,7 +367,9 @@ def touched_paths(args,payload,cwd,root,domain,bindings,shell=False):
             shown=display_path(p,prefixes)
             if shown:found.append(shown)
         return list(dict.fromkeys(found))
-    except Exception:return []  # provenance is a nicety; never fail the hook
+    except Exception as exc:  # provenance is a nicety; never fail the hook
+        from .logs import swallowed
+        swallowed('runtime.touched_paths',exc,root);return []
 
 # Hosts whose PreToolUse output documents additionalContext (Claude Code; Codex since openai/codex#20692).
 # Copilot CLI and Factory document no PreToolUse context, so they get no hints.
@@ -385,7 +395,9 @@ def file_hints(paths,state,root,domain,bindings,session=None):
             record(root,'inject',list(dict.fromkeys(refs)),session,'file-hint')
         text=('Untrusted historical memory; verify against the current file.\n'+'\n'.join(blocks)) if blocks else None
         return text,wanted
-    except Exception:return None,[]
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('runtime.file_hints',exc,root);return None,[]
 
 def git_root(cwd):
     """The enclosing git work tree (a .git folder, or a .git file for worktrees and submodules), else None."""
@@ -605,11 +617,24 @@ def process(harness,event,payload,root=None):
     from . import repository
     from .storage import resolve_root
     root=resolve_root(root)[0]
+    from . import logs
+    logs.use(root);info={};start=time.perf_counter()
+    session=str(payload.get('session_id') or payload.get('sessionId') or '')
+    fields=lambda:{'harness':harness,'domain':info.get('domain'),'session':session_hash(session) if session and session!='unknown' else None,
+                   'ms':round((time.perf_counter()-start)*1000,1)}
     previous=repository.LOCK_TIMEOUT;repository.LOCK_TIMEOUT=HOOK_LOCK_TIMEOUT
-    try:return _process(harness,event,payload,root)
+    try:result=_process(harness,event,payload,root,info)
+    except Exception as exc:
+        logs.write('error','hook',event,root,**fields(),error=logs.error_fields(exc));raise
     finally:repository.LOCK_TIMEOUT=previous
+    context=result.get('context') or result.get('instructions')
+    logs.write('warning' if result.get('warning') else 'info','hook',event,root,**fields(),
+               outcome=sorted(k for k in ('context','deny','allow','continue_reason','warning','instructions') if result.get(k)),
+               context_chars=len(context) if isinstance(context,str) else None)
+    return result
 
-def _process(harness,event,payload,root=None):
+def _process(harness,event,payload,root=None,info=None):
+    info=info if info is not None else {}
     root=Path(root or memory_root()).resolve();cwd=payload.get('cwd') or payload.get('workingDirectory') or os.getcwd()
     session=str(payload.get('session_id') or payload.get('sessionId') or 'unknown');turn=str(payload.get('turn_id') or payload.get('turnId') or '')
     bindings=load_bindings(root)
@@ -617,10 +642,11 @@ def _process(harness,event,payload,root=None):
     if not isinstance(state,dict):state={}
     pinned=state.get('domain')
     domain=pinned if pinned and pinned in bindings.get('domains',{}) else resolve_domain(cwd,bindings)
+    info['domain']=domain
     source=str(payload.get('source') or '').lower()
     transcript=None if _subagent(payload) else _transcript(payload)
     if event=='session-start' and session!='unknown':
-        current=resolve_domain(cwd,bindings) or domain;domain=current
+        current=resolve_domain(cwd,bindings) or domain;domain=current;info['domain']=domain
         def pin(s):
             s['harness']=harness
             if current:s['domain']=current
