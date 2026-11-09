@@ -163,6 +163,35 @@ class ReminderDelivery(StopFixture):
             self.assertEqual(claude_hooks.handle('stop', {}, 'factory'), {'decision': 'block', 'reason': 'save?'})
 
 
+class ReminderSettlesTheTurn(StopFixture):
+    """A fired reminder is not repeated on later turns, even without a stop_hook_active follow-up."""
+    edit = {'tool_name': 'Edit', 'tool_input': {'file_path': 'src/app.py'}}
+
+    def test_ignored_reminders_do_not_carry_over(self):
+        self.assertIn('continue_reason', self.turn(self.edit))   # the agent ignores it
+        self.assertEqual(self.turn(), {})                          # an unrelated turn ends quietly
+        self.payload['prompt'] = 'remember that the staging server was retired'
+        self.assertIn('remember', self.turn()['continue_reason'])
+        self.payload.update(prompt='plan the parser refactor', permission_mode='plan')
+        self.assertEqual(self.turn(), {})                          # not "the user asked ... this turn" again
+
+    def test_a_capture_answering_the_reminder_keeps_files_and_counts_as_signal_capture(self):
+        import contextlib, io
+        from core import usage
+        from core.cli import main
+        self.payload['prompt'] = 'from now on, use tabs'
+        self.assertIn('continue_reason', self.turn(self.edit))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = main(['--root', str(self.root), '--domain', 'demo', 'capture', '--session', 'session', '--type', 'preference', '--title', 'Use tabs',
+                         '--summary', 'The user prefers tabs.', '--tag', 'subject/project', '--tag', 'concern/decision'])
+        made = json.loads(out.getvalue())
+        self.assertEqual(code, 0, made)
+        self.assertEqual(made['suggested_files'], ['src/app.py'])
+        self.assertEqual([r['k'] for r in usage.events(self.root) if r['e'] == 'signal-capture'], ['preference'])
+        self.assertEqual(runtime.process('claude', 'stop', {**self.payload, 'stop_hook_active': True}, self.root), {})
+
+
 if __name__ == '__main__':
     import unittest
     unittest.main()

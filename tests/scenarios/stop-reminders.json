@@ -1,6 +1,6 @@
 {
  "name": "stop-reminders",
- "description": "When Stop asks for a capture decision: file changes, each durable statement, plan mode, the harness's stop-hook loop guard, one reminder per turn, and a receipt that settles the turn.",
+ "description": "When Stop asks for a capture decision: file changes, each durable statement, plan mode, the harness's stop-hook loop guard, one reminder per turn, a receipt that settles the turn, and an ignored reminder that does not carry into later turns.",
  "notes": [
   {"key": "cache", "title": "Cache eviction policy", "body": "LRU eviction."}
  ],
@@ -15,10 +15,10 @@
   {"hook": "stop", "expect": {"stop_reason": "already_reminded", "reminder": null}},
   {"hook": "user-prompt", "payload": {"prompt": "from now on, always run the tests before committing"}, "expect": {"detail": {"signal": "preference"}}},
   {"hook": "stop", "expect": {"reminder": "preference"}},
-  {"hook": "stop", "payload": {"stop_hook_active": true}, "expect": {"stop_reason": "stop_active", "reminder": null}},
+  {"hook": "stop", "payload": {"stop_hook_active": true}, "expect": {"stop_reason": "no_change", "reminder": null}},
   {"hook": "user-prompt", "payload": {"prompt": "remember that the staging server was retired"}, "expect": {"detail": {"signal": "remember"}}},
   {"hook": "stop", "expect": {"reminder": "remember"}},
-  {"hook": "stop", "payload": {"stop_hook_active": true}, "expect": {"stop_reason": "stop_active", "reminder": null}},
+  {"hook": "stop", "payload": {"stop_hook_active": true}, "expect": {"stop_reason": "no_change", "reminder": null}},
   {"hook": "user-prompt", "payload": {"prompt": "from now on, plan the parser refactor", "permission_mode": "plan"}, "expect": {"detail": {"signal": null}}},
   {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/parser.py"}, "permission_mode": "plan"}, "expect": {"mutation": "skipped:plan_mode"}},
   {"hook": "stop", "expect": {"stop_reason": "no_change", "reminder": null}},
@@ -28,6 +28,15 @@
   {"hook": "user-prompt", "payload": {"prompt": "fix it once more"}},
   {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/lexer.py"}}},
   {"cli": ["capture-finalize", "--session", "{session}"], "expect": {"exit": 0, "status": "nothing_durable"}},
-  {"hook": "stop", "expect": {"stop_reason": "receipt", "reminder": null}}
+  {"hook": "stop", "expect": {"stop_reason": "receipt", "reminder": null}},
+  {"hook": "user-prompt", "payload": {"prompt": "from now on, use spaces in YAML files"}},
+  {"hook": "stop", "expect": {"reminder": "preference"}},
+  {"hook": "user-prompt", "payload": {"prompt": "plan the next refactor", "permission_mode": "plan"}},
+  {"hook": "stop", "expect": {"stop_reason": "no_change", "reminder": null}},
+  {"hook": "user-prompt", "payload": {"prompt": "fix the flaky test"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/test_flaky.py"}}},
+  {"hook": "stop", "expect": {"reminder": "mutating"}},
+  {"hook": "user-prompt", "payload": {"prompt": "summarize what changed"}},
+  {"hook": "stop", "expect": {"stop_reason": "no_change", "reminder": null}}
  ]
 }
