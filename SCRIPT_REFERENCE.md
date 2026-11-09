@@ -54,8 +54,12 @@ Apps: these commands serve a desktop app or other human-facing tool.
 - Each `list` row has `ref`, `id`, `domain`, `title`, `type`, `status`, `tags`, `created`, `updated`, `revision` (pass it to `update --expected-revision`) and `path`, relative to the store.
 - `domains` lists bound domains and any domain folder on disk. Each has `bound`, `prefixes`, `active` and `archived` note counts. The result also includes `aliases`, `global_domains` and `foreign_domains`.
 - `version` returns `api` (bumped when the app surface changes incompatibly), `python` and `commands`.
+- `links` returns the link graph of `--domain`, or of every domain folder with `--all-domains`. By default it covers active notes only; `--status any` adds archived, resolved and superseded notes.
+  - A `[[Title]]` link resolves the way a title REF does: case-insensitive, first in the linking note's domain, then its parent domains, then the global domains. Text after `|` or `#` is ignored. An active note wins a title over a retired one.
+  - The result has `nodes` (`ref`, `id`, `domain`, `title`, `type`, `status`, `tags`; it includes linked notes from parent or global domains) and `edges` (`from`, `to`, `kind` `link` or `supersedes`, newer note to the note it replaced). It also has `unresolved` (`from`, `target`) for links that match no note.
+  - A note has at most one edge to another note, and a link wins over supersedes. Self-links are skipped.
 - `--actor viewer` is read-only. It allows every subagent command plus `taxonomy`, `review`, `diff` and `inspect-plan`. Its `read` writes no usage-diary event, so browsing does not change `stats` or note strength.
-- `list`, `domains` and `version` are read-only, and subagents may run them.
+- `list`, `domains`, `version` and `links` are read-only, and subagents may run them.
 
 Search defaults to active, parent and configured global domains, then explicitly configured foreign domains only after zero scoped hits. `--scope all` is explicit and includes the global domains. As for prompts, relevance is judged within each domain before the merge, and global notes rank like the active domain's; `relevant` is false when nothing passed that check, and the closest matches are returned with a `hint`. Filters use `--filter tag=concern/decision`, prefix/status/type. Stale unfiltered retrieval falls back to canonical BM25; stale filtered retrieval requires `--rebuild`. `score` ranks results; `relevance` is the share of informative query terms found in the note's title or body. With a semantic model installed, `engine` is `fts5+semantic` and each hit has `similarity`, the cosine between the query and the note's title plus Executive Summary.
 
@@ -65,6 +69,6 @@ Mutation plans snapshot all touched files and require their exact digest. `undo`
 
 With `--session`, capture and update refuse text that repeats a `<private>` span from the session's prompts, with a `private_content` conflict (see PROTOCOL.md).
 
-Error exit codes: invalid=2, conflict=5, stale=6. Native host event wrappers fail with their adapter's bounded output contract.
+Error exit codes: invalid=2, conflict=5, stale=6. The code comes from the message's own wording, the text before any quoted value or `: detail`. A note title, tag or path quoted in a message never changes it. Native host event wrappers fail with their adapter's bounded output contract.
 
 `scripts/safe_write.py DOMAIN notes/FILENAME --content-file FILE --expected-revision HASH` returns an approved update plan, not a direct write.
