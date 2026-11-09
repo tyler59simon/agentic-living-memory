@@ -51,8 +51,7 @@ class Diary(StoreFixture):
 
     def test_reminder_and_signal_capture(self):
         runtime.process('claude', 'user-prompt', self.payload(prompt='from now on, use tabs'), self.root)
-        runtime.process('claude', 'stop', self.payload(), self.root)
-        self.assertEqual([(r['e'], r['k']) for r in self.rows()], [('reminder', 'preference')])
+        self.assertEqual([(r['e'], r['k']) for r in self.rows()], [('reminder', 'nudge-preference')])
         code, made = self.cli('capture', 'Use tabs', 'The user prefers tabs.', '--session', 's1', '--type', 'preference',
                               '--tag', 'subject/project', '--tag', 'concern/decision')
         self.assertEqual(code, 0, made)
@@ -60,8 +59,9 @@ class Diary(StoreFixture):
         self.assertEqual([(r['ref'], r['k']) for r in signal], [('demo:' + made['id'], 'preference')])
         code, stats = self.cli('stats')
         self.assertEqual(code, 0, stats)
-        self.assertEqual(stats['reminders'], {'preference': 1})
+        self.assertEqual(stats['reminders'], {'nudge-preference': 1})
         self.assertEqual(sum(stats['signal_captures'].values()), 1)
+        self.assertEqual(runtime.process('claude', 'stop', self.payload(), self.root), {})
 
     def test_a_turn_without_a_signal_records_no_signal_capture(self):
         runtime.process('claude', 'user-prompt', self.payload(prompt='summarize the file'), self.root)

@@ -100,7 +100,7 @@ class Maps(StoreFixture):
         start=self.hook('subagent-start',agent_id='a1')
         self.assertIn(result['id'][:8],start['context'])
         spawn=self.tool('Agent',{'description':'Explore suite','prompt':'Map the architecture suite plugin runtime'})
-        self.assertIn('subagent',spawn.get('context',''))
+        self.assertNotIn('context',spawn)   # the brief is already written when PreToolUse fires; SubagentStart hands over the map
         sub=self.tool('Read',{'file_path':str(self.suite/'runtime'/'cli.py')},agent_id='a1')
         self.assertIn('Codebase map',sub.get('context',''))
 

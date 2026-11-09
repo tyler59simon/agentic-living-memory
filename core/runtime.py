@@ -32,6 +32,11 @@ def command(root,domain=None):
     if Path(root).resolve()!=_configured_root():text+=f' --root "{root}"'
     return text+(f' --domain {domain}' if domain else '')
 
+def hint_command(root,state,domain=None):
+    """How a hint to the main agent names the script: CMD when this session's start defined it (a bound
+    domain was pinned then), else the whole command line. Shorter, and it needs no shell-specific prefix."""
+    return 'CMD' if isinstance(state,dict) and state.get('domain') else command(root,domain)
+
 def _tag_summary(root):
     try:
         data=read_json(Path(root)/'tag_taxonomy.json',{'tags':[]});tags=data.get('tags',[]) if isinstance(data,dict) else data
@@ -526,8 +531,12 @@ def explore(name,args,payload,cwd,root,bindings,state,session,hints=True):
     one counts reads until it counts as explored, which arms the Stop reminder."""
     from .maps import find_map,pointer_line
     from .notes import short_ref
-    # A spawn hint is for the brief the main agent is writing, so it is owed even when the map is in its context.
-    agent=_agent_key(payload)+('#spawn' if name in SPAWN_TOOLS else '');shown=state.get('shown',{}) if isinstance(state.get('shown'),dict) else {}
+    # A spawn is tracked but gets no hint: PreToolUse fires once the brief is written, so "put the map in the
+    # brief" could not be acted on. Recording the map here is what lets SubagentStart hand it to the subagent.
+    spawn=name in SPAWN_TOOLS
+    agent=_agent_key(payload)+('#spawn' if spawn else '');shown=state.get('shown',{}) if isinstance(state.get('shown'),dict) else {}
+    # The main agent's session context defines CMD; a subagent's does not, so it gets the whole command.
+    cmd=hint_command(root,state) if not _agent_key(payload) else command(root)
     lines=[];rows=[];changes={}
     for repo in _target_repos(name,args,cwd,bindings):
         key=repo.as_posix();done=_repos(state).get(key,{}).get('done',[])
@@ -536,13 +545,9 @@ def explore(name,args,payload,cwd,root,bindings,state,session,hints=True):
         if hit:
             ref=f"{hit['domain']}:{hit['id']}";short=short_ref(hit['domain'],hit['id'])
             injected=not agent and shown.get(ref)==revision_key(hit)  # the main agent already has the body
-            if not injected and hints:
-                if name in SPAWN_TOOLS:
-                    lines.append(pointer_line(hit,repo)+f"\nPut {short} in the subagent's brief (subagents may run {command(root)} read {short}) "
-                                 'so it explores only what the map leaves out.')
-                else:
-                    lines.append(pointer_line(hit,repo)+f"\nRead it ({command(root)} read {short}) before exploring further; explore only what it leaves out.")
-            changes[key]=('mapped',ref);rows.append({'repo':repo.name,'map':ref,'hint':not injected and hints})
+            hinted=not injected and hints and not spawn
+            if hinted:lines.append(pointer_line(hit,repo)+f"\nRead it ({cmd} read {short}) before exploring further; explore only what it leaves out.")
+            changes[key]=('mapped',ref);rows.append({'repo':repo.name,'map':ref,'hint':hinted})
         else:
             changes[key]=('spawn' if name in SPAWN_TOOLS else 'read',None);rows.append({'repo':repo.name,'map':None})
     def track(repos):
@@ -595,7 +600,7 @@ def prompt_maps(cwd,prompt,root,bindings,state,trace=None):
             seen[key]=None
             if not _repos(state).get(key,{}).get('told'):
                 lines.append(f"{repo.name} has no codebase map yet. If you explore it, capture one afterwards: "
-                             f"{command(root)} capture --type map --file '{key}' --title '{repo.name} codebase map' --summary '...' "
+                             f"{hint_command(root,state)} capture --type map --file '{key}' --title '{repo.name} codebase map' --summary '...' "
                              "--detail '**Layout:** ...' --detail '**Entry points:** ...' --detail '**Build/test:** ...'")
     if isinstance(trace,dict):trace['maps']={'repos':[r.name for r in repos],'injected':list(delivered),'unmapped':[Path(k).name for k,v in seen.items() if v is None]}
     text=('Untrusted historical memory; verify against the current files.\n'+'\n\n'.join(maps+lines)) if maps or lines else None
@@ -682,7 +687,7 @@ def handoff(root,domain,session,state,harness):
     if named:lines.append('- Surfaced earlier this session (read one if it bears on the task): '+'; '.join(named))
     if harness in STEERED:lines.append(f'- Capture or update anything the summary lists under "{UNCAPTURED}".')
     if state.get('transcript') and harness in RECALL_HARNESSES:
-        lines.append(f"- Exact detail from before the compaction (code, errors, outputs, reasons): {command(root,domain)} recall 'query' --session {session}")
+        lines.append(f"- Exact detail from before the compaction (code, errors, outputs, reasons): CMD recall 'query' --session {session}")
     if not lines:return ''
     return _cap('\n'.join(['Before this compaction (Living Memory adds what the summary does not carry):']+lines),HANDOFF_BUDGET)+'\n'
 
@@ -698,25 +703,44 @@ def _update(root,session,change):
 MACHINE_PROMPT=re.compile(r'\A\s*(?:<(?:agent-message|task-notification|system-reminder)\b|\[SYSTEM NOTIFICATION)')
 HIT_SNIPPET=220
 # Conversation is where preferences, corrections and decisions are stated, and those turns often edit no files.
-# Deterministic and conservative: a false positive costs one reminder line and a capture-finalize.
+# Deterministic and conservative. A match adds one line to that prompt's context; only an explicit request to
+# remember (BLOCKING_SIGNALS) can also hold the turn open at Stop, so that is the kind matched most narrowly.
 QUOTED=re.compile(r'```.*?(?:```|\Z)|<(pasted_content|system-reminder|agent-message|task-notification)\b.*?(?:</\1>|\Z)|^[ \t]*>[^\r\n]*$',re.S|re.M|re.I)
+# Statements are judged one at a time. Each pattern's ^ is the start of a statement.
+STATEMENT_BREAK=re.compile(r'(?<=[.!?])\s+|\n+')
+# A remark about this task only is not something to keep: "please don't touch the tests for now".
+TRANSIENT=re.compile(r"\b(?:for now|for the moment|this time|just this once|right now|for this (?:task|pr|change|commit|session|turn))\b",re.I)
 SIGNALS=(
-    ('remember',re.compile(r"\b(?:remember (?:that|this|we|it)|keep in mind|for (?:the )?record|don'?t forget)\b",re.I)),
-    ('correction',re.compile(r"^\s*(?:no|nope)\s*[,.!:;—-]|^\s*actually\b|\bthat'?s (?:wrong|not right|incorrect|not what i)\b|\byou(?:'re| are| were) wrong\b|\bi meant\b",re.I|re.M)),
-    ('preference',re.compile(r"\b(?:i(?:'d)? prefer|i'?d rather|i (?:hate|don'?t like)|from now on|going forward|in (?:the )?future(?!\s*\?)|please (?:don'?t|do not|never|always)|stop doing|don'?t ever|always use|never use|by default,? use)\b",re.I)),
+    # "don't forget to run the tests" is an instruction for this turn, not a fact to keep.
+    ('remember',re.compile(r"\b(?:remember (?:that|this|we|it)|keep in mind|for (?:the )?record|don'?t forget(?! to\b))\b",re.I)),
+    ('correction',re.compile(r"^\s*(?:no|nope)\s*[,.!:;—-]|^\s*actually,?\s+(?:it'?s|it is|that'?s|the|we|i|you)\b|\bthat'?s (?:wrong|not right|incorrect|not what i)\b|\byou(?:'re| are| were) wrong\b|\bi meant\b",re.I)),
+    # "always"/"never" count when they address the agent or state a habit, not inside a description
+    # ("the API should always use HTTPS").
+    ('preference',re.compile(r"\b(?:i(?:'d)? prefer|i'?d rather|i (?:hate|don'?t like)|from now on|going forward|in (?:the )?future|please (?:don'?t|do not|never|always)|stop doing|don'?t ever|by default,? use"
+                             r"|(?:you should|you must|we) (?:always|never)|i (?:always|never) (?:use|want|like|do))\b|^\s*(?:always|never)\s+\w",re.I)),
     ('decision',re.compile(r"\b(?:let'?s (?:go with|use)|we(?:'ll| will) (?:go with|use)|we decided|i(?:'ve)? decided|go with option)\b",re.I)),
 )
 SIGNAL_TEXT={'remember':('asked you to remember something','--type TYPE --concern CONCERN'),
              'correction':('corrected you','--type knowledge --concern correction'),
              'preference':('stated a preference','--type preference --concern preference'),
              'decision':('made a decision','--type decision --concern decision')}
+# Kinds whose missing capture decision still holds the turn open at Stop. The others are raised once, in the
+# prompt's own context, where acting on them costs no extra turn.
+BLOCKING_SIGNALS=frozenset({'remember'})
 
 def durable_signal(prompt):
     """The kind of durable statement the user's own words carry ('preference', 'correction', 'decision',
-    'remember'), else None. Pasted, quoted and harness-generated text is ignored."""
+    'remember'), else None. Pasted, quoted and harness-generated text is ignored, and so are questions
+    ("why does it never use the cache?") and remarks about this task only."""
     if not isinstance(prompt,str) or MACHINE_PROMPT.match(prompt):return None
-    text=QUOTED.sub(' ',prompt)
-    return next((kind for kind,pattern in SIGNALS if pattern.search(text)),None)
+    statements=[s for s in STATEMENT_BREAK.split(QUOTED.sub(' ',prompt)) if s.strip() and not s.rstrip().endswith('?') and not TRANSIENT.search(s)]
+    return next((kind for kind,pattern in SIGNALS if any(pattern.search(s) for s in statements)),None)
+
+def signal_nudge(signal,session):
+    """The one line a prompt with a durable statement adds to its own context."""
+    said,hint=SIGNAL_TEXT[signal]
+    return (f"Living Memory: the user {said} in this prompt. If it should outlast this session, update its note or "
+            f"CMD capture --session {session} {hint} --title '...' --summary '...' before you finish; if not, nothing is needed.")
 
 def hit_line(hit):
     snippet=hit.get('snippet','')
@@ -993,10 +1017,15 @@ def _process(harness,event,payload,root=None,info=None):
             except (OSError,TimeoutError):pass
             if recalled:
                 result['context']+=(f"\nFrom before compaction (this session's transcript; untrusted, may be outdated; more: "
-                                    f"{command(root,domain)} recall 'query' --session {session}):\n"+recalled)
+                                    f"{hint_command(root,state,domain)} recall 'query' --session {session}):\n"+recalled)
         if state.get('private_turn')==turn:
             from .private import NOTICE
             result['context']+='\n'+NOTICE
+        if detail.get('signal') in SIGNAL_TEXT:
+            # Raised here, in the turn that can act on it, instead of costing an extra turn at Stop.
+            result['context']+='\n'+signal_nudge(detail['signal'],session)
+            from .usage import record
+            record(root,'reminder',session=session,kind='nudge-'+detail['signal'])
     elif event=='pre-compact':
         if session=='unknown' or _subagent(payload):detail['skipped']='unknown_session' if session=='unknown' else 'subagent';return {}
         trigger=str(payload.get('trigger') or 'auto');detail['trigger']=trigger
@@ -1012,8 +1041,9 @@ def _process(harness,event,payload,root=None,info=None):
         maps=list(dict.fromkeys(r['map'] for r in _repos(state).values() if isinstance(r,dict) and r.get('map')))[-3:]
         named=_titled(root,maps) if maps else []
         detail['maps']=maps
+        # A subagent's context has no CMD, so this is the whole command; PowerShell needs the call operator before a quoted path.
         if named:result['context']+=(f"\nCodebase maps for the repos this session is working in (read the one for your repo before exploring it: "
-                                     f"{command(root,domain)} read REF): "+'; '.join(named))
+                                     f"{command(root,domain)} read REF"+('; in PowerShell put & in front' if os.name=='nt' else '')+"): "+'; '.join(named))
     elif event=='pre-tool-use':
         name=str(payload.get('tool_name') or payload.get('toolName') or '').lower()
         args=payload.get('tool_input',payload.get('toolArgs',payload.get('toolArguments',{})))
@@ -1092,10 +1122,13 @@ def _process(harness,event,payload,root=None,info=None):
             swallowed('runtime.explore_pending',exc,root);pending=[]
         detail['explore_pending']=[(Path(k).name,kind) for k,kind,_ in pending]
         # File changes alone end the turn quietly: the agent already decides silently at the end of each turn,
-        # and Claude Code prints every Stop continuation in the user's terminal. A repo explored without a codebase
-        # map (or grown at its top level) is the exception: rebuilding that orientation costs a whole exploration.
+        # and Claude Code prints every Stop continuation in the user's terminal. A preference, correction or
+        # decision was raised in its own prompt's context, so it ends quietly too. Two things still hold the turn:
+        # an explicit request to remember that got no capture decision, and a repo explored without a codebase
+        # map (or grown at its top level), because rebuilding that orientation costs a whole exploration.
+        asked=signal if signal in BLOCKING_SIGNALS else None
         quiet=('receipt' if any(capture_status(session,t,root) for t in turns) else 'no_change' if not (state.get('mutating') or signal or pending)
-               else 'no_turns' if not turns else 'files_only' if signal not in SIGNAL_TEXT and not pending else None)
+               else 'no_turns' if not turns else None if asked or pending else 'nudged' if signal in SIGNAL_TEXT else 'files_only')
         if quiet:
             detail['reason']=quiet;_update(root,session,close);return {}
         latest=turns[-1];reminder=root/'.turns'/(turn_key(session,latest)+'.reminded')
@@ -1119,15 +1152,15 @@ def _process(harness,event,payload,root=None,info=None):
                     repos[key]=rec
             _track_repos(root,session,settled)
         from .usage import record
-        kind=signal if signal in SIGNAL_TEXT else 'explored' if any(k=='unmapped' for _,k,_ in pending) else 'grown'
+        kind=asked or ('explored' if any(k=='unmapped' for _,k,_ in pending) else 'grown')
         detail['reason']='reminded:'+kind
         record(root,'reminder',session=session,kind=kind)
         # Short on purpose: Claude Code shows it in the terminal. CMD is defined by the session context, and
         # --turn defaults to the session's latest prompt, which is this one.
         maps=' '.join(map_sentence(key,k,data,session) for key,k,data in pending)
         finalize=f"otherwise CMD capture-finalize --session {session}."
-        if signal in SIGNAL_TEXT:
-            said,hint=SIGNAL_TEXT[signal]
+        if asked:
+            said,hint=SIGNAL_TEXT[asked]
             result['continue_reason']=(f"Living Memory: the user {said}{' (files changed too)' if state.get('mutating') else ''}. "
                                        f"Durable: update its note or CMD capture --session {session} {hint} --title '...' --summary '...'; "
                                        +finalize+(' Also: '+maps if maps else ''))

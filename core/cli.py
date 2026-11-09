@@ -107,12 +107,17 @@ def doctor(root,cwd,explicit=None,domain=None):
     try:db.execute('CREATE VIRTUAL TABLE capability USING fts5(text)');fts=True
     except sqlite3.Error:fts=False
     finally:db.close()
-    pending=[]
-    for path in (root/'.operations').glob('*/journal.json'):
-        value=read_json(path)
-        if value['state'] not in {'committed','rolled_back','abandoned'}:pending.append(value['id'])
+    from .repository import unfinished_operations
+    pending,damaged=unfinished_operations(root)
     index='unbound'
     counts={};warnings=[]
+    if pending:warnings.append(f"{len(pending)} operation(s) did not finish: run recover ID to complete one, or recover ID --abandon when its files changed since ({', '.join(pending[:5])})")
+    if damaged:warnings.append(f"{len(damaged)} operation journal(s) cannot be read and are ignored ({', '.join(damaged[:5])}); history and undo skip them")
+    from . import wiring as hook_wiring
+    wired=hook_wiring.wiring()
+    for harness,row in wired.items():
+        if isinstance(row,dict):warnings+=[f'hooks: {harness}: {problem}' for problem in row.get('problems') or []]
+    if 'error' in wired:warnings.append('hooks: '+str(wired['error']))
     unreadable={}
     for directory in (root/'domains').iterdir() if (root/'domains').is_dir() else []:
         if directory.is_dir():
@@ -149,7 +154,7 @@ def doctor(root,cwd,explicit=None,domain=None):
     location = diagnostics(explicit)
     semantic=semantic_status(root)
     if semantic.get('error'):warnings.append(f"semantic model {semantic['model']} cannot be read ({semantic['error']}); search is lexical-only until it is reinstalled or removed")
-    return {'semantic':{k:semantic[k] for k in ('enabled','model') if k in semantic},'ok':fts and not pending and not unreadable and (not domain or domain_exists),'problems':unreadable,'interpreter':sys.executable,'python':sys.version.split()[0],'fts5':fts,'root':str(root),'location':location,'domain':domain,'binding':'bound' if domain else 'unbound','domain_data':'present' if domain_exists else 'missing' if domain else 'unbound','index':index,'pending_recovery':pending,'hooks':{'trust':'unknown','last_delivery':last},'logs':logged,'capture':'main_agent_via_scripts','protection':'cooperating_agent_governance','notes':counts,'warnings':warnings}
+    return {'semantic':{k:semantic[k] for k in ('enabled','model') if k in semantic},'ok':fts and not pending and not unreadable and (not domain or domain_exists) and not hook_wiring.broken(wired),'problems':unreadable,'interpreter':sys.executable,'python':sys.version.split()[0],'fts5':fts,'root':str(root),'location':location,'domain':domain,'binding':'bound' if domain else 'unbound','domain_data':'present' if domain_exists else 'missing' if domain else 'unbound','index':index,'pending_recovery':pending,'hooks':{'trust':'unknown','last_delivery':last,'wiring':wired},'logs':logged,'capture':'main_agent_via_scripts','protection':'cooperating_agent_governance','notes':counts,'warnings':warnings}
 
 SECTION_ARGS=('summary','detail','link','action','done','important')
 # update only: add to a list section, or replace one labelled bullet, without restating the rest of it.

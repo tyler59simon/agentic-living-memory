@@ -1,5 +1,5 @@
 """Regression tests for the 2026-11-09 production review (fix IDs as in the review's fix report)."""
-import contextlib, io, json, os, sys, time, unittest, zipfile
+import contextlib, io, json, os, sys, time, unittest, unittest.mock, zipfile
 from pathlib import Path
 
 from test_core import StoreFixture
@@ -385,6 +385,152 @@ class Backups(StoreFixture):
         old = time.time() - 72 * 3600
         os.utime(newest, (old, old))
         self.assertIn('Living Memory backup: newest backup', start())
+
+
+class DurableSignals(Cli):
+    """HOOK-1: ordinary sentences are not durable statements, and a real one costs no extra turn."""
+
+    def test_questions_descriptions_and_task_remarks_are_not_signals(self):
+        for prompt in ('The API should always use HTTPS for requests', 'Actually can you check the logs?',
+                       'why does the code never use the cache?', "don't forget to run the tests",
+                       "please don't touch the tests for now", 'do you remember that bug we fixed?',
+                       'Will we always use this cache?', 'See config.no, it is unused'):
+            with self.subTest(prompt=prompt):
+                self.assertIsNone(runtime.durable_signal(prompt))
+
+    def test_statements_addressed_to_the_agent_still_are(self):
+        for prompt, kind in (('Always use uv, not pip.', 'preference'), ('Sure. Never push to main.', 'preference'),
+                             ('we always squash-merge', 'preference'), ('You should never edit the lockfile by hand', 'preference'),
+                             ("please don't touch the generated files", 'preference'), ('Actually, the tests live in tests/', 'correction'),
+                             ('Thanks. No, the other file.', 'correction'), ("don't forget that staging is shared", 'remember'),
+                             ('Remember that we deploy on Tuesdays.', 'remember'), ("let's go with option B", 'decision')):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(runtime.durable_signal(prompt), kind)
+
+    def stop(self, session):
+        return runtime.process('claude', 'stop', {'cwd': str(self.base / 'project'), 'session_id': session}, self.root)
+
+    def context(self, session, text):
+        project = self.base / 'project'
+        project.mkdir(exist_ok=True)
+        payload = {'cwd': str(project), 'session_id': session, 'turn_id': 't-1', 'prompt': text}
+        return runtime.process('claude', 'user-prompt', payload, self.root)['context']
+
+    def test_a_preference_is_raised_in_its_prompt_and_does_not_hold_the_turn(self):
+        context = self.context('nudge', 'From now on, use tabs')
+        self.assertIn('the user stated a preference in this prompt', context)
+        self.assertIn('CMD capture --session nudge --type preference', context)
+        self.assertEqual(self.stop('nudge'), {})
+        self.assertNotIn('Living Memory: the user', self.context('nudge', 'now fix the parser'))
+
+    def test_a_capture_made_after_the_nudge_counts_as_a_signal_capture(self):
+        self.context('caught', 'From now on, use tabs')
+        self.ok('capture', '--session', 'caught', '--type', 'preference', '--subject', 'project', '--concern', 'decision', '--title', 'Use tabs', '--summary', 'The user prefers tabs.')
+        self.assertEqual([r['k'] for r in usage.events(self.root) if r['e'] == 'signal-capture'], ['preference'])
+        self.assertEqual(self.stop('caught'), {})
+
+    def test_a_request_to_remember_still_holds_the_turn_until_it_is_answered(self):
+        self.assertIn('asked you to remember something', self.context('keep', 'Remember that staging is shared'))
+        self.assertIn('capture-finalize', self.stop('keep')['continue_reason'])
+
+
+class HookHints(Cli):
+    """HOOK-2: hints the agent can act on, in a form that works in its shell."""
+
+    def setUp(self):
+        super().setUp()
+        self.project = self.base / 'project'
+        self.repo = self.project / 'billing-api-service'
+        (self.repo / '.git').mkdir(parents=True)
+        (self.repo / 'src').mkdir()
+        self.payload = {'cwd': str(self.project), 'session_id': 'hint'}
+        self.map = self.ok('capture', '--type', 'map', '--file', str(self.repo), '--title', 'billing-api-service codebase map',
+                           '--summary', 'A billing API.', '--detail', '**Layout:** src/ and tests/.')['id']
+
+    def hook(self, event, **extra):
+        return runtime.process('claude', event, {**self.payload, **extra}, self.root)
+
+    def test_a_spawn_gets_no_hint_and_the_subagent_gets_the_map(self):
+        self.hook('session-start')
+        self.hook('user-prompt', prompt='look around')
+        spawn = self.hook('pre-tool-use', tool_name='Agent', tool_input={'description': 'Explore', 'prompt': 'Explore the billing api service repo'})
+        self.assertNotIn('context', spawn)
+        started = self.hook('subagent-start', agent_id='sub-1')['context']
+        self.assertIn('demo:' + self.map[:8], started)
+        self.assertIn(f'"{sys.executable}"', started)          # a subagent has no CMD: it needs the whole command
+
+    def test_hints_to_the_main_agent_use_cmd_and_a_subagents_use_the_whole_command(self):
+        self.hook('session-start')
+        self.hook('user-prompt', prompt='look around')
+        target = {'file_path': str(self.repo / 'src' / 'app.py')}
+        main = self.hook('pre-tool-use', tool_name='Read', tool_input=target)['context']
+        self.assertIn('Read it (CMD read demo:' + self.map[:8], main)
+        self.assertNotIn('living_memory.py', main)
+        sub = self.hook('pre-tool-use', tool_name='Read', tool_input=target, agent_id='sub-1')['context']
+        self.assertIn(f'"{sys.executable}" "{runtime.SCRIPT}"', sub)
+
+
+class Doctor(Cli):
+    """ENV-1: doctor says whether each harness's hooks still reach an interpreter and this package."""
+
+    def wire(self, interpreter, script=None):
+        home = Path(os.environ['CLAUDE_HOME'])
+        home.mkdir(parents=True, exist_ok=True)
+        script = script or (runtime.SCRIPT.parent / 'hooks' / 'claude_hooks.py')
+        handler = lambda action: {'type': 'command', 'command': str(interpreter), 'args': [str(script), action], 'timeout': 15}
+        config = {'statusLine': {'type': 'command', 'command': 'echo status'},
+                  'hooks': {'SessionStart': [{'hooks': [handler('session-start')]}], 'Stop': [{'hooks': [handler('stop')]}]}}
+        (home / 'settings.json').write_text(json.dumps(config), encoding='utf-8')
+
+    def test_an_unwired_harness_is_not_reported(self):
+        report = self.ok('doctor')
+        self.assertEqual(report['hooks']['wiring'], {})
+        self.assertTrue(report['ok'])
+
+    def test_a_missing_interpreter_is_named_with_the_command_that_fixes_it(self):
+        gone = self.base / 'Python399' / 'python.exe'
+        self.wire(gone)
+        report = self.ok('doctor')
+        row = report['hooks']['wiring']['claude']
+        self.assertEqual((row['wired'], row['handlers'], row['interpreter_ok'], row['script_exists']), (True, 2, False, True))
+        self.assertFalse(report['ok'])
+        warning = next(w for w in report['warnings'] if w.startswith('hooks: claude:'))
+        self.assertIn(str(gone), warning)
+        self.assertIn('integrations/setup.py claude --hooks', warning)
+
+    def test_a_working_interpreter_passes_and_a_stale_instruction_block_is_a_warning_only(self):
+        self.wire(sys.executable)
+        report = self.ok('doctor')
+        row = report['hooks']['wiring']['claude']
+        self.assertEqual((row['interpreter_ok'], row['this_copy'], row['instructions']), (True, True, 'stale_or_missing'))
+        self.assertTrue(report['ok'])
+        self.assertTrue(any('instruction block' in w for w in report['warnings']))
+
+    def test_hooks_that_run_another_copy_are_checked_for_existence_only(self):
+        other = self.base / 'elsewhere' / 'hooks' / 'claude_hooks.py'
+        other.parent.mkdir(parents=True)
+        other.write_text('', encoding='utf-8')
+        self.wire(sys.executable, other)
+        row = self.ok('doctor')['hooks']['wiring']['claude']
+        self.assertEqual((row['this_copy'], row['script_exists'], row['problems']), (False, True, []))
+
+    def test_unfinished_and_unreadable_journals_are_found_without_parsing_every_journal(self):
+        from core import repository
+        self.note()
+        operations = self.root / '.operations'
+        (operations / 'stuck').mkdir()
+        (operations / 'stuck' / 'journal.json').write_text(repository.canonical_json(
+            {'schema': 1, 'id': 'stuck', 'kind': 'test', 'created': repository.now(), 'state': 'prepared', 'effects': []}), encoding='utf-8')
+        with unittest.mock.patch('core.repository.read_json', side_effect=AssertionError('a readable journal was parsed in full')):
+            self.assertEqual(repository.unfinished_operations(self.root), (['stuck'], []))
+        (operations / 'broken').mkdir()
+        (operations / 'broken' / 'journal.json').write_text('{not json', encoding='utf-8')
+        self.assertEqual(repository.unfinished_operations(self.root), (['stuck'], ['broken']))
+        report = self.ok('doctor')
+        self.assertEqual(report['pending_recovery'], ['stuck'])
+        self.assertFalse(report['ok'])
+        self.assertTrue(any('recover ID' in w for w in report['warnings']))
+        self.assertTrue(any('cannot be read' in w for w in report['warnings']))
 
 
 if __name__ == '__main__':

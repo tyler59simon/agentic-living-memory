@@ -101,27 +101,41 @@ class StopHook(StopFixture):
 
 
 class ConversationalSignal(StopFixture):
-    """Preferences, corrections and decisions are stated in conversation; those turns arm the reminder too."""
+    """Preferences, corrections and decisions are stated in conversation. Each is raised once, in its own
+    prompt's context; only an explicit request to remember also holds the turn open at Stop."""
+    KINDS = [('From now on, use tabs in this repo', 'stated a preference'),
+             ("I'd prefer short commit messages", 'stated a preference'),
+             ('No, the cache lives in AppData', 'corrected you'),
+             ('Actually the port is 8081', 'corrected you'),
+             ("Let's go with option B", 'made a decision'),
+             ('Remember that the staging box is shared', 'asked you to remember something')]
+
     def said(self, prompt, **extra):
         self.payload = {**self.payload, 'prompt': prompt, **extra}
         return self.turn()
 
-    def test_each_kind_arms_a_specific_reminder(self):
-        for prompt, phrase in [('From now on, use tabs in this repo', 'stated a preference'),
-                               ("I'd prefer short commit messages", 'stated a preference'),
-                               ('No, the cache lives in AppData', 'corrected you'),
-                               ('Actually the port is 8081', 'corrected you'),
-                               ("Let's go with option B", 'made a decision'),
-                               ('Remember that the staging box is shared', 'asked you to remember something')]:
+    def test_each_kind_is_raised_in_its_own_prompt(self):
+        for prompt, phrase in self.KINDS:
+            with self.subTest(prompt=prompt):
+                context = runtime.process('claude', 'user-prompt', {**self.payload, 'prompt': prompt}, self.root)['context']
+                self.assertIn('the user ' + phrase, context)
+                self.assertIn('CMD capture --session session', context)
+
+    def test_only_a_request_to_remember_holds_the_turn_open(self):
+        for prompt, phrase in self.KINDS:
             with self.subTest(prompt=prompt):
                 reason = self.said(prompt).get('continue_reason', '')
-                self.assertIn(phrase, reason)
-                self.assertIn('capture-finalize', reason)
+                if phrase.startswith('asked you to remember'):
+                    self.assertIn(phrase, reason)
+                    self.assertIn('capture-finalize', reason)
+                else:
+                    self.assertEqual(reason, '')
 
     def test_neutral_prompts_do_not_arm(self):
         for prompt in ['work on it', 'summarize the file', 'No problem with that approach? Check it',
                        'what does the cache do', 'I want you to add a button', 'continue']:
             with self.subTest(prompt=prompt):
+                self.assertNotIn('Living Memory: the user', runtime.process('claude', 'user-prompt', {**self.payload, 'prompt': prompt}, self.root)['context'])
                 self.assertEqual(self.said(prompt), {})
 
     def test_pasted_quoted_and_machine_text_do_not_arm(self):
@@ -133,28 +147,35 @@ class ConversationalSignal(StopFixture):
                 self.assertEqual(self.said(prompt), {})
 
     def test_plan_mode_does_not_arm(self):
-        self.assertEqual(self.said('From now on use tabs', permission_mode='plan'), {})
+        self.assertEqual(self.said('Remember that we use tabs', permission_mode='plan'), {})
+        self.assertNotIn('Living Memory: the user', runtime.process('claude', 'user-prompt', self.payload, self.root)['context'])
 
     def test_a_receipt_satisfies_it(self):
-        runtime.process('claude', 'user-prompt', {**self.payload, 'prompt': 'From now on use tabs', 'turn_id': 't1'}, self.root)
+        runtime.process('claude', 'user-prompt', {**self.payload, 'prompt': 'Remember that we use tabs', 'turn_id': 't1'}, self.root)
         from core.capture import finalize
         finalize('session', 't1', [], self.root)
         self.assertEqual(runtime.process('claude', 'stop', {**self.payload, 'turn_id': 't1'}, self.root), {})
 
     def test_one_reminder_per_turn_and_no_prompt_text_kept(self):
-        runtime.process('claude', 'user-prompt', {**self.payload, 'prompt': 'From now on use zebra-tabs'}, self.root)
+        runtime.process('claude', 'user-prompt', {**self.payload, 'prompt': 'Remember that we use zebra-tabs'}, self.root)
         state = json.loads(runtime._pointer(self.root, 'session').read_text(encoding='utf-8'))
-        self.assertEqual(state['signal'], 'preference')
+        self.assertEqual(state['signal'], 'remember')
         self.assertNotIn('zebra', json.dumps(state))
         self.assertIn('continue_reason', runtime.process('claude', 'stop', self.payload, self.root))
         self.assertEqual(runtime.process('claude', 'stop', self.payload, self.root), {})
         self.assertNotIn('signal', json.loads(runtime._pointer(self.root, 'session').read_text(encoding='utf-8')))
 
+    def test_a_preference_ends_the_turn_quietly_and_is_not_carried_over(self):
+        self.assertEqual(self.said('From now on use zebra-tabs'), {})
+        state = json.loads(runtime._pointer(self.root, 'session').read_text(encoding='utf-8'))
+        self.assertNotIn('signal', state)
+        self.assertNotIn('zebra', json.dumps(state))
+
     def test_signal_and_file_changes_mention_both(self):
-        self.payload = {**self.payload, 'prompt': 'From now on use tabs'}
+        self.payload = {**self.payload, 'prompt': 'Remember that we use tabs'}
         write = {'tool_name': 'Edit', 'tool_input': {'file_path': self.cwd + '/x.py'}}
         reason = self.turn(write)['continue_reason']
-        self.assertIn('stated a preference (files changed too)', reason)
+        self.assertIn('asked you to remember something (files changed too)', reason)
 
 
 
@@ -174,7 +195,7 @@ class ReminderSettlesTheTurn(StopFixture):
     edit = {'tool_name': 'Edit', 'tool_input': {'file_path': 'src/app.py'}}
 
     def test_ignored_reminders_do_not_carry_over(self):
-        self.payload['prompt'] = 'from now on, use tabs'
+        self.payload['prompt'] = 'remember that we use tabs'
         self.assertIn('continue_reason', self.turn(self.edit))   # the agent ignores it
         self.payload['prompt'] = 'work on it'
         self.assertEqual(self.turn(), {})                          # an unrelated turn ends quietly
@@ -187,7 +208,7 @@ class ReminderSettlesTheTurn(StopFixture):
         import contextlib, io
         from core import usage
         from core.cli import main
-        self.payload['prompt'] = 'from now on, use tabs'
+        self.payload['prompt'] = 'remember that we use tabs'
         self.assertIn('continue_reason', self.turn(self.edit))
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
@@ -196,7 +217,7 @@ class ReminderSettlesTheTurn(StopFixture):
         made = json.loads(out.getvalue())
         self.assertEqual(code, 0, made)
         self.assertEqual(made['suggested_files'], ['src/app.py'])
-        self.assertEqual([r['k'] for r in usage.events(self.root) if r['e'] == 'signal-capture'], ['preference'])
+        self.assertEqual([r['k'] for r in usage.events(self.root) if r['e'] == 'signal-capture'], ['remember'])
         self.assertEqual(runtime.process('claude', 'stop', {**self.payload, 'stop_hook_active': True}, self.root), {})
 
 
