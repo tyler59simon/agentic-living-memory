@@ -25,6 +25,12 @@
     {"prompt": "let's go with option B", "kind": "decision"},
     {"prompt": "remember that the staging box is slow", "kind": "remember"},
     {"prompt": "please summarize the file", "kind": null},
-    {"prompt": "```\nalways retry\n```\nwhat does this log mean?", "kind": null}
+    {"prompt": "```\nalways retry\n```\nwhat does this log mean?", "kind": null},
+    {"prompt": "The API should always use HTTPS for requests", "kind": null},
+    {"prompt": "Actually can you check the logs?", "kind": null},
+    {"prompt": "why does the code never use the cache?", "kind": null},
+    {"prompt": "don't forget to run the tests", "kind": null},
+    {"prompt": "please don't touch the tests for now", "kind": null},
+    {"prompt": "do you remember that bug we fixed?", "kind": null}
   ]
 }

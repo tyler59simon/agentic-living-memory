@@ -487,6 +487,33 @@ PENDING = "pending"
 BOOKKEEPING_KINDS = frozenset({"overlay_sync", "overlay_state", "overlay_views"})
 
 
+FINAL_STATES = frozenset({"committed", "rolled_back", "abandoned"})
+# canonical_json sorts keys, and "state" sorts last, so a journal ends with its state.
+_TAIL_STATE = re.compile(rb'"state":"([a-z_]+)"\}\s*$')
+
+
+def unfinished_operations(root):
+    """(IDs of operations that never reached a final state, IDs whose journal cannot be read).
+
+    Only the last bytes of each journal are read. A store keeps every note-edit journal, with the notes'
+    before and after text inside, so parsing them all made each health check slower with every write."""
+    pending, unreadable = [], []
+    for path in sorted(Path(root).glob(".operations/*/journal.json")):
+        state = None
+        try:
+            with path.open("rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                handle.seek(max(0, handle.tell() - 64))
+                match = _TAIL_STATE.search(handle.read())
+            state = match[1].decode() if match else read_json(path)["state"]
+        except (OSError, ValueError, KeyError, TypeError):
+            unreadable.append(path.parent.name)
+            continue
+        if state not in FINAL_STATES:
+            pending.append(path.parent.name)
+    return pending, unreadable
+
+
 def prune_journals(root, days=14, kinds=BOOKKEEPING_KINDS):
     """Delete committed journals of the given kinds older than `days`; returns how many were removed."""
     from datetime import timedelta
