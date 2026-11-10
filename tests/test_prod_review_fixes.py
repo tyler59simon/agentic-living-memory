@@ -4,7 +4,7 @@ from pathlib import Path
 
 from test_core import StoreFixture
 from core import backup as snap
-from core import note_format, runtime, usage
+from core import note_format, repository, runtime, semantic, usage
 from core.capture import status as receipt
 from core.cli import main as cli
 from core.governance import apply, undo
@@ -531,6 +531,128 @@ class Doctor(Cli):
         self.assertFalse(report['ok'])
         self.assertTrue(any('recover ID' in w for w in report['warnings']))
         self.assertTrue(any('cannot be read' in w for w in report['warnings']))
+
+
+class ScanOnce(StoreFixture):
+    """PERF-1: a process reads each unchanged note once, and never serves a stale one."""
+
+    def setUp(self):
+        super().setUp()
+        repository._PARSED.clear()
+        self.addCleanup(repository._PARSED.clear)
+
+    def rewrite(self, note, old, new):
+        path = Path(note['path'])
+        path.write_text(path.read_text(encoding='utf-8').replace(old, new), encoding='utf-8')
+
+    def test_unchanged_notes_are_parsed_once_and_a_changed_one_again(self):
+        with unittest.mock.patch.object(repository, 'SETTLE_NS', 0):
+            first = self.note('Alpha fact', 'One.')
+            self.note('Bravo fact', 'Two.')
+            repository._PARSED.clear()
+            with unittest.mock.patch.object(repository, 'parse', wraps=repository.parse) as parse:
+                inventory('demo', self.root)
+                self.assertEqual(parse.call_count, 2)
+                inventory('demo', self.root)
+                self.assertEqual(parse.call_count, 2)
+                self.rewrite(first, 'One.', 'One changed.')
+                again = inventory('demo', self.root)
+                self.assertEqual(parse.call_count, 3)
+        self.assertIn('One changed.', next(n for n in again if n['id'] == first['id'])['body'])
+
+    def test_a_caller_cannot_change_what_the_next_scan_returns(self):
+        with unittest.mock.patch.object(repository, 'SETTLE_NS', 0):
+            self.note('Alpha fact', 'One.')
+            mine = inventory('demo', self.root)[0]
+            mine['title'] = 'Scribbled over'
+            mine['tags'].append('concern/decision')
+            fresh = inventory('demo', self.root)[0]
+        self.assertEqual((fresh['title'], fresh['tags']), ('Alpha fact', sorted(TAGS)))
+
+    def test_a_file_changed_a_moment_ago_is_read_again_even_with_the_same_size_and_time(self):
+        note = self.note('Alpha fact', 'One.')
+        path = Path(note['path'])
+        before = path.stat()
+        inventory('demo', self.root)
+        self.rewrite(note, 'One.', 'Two.')                       # same length
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))   # a filesystem with coarse timestamps
+        self.assertIn('Two.', inventory('demo', self.root)[0]['body'])
+
+    def test_a_symbolic_link_among_the_notes_is_still_refused(self):
+        note = self.note('Alpha fact', 'One.')
+        outside = self.base / 'outside.md'
+        outside.write_text(Path(note['path']).read_text(encoding='utf-8'), encoding='utf-8')
+        try:
+            os.symlink(outside, Path(note['path']).with_name('KNOWLEDGE - linked-00000000.md'))
+        except (OSError, NotImplementedError):
+            self.skipTest('symbolic links need a privilege this account lacks')
+        with self.assertRaisesRegex(ValueError, 'Symbolic links'):
+            inventory('demo', self.root)
+
+    def test_a_listing_entry_that_is_a_link_is_refused(self):
+        # The same rule without needing the privilege to create a link: the listing itself says what each entry is.
+        self.note('Alpha fact', 'One.')
+
+        class Link:
+            name = 'KNOWLEDGE - linked-00000000.md'
+            path = str(self.root / 'domains/demo/notes' / name)
+            def is_symlink(self): return True
+
+        class Listing(list):
+            def __enter__(self): return self
+            def __exit__(self, *exc): return False
+
+        with unittest.mock.patch.object(repository.os, 'scandir', return_value=Listing([Link()])):
+            with self.assertRaisesRegex(ValueError, 'Symbolic links'):
+                inventory('demo', self.root)
+
+
+class VectorReuse(StoreFixture):
+    """PERF-1: a write embeds the note it changed, not every note in the domain."""
+
+    def setUp(self):
+        super().setUp()
+        from test_semantic import write_model
+        source = self.base / 'tiny'
+        hashes = write_model(source)
+        models = unittest.mock.patch.dict(semantic.MODELS, {'tiny': {'repo': 'none/tiny', 'revision': '0', 'min_similarity': 0.45, 'files': hashes}}, clear=True)
+        models.start()
+        self.addCleanup(models.stop)
+        self.addCleanup(semantic._unload)
+        semantic.install(self.root, 'tiny', source)
+        for title, body in (('Layout note', 'The layout.'), ('Cache note', 'The cache.'), ('Weather note', 'The weather.')):
+            self.note(title, body, allow_similar=True)
+
+    def embedded(self, action):
+        """The texts embedded while `action` runs."""
+        real, texts = semantic.Model.embed, []
+        def counting(model, text):
+            texts.append(text)
+            return real(model, text)
+        with unittest.mock.patch.object(semantic.Model, 'embed', counting):
+            action()
+        return texts
+
+    def vectors(self):
+        import sqlite3
+        db = sqlite3.connect(self.root / 'domains/demo/search.sqlite3')
+        try:
+            return db.execute('SELECT count(*) FROM vectors').fetchone()[0]
+        finally:
+            db.close()
+
+    def test_a_capture_embeds_only_the_new_note(self):
+        texts = self.embedded(lambda: self.note('Rebuild note', 'Rebuild the cache.', allow_similar=True))
+        self.assertEqual(len(texts), 1, texts)
+        self.assertTrue(texts[0].startswith('Rebuild note'))
+        self.assertEqual(self.vectors(), 4)
+
+    def test_another_model_revision_embeds_everything_again(self):
+        from core.search import rebuild_index
+        self.assertEqual(self.embedded(lambda: rebuild_index('demo', self.root)), [])
+        with unittest.mock.patch.dict(semantic.MODELS['tiny'], {'revision': '1'}):
+            self.assertEqual(len(self.embedded(lambda: rebuild_index('demo', self.root))), 3)
+        self.assertEqual(self.vectors(), 3)
 
 
 if __name__ == '__main__':

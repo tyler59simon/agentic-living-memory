@@ -21,4 +21,63 @@ def main():
             start=time.perf_counter();search_domains(cases[i%4][2],['benchmark'],3,root);durations.append((time.perf_counter()-start)*1000)
         value={'schema':1,'corpus':'100 synthetic notes: 4 targets + 96 distractors','runs':len(durations),'quality_cases':quality,'top1_accuracy':sum(q['top1_correct'] for q in quality)/len(quality),'median_ms':round(statistics.median(durations),3),'p95_ms':round(sorted(durations)[int(len(durations)*.95)-1],3),'includes':'canonical fingerprint checks, FTS5, ranking, bounded output; excludes interpreter startup','limitation':'Small synthetic check, not real-world relevance certification or a latency guarantee'}
         output=Path(__file__).resolve().parents[1]/'.cache/benchmark.json';output.parent.mkdir(parents=True,exist_ok=True);output.write_text(json.dumps(value,indent=2),encoding='utf-8');print(json.dumps(value))
-if __name__=='__main__':main()
+
+# What keeps a hook inside its timeout, and a write tolerable, as a store grows (in-process, median).
+TARGETS={'prompt_ms':400,'capture_ms':1500}
+WORDS=('cache deploy rollback session token queue index schema migration retry timeout webhook parser lexer renderer export import vault ledger '
+       'invoice tenant shard replica gateway proxy cluster build release artifact pipeline lint format logger metric tracer alert budget quota '
+       'limit policy audit secret rotate backup restore snapshot journal').split()
+
+def synthetic_store(base,count,semantic_from=None):
+    """(store root, project folder, ms to build the first index) for `count` generated notes under `base`.
+    Notes are written as files and indexed once: capturing them one by one would time the very cost being measured."""
+    import random,shutil
+    from core.notes import build_note
+    from core.repository import reconcile
+    rng=random.Random(7);root=base/'store';project=base/'project';project.mkdir()
+    init_domain('scale',[str(project)],root);p=migration_plan(root);apply(root,p['plan_id'],p['digest'])
+    if semantic_from:shutil.copytree(Path(semantic_from)/'.models',root/'.models')
+    for i in range(count):
+        words=rng.sample(WORDS,6);title=f"{' '.join(words[:3]).capitalize()} note {i}"
+        body=('## \U0001f4cc Executive Summary\n'+' '.join(rng.choices(WORDS,k=30))+'.\n\n---\n\n## \U0001f4dd Key Details\n'
+              +'\n'.join(f"* **{word.capitalize()}:** "+' '.join(rng.choices(WORDS,k=25))+'.' for word in words))
+        path,_,text=build_note(title,body,['subject/project','concern/knowledge'],'scale',root)
+        path.parent.mkdir(parents=True,exist_ok=True);path.write_text(text,encoding='utf-8',newline='\n')
+    started=time.perf_counter();reconcile('scale',root)
+    return root,project,round((time.perf_counter()-started)*1000)
+
+def scale(count,semantic_from=None,runs=7):
+    """Latency at `count` notes: a prompt hook, a capture and a session start, run in-process on a synthetic store.
+    semantic_from: a store whose installed model (.models) is copied in, so writes pay for embeddings as they do in use."""
+    from core import repository,runtime,semantic
+    with tempfile.TemporaryDirectory(prefix='living-memory-scale-',ignore_cleanup_errors=True) as directory:
+      try:
+        root,project,built=synthetic_store(Path(directory),count,semantic_from)
+        payload={'cwd':str(project),'session_id':'scale'}
+        runtime.process('claude','session-start',payload,root)
+        def timed(action,cold=True):
+            # cold: forget the notes this process has read before each run, as a hook or a command (a new
+            # process every time) starts. warm is what a long-lived `serve` process sees.
+            samples=[]
+            for i in range(runs):
+                if cold:repository._PARSED.clear()
+                start=time.perf_counter();action(i);samples.append((time.perf_counter()-start)*1000)
+            return round(statistics.median(samples),1)
+        ask=lambda i:runtime.process('claude','user-prompt',{**payload,'prompt':f'how does the {WORDS[i]} {WORDS[i+9]} retry policy work'},root)
+        prompt=timed(ask);warm=timed(lambda i:ask(i+runs),cold=False)
+        written=timed(lambda i:capture(f'Scale capture {i} zebra{i}',f'Distinct fact number {i} about quokka{i}.',['subject/project','concern/knowledge'],'scale',root))
+        started_ms=timed(lambda i:runtime.process('claude','session-start',{**payload,'session_id':f'scale{i}'},root))
+        value={'schema':1,'notes':count,'semantic':bool(semantic_from),'runs':runs,'first_index_build_ms':built,'prompt_ms':prompt,'prompt_warm_ms':warm,
+               'capture_ms':written,'session_start_ms':started_ms,'targets_ms':TARGETS,'met':prompt<=TARGETS['prompt_ms'] and written<=TARGETS['capture_ms'],
+               'includes':'everything a hook or command does in one new process; excludes interpreter start, imports and the first model load'}
+        print(json.dumps(value));return value
+      finally:semantic._unload()   # the model file is memory-mapped; Windows cannot delete the folder while it is
+
+if __name__=='__main__':
+    import argparse
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--scale',type=int,help='Time a prompt hook and a capture on a synthetic store of this many notes')
+    parser.add_argument('--semantic-from',type=Path,help='With --scale: a store whose installed semantic model is copied into the synthetic one')
+    args=parser.parse_args()
+    if args.scale:raise SystemExit(0 if scale(args.scale,args.semantic_from)['met'] else 1)
+    main()
