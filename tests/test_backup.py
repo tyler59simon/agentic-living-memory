@@ -33,8 +33,8 @@ class Backups(StoreFixture):
 
     def test_a_snapshot_that_fails_verification_is_not_kept(self):
         self.note()
-        with patch('core.backup.parse_text', return_value=None):
-            with self.assertRaisesRegex(ValueError, 'does not parse'):
+        with patch('core.backup._allowed', return_value=False):
+            with self.assertRaisesRegex(ValueError, 'outside the canonical set'):
                 snap.backup(self.root)
         self.assertEqual(list((self.root / 'backups').iterdir()), [])
 

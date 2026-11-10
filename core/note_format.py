@@ -32,8 +32,9 @@ ACTION_TYPES = frozenset({'plan', 'bug', 'risk'})
 _H2 = re.compile(r'^##\s+(.*?)\s*$')
 _FENCE = re.compile(r'^ {0,3}(`{3,}|~{3,})')
 _CALLOUT = re.compile(r'^>\s*(?:ℹ️|ℹ|\[!\w+\])?\s*\**\s*Important Note:?\s*\**:?\s*(.*)$', re.I)
-# Markup that carries no content: bullets, checkboxes, a bare "**Label:**", quote markers.
-_EMPTY_LINE = re.compile(r'^\s*(?:>\s*)?(?:[-*+]\s*)?(?:\[[ xX]\]\s*)?(?:\*\*[^*]*:?\*\*:?|\*[^*]*:\*)?\s*$')
+# Markup that carries no content: bullets, checkboxes, a bare "**Label:**", quote markers. A bold span counts
+# only as a label (it ends in a colon): "**Never deploy on Fridays**" is content written in bold.
+_EMPTY_LINE = re.compile(r'^\s*(?:>\s*)?(?:[-*+]\s*)?(?:\[[ xX]\]\s*)?(?:\*\*[^*]*:\*\*:?|\*\*[^*]*\*\*:|\*\*\s*\*\*|\*[^*]*:\*)?\s*$')
 
 
 def _key(heading):
@@ -182,6 +183,12 @@ def render(summary='', details=(), links=(), actions=(), done=(), important='', 
                                        [f'- [x] {d.strip()}' for d in done if d.strip()])
     if important:
         replace['important'] = str(important).strip()
+    return _with_sections(replace, body)
+
+
+def _with_sections(replace, body=''):
+    """`body` with the sections in `replace` (key -> text) put in place of its own, or added where the layout puts them."""
+    replace = dict(replace)
     # Sections of the existing body (including headings this layout does not define) keep their place.
     parts = [[key, heading, text] for key, heading, text in split(format_body(body))[1:]] if body else []
     for part in parts:
@@ -205,6 +212,57 @@ def render(summary='', details=(), links=(), actions=(), done=(), important='', 
         else:
             out.append(text)
     return format_body('\n\n'.join(out))
+
+
+_LABEL = re.compile(r'^\s*(?:[-*+]\s+)?\*\*([^*]+?)\*\*')
+
+
+def detail_label(line):
+    """The bold label a Key Details bullet starts with ("* **Cause:** ..." -> "cause"), else None."""
+    match = _LABEL.match(line)
+    label = match[1].strip().rstrip(':').strip().casefold() if match else ''
+    return label or None
+
+
+def amend(body, details=(), links=(), actions=(), set_details=()):
+    """The body with bullets added rather than sections replaced: `details` and `links` are appended to Key
+    Details and Resource Links, `actions` become new open Action Items, and each of `set_details` replaces the
+    Key Details bullet that starts with the same bold label (or is appended when no bullet has it)."""
+    current = sections(body)
+    replace = {}
+    lines = current.get('details', '').split('\n') if current.get('details') else []
+    for item in set_details:
+        label = detail_label(str(item))
+        if not label:
+            raise ValueError("--set-detail needs a bullet that starts with a bold label, e.g. '**Cause:** ...'")
+        hits = [i for i, line in enumerate(lines) if line[:1] not in (' ', '\t') and detail_label(line) == label]
+        if len(hits) > 1:
+            raise ValueError(f'ambiguous_detail: {len(hits)} Key Details bullets start with **{label}**; rewrite the section with --detail')
+        new = _bullets([item])
+        if hits:
+            # A bullet's indented continuation lines belong to it and go with it.
+            end = hits[0] + 1
+            while end < len(lines) and lines[end][:1] in (' ', '\t'):
+                end += 1
+            lines[hits[0]:end] = [new]
+        else:
+            lines.append(new)
+    if details:
+        lines.append(_bullets(details))
+    if set_details or details:
+        replace['details'] = '\n'.join(line for line in lines if line.strip())
+    if links:
+        replace['links'] = '\n'.join(text for text in (current.get('links', ''), _bullets(links)) if text.strip())
+    added = [f'- [ ] {a.strip()}' for a in actions if str(a).strip()]
+    if added:
+        replace['actions'] = '\n'.join(text for text in (current.get('actions', ''), '\n'.join(added)) if text.strip())
+    return _with_sections(replace, body) if replace else format_body(body)
+
+
+def section_counts(body):
+    """Lines of content in each list section (details, links, actions), for reporting what an update replaced."""
+    found = sections(body)
+    return {key: sum(1 for line in found.get(key, '').split('\n') if line.strip()) for key in ('details', 'links', 'actions')}
 
 
 _ACTION = re.compile(r'^(\s*[-*+]\s*)\[([ xX])\](.*)$')

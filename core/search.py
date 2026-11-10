@@ -107,25 +107,48 @@ def _embedding_text(note):
     from .note_format import sections,plain
     return note['title']+'\n'+plain(sections(note['body']).get('summary',''))
 
+def _vector_identity(root):
+    """What stored vectors depend on besides each note's own text: the model (its name and pinned revision) and
+    how a note becomes embedding text (INDEX_VERSION). None without a model."""
+    from . import semantic
+    name=semantic.installed(root)
+    return f"{INDEX_VERSION}:{name}@{semantic.MODELS.get(name,{}).get('revision','')}" if name else None
+
+def _stored_vectors(path,identity):
+    """{(note id, revision): vector blob} from the index about to be replaced, when the same model made them.
+    Embedding is the slow part of a rebuild and a write changes one note, so the rest are carried over."""
+    if not identity or not path.exists():return {}
+    try:
+        db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)
+        try:
+            if db.execute('SELECT vectors FROM metadata').fetchone()[0]!=identity:return {}
+            return {(note_id,revision):blob for note_id,revision,blob in db.execute('SELECT n.id,n.revision,v.vec FROM vectors v JOIN notes n ON n.rowid=v.rowid')}
+        finally:db.close()
+    except (sqlite3.Error,TypeError,IndexError):return {}   # an index from before vectors were tracked, or a damaged one
+
 def rebuild_index(domain,root=None):
     from . import semantic
     root=Path(root or memory_root()).resolve(); directory=domain_dir(domain,root);directory.mkdir(parents=True,exist_ok=True)
     with store_lock(root):
         notes=inventory(domain,root,retired=True);model=semantic.load(root)
+        identity=_vector_identity(root) if model else None;kept=_stored_vectors(directory/'search.sqlite3',identity)
         fd,name=tempfile.mkstemp(prefix='.search-',suffix='.sqlite3',dir=directory);os.close(fd)
         db=sqlite3.connect(name)
         try:
             db.execute('CREATE TABLE notes(domain TEXT,id TEXT,prefix TEXT,title TEXT,type TEXT,status TEXT,created TEXT,updated TEXT,review_by TEXT,context TEXT,tags TEXT,body TEXT,path TEXT,sha256 TEXT,revision TEXT,schema_version INTEGER,files TEXT,PRIMARY KEY(domain,id))')
             db.execute("CREATE VIRTUAL TABLE notes_fts USING fts5(title,tags,body,tokenize='porter unicode61')")
-            db.execute('CREATE TABLE metadata(fingerprint TEXT)')
+            db.execute('CREATE TABLE metadata(fingerprint TEXT,vectors TEXT)')
             if model:db.execute('CREATE TABLE vectors(rowid INTEGER PRIMARY KEY,vec BLOB NOT NULL)')
             for n in notes:
                 values=(domain,n['id'],n.get('prefix','NOTE'),n['title'],n.get('type','knowledge'),n.get('status','active'),n.get('created'),n.get('updated'),n.get('review_by'),n.get('context',''),json.dumps(n.get('tags',[])),n['body'],n['path'],n['digest'],n['revision'],n.get('schema_version',1),json.dumps(n.get('files') or []))
                 cursor=db.execute('INSERT INTO notes VALUES('+','.join('?'*17)+')',values)
                 db.execute('INSERT INTO notes_fts(rowid,title,tags,body) VALUES(?,?,?,?)',(cursor.lastrowid,n['title'],' '.join(n.get('tags',[])),n['body']))
-                vector=model.embed(_embedding_text(n)) if model else None
-                if vector:db.execute('INSERT INTO vectors VALUES(?,?)',(cursor.lastrowid,semantic.to_blob(vector)))
-            db.execute('INSERT INTO metadata VALUES(?)',(_fingerprint(notes,semantic.installed(root)),));db.commit();db.close();os.replace(name,directory/'search.sqlite3')
+                if not model:continue
+                blob=kept.get((n['id'],n['revision']))
+                if blob is None:
+                    vector=model.embed(_embedding_text(n));blob=semantic.to_blob(vector) if vector else None
+                if blob:db.execute('INSERT INTO vectors VALUES(?,?)',(cursor.lastrowid,blob))
+            db.execute('INSERT INTO metadata VALUES(?,?)',(_fingerprint(notes,semantic.installed(root)),identity));db.commit();db.close();os.replace(name,directory/'search.sqlite3')
         finally:
             db.close()
             if os.path.exists(name):os.unlink(name)

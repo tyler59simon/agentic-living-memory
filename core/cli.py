@@ -107,12 +107,17 @@ def doctor(root,cwd,explicit=None,domain=None):
     try:db.execute('CREATE VIRTUAL TABLE capability USING fts5(text)');fts=True
     except sqlite3.Error:fts=False
     finally:db.close()
-    pending=[]
-    for path in (root/'.operations').glob('*/journal.json'):
-        value=read_json(path)
-        if value['state'] not in {'committed','rolled_back','abandoned'}:pending.append(value['id'])
+    from .repository import unfinished_operations
+    pending,damaged=unfinished_operations(root)
     index='unbound'
     counts={};warnings=[]
+    if pending:warnings.append(f"{len(pending)} operation(s) did not finish: run recover ID to complete one, or recover ID --abandon when its files changed since ({', '.join(pending[:5])})")
+    if damaged:warnings.append(f"{len(damaged)} operation journal(s) cannot be read and are ignored ({', '.join(damaged[:5])}); history and undo skip them")
+    from . import wiring as hook_wiring
+    wired=hook_wiring.wiring()
+    for harness,row in wired.items():
+        if isinstance(row,dict):warnings+=[f'hooks: {harness}: {problem}' for problem in row.get('problems') or []]
+    if 'error' in wired:warnings.append('hooks: '+str(wired['error']))
     unreadable={}
     for directory in (root/'domains').iterdir() if (root/'domains').is_dir() else []:
         if directory.is_dir():
@@ -139,7 +144,7 @@ def doctor(root,cwd,explicit=None,domain=None):
     from .systems import listing as systems_listing
     try:warnings+=['systems: '+w for w in systems_listing(root)['warnings']]
     except ValueError as exc:warnings.append(f'systems.json: {exc}')
-    stale=staleness_warning(root)
+    stale=staleness_warning(root,sum(counts.values()))
     if stale:warnings.append(stale)
     from .logs import summary as log_summary
     logged=log_summary(root)
@@ -152,18 +157,55 @@ def doctor(root,cwd,explicit=None,domain=None):
     location = diagnostics(explicit)
     semantic=semantic_status(root)
     if semantic.get('error'):warnings.append(f"semantic model {semantic['model']} cannot be read ({semantic['error']}); search is lexical-only until it is reinstalled or removed")
-    return {'semantic':{k:semantic[k] for k in ('enabled','model') if k in semantic},'ok':fts and not pending and not unreadable and (not domain or domain_exists),'problems':unreadable,'interpreter':sys.executable,'python':sys.version.split()[0],'fts5':fts,'root':str(root),'location':location,'domain':domain,'binding':'bound' if domain else 'unbound','domain_data':'present' if domain_exists else 'missing' if domain else 'unbound','index':index,'pending_recovery':pending,'hooks':{'trust':'unknown','last_delivery':last},'logs':logged,'capture':'main_agent_via_scripts','protection':'cooperating_agent_governance','notes':counts,'warnings':warnings}
+    return {'semantic':{k:semantic[k] for k in ('enabled','model') if k in semantic},'ok':fts and not pending and not unreadable and (not domain or domain_exists) and not hook_wiring.broken(wired),'problems':unreadable,'interpreter':sys.executable,'python':sys.version.split()[0],'fts5':fts,'root':str(root),'location':location,'domain':domain,'binding':'bound' if domain else 'unbound','domain_data':'present' if domain_exists else 'missing' if domain else 'unbound','index':index,'pending_recovery':pending,'hooks':{'trust':'unknown','last_delivery':last,'wiring':wired},'logs':logged,'capture':'main_agent_via_scripts','protection':'cooperating_agent_governance','notes':counts,'warnings':warnings}
 
 SECTION_ARGS=('summary','detail','link','action','done','important')
+# update only: add to a list section, or replace one labelled bullet, without restating the rest of it.
+AMEND_ARGS=('add_detail','set_detail','add_link','add_action')
+# A replace flag and the add flag for the same section contradict each other.
+AMEND_CLASHES=(('detail','add_detail'),('detail','set_detail'),('link','add_link'),('action','add_action'),('done','add_action'))
 
-def sections_args(p):
+def sections_args(p,update=False):
     """Structured note sections (see core/note_format.py); each replaces only its own section."""
+    whole=' On update this replaces the whole section.' if update else ''
     p.add_argument('--summary',help='Executive Summary: one or two sentences')
-    p.add_argument('--detail',action='append',help='Key Details bullet, e.g. "**Cause:** ..." (repeatable)')
-    p.add_argument('--link',action='append',help='Resource Links bullet: [[Note]], a URL or a REF (repeatable)')
-    p.add_argument('--action',action='append',help='Open Action Item; plan, bug and risk notes only (repeatable)')
-    p.add_argument('--done',action='append',help='Completed Action Item (repeatable)')
+    p.add_argument('--detail',action='append',help='Key Details bullet, e.g. "**Cause:** ..." (repeatable).'+whole)
+    p.add_argument('--link',action='append',help='Resource Links bullet: [[Note]], a URL or a REF (repeatable).'+whole)
+    p.add_argument('--action',action='append',help='Open Action Item; plan, bug and risk notes only (repeatable).'+whole)
+    p.add_argument('--done',action='append',help='Completed Action Item (repeatable).'+whole)
     p.add_argument('--important',help='Important Note callout: a critical caveat or warning')
+    if update:
+        p.add_argument('--add-detail',action='append',help='Append a Key Details bullet; the others are kept (repeatable)')
+        p.add_argument('--set-detail',action='append',help='Replace the Key Details bullet that starts with the same bold label, e.g. "**Cause:** new text"; appended when no bullet has it (repeatable)')
+        p.add_argument('--add-link',action='append',help='Append a Resource Links bullet; the others are kept (repeatable)')
+        p.add_argument('--add-action',action='append',help='Append an open Action Item; the others are kept (repeatable)')
+        p.add_argument('--replace-actions',action='store_true',help='Let --action/--done drop Action Items the note already has')
+
+def _update_body(args,base):
+    """The body an update's section flags leave: replace flags overwrite their section, add flags extend it."""
+    from . import note_format
+    for replace,add in AMEND_CLASHES:
+        if getattr(args,replace) and getattr(args,add):
+            raise ValueError(f"--{replace} replaces the section and --{add.replace('_','-')} adds to it; pass one of them")
+    if (args.action or args.done) and not args.replace_actions:
+        kept={text.strip().casefold() for text in (args.action or [])+(args.done or [])}
+        dropped=[text for _,text in note_format.action_items(base) if text and text.casefold() not in kept]
+        if dropped:
+            raise ValueError(f'replace_actions: --action/--done rewrite the whole Action Items list and would drop {len(dropped)} existing item(s): '
+                             +'; '.join(repr(text) for text in dropped[:10])+". Add a step with --add-action, tick one with `check REF 'item'`, "
+                             'or pass --replace-actions to rewrite the list')
+    body=_sectioned(args,base) or base
+    if any(getattr(args,k) for k in AMEND_ARGS):
+        body=note_format.amend(body,args.add_detail or (),args.add_link or (),args.add_action or (),args.set_detail or ())
+    return body
+
+def _replaced(args,stored,body):
+    """{section: {before, after}} (lines of content) for each list section an update overwrote or shrank, so
+    what a replace flag or a whole new body dropped is reported rather than lost quietly."""
+    from .note_format import section_counts
+    before,after=section_counts(stored),section_counts(body)
+    flags={'details':args.detail,'links':args.link,'actions':args.action or args.done}
+    return {key:{'before':before[key],'after':after[key]} for key in before if before[key] and (flags[key] or after[key]<before[key])}
 
 def _sectioned(args,body=''):
     """The body with any structured sections from the command line applied, or None if none were given."""
@@ -315,7 +357,7 @@ def main(argv=None):
     def sub(name):p=subs.add_parser(name);common(p,True);return p
     p=sub('setup');p.add_argument('--location',type=Path);p.add_argument('--non-interactive',action='store_true');p.add_argument('--source',type=Path);p.add_argument('--apply-plan');p.add_argument('--inspect-plan');p.add_argument('--expected-plan-sha256')
     p=sub('bind');p.add_argument('name');p.add_argument('prefix',nargs='+')
-    p=sub('capture');p.add_argument('items',nargs='*');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='');p.add_argument('--prefix',help='Compatibility assertion only; must equal the uppercase type');p.add_argument('--type',choices=NOTE_TYPES,default='knowledge');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help='REF of a note this one replaces; it is retired in the same transaction');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk/map notes get a default')
+    p=sub('capture');p.add_argument('items',nargs='*');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='');p.add_argument('--prefix',help='Compatibility assertion only; must equal the uppercase type');p.add_argument('--type',choices=NOTE_TYPES,help='Note type (default: knowledge)');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help='REF of a note this one replaces; it is retired in the same transaction');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk/map notes get a default')
     for facet in CAPTURE_FACETS:p.add_argument('--'+facet,action='append',default=[])
     p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
     sections_args(p);_file_flags(p)
@@ -324,7 +366,7 @@ def main(argv=None):
     p=sub('update');p.add_argument('reference');p.add_argument('--title');p.add_argument('--body');p.add_argument('--body-file',type=Path);p.add_argument('--tag',action='append');p.add_argument('--type',choices=NOTE_TYPES);p.add_argument('--context');p.add_argument('--review-by');p.add_argument('--expected-revision');p.add_argument('--payload-file',type=Path);p.add_argument('--session');p.add_argument('--turn')
     for facet in FACET_FLAGS:p.add_argument('--'+facet,action='append')
     p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
-    sections_args(p);_file_flags(p)
+    sections_args(p,update=True);_file_flags(p)
     p=sub('supersede');p.add_argument('reference');p.add_argument('--by',required=True,help='REF of the note that replaces it');p.add_argument('--session');p.add_argument('--turn')
     p=sub('review');p.add_argument('--limit',type=int,default=20);p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)')
     p=sub('open');p.add_argument('--limit',type=int,default=50);p.add_argument('--all-domains',action='store_true',help='Every domain folder, not parents and global only');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)')
@@ -334,6 +376,7 @@ def main(argv=None):
     p=sub('export');p.add_argument('--out',type=Path,required=True,help='New .zip file, outside the store');p.add_argument('--type',choices=NOTE_TYPES,action='append');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)');p.add_argument('--all',action='store_true',help='Include superseded, archived and resolved notes')
     p=sub('import-plan');p.add_argument('file',type=Path)
     p=sub('confirm');p.add_argument('reference');p.add_argument('--session');p.add_argument('--turn')
+    for name in ('resolve','reopen'):p=sub(name);p.add_argument('reference',help='A plan, bug or risk note');p.add_argument('--session');p.add_argument('--turn')
     p=sub('stats');p.add_argument('--days',type=int,default=30,help='Window, at most 30 (the diary keeps 30 days)');p.add_argument('--limit',type=int,default=10)
     p=sub('logs');p.add_argument('--level',choices=['debug','info','warning','error'],default='info',help='Lowest level shown');p.add_argument('--kind',choices=['hook','command','internal']);p.add_argument('--event',help='Hook event, command name or internal call site');p.add_argument('--days',type=int,default=1,help='Window, at most 30 (logs keep 30 days)');p.add_argument('--limit',type=int,default=50)
     p=sub('plan');p.add_argument('action',choices=['update','rename','retag','resolve','reopen','archive','supersede','delete']);p.add_argument('reference');p.add_argument('--payload-file',type=Path)
@@ -422,7 +465,7 @@ def main(argv=None):
                 body=_sectioned(args,body) or body
                 tags=args.tag+[t.strip() for t in args.tags.split(',') if t.strip()]
                 tags += _facet_tags(args,CAPTURE_FACETS)
-                data={'title':title,'body':body,'tags':tags,'prefix':args.prefix,'type':args.type,'context':args.context,'idempotency_key':args.idempotency_key,'domain':domain}
+                data={'title':title,'body':body,'tags':tags,'prefix':args.prefix,'type':args.type or 'knowledge','context':args.context,'idempotency_key':args.idempotency_key,'domain':domain}
                 if args.turn and not args.session:raise ValueError('--turn needs --session')
                 if args.session:data.update(session_id=args.session,turn_id=_turn(root,args.session,args.turn))
                 if args.allow_similar:data['allow_similar']=True
@@ -430,7 +473,20 @@ def main(argv=None):
                 if args.review_by:data['review_by']=args.review_by
                 files,_=_file_args(args,domain,root)
                 if files:data['files']=files
-            else:data=_payload(args)
+            else:
+                # A payload carries its own fields, so a flag beside it would be dropped without a word: refuse it.
+                # The session is the exception: the private-text check, the origin and the receipt depend on it.
+                beside=[('--title',args.title),('--tag',args.tag),('--tags',args.tags),('--prefix',args.prefix),('--type',args.type),('--context',args.context),
+                        ('--idempotency-key',args.idempotency_key),('--allow-similar',args.allow_similar),('--supersedes',args.supersedes),
+                        ('--review-by',args.review_by),('--file',args.file),('--files',args.files)]+[('--'+f,getattr(args,f)) for f in CAPTURE_FACETS]
+                ignored=[flag for flag,given in beside if given]
+                if ignored:raise ValueError('A JSON payload carries its own fields; put these in the payload instead of passing '+', '.join(ignored))
+                if args.turn and not args.session:raise ValueError('--turn needs --session')
+                data=_payload(args)
+                for item in (data if isinstance(data,list) else [data]) if args.session else ():
+                    if isinstance(item,dict) and not item.get('session_id'):
+                        item['session_id']=args.session
+                        if args.turn and not item.get('turn_id'):item['turn_id']=args.turn
             batch=data if isinstance(data,list) else [data]
             if not 1<=len(batch)<=20:raise ValueError('Capture batch must contain 1..20 items')
             results=[]
@@ -538,17 +594,18 @@ def main(argv=None):
         elif cmd=='update':
             from .notes import change
             d,n=_reference(args.reference,domain,root)
-            values=_payload(args) if args.payload_file or not any(getattr(args,k) is not None for k in ('title','body','body_file','tag','type','context','review_by','file','files','subject','concern','platform','technology')+SECTION_ARGS) else {}
+            values=_payload(args) if args.payload_file or not any(getattr(args,k) is not None for k in ('title','body','body_file','tag','type','context','review_by','file','files','subject','concern','platform','technology')+SECTION_ARGS+AMEND_ARGS) else {}
             if args.title is not None:values['title']=args.title
             if args.body is not None:values['body']=args.body
             if args.body_file:values['body']=args.body_file.read_text(encoding='utf-8-sig')
             # Read, rebuild and write under one lock: a concurrent update between them would otherwise be lost.
             with store_lock(root):
-                if any(getattr(args,k) for k in SECTION_ARGS):
-                    # Sections given on the command line replace only themselves; the rest of the body is kept.
-                    from .notes import find_note
-                    base=values['body'] if 'body' in values else find_note(n,d,root)[1]['body']
-                    values['body']=_sectioned(args,base)
+                from .notes import find_note
+                stored=find_note(n,d,root)[1]['body'];replaced={}
+                if any(getattr(args,k) for k in SECTION_ARGS+AMEND_ARGS):
+                    # Sections given on the command line change only themselves; the rest of the body is kept.
+                    values['body']=_update_body(args,values['body'] if 'body' in values else stored)
+                if isinstance(values.get('body'),str):replaced=_replaced(args,stored,values['body'])
                 tags=(args.tag or [])+_facet_tags(args)
                 if tags:values['tags']=tags
                 for key in ('type','context','review_by'):
@@ -558,10 +615,10 @@ def main(argv=None):
                 if args.session:
                     from .private import check as private_check
                     private_check(_session_state(root,args.session),values)
-                from .notes import find_note
                 files,suggested=_file_args(args,d,root,find_note(n,d,root)[1].get('files') or [])
                 if files is not None:values['files']=files
                 result=change(n,d,'update',root,revision,**values)
+            if replaced:result['replaced']=replaced
             if redacted:result['redacted']=redacted
             if suggested:result['suggested_files']=suggested
             _receipt(args,d,n,root,'update')
@@ -642,6 +699,13 @@ def main(argv=None):
             d,n=_reference(args.reference,domain,root)
             result=confirm(n,d,root);result.pop('path',None)
             if result.get('status')!='unchanged':_receipt(args,d,n,root,'confirm')
+        elif cmd in {'resolve','reopen'}:
+            # Finished work leaves the active set in one journaled, undoable step; reopen brings it back.
+            from .notes import change,short_ref
+            d,n=_reference(args.reference,domain,root)
+            result=change(n,d,cmd,root);result.pop('path',None)
+            if cmd=='resolve':result['hint']=f'Resolved notes leave session context and search. `reopen {short_ref(d,n)}` brings it back.'
+            _receipt(args,d,n,root,cmd)
         elif cmd=='stats':
             from .usage import stats
             from .runtime import parent_domains

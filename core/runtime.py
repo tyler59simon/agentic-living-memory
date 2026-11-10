@@ -12,9 +12,9 @@ SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 # Tools that cannot change files; anything else marks the turn as mutating.
 READ_TOOLS={'read','read_file','glob','grep','search','view_image','view','ls','list','webfetch','websearch','web_fetch','web_search','todowrite','task','agent','toolsearch','askuserquestion','exitplanmode','enterplanmode'}
 SHELL_TOOLS={'bash','powershell','shell','run_shell_command','exec_command','local_shell','execute'}
-ALLOWED_SUBCOMMANDS={'search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','promote-plan','projects','systems'}
+ALLOWED_SUBCOMMANDS={'search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','promote-plan','projects','systems','resolve','reopen'}
 # Subagents are read-only: these are denied for them even though the main agent gets them auto-allowed.
-MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm'}
+MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm','resolve','reopen'}
 GLOBAL_OPTIONS={'--root','--domain','--cwd','--actor'}
 HOOK_LOCK_TIMEOUT=5
 # Codex has no SessionEnd, so its session start picks up Obsidian edits, at most this often.
@@ -31,6 +31,11 @@ def command(root,domain=None):
     text=f'"{sys.executable}" "{SCRIPT}"'
     if Path(root).resolve()!=_configured_root():text+=f' --root "{root}"'
     return text+(f' --domain {domain}' if domain else '')
+
+def hint_command(root,state,domain=None):
+    """How a hint to the main agent names the script: CMD when this session's start defined it (a bound
+    domain was pinned then), else the whole command line. Shorter, and it needs no shell-specific prefix."""
+    return 'CMD' if isinstance(state,dict) and state.get('domain') else command(root,domain)
 
 def _tag_summary(root):
     try:
@@ -105,43 +110,112 @@ def shell_command(args):
         return value if isinstance(value,str) else ''
     return args if isinstance(args,str) else ''
 
-SINGLE_QUOTED=re.compile(r"'(?:[^']|'')*'")
+# Outside quotes these run, chain, redirect or expand. Parentheses open a subshell in Bash and evaluate an
+# expression in PowerShell: `search (Remove-Item x)` runs the cmdlet before the script sees its arguments.
+# Braces are a script block in PowerShell and expand in Bash ({a,/etc/passwd} becomes two arguments).
+SHELL_META=frozenset(';|&<>`$(){}\r\n')
+# PowerShell only: splatting, array expressions and here-strings.
+POWERSHELL_META=frozenset('@')
+# PowerShell's stop-parsing token: what follows is no longer read by the rules tracked here.
+STOP_PARSING='--%'
+# PowerShell reads these as quotation marks too, so a curly quote can close a string an ASCII quote opened.
+POWERSHELL_QUOTES=frozenset('\u2018\u2019\u201a\u201b\u201c\u201d\u201e')
+SHELL_GRAMMARS=('posix','powershell')
 
-def _inert(rest):
-    """True when the arguments cannot run anything: shell metacharacters appear only inside single quotes
-    (literal in Bash and PowerShell). A single quote inside double quotes is an ordinary character, so the
-    quote state is tracked rather than stripping '...' spans. Double-quoted text may not expand ($, `) or
-    escape (a backslash before $ ` " \\ or a newline); other backslashes, as in Windows paths, are literal."""
-    state=None
-    for i,ch in enumerate(rest):
+def shell_grammar(tool):
+    """The quoting rules a shell tool's command follows: 'posix', 'powershell', or None when the tool does not say."""
+    return 'posix' if tool=='bash' else 'powershell' if tool=='powershell' else None
+
+def _words(rest,grammar):
+    """The argument words of a command line that cannot run or expand anything, else None.
+
+    Quote state is tracked per shell, because the two disagree. In Bash a backslash outside quotes makes the
+    next character literal, so \\' does not open a string and '\\'' is a quote inside single-quoted text. In
+    PowerShell a backslash is an ordinary character and '' is the quote inside single-quoted text.
+    Single-quoted text is literal in both, so note text there may hold anything (->, |, $, newlines).
+    Double-quoted text may not expand ($, `) or, in Bash, escape (a backslash before $ ` " \\ or a newline);
+    other backslashes, as in Windows paths, are literal."""
+    words=[];word=None;state=None;i=0;ps=grammar=='powershell'
+    while i<len(rest):
+        ch=rest[i];nxt=rest[i+1:i+2]
+        if ps and ch in POWERSHELL_QUOTES:return None
         if state=="'":
-            if ch=="'":state=None
+            if ch!="'":word+=ch
+            elif ps and nxt=="'":word+="'";i+=1
+            else:state=None
         elif state=='"':
-            if ch=='"':state=None
-            elif ch in '$`' or (ch=='\\' and rest[i+1:i+2] in ('$','`','"','\\','\n','\r')):return False
-        elif ch in "'\"":state=ch
-        elif ch in ';|&<>`$\r\n':return False
-    return state is None
+            if ch=='"':
+                if ps and nxt=='"':word+='"';i+=1
+                else:state=None
+            elif ch in '$`' or (not ps and ch=='\\' and nxt in ('$','`','"','\\','\n','\r','')):return None
+            else:word+=ch
+        elif ch in "'\"":state=ch;word=word or ''
+        elif ch=='\\' and not ps:
+            if nxt in ('','\n','\r'):return None
+            word=(word or '')+nxt;i+=1
+        elif ch in SHELL_META or (ps and ch in POWERSHELL_META):return None
+        elif ch.isspace():
+            if word is not None:words.append(word);word=None
+        else:word=(word or '')+ch
+        i+=1
+    if state is not None:return None
+    if word is not None:words.append(word)
+    return None if ps and STOP_PARSING in words else words
 
-def memory_subcommand(text):
-    """Subcommand of an exact, unchained living_memory.py invocation, else None.
-
-    Single-quoted arguments are literal in Bash and PowerShell, so note text inside them may
-    contain anything (->, |, $, newlines). Outside them, any shell metacharacter disqualifies."""
+def _parsed(text,grammar=None):
+    """The argument words of an exact, unchained living_memory.py invocation, once per shell grammar that
+    may apply, else None. A tool that does not name its shell must be inert under both grammars."""
     match=re.match(r'\s*(?:&\s*)?"([^"]+)"\s+"([^"]+)"(.*)\Z',text,re.S)
     if not match or _norm(match[1])!=_norm(sys.executable) or _norm(match[2])!=_norm(SCRIPT):return None
-    rest=match[3]
-    if not _inert(rest):return None
-    rest=SINGLE_QUOTED.sub("'x'",rest)
-    try:tokens=shlex.split(rest,posix=True)
-    except ValueError:return None
+    found=[_words(match[3],g) for g in ((grammar,) if grammar in SHELL_GRAMMARS else SHELL_GRAMMARS)]
+    return None if any(words is None for words in found) else found
+
+def _subcommand(words):
     index=0
-    while index<len(tokens):
-        token=tokens[index]
+    while index<len(words):
+        token=words[index]
         if token in GLOBAL_OPTIONS:index+=2;continue
         if token=='--json':index+=1;continue
         return token
     return None
+
+def memory_subcommand(text,grammar=None):
+    """Subcommand of an exact, unchained living_memory.py invocation, else None. grammar: see shell_grammar."""
+    parsed=_parsed(text,grammar)
+    if not parsed:return None
+    found={_subcommand(words) for words in parsed}
+    return found.pop() if len(found)==1 else None
+
+# Options that read a file into a note. Auto-approval covers only files the session could already see.
+FILE_OPTIONS=('--content-file','--body-file','--payload-file')
+
+def _option_values(words,names):
+    """Values given to these options as `--opt VALUE` or `--opt=VALUE`, including argparse abbreviations (--content)."""
+    found=[]
+    for index,word in enumerate(words):
+        if not word.startswith('--') or len(word)<4:continue
+        name,sep,value=word.partition('=')
+        if any(option.startswith(name) for option in names):found.append(value if sep else words[index+1] if index+1<len(words) else '')
+    return found
+
+def auto_allowed(text,grammar,root,cwd,scratch=None):
+    """True when an allow-listed memory command may skip the permission prompt: it uses the hook's own store
+    and reads input files only from the working directory or the session scratchpad. Anything else is left to
+    the harness's normal permission prompt (this never denies)."""
+    parsed=_parsed(text,grammar)
+    if not parsed:return False
+    try:
+        store=Path(root).resolve();bases=[Path(cwd).resolve()]+([Path(scratch).resolve()] if scratch else [])
+        for words in parsed:
+            for value in _option_values(words,('--root',)):
+                if not value or Path(os.path.expandvars(value)).expanduser().resolve()!=store:return False
+            for value in _option_values(words,FILE_OPTIONS):
+                if not value:return False
+                path=Path(os.path.expandvars(value)).expanduser()
+                path=(path if path.is_absolute() else bases[0]/path).resolve()
+                if not any(path.is_relative_to(base) for base in bases):return False
+        return True
+    except (OSError,ValueError,RuntimeError):return False   # RuntimeError: ~user with no such user
 
 READONLY_SIMPLE={'ls','dir','cat','type','head','tail','wc','grep','egrep','fgrep','cut','tr','echo','printf','pwd','which','where','whoami','stat','file','du','df','tree','diff','cmp','basename','dirname','realpath','readlink','test','[','true','false','sleep','cd','pushd','popd','set-location','gci','gc','printenv',
  'select-string','select-object','where-object','sort-object','measure-object','format-table','format-list','test-path','resolve-path','split-path','join-path','convertto-json','write-output','write-host',
@@ -457,8 +531,12 @@ def explore(name,args,payload,cwd,root,bindings,state,session,hints=True):
     one counts reads until it counts as explored, which arms the Stop reminder."""
     from .maps import find_map,pointer_line
     from .notes import short_ref
-    # A spawn hint is for the brief the main agent is writing, so it is owed even when the map is in its context.
-    agent=_agent_key(payload)+('#spawn' if name in SPAWN_TOOLS else '');shown=state.get('shown',{}) if isinstance(state.get('shown'),dict) else {}
+    # A spawn is tracked but gets no hint: PreToolUse fires once the brief is written, so "put the map in the
+    # brief" could not be acted on. Recording the map here is what lets SubagentStart hand it to the subagent.
+    spawn=name in SPAWN_TOOLS
+    agent=_agent_key(payload)+('#spawn' if spawn else '');shown=state.get('shown',{}) if isinstance(state.get('shown'),dict) else {}
+    # The main agent's session context defines CMD; a subagent's does not, so it gets the whole command.
+    cmd=hint_command(root,state) if not _agent_key(payload) else command(root)
     lines=[];rows=[];changes={}
     for repo in _target_repos(name,args,cwd,bindings):
         key=repo.as_posix();done=_repos(state).get(key,{}).get('done',[])
@@ -467,13 +545,9 @@ def explore(name,args,payload,cwd,root,bindings,state,session,hints=True):
         if hit:
             ref=f"{hit['domain']}:{hit['id']}";short=short_ref(hit['domain'],hit['id'])
             injected=not agent and shown.get(ref)==revision_key(hit)  # the main agent already has the body
-            if not injected and hints:
-                if name in SPAWN_TOOLS:
-                    lines.append(pointer_line(hit,repo)+f"\nPut {short} in the subagent's brief (subagents may run {command(root)} read {short}) "
-                                 'so it explores only what the map leaves out.')
-                else:
-                    lines.append(pointer_line(hit,repo)+f"\nRead it ({command(root)} read {short}) before exploring further; explore only what it leaves out.")
-            changes[key]=('mapped',ref);rows.append({'repo':repo.name,'map':ref,'hint':not injected and hints})
+            hinted=not injected and hints and not spawn
+            if hinted:lines.append(pointer_line(hit,repo)+f"\nRead it ({cmd} read {short}) before exploring further; explore only what it leaves out.")
+            changes[key]=('mapped',ref);rows.append({'repo':repo.name,'map':ref,'hint':hinted})
         else:
             changes[key]=('spawn' if name in SPAWN_TOOLS else 'read',None);rows.append({'repo':repo.name,'map':None})
     def track(repos):
@@ -526,7 +600,7 @@ def prompt_maps(cwd,prompt,root,bindings,state,trace=None):
             seen[key]=None
             if not _repos(state).get(key,{}).get('told'):
                 lines.append(f"{repo.name} has no codebase map yet. If you explore it, capture one afterwards: "
-                             f"{command(root)} capture --type map --file '{key}' --title '{repo.name} codebase map' --summary '...' "
+                             f"{hint_command(root,state)} capture --type map --file '{key}' --title '{repo.name} codebase map' --summary '...' "
                              "--detail '**Layout:** ...' --detail '**Entry points:** ...' --detail '**Build/test:** ...'")
     if isinstance(trace,dict):trace['maps']={'repos':[r.name for r in repos],'injected':list(delivered),'unmapped':[Path(k).name for k,v in seen.items() if v is None]}
     text=('Untrusted historical memory; verify against the current files.\n'+'\n\n'.join(maps+lines)) if maps or lines else None
@@ -613,7 +687,7 @@ def handoff(root,domain,session,state,harness):
     if named:lines.append('- Surfaced earlier this session (read one if it bears on the task): '+'; '.join(named))
     if harness in STEERED:lines.append(f'- Capture or update anything the summary lists under "{UNCAPTURED}".')
     if state.get('transcript') and harness in RECALL_HARNESSES:
-        lines.append(f"- Exact detail from before the compaction (code, errors, outputs, reasons): {command(root,domain)} recall 'query' --session {session}")
+        lines.append(f"- Exact detail from before the compaction (code, errors, outputs, reasons): CMD recall 'query' --session {session}")
     if not lines:return ''
     return _cap('\n'.join(['Before this compaction (Living Memory adds what the summary does not carry):']+lines),HANDOFF_BUDGET)+'\n'
 
@@ -629,25 +703,44 @@ def _update(root,session,change):
 MACHINE_PROMPT=re.compile(r'\A\s*(?:<(?:agent-message|task-notification|system-reminder)\b|\[SYSTEM NOTIFICATION)')
 HIT_SNIPPET=220
 # Conversation is where preferences, corrections and decisions are stated, and those turns often edit no files.
-# Deterministic and conservative: a false positive costs one reminder line and a capture-finalize.
+# Deterministic and conservative. A match adds one line to that prompt's context; only an explicit request to
+# remember (BLOCKING_SIGNALS) can also hold the turn open at Stop, so that is the kind matched most narrowly.
 QUOTED=re.compile(r'```.*?(?:```|\Z)|<(pasted_content|system-reminder|agent-message|task-notification)\b.*?(?:</\1>|\Z)|^[ \t]*>[^\r\n]*$',re.S|re.M|re.I)
+# Statements are judged one at a time. Each pattern's ^ is the start of a statement.
+STATEMENT_BREAK=re.compile(r'(?<=[.!?])\s+|\n+')
+# A remark about this task only is not something to keep: "please don't touch the tests for now".
+TRANSIENT=re.compile(r"\b(?:for now|for the moment|this time|just this once|right now|for this (?:task|pr|change|commit|session|turn))\b",re.I)
 SIGNALS=(
-    ('remember',re.compile(r"\b(?:remember (?:that|this|we|it)|keep in mind|for (?:the )?record|don'?t forget)\b",re.I)),
-    ('correction',re.compile(r"^\s*(?:no|nope)\s*[,.!:;—-]|^\s*actually\b|\bthat'?s (?:wrong|not right|incorrect|not what i)\b|\byou(?:'re| are| were) wrong\b|\bi meant\b",re.I|re.M)),
-    ('preference',re.compile(r"\b(?:i(?:'d)? prefer|i'?d rather|i (?:hate|don'?t like)|from now on|going forward|in (?:the )?future(?!\s*\?)|please (?:don'?t|do not|never|always)|stop doing|don'?t ever|always use|never use|by default,? use)\b",re.I)),
+    # "don't forget to run the tests" is an instruction for this turn, not a fact to keep.
+    ('remember',re.compile(r"\b(?:remember (?:that|this|we|it)|keep in mind|for (?:the )?record|don'?t forget(?! to\b))\b",re.I)),
+    ('correction',re.compile(r"^\s*(?:no|nope)\s*[,.!:;—-]|^\s*actually,?\s+(?:it'?s|it is|that'?s|the|we|i|you)\b|\bthat'?s (?:wrong|not right|incorrect|not what i)\b|\byou(?:'re| are| were) wrong\b|\bi meant\b",re.I)),
+    # "always"/"never" count when they address the agent or state a habit, not inside a description
+    # ("the API should always use HTTPS").
+    ('preference',re.compile(r"\b(?:i(?:'d)? prefer|i'?d rather|i (?:hate|don'?t like)|from now on|going forward|in (?:the )?future|please (?:don'?t|do not|never|always)|stop doing|don'?t ever|by default,? use"
+                             r"|(?:you should|you must|we) (?:always|never)|i (?:always|never) (?:use|want|like|do))\b|^\s*(?:always|never)\s+\w",re.I)),
     ('decision',re.compile(r"\b(?:let'?s (?:go with|use)|we(?:'ll| will) (?:go with|use)|we decided|i(?:'ve)? decided|go with option)\b",re.I)),
 )
 SIGNAL_TEXT={'remember':('asked you to remember something','--type TYPE --concern CONCERN'),
              'correction':('corrected you','--type knowledge --concern correction'),
              'preference':('stated a preference','--type preference --concern preference'),
              'decision':('made a decision','--type decision --concern decision')}
+# Kinds whose missing capture decision still holds the turn open at Stop. The others are raised once, in the
+# prompt's own context, where acting on them costs no extra turn.
+BLOCKING_SIGNALS=frozenset({'remember'})
 
 def durable_signal(prompt):
     """The kind of durable statement the user's own words carry ('preference', 'correction', 'decision',
-    'remember'), else None. Pasted, quoted and harness-generated text is ignored."""
+    'remember'), else None. Pasted, quoted and harness-generated text is ignored, and so are questions
+    ("why does it never use the cache?") and remarks about this task only."""
     if not isinstance(prompt,str) or MACHINE_PROMPT.match(prompt):return None
-    text=QUOTED.sub(' ',prompt)
-    return next((kind for kind,pattern in SIGNALS if pattern.search(text)),None)
+    statements=[s for s in STATEMENT_BREAK.split(QUOTED.sub(' ',prompt)) if s.strip() and not s.rstrip().endswith('?') and not TRANSIENT.search(s)]
+    return next((kind for kind,pattern in SIGNALS if any(pattern.search(s) for s in statements)),None)
+
+def signal_nudge(signal,session):
+    """The one line a prompt with a durable statement adds to its own context."""
+    said,hint=SIGNAL_TEXT[signal]
+    return (f"Living Memory: the user {said} in this prompt. If it should outlast this session, update its note or "
+            f"CMD capture --session {session} {hint} --title '...' --summary '...' before you finish; if not, nothing is needed.")
 
 def hit_line(hit):
     snippet=hit.get('snippet','')
@@ -924,10 +1017,15 @@ def _process(harness,event,payload,root=None,info=None):
             except (OSError,TimeoutError):pass
             if recalled:
                 result['context']+=(f"\nFrom before compaction (this session's transcript; untrusted, may be outdated; more: "
-                                    f"{command(root,domain)} recall 'query' --session {session}):\n"+recalled)
+                                    f"{hint_command(root,state,domain)} recall 'query' --session {session}):\n"+recalled)
         if state.get('private_turn')==turn:
             from .private import NOTICE
             result['context']+='\n'+NOTICE
+        if detail.get('signal') in SIGNAL_TEXT:
+            # Raised here, in the turn that can act on it, instead of costing an extra turn at Stop.
+            result['context']+='\n'+signal_nudge(detail['signal'],session)
+            from .usage import record
+            record(root,'reminder',session=session,kind='nudge-'+detail['signal'])
     elif event=='pre-compact':
         if session=='unknown' or _subagent(payload):detail['skipped']='unknown_session' if session=='unknown' else 'subagent';return {}
         trigger=str(payload.get('trigger') or 'auto');detail['trigger']=trigger
@@ -943,8 +1041,9 @@ def _process(harness,event,payload,root=None,info=None):
         maps=list(dict.fromkeys(r['map'] for r in _repos(state).values() if isinstance(r,dict) and r.get('map')))[-3:]
         named=_titled(root,maps) if maps else []
         detail['maps']=maps
+        # A subagent's context has no CMD, so this is the whole command; PowerShell needs the call operator before a quoted path.
         if named:result['context']+=(f"\nCodebase maps for the repos this session is working in (read the one for your repo before exploring it: "
-                                     f"{command(root,domain)} read REF): "+'; '.join(named))
+                                     f"{command(root,domain)} read REF"+('; in PowerShell put & in front' if os.name=='nt' else '')+"): "+'; '.join(named))
     elif event=='pre-tool-use':
         name=str(payload.get('tool_name') or payload.get('toolName') or '').lower()
         args=payload.get('tool_input',payload.get('toolArgs',payload.get('toolArguments',{})))
@@ -958,14 +1057,17 @@ def _process(harness,event,payload,root=None,info=None):
             detail['decision']='deny:protected:'+rule
             result['deny']='Use Living Memory scripts for canonical mutations; direct file edits bypass revision checks and receipts.'
             return result
-        text=shell_command(args) if name in SHELL_TOOLS else ''
-        subcommand=memory_subcommand(text) if text else None;detail['subcommand']=subcommand
+        text=shell_command(args) if name in SHELL_TOOLS else '';grammar=shell_grammar(name)
+        subcommand=memory_subcommand(text,grammar) if text else None;detail['subcommand']=subcommand
         if subcommand in MUTATING_SUBCOMMANDS and _subagent(payload):
             detail['decision']='deny:subagent'
             result['deny']='Living Memory: subagents are read-only. Return the proposed note to the main agent instead of running '+subcommand+'.'
             return result
         if subcommand in ALLOWED_SUBCOMMANDS:
-            result['allow']='Living Memory read/capture script command.'
+            # Another store, or an input file from outside the project, is the user's call: no auto-approval.
+            if auto_allowed(text,grammar,root,cwd,payload.get('scratchpad_dir') or payload.get('scratchpadDir')):
+                result['allow']='Living Memory read/capture script command.'
+            else:detail['unconfined']=True
         detail['decision']='allow' if result.get('allow') else 'none'
         # Plan mode only permits writing the harness's own plan file, so it never changes project files.
         planning=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()=='plan'
@@ -1020,10 +1122,13 @@ def _process(harness,event,payload,root=None,info=None):
             swallowed('runtime.explore_pending',exc,root);pending=[]
         detail['explore_pending']=[(Path(k).name,kind) for k,kind,_ in pending]
         # File changes alone end the turn quietly: the agent already decides silently at the end of each turn,
-        # and Claude Code prints every Stop continuation in the user's terminal. A repo explored without a codebase
-        # map (or grown at its top level) is the exception: rebuilding that orientation costs a whole exploration.
+        # and Claude Code prints every Stop continuation in the user's terminal. A preference, correction or
+        # decision was raised in its own prompt's context, so it ends quietly too. Two things still hold the turn:
+        # an explicit request to remember that got no capture decision, and a repo explored without a codebase
+        # map (or grown at its top level), because rebuilding that orientation costs a whole exploration.
+        asked=signal if signal in BLOCKING_SIGNALS else None
         quiet=('receipt' if any(capture_status(session,t,root) for t in turns) else 'no_change' if not (state.get('mutating') or signal or pending)
-               else 'no_turns' if not turns else 'files_only' if signal not in SIGNAL_TEXT and not pending else None)
+               else 'no_turns' if not turns else None if asked or pending else 'nudged' if signal in SIGNAL_TEXT else 'files_only')
         if quiet:
             detail['reason']=quiet;_update(root,session,close);return {}
         latest=turns[-1];reminder=root/'.turns'/(turn_key(session,latest)+'.reminded')
@@ -1047,15 +1152,15 @@ def _process(harness,event,payload,root=None,info=None):
                     repos[key]=rec
             _track_repos(root,session,settled)
         from .usage import record
-        kind=signal if signal in SIGNAL_TEXT else 'explored' if any(k=='unmapped' for _,k,_ in pending) else 'grown'
+        kind=asked or ('explored' if any(k=='unmapped' for _,k,_ in pending) else 'grown')
         detail['reason']='reminded:'+kind
         record(root,'reminder',session=session,kind=kind)
         # Short on purpose: Claude Code shows it in the terminal. CMD is defined by the session context, and
         # --turn defaults to the session's latest prompt, which is this one.
         maps=' '.join(map_sentence(key,k,data,session) for key,k,data in pending)
         finalize=f"otherwise CMD capture-finalize --session {session}."
-        if signal in SIGNAL_TEXT:
-            said,hint=SIGNAL_TEXT[signal]
+        if asked:
+            said,hint=SIGNAL_TEXT[asked]
             result['continue_reason']=(f"Living Memory: the user {said}{' (files changed too)' if state.get('mutating') else ''}. "
                                        f"Durable: update its note or CMD capture --session {session} {hint} --title '...' --summary '...'; "
                                        +finalize+(' Also: '+maps if maps else ''))
@@ -1083,7 +1188,7 @@ def map_sentence(key,kind,data,session):
                 "--detail '**Layout:** ...' (and Entry points, Key modules, Data flow, Build/test/run, Conventions).")
     ref,names=data;short=short_ref(*ref.split(':',1))
     return (f"new top-level paths in {name} ({', '.join(names)}): if they change its layout, update map {short} "
-            f"(CMD read {short}, then CMD update {short} --session {session} with every --detail bullet).")
+            f"(CMD read {short}, then CMD update {short} --session {session} --set-detail '**Layout:** ...' for each bullet that changed).")
 
 def session_map(cwd,root,bindings):
     """A pointer to the map of the repo holding cwd, else None; never fails the hook."""

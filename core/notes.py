@@ -309,7 +309,7 @@ def _cross_similar(title,body,note_type,domain,root):
     globals_=set(global_domains(root));to_global=domain in globals_
     order=lambda d:(0 if d in globals_ else 1 if related(d,domain,root) else 2,d)
     for other in sorted((d for d in domain_folders(root) if d!=domain),key=order):
-        notes=[n for n in inventory(other,root) if n.get('status','active')=='active']
+        notes=[n for n in inventory(other,root) if n.get('status','active')=='active' and not (note_type=='map' and effective_type(n)=='map')]
         similar=similar_title(title,notes) if notes else None
         if not similar:continue
         if other in globals_ or related(other,domain,root):return 'visible',other,similar
@@ -361,9 +361,12 @@ def capture(title,body,tags,domain,root=None,**metadata):
             if note['title'].casefold()==title.strip().casefold() and note['body'].strip()==body.strip():
                 if effective_type(note)!=selected_type:raise ValueError('Existing note has a different type; update that note instead')
                 return {'ok':True,'id':note['id'],'status':'duplicate','path':note['path']}
+        # A map is one per repo, enforced by its repo folder (maps.capture_conflict below). Every map is titled
+        # "<repo> codebase map", so comparing map titles would refuse the second repo's map as a duplicate.
+        other_map=lambda n:selected_type=='map' and effective_type(n)=='map'
         if not allow_similar:
             replaced=set(supersedes)
-            similar=similar_title(title,[n for n in existing if n.get('status','active')=='active' and n['id'] not in replaced])
+            similar=similar_title(title,[n for n in existing if n.get('status','active')=='active' and n['id'] not in replaced and not other_map(n)])
             if similar:
                 ref=f"{domain}:{similar['id']}"
                 raise ValueError(f"possible_duplicate conflict: similar to {ref} \"{similar['title']}\". If it is the same subject, "
@@ -412,7 +415,7 @@ def capture(title,body,tags,domain,root=None,**metadata):
         result.update(id=note['id'],domain=domain,status='created',path=str(path))
         hint=None if domain in global_domains(root) else scope_hint(note)
         if hint:result['scope_hint']={'reason':hint,'next':f'If this holds beyond this project, run `promote-plan {domain}:{note["id"]}`.'}
-        near=near_titles(title,[n for n in existing if n.get('status','active')=='active' and n['id'] not in set(supersedes)])
+        near=near_titles(title,[n for n in existing if n.get('status','active')=='active' and n['id'] not in set(supersedes) and not other_map(n)])
         if near:result['similar']=[{'ref':f"{domain}:{n['id']}",'title':n['title']} for n in near]
         warnings=quality_warnings(note)
         if warnings:result['quality_warnings']=warnings
@@ -456,6 +459,11 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
             # Updating a time-sensitive note makes it current again.
             review=default_review_by(note['type'])
             if review:note['review_by']=review
+        if note['type']=='map' and note.get('status','active')=='active' and ('type' in values or 'files' in values):
+            # One map per repo holds for updates too: retyping a note, or pointing a map at another repo, must not make a second one.
+            from .maps import capture_conflict
+            conflict=capture_conflict(clean_files(note.get('files')),domain,root,read_json(root/'bindings.json',{}),{note['id']})
+            if conflict:raise ValueError(conflict)
     elif action=='confirm':
         # "Still true": a dated confirmation and a fresh review date, without touching content or `updated`.
         if note.get('status','active')!='active':raise ValueError('Only active notes can be confirmed')
@@ -469,8 +477,9 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
             from datetime import timedelta
             note['review_by']=(date.today()+timedelta(days=STALE_DAYS)).isoformat()
     elif action in {'resolve','reopen'}:
-        if action=='resolve' and (note['type']!='bug' or note.get('status')!='active'):raise ValueError('Only active bug notes may be resolved')
-        if action=='reopen' and (note['type']!='bug' or note.get('status')!='resolved'):raise ValueError('Only resolved bug notes may be reopened')
+        # Notes that track work (plan, bug, risk) are resolved when the work is finished; other types are archived by plan.
+        if action=='resolve' and (note['type'] not in ACTION_TYPES or note.get('status')!='active'):raise ValueError('Only active plan, bug and risk notes may be resolved')
+        if action=='reopen' and (note['type'] not in ACTION_TYPES or note.get('status')!='resolved'):raise ValueError('Only resolved plan, bug and risk notes may be reopened')
         note['status']='resolved' if action=='resolve' else 'active'
         folder=root/'domains'/domain/('archive' if action=='resolve' else 'notes')
     elif action in {'archive','supersede'}:
@@ -599,6 +608,9 @@ def check_action(note_id,domain,root=None,item=None,index=None,done=True):
             return {'ok':True,'id':note['id'],'status':'unchanged','item':items[chosen][1],'done':done}
         result=change(note['id'],domain,'update',root,note['revision'],body=set_action(note['body'],chosen,done))
         result.update(item=items[chosen][1],index=chosen+1,done=done,open=sum(1 for d,_ in action_items(find_note(note['id'],domain,root)[1]['body']) if not d))
+        if done and not result['open']:
+            ref=short_ref(domain,note['id'])
+            result['hint']=f'Every Action Item is done. If the work is finished, run `resolve {ref}` so the note leaves the active set; if not, add the next step with `update {ref} --add-action`.'
         return result
 
 def main(argv=None):

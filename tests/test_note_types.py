@@ -71,7 +71,7 @@ class NoteTypes(StoreFixture):
             self.assertEqual((note['type'],note['prefix'],note['status']),('bug','BUG',status))
             self.assertEqual(path.parent.name,directory)
         regular=self.note('Regular','A general fact')
-        with self.assertRaisesRegex(ValueError,'Only active bug'):
+        with self.assertRaisesRegex(ValueError,'Only active plan, bug and risk'):
             change(regular['id'],'demo','resolve',self.root,plan_only=True)
 
     def test_type_update_is_reviewed_and_preserves_identity(self):

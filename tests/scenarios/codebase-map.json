@@ -26,7 +26,7 @@
   {"hook": "stop", "expect": {"stop_reason": "no_change", "reminder": null}},
   {"hook": "user-prompt", "payload": {"prompt": "look into the runtime"}},
   {"hook": "pre-tool-use", "payload": {"tool_name": "Agent", "tool_input": {"description": "Explore runtime", "prompt": "Map the suite plugin runtime"}},
-   "expect_by_harness": {"claude": {"context_contains": ["subagent's brief", "{short:@suitemap}"]}, "codex": {"context_contains": ["subagent's brief"]}}},
+   "expect": {"context_excludes": ["subagent's brief", "Codebase map for"]}},
   {"hook": "subagent-start", "payload": {"agent_id": "sub1", "agent_type": "Explore"}, "expect": {"context_contains": ["{short:@suitemap}"]}},
   {"hook": "pre-tool-use", "payload": {"tool_name": "Read", "tool_input": {"file_path": "{project}/suite-plugin/runtime/cli.py"}, "agent_id": "sub1"},
    "expect_by_harness": {"claude": {"context_contains": ["Codebase map for suite-plugin"]}, "codex": {"context_contains": ["Codebase map for suite-plugin"]}}},

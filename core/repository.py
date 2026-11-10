@@ -293,6 +293,59 @@ def serialize(note):
     return "---\n" + front + "\n---\n\n" + TITLE_MARK + title + "\n\n" + body + "\n"
 
 
+# Parsed notes this process has already read, per canonical directory: {directory: {path: (mtime_ns, size, note)}}.
+# One command scans a domain several times (search, duplicate checks, the index rebuild, session context), and
+# a long-lived `serve` process scans it on every request; re-reading and re-hashing every file each time made
+# latency grow with the store. A file is re-read whenever its size or modification time differs.
+_PARSED = {}
+# A file changed this recently is not remembered: where timestamps are coarse, a second change could look the same.
+SETTLE_NS = 2_000_000_000
+
+
+def _note_files(root, directory):
+    """[(path, stat)] for the Markdown files under a canonical directory, in path order.
+
+    Every directory is checked with confined() and every entry for being a symbolic link, which keeps what
+    confined() guaranteed per file (no link anywhere between the store root and the note) at one check per
+    directory, using the listing's own data for each file."""
+    found = []
+    pending = [directory]
+    while pending:
+        current = pending.pop()
+        confined(root, current.relative_to(root))
+        with os.scandir(current) as entries:
+            for entry in entries:
+                if entry.is_symlink():
+                    raise ValueError("Symbolic links are not allowed in the store")
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(Path(entry.path))
+                elif os.path.normcase(entry.name).endswith(".md"):
+                    found.append((Path(entry.path), entry.stat(follow_symlinks=False)))
+    return sorted(found, key=lambda item: item[0])
+
+
+def _remembered(directory, files):
+    """[(path, note or None)] for these files, parsing only those not already read at this size and time."""
+    import time
+    known = _PARSED.get(str(directory), {})
+    current = {}
+    notes = []
+    for path, stat in files:
+        key = str(path)
+        hit = known.get(key)
+        if hit and hit[0] == stat.st_mtime_ns and hit[1] == stat.st_size:
+            current[key] = hit
+            note = hit[2]
+        else:
+            note = parse(path)
+            if time.time_ns() - stat.st_mtime_ns > SETTLE_NS:
+                current[key] = (stat.st_mtime_ns, stat.st_size, note)
+        # Callers change the notes they are given, so each gets its own copy.
+        notes.append((path, {k: (v.copy() if isinstance(v, (list, dict)) else v) for k, v in note.items()} if note is not None else None))
+    _PARSED[str(directory)] = current
+    return notes
+
+
 def _scan(domain, root=None, retired=False):
     """Notes plus problems. A bad file is reported, never allowed to hide or break the domain."""
     from .common import canonical_domain
@@ -307,9 +360,9 @@ def _scan(domain, root=None, retired=False):
     for directory in directories:
         if directory.is_symlink():
             raise ValueError("Canonical directory cannot be a symbolic link")
-        for path in sorted(directory.rglob("*.md")):
-            confined(root, path.relative_to(root))
-            note = parse(path)
+        if not directory.is_dir():
+            continue
+        for path, note in _remembered(directory, _note_files(root, directory)):
             rel = path.relative_to(root).as_posix()
             if note is None:
                 found.append({"path": rel, "problem": "unreadable frontmatter"})
@@ -348,8 +401,8 @@ def validate(note, domain, root=None, new=False, extra_tags=()):
         prefix = prefix_for(note.get('type'), legacy=not new)
         if note.get('schema_version') != 3 or note.get('prefix') != prefix:
             raise ValueError('Prefix must be derived from type; use capture or the note-type-plan migration')
-        if note.get('status') == 'resolved' and note['type'] != 'bug':
-            raise ValueError('Only bug notes may have resolved status')
+        if note.get('status') == 'resolved' and note['type'] not in ('plan', 'bug', 'risk'):
+            raise ValueError('Only plan, bug and risk notes may have resolved status')
         if note.get('path'):
             from .notes import slug
             expected = f"{prefix} - {slug(note['title'])}-{note['id'][:8]}.md"
@@ -413,6 +466,31 @@ def _write(path, data):
         os.chmod(path, mode)
 
 
+def _fold_case_renames(root, changes, expected):
+    """(changes, expected, renames) with each "delete Note.md + write note.md" pair that names ONE file reduced
+    to the write. On a case-insensitive filesystem the two spellings are the same file, so writing the new text
+    and then deleting the old name would delete the note. renames lists (old, new) so the file can take the new
+    spelling; the old name's expected revision carries over to the new one."""
+    changes = dict(changes)
+    expected = dict(expected) if expected is not None else None
+    renames = []
+    for old in [rel for rel, content in changes.items() if content is None]:
+        for new in [rel for rel, content in changes.items() if content is not None]:
+            if str(old) == str(new) or str(old).casefold() != str(new).casefold():
+                continue
+            try:
+                same = os.path.samefile(root / old, root / new)
+            except OSError:
+                same = False
+            if same:
+                del changes[old]
+                renames.append((old, new))
+                if expected is not None and str(old) in expected:
+                    expected.setdefault(str(new), expected.pop(str(old)))
+                break
+    return changes, expected, renames
+
+
 def transaction(root, changes, kind, expected=None, operation_id=None, skip_unchanged=False):
     """Durable intent precedes every write. Recovery accepts only known states.
 
@@ -424,6 +502,7 @@ def transaction(root, changes, kind, expected=None, operation_id=None, skip_unch
         raise ValueError("Invalid operation ID")
     journal_path = root / ".operations" / operation_id / "journal.json"
     with store_lock(root):
+        changes, expected, renames = _fold_case_renames(root, changes, expected)
         if journal_path.exists():
             journal = read_json(journal_path)
             if journal["kind"] != kind:
@@ -449,6 +528,9 @@ def transaction(root, changes, kind, expected=None, operation_id=None, skip_unch
         journal = {"schema": 1, "id": operation_id, "kind": kind, "created": now(), "state": "prepared", "effects": effects}
         atomic_write(journal_path, canonical_json(journal))
         atomic_write(journal_path.with_name(PENDING), "pending\n")
+        for old, new in renames:
+            # Same file, new spelling: the content is untouched, so an interruption here loses nothing.
+            retry_sharing(lambda: os.rename(root / old, root / new))
         return recover(root, operation_id, "forward")
 
 
@@ -456,6 +538,33 @@ PENDING = "pending"
 # Journals of regenerated vault views and sync bookkeeping. Nothing undoes them, so old ones only take space.
 # Journals of note edits (including overlay_capture, overlay_auto_update, overlay_delete) are never pruned.
 BOOKKEEPING_KINDS = frozenset({"overlay_sync", "overlay_state", "overlay_views"})
+
+
+FINAL_STATES = frozenset({"committed", "rolled_back", "abandoned"})
+# canonical_json sorts keys, and "state" sorts last, so a journal ends with its state.
+_TAIL_STATE = re.compile(rb'"state":"([a-z_]+)"\}\s*$')
+
+
+def unfinished_operations(root):
+    """(IDs of operations that never reached a final state, IDs whose journal cannot be read).
+
+    Only the last bytes of each journal are read. A store keeps every note-edit journal, with the notes'
+    before and after text inside, so parsing them all made each health check slower with every write."""
+    pending, unreadable = [], []
+    for path in sorted(Path(root).glob(".operations/*/journal.json")):
+        state = None
+        try:
+            with path.open("rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                handle.seek(max(0, handle.tell() - 64))
+                match = _TAIL_STATE.search(handle.read())
+            state = match[1].decode() if match else read_json(path)["state"]
+        except (OSError, ValueError, KeyError, TypeError):
+            unreadable.append(path.parent.name)
+            continue
+        if state not in FINAL_STATES:
+            pending.append(path.parent.name)
+    return pending, unreadable
 
 
 def prune_journals(root, days=14, kinds=BOOKKEEPING_KINDS):
