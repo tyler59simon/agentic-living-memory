@@ -413,6 +413,31 @@ def _write(path, data):
         os.chmod(path, mode)
 
 
+def _fold_case_renames(root, changes, expected):
+    """(changes, expected, renames) with each "delete Note.md + write note.md" pair that names ONE file reduced
+    to the write. On a case-insensitive filesystem the two spellings are the same file, so writing the new text
+    and then deleting the old name would delete the note. renames lists (old, new) so the file can take the new
+    spelling; the old name's expected revision carries over to the new one."""
+    changes = dict(changes)
+    expected = dict(expected) if expected is not None else None
+    renames = []
+    for old in [rel for rel, content in changes.items() if content is None]:
+        for new in [rel for rel, content in changes.items() if content is not None]:
+            if str(old) == str(new) or str(old).casefold() != str(new).casefold():
+                continue
+            try:
+                same = os.path.samefile(root / old, root / new)
+            except OSError:
+                same = False
+            if same:
+                del changes[old]
+                renames.append((old, new))
+                if expected is not None and str(old) in expected:
+                    expected.setdefault(str(new), expected.pop(str(old)))
+                break
+    return changes, expected, renames
+
+
 def transaction(root, changes, kind, expected=None, operation_id=None, skip_unchanged=False):
     """Durable intent precedes every write. Recovery accepts only known states.
 
@@ -424,6 +449,7 @@ def transaction(root, changes, kind, expected=None, operation_id=None, skip_unch
         raise ValueError("Invalid operation ID")
     journal_path = root / ".operations" / operation_id / "journal.json"
     with store_lock(root):
+        changes, expected, renames = _fold_case_renames(root, changes, expected)
         if journal_path.exists():
             journal = read_json(journal_path)
             if journal["kind"] != kind:
@@ -449,6 +475,9 @@ def transaction(root, changes, kind, expected=None, operation_id=None, skip_unch
         journal = {"schema": 1, "id": operation_id, "kind": kind, "created": now(), "state": "prepared", "effects": effects}
         atomic_write(journal_path, canonical_json(journal))
         atomic_write(journal_path.with_name(PENDING), "pending\n")
+        for old, new in renames:
+            # Same file, new spelling: the content is untouched, so an interruption here loses nothing.
+            retry_sharing(lambda: os.rename(root / old, root / new))
         return recover(root, operation_id, "forward")
 
 
