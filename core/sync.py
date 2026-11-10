@@ -38,7 +38,8 @@ TEMPLATE_PROMPTS={
     'risk':'Possible problem: trigger, impact, mitigation and owner if known.',
     'research':'Question, sources or experiments, observations vs inference, open questions.',
     'policy':'The mandatory rule, its authority and where it applies.',
-    'map':'A repo orientation: purpose, layout, entry points, key modules, data flow, build/test/run, conventions.'}
+    'map':'A repo orientation: purpose, layout, entry points, key modules, data flow, build/test/run, conventions.',
+    'runbook':'An operational procedure: when to use it, preconditions, numbered steps, how to verify, how to roll back.'}
 
 def _hash(path):
     try:return digest(path.read_bytes())

@@ -65,14 +65,14 @@ def _file_flags(p):
     p.add_argument('--files',choices=['auto','none'],help="auto: add the files changed this turn (needs --session); none: clear the list")
 
 FACET_FLAGS=('subject','concern','platform','technology')
-CAPTURE_FACETS=FACET_FLAGS+('project',)
+CAPTURE_FACETS=FACET_FLAGS+('project','system')
 def _facet_tags(args,facets=FACET_FLAGS):
     """--subject x and --subject subject/x both mean subject/x."""
     return [v if v.startswith(f+'/') else f+'/'+v for f in facets for v in (getattr(args,f) or [])]
 
 # Defaults when a capture names no subject/ or concern/ tag; used only if the tag is in the taxonomy.
 SUBJECT_BY_TYPE={'preference':'subject/user'}
-CONCERN_BY_TYPE={'decision':'concern/decision','preference':'concern/preference','bug':'concern/bug','knowledge':'concern/knowledge','policy':'concern/workflow','map':'concern/architecture'}
+CONCERN_BY_TYPE={'decision':'concern/decision','preference':'concern/preference','bug':'concern/bug','knowledge':'concern/knowledge','policy':'concern/workflow','map':'concern/architecture','runbook':'concern/workflow'}
 def _infer_tags(item,root):
     from .notes import taxonomy
     known=taxonomy(root);tags=list(item.get('tags') or []);kind=item.get('type') or 'knowledge';added=[]
@@ -141,6 +141,9 @@ def doctor(root,cwd,explicit=None,domain=None):
     from .projects import listing
     try:warnings+=['projects: '+w for w in listing(root)['warnings']]
     except ValueError as exc:warnings.append(f'projects.json: {exc}')
+    from .systems import listing as systems_listing
+    try:warnings+=['systems: '+w for w in systems_listing(root)['warnings']]
+    except ValueError as exc:warnings.append(f'systems.json: {exc}')
     stale=staleness_warning(root,sum(counts.values()))
     if stale:warnings.append(stale)
     from .logs import summary as log_summary
@@ -210,7 +213,7 @@ def _sectioned(args,body=''):
     from .note_format import render
     return render(args.summary or '',args.detail or (),args.link or (),args.action or (),args.done or (),args.important or '',body)
 
-READ_ONLY={'search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects'}
+READ_ONLY={'search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems'}
 # Viewer: a human-facing app browsing the store. Read-only, and its reads are not usage evidence for the diary.
 VIEWER=READ_ONLY|{'taxonomy','review','diff','inspect-plan'}
 SERVE_API=2
@@ -397,6 +400,8 @@ def main(argv=None):
     p=sub('taxonomy')
     p=sub('project-plan');p.add_argument('action',choices=['create','update','archive']);p.add_argument('--payload-file',type=Path)
     p=sub('projects');p.add_argument('--status',choices=['active','paused','archived','any'],default='any')
+    p=sub('system-plan');p.add_argument('action',choices=['create','update','retire']);p.add_argument('--payload-file',type=Path)
+    p=sub('systems');p.add_argument('--status',choices=['active','deprecated','retired','any'],default='any')
     p=sub('batch');p.add_argument('--payload-file',type=Path)
     p=sub('retag-plan');p.add_argument('--payload-file',type=Path)
     p=sub('remap-plan');p.add_argument('--payload-file',type=Path)
@@ -498,6 +503,10 @@ def main(argv=None):
                     from . import projects
                     ptags,candidates=projects.infer(item,selected,root,_session_state(root,session).get('touched',[]) if session else (),cwd if session else None)
                     if ptags:item['tags']=list(item.get('tags') or [])+ptags;inferred=inferred+ptags
+                    # System attribution follows the same rules; a note may belong to a project and a system.
+                    from . import systems
+                    stags,system_candidates=systems.infer(item,selected,root,_session_state(root,session).get('touched',[]) if session else (),cwd if session else None)
+                    if stags:item['tags']=list(item.get('tags') or [])+stags;inferred=inferred+stags
                     if session:
                         from .private import check as private_check
                         private_check(_session_state(root,session),item);item['origin']=_origin(root,session)
@@ -506,6 +515,7 @@ def main(argv=None):
                     landed=outcome.get('domain') or selected
                     if inferred:outcome['inferred_tags']=inferred
                     if candidates:outcome['project_candidates']=candidates
+                    if system_candidates:outcome['system_candidates']=system_candidates
                     if redacted:outcome['redacted']=redacted
                     suggested=[t for t in _session_state(root,session).get('touched',[]) if t not in (item.get('files') or [])] if session else []
                     if suggested and outcome.get('status')=='created':outcome['suggested_files']=suggested
@@ -775,6 +785,13 @@ def main(argv=None):
             result['hint']='Review with inspect-plan PLAN_ID, then apply PLAN_ID --expected-plan-sha256 DIGEST.'
         elif cmd=='projects':
             from .projects import listing
+            result=listing(root,args.status)
+        elif cmd=='system-plan':
+            from .systems import system_plan
+            result=system_plan(root,args.action,_payload(args))
+            result['hint']='Review with inspect-plan PLAN_ID, then apply PLAN_ID --expected-plan-sha256 DIGEST.'
+        elif cmd=='systems':
+            from .systems import listing
             result=listing(root,args.status)
         elif cmd=='taxonomy':result=read_json(root/'tag_taxonomy.json',{'tags':[]})
         elif cmd=='batch':

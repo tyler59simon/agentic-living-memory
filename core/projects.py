@@ -42,23 +42,34 @@ def resolve_file(value,domain,root):
     return [str(prefix/value) for prefix in domain_prefixes(domain,load_bindings(root))]
 
 def infer(item,domain,root,touched=(),cwd=None):
-    """(project tags to add, candidate slugs) for a capture. The first level that matches wins: the note's files, then this
-    turn's touched files, then cwd (callers pass touched and cwd only for a session capture). More than MAX_AUTO matches
-    add nothing and return the slugs as candidates. Only active projects with a registered tag count; a broken registry infers nothing."""
-    if any(str(t).startswith('project/') for t in item.get('tags') or []):return [],[]
+    """(project tags to add, candidate slugs) for a capture; a broken registry infers nothing. See infer_tags."""
     try:registry=load(root)['projects']
     except ValueError:return [],[]
+    return infer_tags(item,domain,root,registry,'project',touched,cwd)
+
+def infer_tags(item,domain,root,entries,facet,touched=(),cwd=None):
+    """(facet tags to add, candidate slugs) for a capture, from registry entries (projects or systems). The first level that
+    matches wins: the note's files, then this turn's touched files, then cwd (callers pass touched and cwd only for a session
+    capture). More than MAX_AUTO matches add nothing and return the slugs as candidates. Only active entries with a registered tag count."""
+    if any(str(t).startswith(facet+'/') for t in item.get('tags') or []):return [],[]
     from .notes import taxonomy
-    known=taxonomy(root);eligible=[p for p in registry if p.get('status')=='active' and tag(p['slug']) in known]
+    known=taxonomy(root);eligible=[p for p in entries if p.get('status')=='active' and f"{facet}/{p['slug']}" in known]
     if not eligible:return [],[]
     for level in ([f for v in item.get('files') or [] for f in resolve_file(v,domain,root)],[f for v in touched for f in resolve_file(v,domain,root)],[str(cwd)] if cwd else []):
         found=sorted({m['slug'] for m in (match_path(f,eligible) for f in level) if m})
-        if found:return ([tag(s) for s in found],[]) if len(found)<=MAX_AUTO else ([],found)
+        if found:return ([f'{facet}/{s}' for s in found],[]) if len(found)<=MAX_AUTO else ([],found)
     return [],[]
 
 def _text(value,field,low,high):
     if not isinstance(value,str) or not low<=len(value.strip())<=high:raise ValueError(f'{field} must be {low}..{high} characters')
     return value.strip()
+
+def _repos(repos):
+    """Validated repo folders: at most 10 absolute paths, forward slashes, no trailing slash, no duplicates."""
+    if not isinstance(repos,list) or len(repos)>10 or any(not isinstance(r,str) or not r.strip() for r in repos):raise ValueError('repos must be a list of at most 10 absolute folder paths')
+    if any(not Path(r).is_absolute() for r in repos):raise ValueError('repos must be absolute paths')
+    fixed=[r.replace('\\','/') for r in repos];fixed=[r.rstrip('/') if len(r.rstrip('/'))>2 else r for r in fixed]
+    return list(dict.fromkeys(fixed))
 
 def _clean(values,base):
     """Validated registry fields from a payload's values, layered over base (an entry)."""
@@ -68,12 +79,7 @@ def _clean(values,base):
     if 'status' in values:
         if values['status'] not in STATUSES:raise ValueError('status must be one of '+', '.join(STATUSES))
         entry['status']=values['status']
-    if 'repos' in values:
-        repos=values['repos']
-        if not isinstance(repos,list) or len(repos)>10 or any(not isinstance(r,str) or not r.strip() for r in repos):raise ValueError('repos must be a list of at most 10 absolute folder paths')
-        if any(not Path(r).is_absolute() for r in repos):raise ValueError('repos must be absolute paths')
-        fixed=[r.replace('\\','/') for r in repos];fixed=[r.rstrip('/') if len(r.rstrip('/'))>2 else r for r in fixed]
-        entry['repos']=list(dict.fromkeys(fixed))
+    if 'repos' in values:entry['repos']=_repos(values['repos'])
     if 'aliases' in values:
         aliases=values['aliases'] or []
         if not isinstance(aliases,list) or len(aliases)>5:raise ValueError('aliases must be a list of at most 5 strings')
@@ -114,7 +120,7 @@ def project_plan(root,action,payload):
             note_id=str(uuid.uuid4());title=charter.get('title') or f"{entry['name']} charter"
             if not isinstance(title,str):raise ValueError('charter.title must be a string')
             changes={};added=tag(slug) not in known
-            if added:changes['tag_taxonomy.json']=content([tag(slug)],root,allow_project=True)[0]
+            if added:changes['tag_taxonomy.json']=content([tag(slug)],root,allow_managed=True)[0]
             path,note,text=build_note(title,charter['body'],['subject/project','concern/knowledge',tag(slug)],domain,root,'context',note_id=note_id,extra_tags=[tag(slug)])
             entry['charter']=f'{domain}:{note_id}'
             changes['projects.json']=_registry(others+[entry]);changes[path.relative_to(root).as_posix()]=text
@@ -124,11 +130,11 @@ def project_plan(root,action,payload):
         entry=_clean(values,current);entry['updated']=stamp
         return plan(root,{'projects.json':_registry(others+[entry])},'project_'+action,[],{'slug':slug,'fields':sorted(values),'files':1})
 
-def _charter_domain(root,named,repos):
+def _charter_domain(root,named,repos,field='charter.domain'):
     """The charter's domain: the one named (must exist), else the repo's bound domain, else the global domain."""
     if named:
         name=canonical_domain(named,root)
-        if name not in load_bindings(root).get('domains',{}) and not (Path(root)/'domains'/name).is_dir() and name!=global_domain(root):raise ValueError(f'charter.domain {named} is not a bound domain')
+        if name not in load_bindings(root).get('domains',{}) and not (Path(root)/'domains'/name).is_dir() and name!=global_domain(root):raise ValueError(f'{field} {named} is not a bound domain')
         return name
     found=resolve_domain(repos[0],load_bindings(root)) if repos else None
     return canonical_domain(found,root) if found else global_domain(root)

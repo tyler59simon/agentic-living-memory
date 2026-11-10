@@ -247,6 +247,11 @@ def retag_plan(root,mappings,domains=None):
         from .projects import load
         missing=[s for s in wanted if s not in {p['slug'] for p in load(root)['projects']}]
         if missing:raise ValueError('Unregistered project tags: '+', '.join('project/'+s for s in missing)+'; create projects with project-plan')
+    wanted=sorted({t.split('/',1)[1] for t in mappings.values() if t.startswith('system/')})
+    if wanted:
+        from .systems import load
+        missing=[s for s in wanted if s not in {x['slug'] for x in load(root)['systems']}]
+        if missing:raise ValueError('Unregistered system tags: '+', '.join('system/'+s for s in missing)+'; create systems with system-plan')
     with store_lock(root):
         # The taxonomy is store-wide, so a retag must cover every domain directory
         # (including _global and domains no longer bound), or it strands other notes.
