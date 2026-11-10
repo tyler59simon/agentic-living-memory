@@ -40,7 +40,7 @@ ROOT_DOCUMENTS = (
     "OBSIDIAN.md", "PDF.md", "TAGGING.md", "VALIDATION.md", "AGENTS.md",
     "bindings.example.json", "tag_taxonomy.example.json", "install.py",
     "new_note.py", "resolve_note.py", "living_memory.py", "PROTOCOL.md",
-    "ARCHITECTURE.md", "SCRIPT_REFERENCE.md", "RECOVERY.md", "NOTE_TYPES.md",
+    "ARCHITECTURE.md", "SCRIPT_REFERENCE.md", "RECOVERY.md", "NOTE_TYPES.md", "LEARNING.md",
 )
 SKIP_NAMES = {".git", ".agents", ".codex-plugin", "__pycache__", ".DS_Store"}
 SKIP_SUFFIXES = {".pyc", ".db", ".sqlite", ".sqlite3", ".lock"}

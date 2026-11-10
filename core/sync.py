@@ -312,6 +312,11 @@ def sync(domain,vault,root=None,trigger=None):
                         updated['files']=clean_files(updated['files'])
                         if not updated['files']:updated.pop('files')
                     updated['body']=proposed_note['body'];updated=normalize(updated)
+                    if note.get('learning_procedure'):
+                        from .learning import stage_edit
+                        if updated['body']!=note['body'] or updated['title']!=note['title']:
+                            stage_edit(root,domain,note,dict(title=updated['title'],body=updated['body']))
+                        updated=dict(note)
                     if serialize({**updated,'updated':''})!=serialize({**normalize(note),'updated':''}):
                         updated['updated']=now()
                         canonical_target,changes,expected=_canonical_changes(note,updated,domain,root)

@@ -277,7 +277,7 @@ def clean_files(value):
 
 def serialize(note):
     from .note_format import format_body, TITLE_MARK
-    meta = {k: v for k, v in note.items() if k not in {"body", "path", "digest", "revision"}}
+    meta = {k: v for k, v in note.items() if k not in {"body", "path", "digest", "revision", "learning_state", "learning_pending_edit"}}
     meta["schema_version"] = note.get('schema_version', 2)
     if meta['schema_version'] == 3:
         from .note_types import prefix_for
@@ -381,7 +381,9 @@ def _scan(domain, root=None, retired=False):
 
 
 def inventory(domain, root=None, retired=False):
-    return _scan(domain, root, retired)[0]
+    notes=_scan(domain, root, retired)[0]
+    from .learning import approved_notes
+    return approved_notes(Path(root or memory_root()),domain,notes,actionable=not retired)
 
 
 def problems(domain, root=None):

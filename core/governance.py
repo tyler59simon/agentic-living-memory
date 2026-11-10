@@ -16,7 +16,7 @@ def plan(root, changes, kind, domains=(), summary=None, guards=None):
             expected[rel]=digest(p.read_bytes()) if p.exists() else None
         value={'schema':2,'id':uuid.uuid4().hex,'kind':kind,'domains':sorted(set(domains)),
                'created':now(),'changes':changes,'expected':expected,'summary':summary or {'files':len(changes)}}
-        if guards:value['guards']={k:sorted(set(v)) for k,v in guards.items() if v}
+        if guards:value['guards']={k:(v if k in ('read_set','learning_admission') else sorted(set(v))) for k,v in guards.items() if v}
         value['digest']=hashlib.sha256(canonical_json(value).encode()).hexdigest()
         path=root/'.plans'/(value['id']+'.json');atomic_write(path,canonical_json(value))
         return {'ok':True,'plan_id':value['id'],'digest':value['digest'],'kind':kind,'summary':value['summary']}
@@ -30,7 +30,7 @@ def apply(root,plan_id,expected_digest,sync_overlay=True):
         unsigned={k:v for k,v in value.items() if k!='digest'}
         actual=hashlib.sha256(canonical_json(unsigned).encode()).hexdigest()
         if value['digest']!=actual or actual!=expected_digest:raise ValueError('Plan digest mismatch')
-        _check_guards(root,value)
+        if not (root/'.operations'/plan_id/'journal.json').exists():_check_guards(root,value)
         receipt=transaction(root,value['changes'],value['kind'],value['expected'],value['id'])
         for domain in value['domains']:
             try:reconcile(domain,root,sync_overlay=sync_overlay)
@@ -45,6 +45,20 @@ def _check_guards(root,value):
     from .repository import inventory
     guards=value.get('guards') or {}
     if not guards:return
+    for rel,expected in guards.get('read_set',{}).items():
+        path=confined(root,rel)
+        if (digest(path.read_bytes()) if path.exists() else None)!=expected:
+            raise ValueError('stale plan: learning dependency changed: '+rel)
+    admission=guards.get('learning_admission')
+    if admission:
+        for note in inventory(admission['domain'],root,retired=True):
+            if note['title'].casefold()==admission['title'].casefold() and note.get('learning_procedure')!=admission['procedure_id']:
+                raise ValueError('stale plan: another note now has this procedure title')
+    for item in guards.get('absent_learning_imports',[]):
+        domain,key=item.split(':',1)
+        from .learning import rows
+        if any(r.get('import_key')==key for r in rows(root,domain,'candidates')):
+            raise ValueError('stale plan: learning bundle already imported')
     absent=set(guards.get('absent_ids',[]));unused=set(guards.get('unused_tags',[]))
     folders=sorted(p.name for p in (root/'domains').iterdir() if p.is_dir()) if (root/'domains').is_dir() else []
     for domain in folders:
@@ -88,12 +102,14 @@ def merge_plan(root,payload):
     if not isinstance(sources,list) or not 1<=len(sources)<=20 or len(set(sources))!=len(sources):raise ValueError('Merge requires 1..20 distinct source references')
     with store_lock(root):
         target_path,target=find_note(target_id,domain,root)
+        if target.get('learning_procedure'):raise ValueError('Learned procedure changes require candidate review')
         if target.get('status')!='active':raise ValueError('Merge target must be active')
         target['body']=payload['body'].strip();target['updated']=now();changes={};merged=[];moves={}
         for ref in sources:
             source_domain,identity=ref.split(':',1)
             if source_domain!=domain:raise ValueError('Merge sources must be distinct notes in the target domain')
             path,note=find_note(identity,domain,root)
+            if note.get('learning_procedure'):raise ValueError('Learned procedures cannot be merged without candidate review')
             # Compare resolved notes, not spellings: a full ID and its short prefix are the same note.
             if note['id']==target['id'] or note['id'] in merged:raise ValueError('Merge sources must be distinct notes in the target domain')
             if note.get('status')!='active':raise ValueError('Merge sources must be active')

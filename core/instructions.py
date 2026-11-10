@@ -21,14 +21,15 @@ AUTO_MEMORY='Where Living Memory applies, it is the durable memory system: do no
 
 def usage(session='SESSION'):
     """Command shapes shared by the static block (SESSION placeholder) and the full fallback injection."""
-    return ("Search: CMD search 'query'. Read: CMD read REF (short or full ref, or exact title)."
-            f"\nCapture (also records this turn): CMD capture --session {session} [--global] --type TYPE [--concern CONCERN] --title 'Title' --summary 'One or two sentences' [--detail '**Label:** fact' ...] [--link '[[Note]] or URL' ...] [--important 'Critical caveat']"
+    return ("Search: CMD search 'query'. Read: CMD read REF (ref or exact title)."
+            f"\nCapture: CMD capture --session {session} [--global] --type TYPE [--concern CONCERN] --title 'Title' --summary 'One or two sentences' [--detail '**Label:** fact' ...] [--link '[[Note]] or URL' ...] [--important 'Critical caveat']"
             f"\n  Types: {', '.join(NOTE_TYPES)}. Omitted --subject/--concern default from the type. --action/--done add Action Items (plan, bug, risk only)."
             "\n  Notes about files: --files auto (this turn's edits) or --file PATH."
             "\n  Use single quotes, literal in Bash and PowerShell (write ' as '' in PowerShell, '\\'' in Bash). Long body: --content-file FILE."
             f"\nKeep current: CMD update REF --session {session} --set-detail '**Label:** new fact' or --add-detail/--add-link/--add-action '...' (--detail/--link/--action/--body overwrite) [--title '...']; replaced: capture ... --supersedes REF; still true: CMD confirm REF; due notes: CMD review."
             f"\nResuming: CMD open first; tick a done item: CMD check REF 'item' --session {session}; finished: CMD resolve REF."
-            f'\nNo per-turn receipt unless a Stop reminder asks (then: CMD capture-finalize --session {session}).')
+            f'\nNo per-turn receipt unless Stop asks (then: CMD capture-finalize --session {session}).'
+            '\nLearning: CMD learn; review before admission.')
 
 def static_protocol(harness):
     """Machine-independent protocol text for instruction files: no interpreter paths, domains or sessions."""

@@ -4,6 +4,8 @@ A local, harness-independent memory store with canonical Markdown, disposable SQ
 
 See [architecture](ARCHITECTURE.md) for the design, components and known limits.
 
+[Reviewed learning](LEARNING.md) adds explicit task evidence, proposed runbooks, immutable approved versions and outcome feedback. Review candidates in Hivemind or through exact-digest CLI plans. It runs without a background model and does not collect transcripts or automatically admit lessons.
+
 ## Install and use
 
 Python 3.10+ with SQLite FTS5 is required. Python 3.15 is supported; use your selected interpreter for setup and installation. On this Windows installation:

@@ -123,6 +123,8 @@ def doctor(root,cwd,explicit=None,domain=None):
         if directory.is_dir():
             counts[directory.name]=sum(1 for _ in (directory/'notes').rglob('*.md'))+sum(1 for _ in (directory/'archive').rglob('*.md'))
             found=problems(directory.name,root)
+            from .learning import problems as learning_problems
+            found+=learning_problems(root,directory.name)
             if found:unreadable[directory.name]=found
     if (root/'improvement').is_dir():warnings.append('improvement/ holds data from a removed feature; nothing reads it and it is safe to delete')
     warnings+=[f'{name}: {count} notes; capture and freshness checks scale linearly and may slow hooks' for name,count in counts.items() if count>1500]
@@ -374,6 +376,7 @@ def main(argv=None):
     p=sub('timeline');p.add_argument('reference',nargs='?',help='Anchor note; default: the newest note');p.add_argument('--date',help='YYYY-MM-DD: anchor at the first note on or after this date');p.add_argument('--before',type=int,default=5);p.add_argument('--after',type=int,default=5);p.add_argument('--type',choices=NOTE_TYPES,action='append');p.add_argument('--by',choices=['updated','created'],default='updated');p.add_argument('--all',action='store_true',help='Include superseded, archived and resolved notes')
     p=sub('ingest-plan');p.add_argument('--source',type=Path,help="Auto-memory folder; default: Claude Code's folder for --cwd");p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of skipping the file");p.add_argument('--allow-similar',action='store_true')
     p=sub('export');p.add_argument('--out',type=Path,required=True,help='New .zip file, outside the store');p.add_argument('--type',choices=NOTE_TYPES,action='append');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)');p.add_argument('--all',action='store_true',help='Include superseded, archived and resolved notes')
+    p.add_argument('--include-learning',action='store_true',help='Include procedure evidence and history; imports require fresh review')
     p=sub('import-plan');p.add_argument('file',type=Path)
     p=sub('confirm');p.add_argument('reference');p.add_argument('--session');p.add_argument('--turn')
     for name in ('resolve','reopen'):p=sub(name);p.add_argument('reference',help='A plan, bug or risk note');p.add_argument('--session');p.add_argument('--turn')
@@ -409,6 +412,7 @@ def main(argv=None):
     p=sub('recall');p.add_argument('query');p.add_argument('--session',required=True);p.add_argument('--limit',type=int,default=5);p.add_argument('--all',action='store_true',help='Search the whole transcript, not only what precedes the latest compaction')
     p=sub('capture-finalize');p.add_argument('--session',required=True);p.add_argument('--turn',help='Defaults to the latest prompt of the session');p.add_argument('--note',action='append',default=[])
     p=sub('list');p.add_argument('--status',choices=['active','resolved','archived','superseded','any'],default='active');p.add_argument('--type',choices=NOTE_TYPES,action='append');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)');p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--with-summary',action='store_true',help='Add summary, files and actions {open, done} to each row');p.add_argument('--offset',type=int,default=0);p.add_argument('--limit',type=int,default=200)
+    p=sub('learn');p.add_argument('entity',choices=['config','task','attempt','evidence','candidate','procedure','version','use','feedback']);p.add_argument('action');p.add_argument('reference',nargs='?');p.add_argument('--payload-file',type=Path);p.add_argument('--all-domains',action='store_true')
     p=sub('domains')
     p=sub('links');p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--status',choices=['active','any'],default='active',help='any: include archived, resolved and superseded notes')
     p=sub('version')
@@ -447,8 +451,9 @@ def main(argv=None):
             # Snapshots exist to repair a damaged store, so restoring must not depend on readable bindings.
             if cmd not in {'restore-plan','inspect-plan','apply','backup','history'}:raise
             domain=None
-        if args.actor=='subagent' and cmd not in READ_ONLY:raise ValueError('Subagents are read-only; return mutation proposals to the main agent')
-        if args.actor=='viewer' and cmd not in VIEWER:raise ValueError('Viewers are read-only; run changes as --actor main')
+        learning_read=cmd=='learn' and args.action in {'read','list','evaluate','status'}
+        if args.actor=='subagent' and cmd not in READ_ONLY and not learning_read:raise ValueError('Subagents are read-only; return mutation proposals to the main agent')
+        if args.actor=='viewer' and cmd not in VIEWER and not learning_read:raise ValueError('Viewers are read-only; run changes as --actor main')
         if cmd=='serve':return serve(root,cwd,set(subs.choices)-{'serve','setup'})
         if cmd=='bind':
             from .init_domain import init_domain
@@ -590,7 +595,11 @@ def main(argv=None):
             elif domain:domains=[domain]
             else:raise ValueError('unbound_project')
             result=note_links(root,domains,args.status)
-        elif cmd=='version':result={'ok':True,'api':SERVE_API,'python':sys.version.split()[0],'commands':sorted(subs.choices)}
+        elif cmd=='version':result={'ok':True,'api':SERVE_API,'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'learning':1}}
+        elif cmd=='learn':
+            from .learning import dispatch
+            result=dispatch(root,domain,args.entity,args.action,args.reference,
+                            {} if learning_read else _payload(args),args.all_domains)
         elif cmd=='update':
             from .notes import change
             d,n=_reference(args.reference,domain,root)
@@ -689,7 +698,7 @@ def main(argv=None):
         elif cmd=='export':
             from .bundle import export
             if not domain:raise ValueError('unbound_project')
-            result=export(root,domain,args.out,args.type or (),args.tag,args.all)
+            result=export(root,domain,args.out,args.type or (),args.tag,args.all,args.include_learning)
         elif cmd=='import-plan':
             from .bundle import import_plan
             # The bundle's own domain unless --domain names another; the cwd binding does not choose it.

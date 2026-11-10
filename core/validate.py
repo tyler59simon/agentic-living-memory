@@ -13,6 +13,8 @@ def validate_domain(domain,root=None):
                 if note.get('sha256') and note['sha256']!=note['digest']:raise ValueError('Body hash mismatch')
             except ValueError as exc:issues.append(str(exc)+': '+note['path'])
         issues+=[f"{item['problem'].capitalize()}: {item['path']}" for item in problems(domain,root)]
+        from .learning import problems as learning_problems
+        issues+=[f"{item['problem']}: {item['path']}" for item in learning_problems(root,domain)]
     except ValueError as exc:issues.append(str(exc))
     return issues
 
