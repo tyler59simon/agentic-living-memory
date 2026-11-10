@@ -141,7 +141,7 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
         try:notes.extend(dict(n,domain=domain) for n in inventory(domain,root))
         except (OSError,ValueError):continue
     project,here=_project_context(cwd,active,root,bindings)
-    tail=_review_line(active,root)+_problem_line(active,root)
+    tail=_finished_line(notes)+_review_line(active,root)+_problem_line(active,root)+_backup_line(root)
     last=_last_session_line(active,root,session,notes)
     notes=_collapse([n for n in notes if n.get('id') and n.get('title')])
     from . import usage
@@ -209,6 +209,26 @@ def _review_line(domain,root,shown=2):
     due=review_order(due,used_refs(root),domain)
     listed='; '.join(f"{short_ref(domain,n['id'])} {_title(n['title'])}" for n in due[:shown])
     return [f"{len(due)} note(s) due for review (confirm if still true, update if changed, supersede if replaced; `review` lists all): {listed}"]
+
+def _finished_line(notes,shown=2):
+    """Active plan, bug and risk notes whose Action Items are all ticked: finished work that keeps taking
+    index space until it is resolved. notes carry their domain."""
+    from .note_format import action_items,ACTION_TYPES
+    found=[]
+    for note in notes:
+        if note.get('type') not in ACTION_TYPES or not note.get('id') or not note.get('title'):continue
+        items=action_items(note.get('body',''))
+        if items and all(done for done,_ in items):found.append(note)
+    if not found:return []
+    listed='; '.join(f"{short_ref(n['domain'],n['id'])} {_title(n['title'])}" for n in found[:shown])
+    return [f"{len(found)} note(s) have every Action Item done (work finished: CMD resolve REF; more to do: CMD update REF --add-action 'step'): {listed}"]
+
+def _backup_line(root):
+    """One line when the newest snapshot is stale; a store that has never been backed up is doctor's to report."""
+    from .backup import snapshots,staleness_warning
+    try:warning=staleness_warning(root) if snapshots(root) else None
+    except OSError:return []
+    return [f'Living Memory backup: {warning} (CMD backup; CMD doctor if it fails).'] if warning else []
 
 def _problem_line(domain,root):
     from .repository import problems

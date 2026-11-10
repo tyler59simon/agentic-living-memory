@@ -9,9 +9,12 @@ import json
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
 
-EVENTS=('inject','read','update','check','supersede','confirm','duplicate','reminder','signal-capture')
-USE=('read','update','check','supersede','confirm','duplicate')   # evidence that a note mattered
+EVENTS=('inject','read','update','check','supersede','confirm','duplicate','resolve','reopen','reminder','signal-capture')
+USE=('read','update','check','supersede','confirm','duplicate','resolve','reopen')   # evidence that a note mattered
 NOISY_MIN=3
+# Injection kinds that are standing context rather than an answer retrieved for a question: session-start
+# guidance (the same few notes every session) and a repo's codebase map (delivered whole).
+STANDING=('session','prompt-map')
 LOCK_SECONDS=1
 
 def _path(root,when):return Path(root)/'.turns'/f'usage-{when:%Y-%m-%d}.jsonl'
@@ -102,7 +105,9 @@ def stats(root,domains,days=30,limit=10):
             weekly[key]=weekly.get(key,0)+1;continue
         ref=row.get('ref')
         if not isinstance(ref,str) or ref.split(':',1)[0] not in domains:continue
-        entry=counts.setdefault(ref,dict.fromkeys(('inject',)+USE,0));entry[event]+=1
+        entry=counts.setdefault(ref,dict.fromkeys(('inject','standing')+USE,0))
+        # Standing context is delivered whatever the prompt, so going unread says nothing about the note.
+        entry['standing' if event=='inject' and row.get('k') in STANDING else event]+=1
         if event=='inject' and row.get('s'):sessions.add(row['s'])
     notes={}
     for domain in domains:
@@ -120,5 +125,5 @@ def stats(root,domains,days=30,limit=10):
             'noisy':[item(r,c) for r,c in noisy[:limit]],
             'used':[item(r,c) for r,c in top[:limit]],
             'reminders':reminders,'signal_captures':dict(sorted(weekly.items())),
-            'hint':'noisy = injected at least %d times and never read, updated, confirmed or re-captured: consider a sharper title or an archive plan. '
+            'hint':'noisy = retrieved for a prompt or a file at least %d times and never read, updated, confirmed or re-captured: consider a sharper title or an archive plan. '
                    'The injected snippet alone may have been enough, so treat it as a lead, not a verdict.'%NOISY_MIN}
