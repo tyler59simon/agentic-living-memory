@@ -273,12 +273,14 @@ def near_titles(title,notes,low=0.6,high=0.8):
     scored=sorted(((scorer.score(title,n['title']),n) for n in notes),key=lambda s:-s[0])
     return [n for s,n in scored if low<=s<high][:3]
 
-def _set_identity(note,files,domain,root):
-    """A map or brief carries the git identity of its folder (`repo`, system-managed), so a clone of the same origin finds it."""
-    from .maps import note_identity
-    identity=note_identity(files,domain,read_json(Path(root)/'bindings.json',{}))
+def _set_identity(note,files,domain,root,moved=True):
+    """A map or brief carries the git identity of its folder (`repo`, system-managed), so a clone of the same origin finds it.
+    An update that leaves `files` alone (moved=False) keeps the identity when the folder is gone: the note was shared from another clone."""
+    from .maps import note_identity,_resolve
+    bindings=read_json(Path(root)/'bindings.json',{})
+    identity=note_identity(files,domain,bindings);folder=_resolve(files[0],domain,bindings) if files else None
     if identity:note['repo']=identity
-    else:note.pop('repo',None)
+    elif moved or (folder is not None and folder.is_dir()):note.pop('repo',None)
 
 def build_note(title,body,tags,domain,root,note_type='knowledge',context='',key=None,review_by=None,supersedes=(),files=None,origin=None,note_id=None,extra_tags=(),commands=None):
     """(path, note, file text) for a new active note, validated like every capture. Writes nothing; capture and
@@ -481,7 +483,7 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
             # Updating a time-sensitive note makes it current again.
             review=default_review_by(note['type'])
             if review:note['review_by']=review
-        if note['type'] in KEYED_TYPES:_set_identity(note,clean_files(note.get('files')),domain,root)
+        if note['type'] in KEYED_TYPES:_set_identity(note,clean_files(note.get('files')),domain,root,'files' in values or 'type' in values)
         else:note.pop('repo',None)
         if note['type'] in KEYED_TYPES and note.get('status','active')=='active' and ('type' in values or 'files' in values):
             # One map per repo (brief per project folder) holds for updates too: retyping a note, or pointing one at another folder, must not make a second.

@@ -505,11 +505,13 @@ HINT_NOTES_PER_COMMAND=2
 
 def command_hints(text,state,root,domain,bindings,session,trace=None):
     """Context naming notes that warn about the shell command about to run, or None. A command shape (wrapper, program,
-    subcommands) whose hint was shown is not looked up again in the session, and a note is shown once per session. Like file hints, it reads the
+    subcommands, a generic program's long flags) whose hint was shown is not looked up again in the session, and a note is shown once per session. Like file hints, it reads the
     index without refreshing it: a missing or stale index gives no hint rather than slowing the tool call."""
     try:
         from .commands import signature,command_notes
-        keys=list(dict.fromkeys(hashlib.sha256(repr((s.wrapper,s.program,s.subs)).encode()).hexdigest()[:12] for s in signature(text)))
+        from .commands import GENERIC
+        # A generic program's long flags decide what matches (`git push --force`), so they are part of the shape.
+        keys=list(dict.fromkeys(hashlib.sha256(repr((s.wrapper,s.program,s.subs)+((tuple(sorted(f for f in s.flags if f.startswith('--'))),) if s.program in GENERIC else ())).encode()).hexdigest()[:12] for s in signature(text)))
         seen=set(state.get('command_seen',[]))
         if not keys or all(k in seen for k in keys):return None
         hinted=set(state.get('command_hints',[]))
@@ -689,8 +691,8 @@ BRIEF_NOTES_BUDGET=600
 def prompt_briefs(cwd,root,bindings,state,trace=None,briefed=None,session=None):
     """(brief block or None, {ref: revision key} delivered): the brief of the project folder holding cwd, once
     per revision per session, followed by one-line summaries of the notes it links to (refs appended to briefed)."""
-    from .briefs import find_brief,brief_block
-    from .maps import repo_notes,repo_of
+    from .briefs import find_brief,brief_block,brief_folder
+    from .maps import repo_notes
     briefed=[] if briefed is None else briefed
     hit=find_brief(cwd,root,bindings)
     shown=state.get('shown',{}) if isinstance(state.get('shown'),dict) else {}
@@ -698,7 +700,7 @@ def prompt_briefs(cwd,root,bindings,state,trace=None,briefed=None,session=None):
     fresh=bool(hit) and shown.get(ref)!=revision_key(hit)
     if isinstance(trace,dict):trace['brief']={'ref':ref,'injected':[ref] if fresh else []}
     if not fresh:return None,{}
-    block=brief_block(hit,entry=note_currency(hit,repo_of(hit,hit['domain'],bindings),root,bindings,state,session,'fresh_brief'))
+    block=brief_block(hit,entry=note_currency(hit,brief_folder(hit,cwd,bindings),root,bindings,state,session,'fresh_brief'))
     lines_,refs_=repo_notes(hit,None,root,bindings,shown,budget=BRIEF_NOTES_BUDGET,files=False,exclude=briefed)
     if lines_:block+='\n'+lines_;briefed.extend(refs_)
     return block,{ref:revision_key(hit)}
@@ -1168,9 +1170,9 @@ def _process(harness,event,payload,root=None,info=None):
         except Exception as exc:
             from .logs import swallowed
             swallowed('runtime.refresh_stale',exc,root)
-        from .maps import repo_of
+        from .briefs import brief_folder
         text,shown,indexed=build_context(cwd,root,max(MIN_BUDGET,BUDGET-len(prefix)),session=session,trace=detail,
-                                         currency=lambda hit:note_currency(hit,repo_of(hit,hit['domain'],bindings),root,bindings,state,session,'fresh_brief'))
+                                         currency=lambda hit:note_currency(hit,brief_folder(hit,cwd,bindings),root,bindings,state,session,'fresh_brief'))
         detail.update(shown=list(shown),indexed=indexed)
         if session!='unknown':
             # A new or compacted context has seen only what is injected now. Guidance shown in full is not

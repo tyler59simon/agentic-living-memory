@@ -115,6 +115,20 @@ class Matching(unittest.TestCase):
             self.assertIsNone(match(Sig(None, bare, (), frozenset()), Sig(None, bare, ('x',), frozenset())), bare)
         self.assertEqual(match(one('mvn'), one('mvn verify')), 'exact')   # a specific tool alone is enough
 
+    def test_an_interpreters_script_path_is_the_operand_that_discriminates(self):
+        self.assertEqual(one('python scripts/build.py --release').subs, ('scripts/build.py',))
+        self.assertEqual(one(r'py -3 .\scripts\Build.py --release').subs, ('scripts/build.py',))
+        self.assertEqual(one('node "tools/gen code/run.js" x').subs, ('tools/gen code/run.js', 'x'))
+        note = one('python scripts/build.py --release')
+        self.assertEqual(match(note, one('python scripts/build.py --release')), 'exact')
+        self.assertEqual(match(note, one(r'py .\scripts\BUILD.py --release --fast')), 'exact')
+        self.assertEqual(match(note, one('python3 ./scripts/build.py --release')), 'exact')
+        self.assertIsNone(match(note, one('python scripts/other.py --release')))
+        self.assertIsNone(match(note, one('python scripts/build.py')))           # the note is about the flag
+        self.assertIsNone(match(note, one('python other/scripts/build.py --release')))
+        self.assertIsNone(match(note, one('python -c "import scripts/build.py" --release')))
+        self.assertEqual(one('python -c "print(1)"').subs, ())
+
     def test_read_only_programs_and_the_memory_script_never_match(self):
         self.assertIsNone(match(Sig(None, 'grep', (), frozenset()), Sig(None, 'grep', (), frozenset())))
         self.assertIsNone(match(Sig(None, 'cat', ('x',), frozenset()), Sig(None, 'cat', ('x',), frozenset())))
@@ -160,6 +174,24 @@ class Hints(StoreFixture):
             lookup.assert_not_called()
         self.assertNotIn('context', self.run_command('./mvnw verify'))                    # another shape, same note: already shown
         self.assertIn('context', self.run_command('cmd /c mvnw.cmd verify', session='s2'))
+
+    def test_a_long_flag_makes_a_new_command_shape(self):
+        self.note('Push target', 'Pushes go to the fork: `git push origin main`.', type='knowledge', allow_similar=True)
+        force = self.note('Force push warning', 'Never run `git push --force origin main`: the remote rewrites history.', type='bug', allow_similar=True)
+        first = self.run_command('git push origin main')['context']
+        self.assertIn('Push target', first)
+        self.assertNotIn('Force push warning', first)
+        second = self.run_command('git push --force origin main')['context']
+        self.assertIn('Force push warning', second)
+        self.assertEqual(self.state()['command_hints'][-1], 'demo:' + force['id'])
+        with patch('core.commands.command_notes') as lookup:
+            self.assertNotIn('context', self.run_command('git push -f origin main'))   # short flags never change what a note matches: same shape as the first
+            lookup.assert_not_called()
+
+    def test_a_recorded_script_command_surfaces_its_note(self):
+        self.note('Release build', 'Running `python scripts/build.py --release` without the signing key ships an unsigned jar.', type='bug', allow_similar=True)
+        self.assertIn('Release build', self.run_command('python scripts/build.py --release')['context'])
+        self.assertNotIn('context', self.run_command('python scripts/other.py --release', session='s2'))
 
     def test_at_most_two_notes_and_the_exact_one_first(self):
         self.note('Wrapper script notes', 'The `./mvnw` script needs the exec bit.', type='decision')
@@ -311,6 +343,34 @@ class ExplicitCommands(StoreFixture):
         for bad in (['a'] * 11, ['x' * 201], [''], 'run it', [1]):
             with self.assertRaises(ValueError, msg=repr(bad)):
                 validate({**note, 'commands': bad}, 'demo', self.root)
+
+    def test_a_credential_in_a_command_is_refused_or_redacted_like_the_body(self):
+        secret = 'Bearer abcdefghijklmnopqrstuvwxyz0123456789'
+        command = f"curl -H 'Authorization: {secret}' https://api.test/deploy"
+        code, result = self.cli('capture', *TAGS, '--title', 'Deploy gotcha', '--summary', 'The deploy call needs a header.', '--command', command)
+        self.assertNotEqual(code, 0)
+        self.assertIn('credential', json.dumps(result).lower())
+        self.assertEqual(inventory('demo', self.root), [])
+        code, made = self.cli('capture', *TAGS, '--redact', '--title', 'Deploy gotcha', '--summary', 'The deploy call needs a header.', '--command', command)
+        self.assertEqual(code, 0)
+        self.assertIn({'kind': 'bearer token', 'field': 'commands'}, made['redacted'])
+        for stored in (self.commands_of(made['id']), self.indexed(made['id'])):
+            self.assertNotIn('abcdefghijklmnopqrstuvwxyz', json.dumps(stored))
+        code, _ = self.cli('update', made['id'], '--command', command)
+        self.assertNotEqual(code, 0)
+        code, updated = self.cli('update', made['id'], '--redact', '--command', command)
+        self.assertEqual(code, 0)
+        self.assertIn('commands', [r['field'] for r in updated['redacted']])
+        self.assertNotIn('abcdefghijklmnopqrstuvwxyz', json.dumps(self.commands_of(made['id'])))
+        with self.assertRaisesRegex(ValueError, 'credential'):
+            validate({'id': 'x', 'title': 't', 'body': 'b', 'tags': [], 'domain': 'demo', 'status': 'active', 'commands': [command]}, 'demo', self.root)
+
+    def test_commands_extracted_from_a_redacted_body_carry_no_secret(self):
+        body = "Run `curl -H 'Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789' https://api.test/x` first."
+        code, made = self.cli('capture', *TAGS, '--redact', '--title', 'Body command', '--summary', body)
+        self.assertEqual(code, 0)
+        self.assertNotIn('abcdefghijklmnopqrstuvwxyz', json.dumps(self.indexed(made['id'])))
+        self.assertEqual(extract('t', "Run `curl -H 'Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789' https://api.test/x`."), [])
 
     def test_removing_the_list_clears_it(self):
         code, made = self.cli('capture', *TAGS, '--title', 'Deploy gotcha', '--summary', 'Deploys skip lint.', '--command', 'deploy-tool apply')

@@ -198,6 +198,21 @@ class SharedMaps(StoreFixture):
         change(made['id'], 'demo', 'update', self.root, files=['ws/local'])
         self.assertNotIn('repo', find_note(made['id'], 'demo', self.root)[1])
 
+    def test_updating_a_shared_note_after_its_original_clone_is_gone_keeps_its_identity(self):
+        import shutil
+        made = {kind: self.capture(kind, self.po, title)[1] for kind, title in (('map', 'ledger codebase map'), ('brief', 'ledger project brief'))}
+        shutil.rmtree(self.po)
+        for kind, note in made.items():
+            with self.subTest(kind=kind):
+                change(note['id'], 'demo', 'update', self.root, body=find_note(note['id'], 'demo', self.root)[1]['body'] + ' (updated after the original clone was removed)')
+                self.assertEqual(find_note(note['id'], 'demo', self.root)[1]['repo'], IDENTITY)
+        self.assertEqual(find_map(self.arch, self.root, self.bindings())['id'], made['map']['id'])
+        self.assertEqual(find_brief(str(self.arch), self.root, self.bindings())['id'], made['brief']['id'])
+        # Pointing the note at a folder without a remote on purpose still drops the identity.
+        make_repo(self.project / 'ws' / 'solo')
+        change(made['map']['id'], 'demo', 'update', self.root, files=['ws/solo'])
+        self.assertNotIn('repo', find_note(made['map']['id'], 'demo', self.root)[1])
+
     def test_ordinary_notes_and_the_vault_never_carry_repo(self):
         made = self.note('Cache', 'The local cache is rebuildable.', files=['ws/po'])
         self.assertNotIn('repo', find_note(made['id'], 'demo', self.root)[1])

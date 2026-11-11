@@ -31,6 +31,12 @@ def find_brief(cwd,root=None,bindings=None):
         if folder and here.is_relative_to(folder) and (best is None or len(folder.parts)>len(best[0].parts)):best=(folder,dict(note,domain=domain))
     return best[1] if best else None
 
+def brief_folder(hit,cwd,bindings):
+    """The checkout to measure a brief's freshness against: the git repo holding cwd when it has the brief's identity (a clone
+    of the same origin, wherever the brief was captured), else the folder the brief is keyed to."""
+    repo=git_root(cwd) if cwd else None;identity=_identity_of(hit,hit['domain'],bindings)
+    return repo if repo and identity and repo_identity(repo)==identity else repo_of(hit,hit['domain'],bindings)
+
 def project_dir(cwd,bindings):
     """The folder a new brief for cwd is keyed by: the git repo holding cwd when it lies inside the bound folder
     (a domain bound to a parent of several repos gets one brief per repo, as maps do), else the deepest bound

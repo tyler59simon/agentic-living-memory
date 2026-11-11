@@ -352,6 +352,26 @@ class Staleness(StoreFixture):
         self.assertIn(f'project brief {self.short} is stale (docs/adr/ADR-004-money.md, pom.xml changed since it was written)',reason)
         self.assertIn("--set-detail '**Key decisions:** ...'",reason)
 
+    def test_a_note_shared_from_another_clone_is_checked_against_the_active_checkout(self):
+        remote='https://github.com/acme/app.git'
+        clone=self.project/'clone';git(self.project,'clone','-q',str(self.app),str(clone));clone=clone.resolve()
+        git(clone,'remote','set-url','origin',remote);git(self.app,'remote','add','origin',remote)
+        map_short=self.capture()['id'][:8];self.capture('brief')
+        commit(clone,{'docs/adr/ADR-004-money.md':'# ADR-004\nBigDecimal\n','pom.xml':'<v>2</v>'},later(),'adr four in the clone')
+        self.assertEqual(self.hit('brief')['repo'],'github.com/acme/app')   # the notes are shared by identity, but the original checkout is untouched
+        extra={'cwd':str(clone)}
+        start=self.hook('session-start',**extra)['context']
+        line=next(l for l in start.splitlines() if l.startswith('Project brief:'))
+        self.assertIn('STALE: docs/adr/ADR-004-money.md, pom.xml changed since',line)
+        text=self.prompt(**extra)['context']
+        self.assertIn('Project brief — ',text);self.assertEqual(text.count('STALE:'),2)   # the map and the brief
+        repos=self.state()['repos']
+        self.assertEqual(repos[clone.as_posix()]['fresh_brief']['changed'],['docs/adr/ADR-004-money.md','pom.xml'])
+        self.assertNotIn(self.app.as_posix(),repos)
+        self.tool('Edit',{'file_path':str(clone/'src'/'Money.java')},**extra)
+        reason=self.hook('stop',**extra)['continue_reason']
+        self.assertIn(f'project brief {self.short} is stale',reason);self.assertIn(f'map demo:{map_short} is stale',reason)
+
     def test_a_map_and_a_brief_are_both_reported_in_one_reminder(self):
         self.capture();self.capture('brief');self.adr_changed()
         self.hook('session-start');self.prompt();self.edit_app()
