@@ -5,7 +5,7 @@ from datetime import date
 from pathlib import Path
 from .common import memory_root,safe_domain,canonical_domain
 from .repository import inventory,parse,serialize,validate,read_json,transaction,reconcile,store_lock,now,digest,clean_files
-from .note_types import prefix_for,normalize,effective_type,default_review_by
+from .note_types import prefix_for,normalize,effective_type,default_review_by,KEYED_TYPES
 from .note_format import format_body,without_actions,ACTION_TYPES
 
 # Fields an agent may change directly (journaled and undoable, no plan) with `update`.
@@ -310,7 +310,7 @@ def _cross_similar(title,body,note_type,domain,root):
     globals_=set(global_domains(root));to_global=domain in globals_
     order=lambda d:(0 if d in globals_ else 1 if related(d,domain,root) else 2,d)
     for other in sorted((d for d in domain_folders(root) if d!=domain),key=order):
-        notes=[n for n in inventory(other,root) if n.get('status','active')=='active' and not (note_type=='map' and effective_type(n)=='map')]
+        notes=[n for n in inventory(other,root) if n.get('status','active')=='active' and not (note_type in KEYED_TYPES and effective_type(n)==note_type)]
         similar=similar_title(title,notes) if notes else None
         if not similar:continue
         if other in globals_ or related(other,domain,root):return 'visible',other,similar
@@ -362,9 +362,9 @@ def capture(title,body,tags,domain,root=None,**metadata):
             if note['title'].casefold()==title.strip().casefold() and note['body'].strip()==body.strip():
                 if effective_type(note)!=selected_type:raise ValueError('Existing note has a different type; update that note instead')
                 return {'ok':True,'id':note['id'],'status':'duplicate','path':note['path']}
-        # A map is one per repo, enforced by its repo folder (maps.capture_conflict below). Every map is titled
-        # "<repo> codebase map", so comparing map titles would refuse the second repo's map as a duplicate.
-        other_map=lambda n:selected_type=='map' and effective_type(n)=='map'
+        # A map is one per repo and a brief one per project folder, enforced by that folder (maps.capture_conflict below).
+        # Every map is titled "<repo> codebase map", so comparing titles would refuse the second repo's map as a duplicate.
+        other_map=lambda n:selected_type in KEYED_TYPES and effective_type(n)==selected_type
         if not allow_similar:
             replaced=set(supersedes)
             similar=similar_title(title,[n for n in existing if n.get('status','active')=='active' and n['id'] not in replaced and not other_map(n)])
@@ -392,10 +392,10 @@ def capture(title,body,tags,domain,root=None,**metadata):
             absorbed=(other,match)   # 'supersede': the new global note replaces the project one
         review_by=metadata.pop('review_by',None);context=metadata.pop('context','');files=metadata.pop('files',None);origin=metadata.pop('origin',None)
         if metadata:raise ValueError('Unsupported capture metadata: '+', '.join(metadata))
-        if selected_type=='map':
-            # One map per repo: a second capture would split what the next session reads.
+        if selected_type in KEYED_TYPES:
+            # One map per repo, one brief per project folder: a second capture would split what the next session reads.
             from .maps import capture_conflict
-            conflict=capture_conflict(clean_files(files),domain,root,read_json(root/'bindings.json',{}),set(supersedes))
+            conflict=capture_conflict(clean_files(files),domain,root,read_json(root/'bindings.json',{}),set(supersedes),selected_type)
             if conflict:raise ValueError(conflict)
         replaces=supersedes+([absorbed[1]['id']] if absorbed else [])
         path,note,text=build_note(title,body,tags,domain,root,selected_type,context=context,key=key,review_by=review_by,supersedes=replaces,files=files,origin=origin)
@@ -462,10 +462,10 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
             # Updating a time-sensitive note makes it current again.
             review=default_review_by(note['type'])
             if review:note['review_by']=review
-        if note['type']=='map' and note.get('status','active')=='active' and ('type' in values or 'files' in values):
-            # One map per repo holds for updates too: retyping a note, or pointing a map at another repo, must not make a second one.
+        if note['type'] in KEYED_TYPES and note.get('status','active')=='active' and ('type' in values or 'files' in values):
+            # One map per repo (brief per project folder) holds for updates too: retyping a note, or pointing one at another folder, must not make a second.
             from .maps import capture_conflict
-            conflict=capture_conflict(clean_files(note.get('files')),domain,root,read_json(root/'bindings.json',{}),{note['id']})
+            conflict=capture_conflict(clean_files(note.get('files')),domain,root,read_json(root/'bindings.json',{}),{note['id']},note['type'])
             if conflict:raise ValueError(conflict)
     elif action=='confirm':
         # "Still true": a dated confirmation and a fresh review date, without touching content or `updated`.

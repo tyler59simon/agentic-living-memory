@@ -8,7 +8,7 @@
   {"hook": "session-start"},
   {"hook": "user-prompt", "payload": {"prompt": "write down the money decision"}},
   {"hook": "pre-tool-use", "payload": {"tool_name": "Write", "tool_input": {"file_path": "{project}/docs/adr/ADR-004-money.md"}}, "expect": {"mutation": "tracked", "detail": {"docs": 1}}},
-  {"hook": "stop", "expect": {"reminder": "doc", "detail": {"pending": ["doc"]}, "reminder_contains": ["You changed docs/adr/ADR-004-money.md", "--link 'docs/adr/ADR-004-money.md'", "{short:@money} Money representation", "Nothing durable: CMD capture-finalize --session {session}"]}},
+  {"hook": "stop", "expect": {"reminder": "doc", "detail": {"pending": ["doc", "unbriefed"]}, "reminder_contains": ["You changed docs/adr/ADR-004-money.md", "--link 'docs/adr/ADR-004-money.md'", "{short:@money} Money representation", "has no project brief", "Nothing durable: CMD capture-finalize --session {session}"]}},
   {"hook": "stop", "expect": {"stop_reason": "no_change", "reminder": null}},
   {"hook": "user-prompt", "payload": {"prompt": "tweak the wording"}},
   {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/docs/adr/ADR-004-money.md"}}, "expect": {"mutation": "tracked"}},

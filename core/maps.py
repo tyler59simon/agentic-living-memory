@@ -49,8 +49,12 @@ def map_domains(repo,bindings,root=None):
     near=[found]+parent_domains(found,bindings) if found else []
     return list(dict.fromkeys(near+global_domains(root)))
 
-def _rows(domain,root):
-    """Active map rows from the domain's index (no rebuild: hooks must stay fast), else from the note files."""
+def repo_name(path):
+    """The name maps and briefs use for a folder in titles and lines (its folder name; Phase 3 may derive it from the git remote)."""
+    return Path(path).name
+
+def _rows(domain,root,kind='map'):
+    """Active rows of a keyed note type (map or brief) from the domain's index (no rebuild: hooks must stay fast), else from the note files."""
     from .search import _unchanged,domain_dir
     try:folder=domain_dir(domain,root)
     except ValueError:return []
@@ -59,22 +63,22 @@ def _rows(domain,root):
     if db_path.exists():
         try:
             db=sqlite3.connect(db_path.as_uri()+'?mode=ro',uri=True)
-            try:rows=db.execute("SELECT id,title,updated,files,body,path,revision FROM notes WHERE status='active' AND type='map'").fetchall()
+            try:rows=db.execute("SELECT id,title,updated,files,body,path,revision FROM notes WHERE status='active' AND type=?",(kind,)).fetchall()
             finally:db.close()
-            return [{'id':i,'domain':domain,'title':t,'type':'map','updated':str(u or ''),'files':f,'body':b,'revision':r}
+            return [{'id':i,'domain':domain,'title':t,'type':kind,'updated':str(u or ''),'files':f,'body':b,'revision':r}
                     for i,t,u,f,b,p,r in rows if _unchanged(p,r)]
         except sqlite3.Error:pass
     from .repository import inventory
-    try:return [dict(n,domain=domain) for n in inventory(domain,root) if n.get('type')=='map' and n.get('status','active')=='active']
+    try:return [dict(n,domain=domain) for n in inventory(domain,root) if n.get('type')==kind and n.get('status','active')=='active']
     except (OSError,ValueError):return []
 
-def find_map(repo,root=None,bindings=None,notes=None):
-    """The active map note for a repo folder, else None. notes, when given, is [(domain, note)] to look in instead."""
+def find_map(repo,root=None,bindings=None,notes=None,kind='map'):
+    """The active note of a keyed type (map by default) for a folder, else None. notes, when given, is [(domain, note)] to look in instead."""
     from .common import load_bindings
     root=Path(root or memory_root()).resolve();bindings=bindings if bindings is not None else load_bindings(root)
     try:repo=Path(repo).resolve()
     except (OSError,ValueError):return None
-    if notes is None:notes=[(d,n) for d in map_domains(repo,bindings,root) for n in _rows(d,root)]
+    if notes is None:notes=[(d,n) for d in map_domains(repo,bindings,root) for n in _rows(d,root,kind)]
     return next((dict(n,domain=d) for d,n in notes if repo_of(n,d,bindings)==repo),None)
 
 def candidate_repos(cwd,bindings):
@@ -139,7 +143,7 @@ def map_block(hit,repo,budget=MAP_BUDGET):
     """The map's body for a prompt, with a freshness line; bounded."""
     from .notes import short_ref
     from .session_start import _cap
-    head=f"Codebase map for {Path(repo).name} — {short_ref(hit['domain'],hit['id'])} {hit['title']} ({freshness(hit,repo)})"
+    head=f"Codebase map for {repo_name(repo)} — {short_ref(hit['domain'],hit['id'])} {hit['title']} ({freshness(hit,repo)})"
     body=_cap(str(hit.get('body','')).strip(),max(400,budget-len(head)-1))
     return head+'\n'+body
 
@@ -149,21 +153,24 @@ def pointer_line(hit,repo,width=400):
     from .note_format import sections,plain
     summary=' '.join(plain(sections(str(hit.get('body',''))).get('summary','')).split())
     if len(summary)>width:summary=summary[:summary.rfind(' ',0,width) if ' ' in summary[:width] else width]+' …'
-    return f"Codebase map for {Path(repo).name}: {short_ref(hit['domain'],hit['id'])} {hit['title']} — {summary} ({freshness(hit,repo)})"
+    return f"Codebase map for {repo_name(repo)}: {short_ref(hit['domain'],hit['id'])} {hit['title']} — {summary} ({freshness(hit,repo)})"
 
-def capture_conflict(files,domain,root,bindings,replaced=()):
-    """For a new map: an error message when its repo already has an active map, else None."""
+KEYED={'map':('codebase map','REPO','the repo folder they describe','repo'),'brief':('project brief','DIR','the project folder they describe','project')}
+
+def capture_conflict(files,domain,root,bindings,replaced=(),kind='map'):
+    """For a new map or brief: an error message when its folder already has an active note of that type, else None."""
     from .notes import short_ref
     from .repository import inventory
+    label,arg,what,noun=KEYED[kind]
     repo=_resolve(files[0],domain,bindings) if files else None
-    if repo is None:return 'map notes need --file REPO (the repo folder they describe)'
-    if not repo.is_dir():return f'map notes describe a repo folder; {repo.as_posix()} is not a folder'
+    if repo is None:return f'{kind} notes need --file {arg} ({what})'
+    if not repo.is_dir():return f'{kind} notes describe a {noun} folder; {repo.as_posix()} is not a folder'
     for other in dict.fromkeys([domain]+map_domains(repo,bindings,root)):
-        try:notes=[n for n in inventory(other,root) if n.get('type')=='map' and n.get('status','active')=='active' and n['id'] not in replaced]
+        try:notes=[n for n in inventory(other,root) if n.get('type')==kind and n.get('status','active')=='active' and n['id'] not in replaced]
         except (OSError,ValueError):continue
         hit=find_map(repo,root,bindings,[(other,n) for n in notes])
         if hit:
             ref=short_ref(other,hit['id'])
-            return (f"map_exists conflict: {ref} \"{hit['title']}\" is the codebase map for {repo.as_posix()}; "
+            return (f"{kind}_exists conflict: {ref} \"{hit['title']}\" is the {label} for {repo.as_posix()}; "
                     f"run `update {ref}` (or capture with `--supersedes {ref}`)")
     return None

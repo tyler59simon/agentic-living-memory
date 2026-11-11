@@ -11,7 +11,7 @@
   {"hook": "session-start"},
   {"hook": "user-prompt", "payload": {"prompt": "fix the notes parser"}},
   {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/core/notes.py"}}, "expect": {"hints": ["@parser"]}},
-  {"hook": "stop", "expect": {"reminder": "follow", "detail": {"pending": ["follow"]}, "reminder_contains": ["You edited core/notes.py", "{short:@parser} Notes parser gotcha", "CMD confirm {short:@parser} --session {session}", "CMD update {short:@parser} --session {session}"]}},
+  {"hook": "stop", "expect": {"reminder": "follow", "detail": {"pending": ["follow", "unbriefed"]}, "reminder_contains": ["You edited core/notes.py", "{short:@parser} Notes parser gotcha", "CMD confirm {short:@parser} --session {session}", "CMD update {short:@parser} --session {session}", "has no project brief"]}},
   {"hook": "user-prompt", "payload": {"prompt": "one more fix"}},
   {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/core/notes.py"}}, "expect": {"hints": []}},
   {"hook": "stop", "expect": {"stop_reason": "files_only", "reminder": null}},

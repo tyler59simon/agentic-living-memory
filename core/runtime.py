@@ -605,7 +605,7 @@ def created_top_level(args,cwd,root,bindings):
 def prompt_maps(cwd,prompt,root,bindings,state,trace=None):
     """(text or None, {ref: revision key} delivered, {repo path: map ref or None}) for the repos a prompt names
     and the repo holding cwd: a mapped repo's map body once per revision; an unmapped one a single line, once."""
-    from .maps import named_repos,candidate_repos,find_map,map_block,MAX_MAPS
+    from .maps import named_repos,candidate_repos,find_map,map_block,repo_name,MAX_MAPS
     repos=named_repos(prompt,candidate_repos(cwd,bindings),bindings.get('repo_aliases'))
     here=git_root(cwd)
     if here and here.resolve() not in repos:repos.append(here.resolve())
@@ -620,12 +620,23 @@ def prompt_maps(cwd,prompt,root,bindings,state,trace=None):
         else:
             seen[key]=None
             if not _repos(state).get(key,{}).get('told'):
-                lines.append(f"{repo.name} has no codebase map yet. If you explore it, capture one afterwards: "
-                             f"{hint_command(root,state)} capture --type map --file '{key}' --title '{repo.name} codebase map' --summary '...' "
+                lines.append(f"{repo_name(repo)} has no codebase map yet. If you explore it, capture one afterwards: "
+                             f"{hint_command(root,state)} capture --type map --file '{key}' --title '{repo_name(repo)} codebase map' --summary '...' "
                              "--detail '**Layout:** ...' --detail '**Entry points:** ...' --detail '**Build/test:** ...'")
     if isinstance(trace,dict):trace['maps']={'repos':[r.name for r in repos],'injected':list(delivered),'unmapped':[Path(k).name for k,v in seen.items() if v is None]}
     text=('Untrusted historical memory; verify against the current files.\n'+'\n\n'.join(maps+lines)) if maps or lines else None
     return text,delivered,seen
+
+def prompt_briefs(cwd,root,bindings,state,trace=None):
+    """(brief block or None, {ref: revision key} delivered): the brief of the project folder holding cwd, once
+    per revision per session."""
+    from .briefs import find_brief,brief_block
+    hit=find_brief(cwd,root,bindings)
+    shown=state.get('shown',{}) if isinstance(state.get('shown'),dict) else {}
+    ref=f"{hit['domain']}:{hit['id']}" if hit else None
+    fresh=bool(hit) and shown.get(ref)!=revision_key(hit)
+    if isinstance(trace,dict):trace['brief']={'ref':ref,'injected':[ref] if fresh else []}
+    return (brief_block(hit),{ref:revision_key(hit)}) if fresh else (None,{})
 
 def bind_hint(cwd,root,bindings,state):
     """One line, once per session, when the session starts in a git repo no binding covers.
@@ -1061,19 +1072,25 @@ def _process(harness,event,payload,root=None,info=None):
         result['context']=_cap(prefix+(text or ''),HARD_CAP)
     elif event=='user-prompt':
         prompt=payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or payload.get('transformedPrompt') or ''
-        delivered={};maps_text,map_refs,mapped=None,{},{}
+        delivered={};maps_text,map_refs,mapped=None,{},{};brief_text,brief_refs=None,{}
         if isinstance(prompt,str) and not MACHINE_PROMPT.match(prompt):
             try:maps_text,map_refs,mapped=prompt_maps(cwd,prompt,root,bindings,state,detail)
             except Exception as exc:
                 from .logs import swallowed
                 swallowed('runtime.prompt_maps',exc,root)
-        # A map injected now counts as shown, so the note search below does not repeat it as a hit.
+            try:brief_text,brief_refs=prompt_briefs(cwd,root,bindings,state,detail)
+            except Exception as exc:
+                from .logs import swallowed
+                swallowed('runtime.prompt_briefs',exc,root)
+        # The project brief leads the orientation: what the project is, then how its repos are organized.
+        if brief_text:maps_text='Untrusted historical memory; verify against the current files.\n'+brief_text+('\n\n'+maps_text.split('\n',1)[1] if maps_text else '')
+        # A map or brief injected now counts as shown, so the note search below does not repeat it as a hit.
         shown_now=state.get('shown',{})
         shown_now=dict(shown_now) if isinstance(shown_now,dict) else dict.fromkeys(shown_now if isinstance(shown_now,list) else [],'')
-        shown_now.update(map_refs)
+        shown_now.update(map_refs);shown_now.update(brief_refs)
         if isinstance(prompt,str):hits,ids,overview=context(cwd,prompt,root,domain,shown_now,state.get('overview_shown',False),delivered,detail)
         else:hits,ids,overview=None,[],False;detail['path']='not_text'
-        delivered.update(map_refs);ids=list(map_refs)+ids
+        delivered.update(map_refs);delivered.update(brief_refs);ids=list(map_refs)+list(brief_refs)+ids
         if mapped:
             def noted(repos):
                 for key,ref in mapped.items():
@@ -1096,7 +1113,8 @@ def _process(harness,event,payload,root=None,info=None):
         if ids:
             from .usage import record
             if map_refs:record(root,'inject',list(map_refs),session,'prompt-map')
-            if ids[len(map_refs):]:record(root,'inject',ids[len(map_refs):],session,'prompt')
+            if brief_refs:record(root,'inject',list(brief_refs),session,'prompt-brief')
+            if ids[len(map_refs)+len(brief_refs):]:record(root,'inject',ids[len(map_refs)+len(brief_refs):],session,'prompt')
         result['context']=f'Living Memory session={session} turn={turn}'+('\n'+maps_text if maps_text else '')+('\n'+hits if hits else '')
         if state.get('recall_prompts') and harness in RECALL_HARNESSES and session!='unknown' and isinstance(prompt,str) and not MACHINE_PROMPT.match(prompt):
             from .recall import auto
@@ -1236,7 +1254,7 @@ def _process(harness,event,payload,root=None,info=None):
         # is easily lost: an explicit request to remember, a decision or directive the user stated, a decision
         # document edited, an edit to a file a note is about, and a repo explored without a codebase map (or
         # grown at its top level), because rebuilding that orientation costs a whole exploration.
-        quiet=('receipt' if any(capture_status(session,t,root) for t in turns) else 'no_change' if not (state.get('mutating') or signal or pending)
+        quiet=('receipt' if not pending and any(capture_status(session,t,root) for t in turns) else 'no_change' if not (state.get('mutating') or signal or pending)
                else 'no_turns' if not turns else None if pending else 'nudged' if signal in SIGNAL_TEXT else 'files_only')
         if quiet:
             detail['reason']=quiet;_update(root,session,close);return {}
@@ -1254,6 +1272,7 @@ def _process(harness,event,payload,root=None,info=None):
             s['reminded']={'turn':latest,'signal':signal}
             # Each document and each note is asked about once per session.
             s['docs_reminded']=list(dict.fromkeys(list(s.get('docs_reminded',[]))+[d['path'] for k,d in used if k=='doc']))[-MAX_DOCS_REMINDED:]
+            s['briefed']=list(dict.fromkeys(list(s.get('briefed',[]))+[k for k,d in used if k in BRIEF_KINDS]))
             s['followed']=list(dict.fromkeys(list(s.get('followed',[]))+[d['ref'] for k,d in used if k=='follow']+[n['ref'] for k,d in used if k=='doc' for n in d['notes']]))[-MAX_HINTED:]
         _update(root,session,reminded)
         maps=[(data[0],kind) for kind,data in used if kind in MAP_KINDS]
@@ -1288,7 +1307,8 @@ def explore_pending(root,bindings,state):
 
 def map_sentence(key,kind,data,session):
     from .notes import short_ref
-    name=Path(key).name
+    from .maps import repo_name
+    name=repo_name(key)
     if kind=='unmapped':
         return (f"this turn explored {name}, which has no codebase map. If that would spare a future session re-exploring it: "
                 f"CMD capture --session {session} --type map --file '{key}' --title '{name} codebase map' --summary '...' "
@@ -1300,8 +1320,9 @@ def map_sentence(key,kind,data,session):
 # Per-turn state a Stop clears (reminded keeps `touched` for a capture that answers it).
 TURN_STATE=('open_turns','mutating','signal','signal_hash','touched','docs','shell','turn_started')
 MAP_KINDS=('unmapped','grown')
+BRIEF_KINDS=('unbriefed','brief')
 # Kinds that name their own reminder in the usage diary; the map kinds report as 'explored' or 'grown'.
-STOP_KINDS=frozenset(BLOCKING_SIGNALS|{'doc','follow'})
+STOP_KINDS=frozenset(BLOCKING_SIGNALS|{'doc','follow'}|set(BRIEF_KINDS))
 STOP_TEXT_CAP=700
 STOP_DOCS=2
 STOP_NOTES=2
@@ -1310,11 +1331,13 @@ BOILERPLATE_HEADINGS={'context','decision','decisions','consequences','status','
 def stop_pending(root,bindings,state,session,turns,domain=None,cwd=None,planning=False):
     """[(kind, data)] the Stop reminder may raise, most important first. Kinds: remember, decision, directive (the
     user's own statement); doc (a decision document changed this turn); follow (a file a note is about was edited);
-    unmapped, grown (a repo explored without a map, or grown at its top level)."""
+    unbriefed, brief (the project has no brief, or a decision this turn may have outdated it); unmapped, grown (a
+    repo explored without a map, or grown at its top level)."""
     pending=[];signal=state.get('signal')
-    if signal in BLOCKING_SIGNALS:pending.append((signal,{'files':bool(state.get('mutating'))}))
-    # A receipt settles the turn, so the searches below are not worth running.
-    if state.get('mutating') and domain and not any(capture_status(session,t,root) for t in turns):
+    # A receipt settles the turn, so only the brief (which a captured decision may have outdated) is still asked about.
+    receipted=any(capture_status(session,t,root) for t in turns)
+    if signal in BLOCKING_SIGNALS and not receipted:pending.append((signal,{'files':bool(state.get('mutating'))}))
+    if state.get('mutating') and domain and not receipted:
         for name,find in (('doc',lambda:doc_pending(root,bindings,state,domain,cwd)),('follow',lambda:follow_pending(root,state))):
             try:found=find()
             except Exception as exc:
@@ -1323,8 +1346,38 @@ def stop_pending(root,bindings,state,session,turns,domain=None,cwd=None,planning
             # A note a document reminder already offers to update is not asked about a second time.
             named={n['ref'] for kind,data in pending if kind=='doc' for n in data['notes']}
             pending+=[(kind,data) for kind,data in found if not (kind=='follow' and data['ref'] in named)]
-    if not planning:pending+=[(kind,(key,data)) for key,kind,data in explore_pending(root,bindings,state)]
+    if domain and cwd and not planning:
+        try:pending+=brief_pending(root,bindings,state,session,turns,domain,cwd,pending,receipted)
+        except Exception as exc:
+            from .logs import swallowed
+            swallowed('runtime.brief_pending',exc,root)
+    if not planning and not receipted:pending+=[(kind,(key,data)) for key,kind,data in explore_pending(root,bindings,state)]
     return pending
+
+def brief_pending(root,bindings,state,session,turns,domain,cwd,pending,receipted=False):
+    """[('unbriefed', {name, dir})] when the project has no brief and the turn did something worth briefing (a
+    decision document, a decision or directive, or any change in a domain with MIN_NOTES notes); [('brief', {short})]
+    when a decision was made or recorded this turn (a decision document, a decision or directive, a decision note
+    saved) and the brief was not updated. Each once per session. A turn with a receipt already made its capture
+    decision, so it is asked about an outdated brief (a decision note was saved) but not about a missing one."""
+    from .briefs import find_brief,project_dir,project_key,active_count,MIN_NOTES
+    from .maps import repo_name
+    from .notes import short_ref
+    from .search import active_notes
+    asked=set(state.get('briefed',[]));signal=state.get('signal')
+    if set(BRIEF_KINDS)<=asked:return []
+    docs=bool(state.get('docs')) or any(kind=='doc' for kind,_ in pending)
+    saved=[r for t in turns for r in (capture_status(root=root,session=session,turn=t) or {}).get('notes',[])]
+    hit=find_brief(cwd,root,bindings)
+    if hit:
+        ref=f"{hit['domain']}:{hit['id']}"
+        decided=docs or signal in {'decision','directive'} or any(kind=='decision' for _,kind in active_notes(saved,root).values())
+        if 'brief' in asked or not decided or ref in saved:return []
+        return [('brief',{'short':short_ref(hit['domain'],hit['id']),'title':hit['title']})]
+    if 'unbriefed' in asked or receipted:return []
+    if docs or signal in BLOCKING_SIGNALS or (state.get('mutating') and active_count(domain,root,MIN_NOTES)>=MIN_NOTES):
+        folder=project_dir(cwd,bindings);return [('unbriefed',{'dir':project_key(folder,bindings),'name':repo_name(folder)})]
+    return []
 
 def _doc_file(shown,prefixes):
     """The file a path shown to notes names, else None."""
@@ -1409,6 +1462,13 @@ def _stop_part(kind,data,session):
               f"changed: CMD update {s} --session {session} --set-detail '**Label:** ...'.")
         if data.get('type')=='bug':text+=f" If this fixed it: CMD update {s} --session {session} --set-detail '**Fix:** ...' then CMD resolve {s}."
         return text
+    if kind=='unbriefed':
+        return (f"{data['name']} has no project brief (goals, owners, phase, key decisions): "
+                f"CMD capture --session {session} --type brief --file '{data['dir']}' --title '{data['name']} project brief' --summary '...' "
+                "--detail '**Goals and scope:** ...' (and Team and ownership, Current phase, Key decisions).")
+    if kind=='brief':
+        return (f"a decision was made or recorded this turn: if project brief {data['short']} no longer matches it, "
+                f"CMD update {data['short']} --session {session} --set-detail '**Key decisions:** ...' (or Team and ownership, Current phase, status and blockers).")
     return map_sentence(data[0],kind,data[1],session)
 
 def stop_text(pending,session,used=None):
@@ -1423,7 +1483,7 @@ def stop_text(pending,session,used=None):
         if kind=='follow' and notes>=STOP_NOTES:continue
         fits=lambda text:not parts or len('Living Memory: '+' '.join(parts+[text]))+len(closing)<=STOP_TEXT_CAP
         part=_stop_part(kind,data,session)
-        if kind in MAP_KINDS and parts:part='Also: '+part
+        if kind in MAP_KINDS+BRIEF_KINDS and parts:part='Also: '+part
         # A document that does not fit with its notes is still asked about, with fewer of them.
         while not fits(part) and kind=='doc' and data['notes']:data={**data,'notes':data['notes'][:-1]};part=_stop_part(kind,data,session)
         if not fits(part):continue

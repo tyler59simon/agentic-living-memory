@@ -1,0 +1,22 @@
+{
+ "name": "project-brief",
+ "description": "A project with no brief is asked for one at Stop (here after a directive, in the same reminder); once captured, the next session's first prompt injects the brief once per revision and SessionStart points to it; a later decision document edit asks for a brief update in the same reminder as the document.",
+ "steps": [
+  {"hook": "session-start", "expect": {"context_excludes": ["Project brief"]}},
+  {"hook": "user-prompt", "payload": {"prompt": "> Directive CFO-2025-03: effective immediately, all monetary amounts must be BigDecimal with scale 4, replacing the earlier long-cents guidance.\nApply it to the ledger."}, "expect": {"detail": {"signal": "directive"}}},
+  {"hook": "stop", "expect": {"reminder": "directive", "detail": {"pending": ["directive", "unbriefed"]}, "reminder_contains": ["shared a directive", "has no project brief", "CMD capture --session {session} --type brief --file '", "**Goals and scope:**", "Nothing durable: CMD capture-finalize --session {session}"]}},
+  {"cli": ["capture", "--session", "{session}", "--type", "brief", "--file", ".", "--title", "project project brief", "--summary", "A ledger rebuild, phase 2 of 3.", "--detail", "**Goals and scope:** Replace the legacy ledger.", "--detail", "**Team and ownership:** Priya owns billing; Marcus took over ledger on Nov 3.", "--detail", "**Key decisions:** Money is BigDecimal (docs/adr/ADR-004-money.md)."], "expect": {"exit": 0, "status": "created"}, "as": "brief"},
+  {"hook": "stop", "expect": {"stop_reason": "receipt", "reminder": null}},
+  {"session": "s2"},
+  {"hook": "session-start", "expect": {"context_contains": ["Project brief: {short:@brief} project project brief (updated "]}},
+  {"hook": "user-prompt", "payload": {"prompt": "who owns the ledger module now?"}, "expect": {"context_contains": ["Project brief — {short:@brief}", "Marcus took over ledger on Nov 3"], "detail": {"brief": {"injected": ["@brief"]}}}},
+  {"hook": "user-prompt", "payload": {"prompt": "and the billing module?"}, "expect": {"context_excludes": ["Project brief —"], "detail": {"brief": {"injected": []}}}},
+  {"hook": "stop", "expect": {"stop_reason": "no_change", "reminder": null}},
+  {"hook": "user-prompt", "payload": {"prompt": "write down the rounding decision"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Write", "tool_input": {"file_path": "{project}/docs/adr/ADR-006-rounding.md"}}, "expect": {"mutation": "tracked", "detail": {"docs": 1}}},
+  {"hook": "stop", "expect": {"reminder": "doc", "detail": {"pending": ["doc", "brief"]}, "reminder_contains": ["You changed docs/adr/ADR-006-rounding.md", "Also: a decision was made or recorded this turn", "CMD update {short:@brief} --session {session} --set-detail '**Key decisions:** ...'", "Nothing durable: CMD capture-finalize --session {session}"]}},
+  {"hook": "user-prompt", "payload": {"prompt": "another decision doc"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Write", "tool_input": {"file_path": "{project}/docs/adr/ADR-007-ids.md"}}},
+  {"hook": "stop", "expect": {"reminder": "doc", "detail": {"pending": ["doc"]}, "reminder_contains": ["You changed docs/adr/ADR-007-ids.md"]}}
+ ]
+}

@@ -39,7 +39,8 @@ TEMPLATE_PROMPTS={
     'research':'Question, sources or experiments, observations vs inference, open questions.',
     'policy':'The mandatory rule, its authority and where it applies.',
     'map':'A repo orientation: purpose, layout, entry points, key modules, data flow, build/test/run, conventions.',
-    'runbook':'An operational procedure: when to use it, preconditions, numbered steps, how to verify, how to roll back.'}
+    'runbook':'An operational procedure: when to use it, preconditions, numbered steps, how to verify, how to roll back.',
+    'brief':'The project brief: goals and scope, stakeholders, team and ownership, current phase and blockers, key decisions (each pointing to where it is recorded), active risks, glossary.'}
 
 def _hash(path):
     try:return digest(path.read_bytes())
