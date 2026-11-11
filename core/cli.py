@@ -154,6 +154,9 @@ def doctor(root,cwd,explicit=None,domain=None):
     from .sources import listing as sources_listing
     try:warnings+=['sources: '+w for w in sources_listing(root)['warnings']]
     except ValueError as exc:warnings.append(f'sources.json: {exc}')
+    from .changes import listing as changes_listing
+    try:warnings+=['changes: '+w for w in changes_listing(root)['warnings']]
+    except ValueError as exc:warnings.append(f'changes.json: {exc}')
     stale=staleness_warning(root,sum(counts.values()))
     if stale:warnings.append(stale)
     from .logs import summary as log_summary
@@ -225,7 +228,7 @@ def _sectioned(args,body=''):
 
 # source-sync writes only the derived knowledge-base index (as search --rebuild does the notes' one), so subagents and viewers may run it
 # (not for a remote source, which it would pull from the network: sources.sync refuses that for them).
-READ_ONLY={'search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','ask','sources','source-sync','ingest-scan'}
+READ_ONLY={'search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','ask','sources','source-sync','ingest-scan','changes'}
 # Viewer: a human-facing app browsing the store. Read-only, and its reads are not usage evidence for the diary.
 VIEWER=READ_ONLY|{'taxonomy','review','diff','inspect-plan'}
 SERVE_API=2
@@ -483,6 +486,8 @@ def main(argv=None):
     p=sub('ingest-scan');p.add_argument('--source',help='One source (a `sources` name); default: all of the domain');p.add_argument('--limit',type=int,default=50);p.add_argument('--changed',action='store_true',help='Only files with no digest yet or a stale one')
     p=sub('ingest-skip');p.add_argument('--payload-file',type=Path)
     p=sub('ask');p.add_argument('query',nargs='+',help='A question about the project');p.add_argument('--limit',type=int,default=5,help='Notes and source excerpts shown, at most, of each')
+    p=sub('change-plan');p.add_argument('action',choices=['create','update','close']);p.add_argument('--payload-file',type=Path)
+    p=sub('changes');p.add_argument('--status',choices=['active','done','cancelled','any'],default='any');p.add_argument('--project',help='Only the changes of this project slug')
     p=sub('batch');p.add_argument('--payload-file',type=Path)
     p=sub('retag-plan');p.add_argument('--payload-file',type=Path)
     p=sub('remap-plan');p.add_argument('--payload-file',type=Path)
@@ -937,6 +942,13 @@ def main(argv=None):
         elif cmd=='ask':
             if not domain:raise ValueError('unbound_project')
             result=_ask(root,domain,' '.join(args.query),args.limit)
+        elif cmd=='change-plan':
+            from .changes import change_plan
+            result=change_plan(root,args.action,_payload(args))
+            result['hint']='Review with inspect-plan PLAN_ID, then apply PLAN_ID --expected-plan-sha256 DIGEST.'
+        elif cmd=='changes':
+            from .changes import listing
+            result=listing(root,args.status,args.project)
         elif cmd=='taxonomy':result=read_json(root/'tag_taxonomy.json',{'tags':[]})
         elif cmd=='batch':
             import contextlib,io
