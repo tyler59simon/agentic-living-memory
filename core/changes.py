@@ -7,7 +7,7 @@ import re,uuid
 from pathlib import Path
 from . import projects,systems
 from .projects import _charter_domain,_repos,_text
-from .repository import read_json,canonical_json,find_secrets,store_lock,now
+from .repository import read_json,canonical_json,digest,find_secrets,store_lock,now
 
 STAGES=('explore','design','implement','validate')
 STATUSES=('active','done','cancelled')
@@ -80,7 +80,7 @@ def change_plan(root,action,payload):
     extra=set(payload)-FIELDS[action]
     if extra:raise ValueError('Unknown payload fields: '+', '.join(sorted(extra)))
     with store_lock(root):
-        entries=load(root)['changes'];stamp=now();files={}
+        entries=load(root)['changes'];stamp=now();files={};guards=None
         if action=='create':
             for key in ('project','title','brief'):
                 if key not in payload:raise ValueError(f'create requires {key}')
@@ -100,16 +100,23 @@ def change_plan(root,action,payload):
                 if taken:raise ValueError(f"That note is already the brief of {display(taken['id'])}")
                 missing=set(tags)-set(note.get('tags') or [])
                 if missing:files.update(_change_set(note_id,domain,'retag',root,tags=sorted(set(note.get('tags') or [])|missing))[0])
+                else:
+                    # Nothing to write to the note, so guard it: a note resolved, retyped or deleted before apply makes the plan stale.
+                    from .notes import find_note
+                    rel=find_note(note_id,domain,root)[0];guards={'read_set':{Path(rel).resolve().relative_to(root).as_posix():digest(Path(rel).read_bytes())}}
             else:
                 if not isinstance(brief,dict) or not isinstance(brief.get('body'),str) or not brief['body'].strip():raise ValueError('create requires brief.body (with an Executive Summary), or brief as the reference of an existing plan note')
                 if set(brief)-{'domain','title','body'}:raise ValueError('brief accepts domain, title and body')
                 if not isinstance(brief.get('title') or '',str):raise ValueError('brief.title must be a string')
+                if brief.get('title'):
+                    _text(brief['title'],'brief.title',1,120)
+                    if UNLINKABLE.search(brief['title']):raise ValueError('brief.title cannot contain [ ] | or #')
                 domain=_charter_domain(root,brief.get('domain'),[entry['repo']] if entry['repo'] else project.get('repos') or [],'brief.domain')
                 note_id=str(uuid.uuid4())
                 path,note,text=build_note(f"{display(number)} {brief.get('title') or entry['title']}",brief['body'],['subject/project','concern/workflow']+tags,domain,root,'plan',note_id=note_id)
                 files[path.relative_to(root).as_posix()]=text
             entry['brief']=f'{domain}:{note_id}';files['changes.json']=_registry(entries+[entry])
-            return plan(root,files,'change_create',[domain],{'id':number,'display':display(number),'title':entry['title'],'fields':sorted(payload),'brief':entry['brief'],'adopted':isinstance(brief,str),'files':len(files)})
+            return plan(root,files,'change_create',[domain],guards=guards,summary={'id':number,'display':display(number),'title':entry['title'],'fields':sorted(payload),'brief':entry['brief'],'adopted':isinstance(brief,str),'files':len(files)})
         number=_number(payload.get('id'));current=next((c for c in entries if c['id']==number),None)
         if not current:raise ValueError(f'Unknown change {display(number)}')
         if action=='close':

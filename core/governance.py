@@ -48,7 +48,7 @@ def _check_guards(root,value):
     for rel,expected in guards.get('read_set',{}).items():
         path=confined(root,rel)
         if (digest(path.read_bytes()) if path.exists() else None)!=expected:
-            raise ValueError('stale plan: learning dependency changed: '+rel)
+            raise ValueError('stale plan: a file this plan depends on changed: '+rel)
     admission=guards.get('learning_admission')
     if admission:
         for note in inventory(admission['domain'],root,retired=True):

@@ -87,6 +87,17 @@ class Changes(Fixture):
         code,result=self.plan('create',{'project':'paystream','title':'Bad','brief':'demo:'+dshort});self.assertNotEqual(code,0);self.assertIn('active plan note',json.dumps(result))
         code,result=self.plan('create',{'project':'paystream','title':'Bad','brief':GHOST});self.assertNotEqual(code,0);self.assertIn('does not resolve',json.dumps(result))
 
+    def test_adopting_a_note_that_needs_no_retag_still_guards_it(self):
+        code,cap=self.cli('--domain','demo','capture','--type','plan','--title','Tagged plan','--summary','Summary text.','--subject','project','--concern','workflow','--project','paystream','--action','Do it')
+        self.assertEqual(code,0,cap);short=str(cap.get('ref') or cap.get('id') or cap.get('note_id')).split(':')[-1]
+        self.assertIn('project/paystream',self.note('demo:'+short)['tags'])
+        code,plan=self.plan('create',{'project':'paystream','title':'Tagged plan','brief':'demo:'+short});self.assertEqual(code,0,plan)
+        self.assertEqual(plan['summary']['files'],1)
+        code,res=self.cli('--domain','demo','resolve',short);self.assertEqual(code,0,res)
+        if isinstance(res,dict) and res.get('plan_id'):self.apply(res)
+        code,result=self.cli('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest']);self.assertNotEqual(code,0,result)
+        self.assertIn('stale plan',json.dumps(result));self.assertFalse((self.root/'changes.json').exists())
+
     def test_update_touches_only_the_registry(self):
         self.create();code,plan=self.plan('update',{'id':'CHG-001','stage':'design','branch':'feature/x','title':'New title'});self.assertEqual(code,0,plan)
         self.assertEqual(plan['kind'],'change_update');_,view=self.cli('inspect-plan',plan['plan_id']);self.assertEqual([e['path'] for e in view['effects']],['changes.json'])
@@ -123,7 +134,7 @@ class Changes(Fixture):
         cases=[({'project':'ghost'},'unknown project'),({'system':'ghost'},'unknown system'),({'title':None},'requires title'),({'brief':None},'requires brief'),
                ({'brief':{'body':'## Key Details\n* only details'}},'Executive Summary'),({'brief':{'body':BRIEF,'extra':1}},'brief accepts'),({'repo':'rel/path'},'absolute'),
                ({'stage':'ship'},'stage must be one of'),({'status':'active'},'Unknown payload'),({'title':'Fix [x]'},'cannot contain'),({'title':'x'*121},'1..120'),
-               ({'system':None},'element needs a system'),({'title':'Rotate '+'sk-'+'a'*24},'credential')]
+               ({'system':None},'element needs a system'),({'brief':{'body':BRIEF,'title':'Fix #42'}},'brief.title cannot contain'),({'title':'Rotate '+'sk-'+'a'*24},'credential')]
         for kw,message in cases:
             value=self.payload(**kw)
             for key in ('title','brief'):
