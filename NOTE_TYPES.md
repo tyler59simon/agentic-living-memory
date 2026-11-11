@@ -98,6 +98,8 @@ A project's charter is a `context` note tagged `project/<slug>` (with `subject/p
 
 A system's passport is a `context` note tagged `system/<slug>` (with `subject/project` and `concern/architecture`); `system-plan create` writes it and `systems.json` links to it.
 
+A change's brief is a `plan` note tagged `project/<slug>` (with `subject/project` and `concern/workflow`); `change-plan create` writes it, or adopts an existing plan note, and `changes.json` links to it.
+
 Date status snapshots in the body and preserve the information needed to interpret them later. When a snapshot becomes misleading, use an approved update, archive or supersession plan. The system does not automatically expire status notes or treat a plan, risk or policy as an executable instruction.
 
 ## Capture and existing-note conversion
