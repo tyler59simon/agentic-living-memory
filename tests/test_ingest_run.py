@@ -1,7 +1,7 @@
 """scripts/ingest_run.py driven with a FAKE agent (a small Python script that reads the prompt, calls the real LM CLI against a temp store to
-capture a digest per listed file, and prints a JSON report with a cost): batching, --changed-only, --budget-usd, --dry-run, idempotent
+capture a digest per listed file, and prints a JSON report with a cost): batching, new/stale only by default (--all, the --changed-only alias), skip markers, --budget-usd, --dry-run, idempotent
 reruns, and a changed file's new digest replacing the old one. No real claude or codex process is ever started."""
-import json,re,subprocess,sys,unittest
+import json,re,subprocess,sys,unittest,unittest.mock
 from pathlib import Path
 from test_digests import Digests,put
 from core import sources
@@ -68,7 +68,7 @@ class Batches(IngestRun):
         order=[path for p in prompts for path in self.listed(p)];self.assertEqual(order[:3],['kb/docs/adr/0003-use-event-sourcing.md','kb/README.md','kb/docs/guide.md'])
         self.assertEqual(len(order),total)
         self.assertEqual((out['batches_run'],out['files_digested'],out['files_skipped']),(len(prompts),total-1,1));self.assertEqual(out['cost_usd'],0.5*len(prompts))
-        self.assertEqual(out['verified'],{'current':total-1,'still_open':1});self.assertTrue(out['ok'])
+        self.assertEqual(out['verified'],{'current':total-1,'skipped':1,'still_open':0});self.assertTrue(out['ok'])
         notes=self.active();self.assertEqual(len(notes),total-1)
         adr=next(n for n in notes if n['sources'][0]['path']=='kb/docs/adr/0003-use-event-sourcing.md');self.assertEqual(adr['type'],'decision')
         rows=[json.loads(l) for l in self.log.read_text(encoding='utf-8').splitlines()]
@@ -95,25 +95,51 @@ class Batches(IngestRun):
 class Reruns(IngestRun):
     def test_a_rerun_writes_nothing_new(self):
         self.run_script('--batch','4');before={n['id']:n['revision'] for n in self.active()};self.assertTrue(before)
-        out=self.run_script('--batch','4');after={n['id']:n['revision'] for n in self.active()}
+        out=self.run_script('--batch','4','--all');self.assertEqual(out['batches_run'],-(-self.total()//4));after={n['id']:n['revision'] for n in self.active()}
         self.assertEqual(after,before);self.assertEqual(out['verified']['current'],len(before))
         self.assertEqual(len([n for n in inventory('demo',self.root,retired=True)]),len(before))   # not even a retired copy
 
-    def test_changed_only_sends_new_and_stale_files_and_nothing_else(self):
+    def test_by_default_only_new_and_stale_files_are_sent(self):
         self.run_script('--batch','4');self.calls.unlink()
-        out=self.run_script('--changed-only');self.assertEqual(out['batches_run'],0);self.assertFalse(self.calls.exists())
+        out=self.run_script();self.assertEqual(out['batches_run'],0);self.assertFalse(self.calls.exists())
         put(self.repo/'README.md',self.repo.joinpath('README.md').read_text(encoding='utf-8')+'## Timeouts\n\nFive seconds.\n')
         put(self.repo/'docs'/'ops.md','# On-call\n\nPage the billing team.\n');sources.sync(self.root,'demo')
-        out=self.run_script('--changed-only');prompts=self.prompts();self.assertEqual(len(prompts),1)
+        out=self.run_script('--changed-only');prompts=self.prompts();self.assertEqual(len(prompts),1)   # the old flag is a no-op alias
         self.assertEqual(sorted(self.listed(prompts[0])),['kb/README.md','kb/docs/ops.md'])
-        self.assertIn('stale',prompts[0]);self.assertIn('new',prompts[0]);self.assertEqual(out['verified'],{'current':2,'still_open':0})
+        self.assertIn('stale',prompts[0]);self.assertIn('new',prompts[0]);self.assertEqual(out['verified'],{'current':2,'skipped':0,'still_open':0})
 
     def test_a_stale_file_is_re_digested_by_replacing_the_old_digest(self):
         self.run_script('--batch','4');old=next(n for n in self.active() if n['sources'][0]['path']=='kb/README.md')
         put(self.repo/'README.md',self.repo.joinpath('README.md').read_text(encoding='utf-8')+'## Timeouts\n\nFive seconds.\n');sources.sync(self.root,'demo')
-        out=self.run_script('--changed-only');self.assertEqual(out['files_digested'],1)
+        out=self.run_script();self.assertEqual(out['files_digested'],1)
         active=[n for n in self.active() if n['sources'][0]['path']=='kb/README.md'];self.assertEqual(len(active),1);self.assertNotEqual(active[0]['id'],old['id'])
         retired={n['id']:n for n in inventory('demo',self.root,retired=True)}[old['id']];self.assertEqual(retired['status'],'superseded');self.assertEqual(retired['superseded_by'],active[0]['id'])
         self.assertEqual(self.cli('ingest-scan','--changed','--limit','100')[1]['counts']['stale'],0)
+
+class Skips(IngestRun):
+    UTIL='kb/src/util.py'
+    def setUp(self):
+        super().setUp()
+        self.run_script('--batch','4',agent=('--skip-util',));self.calls.unlink()
+    def test_a_skipped_file_is_remembered_and_not_sent_again(self):
+        sidecar=json.loads((self.root/'domains'/'demo'/'.ingest-skips.json').read_text(encoding='utf-8'))
+        self.assertEqual(list(sidecar),[self.UTIL]);self.assertEqual((sidecar[self.UTIL]['reason'],len(sidecar[self.UTIL]['sha256'])),('trivial',64));self.assertIn('at',sidecar[self.UTIL])
+        found=self.cli('ingest-scan','--limit','100')[1];self.assertEqual(found['counts']['skipped'],1)
+        self.assertEqual({i['path']:i['status'] for i in found['items']}[self.UTIL],'skipped');self.assertNotIn(self.UTIL,[i['path'] for i in self.cli('ingest-scan','--changed','--limit','100')[1]['items']])
+        out=self.run_script();self.assertEqual(out['batches_run'],0);self.assertFalse(self.calls.exists())
+    def test_all_sends_skipped_and_current_files_again(self):
+        self.run_script('--batch','100','--all');prompts=self.prompts();self.assertEqual(len(prompts),1);self.assertIn(self.UTIL,self.listed(prompts[0]));self.assertEqual(len(self.listed(prompts[0])),self.total())
+    def test_a_changed_skipped_file_is_offered_again(self):
+        put(self.repo/'src'/'util.py','def tiny():'+chr(10)+'    return 2'+chr(10)+('# now it matters'+chr(10))*30);sources.sync(self.root,'demo')
+        self.assertEqual({i['path']:i['status'] for i in self.cli('ingest-scan','--limit','100')[1]['items']}[self.UTIL],'new')
+        out=self.run_script();self.assertEqual([self.listed(p) for p in self.prompts()],[[self.UTIL]])
+    def test_the_skip_list_keeps_the_newest_five_thousand(self):
+        from core import digests
+        with unittest.mock.patch.object(digests,'MAX_SKIPS',2):
+            for name in ('a','b','c'):
+                put(self.repo/f'{name}.md',name);digests.record_skips(self.root,'demo',[{'path':f'kb/{name}.md','reason':'x'}])
+        self.assertEqual(sorted(digests.skips(self.root,'demo')),['kb/b.md','kb/c.md'])
+    def test_ingest_skip_is_a_main_agent_write(self):
+        code,_=self.cli('--actor','subagent','ingest-skip');self.assertNotEqual(code,0)
 
 if __name__=='__main__':unittest.main()

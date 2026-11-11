@@ -2,10 +2,11 @@
 
 Living Memory never calls a model; this script does the calling, one batch of files per agent run, and the agent writes
 its digests through the normal LM CLI (`capture ... --source PATH`, so each digest records the file's hash and reads STALE
-when the file changes). Reruns are idempotent: a digest's capture key is digest:<path>:<sha256>, so a file whose content
+when the file changes). Only new and stale files are sent (--all adds current and skipped ones); a file the agent skips as trivial is
+remembered (ingest-skip, a sidecar in the domain folder) until its content changes. Reruns are idempotent: a digest's capture key is digest:<path>:<sha256>, so a file whose content
 was already digested is left alone, and a changed file's new digest replaces the old one.
 
-    py -3.15 scripts/ingest_run.py --domain demo --batch 8 --max-batches 5 --budget-usd 3 [--changed-only] [--dry-run]
+    py -3.15 scripts/ingest_run.py --domain demo --batch 8 --max-batches 5 --budget-usd 3 [--all] [--dry-run]
     ... --command-json '["claude","-p","{prompt}","--model","{model}","--output-format","json","--allowedTools","Read","Bash"]'
 
 The agent argv template takes {prompt} and {model}; without {prompt} the prompt goes to the agent's stdin. No shell is used.
@@ -45,10 +46,10 @@ After the files: if this batch changed what the project brief or the codebase ma
 Finish with exactly one JSON object as the last thing you print: {{"digested": ["path", ...], "skipped": [{{"path": "...", "reason": "..."}}]}}"""
 
 
-def lm(args, *argv, check=True):
+def lm(args, *argv, check=True, stdin=None):
     """Run the LM CLI; its JSON reply."""
     cmd = [sys.executable, str(args.cli), '--root', str(args.root), '--cwd', args.cwd] + (['--domain', args.domain] if args.domain else []) + list(argv)
-    done = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', env=dict(os.environ, PYTHONUTF8='1'), cwd=args.cwd)
+    done = subprocess.run(cmd, input=stdin, capture_output=True, text=True, encoding='utf-8', env=dict(os.environ, PYTHONUTF8='1'), cwd=args.cwd)
     if done.returncode and check:
         raise SystemExit(f'living_memory {" ".join(argv[:2])} failed: {(done.stderr or done.stdout).strip()[:500]}')
     return json.loads(done.stdout) if done.stdout.strip().startswith('{') else {}
@@ -134,7 +135,8 @@ def main(argv=None):
     parser.add_argument('--max-batches', type=int, help='Stop after this many batches')
     parser.add_argument('--budget-usd', type=float, help='Stop starting batches once the reported costs add up to this')
     parser.add_argument('--parallel', type=int, default=1, help='Agents at once (default 1: memory is limited)')
-    parser.add_argument('--changed-only', action='store_true', help='Only files with no digest yet or a stale one')
+    parser.add_argument('--all', action='store_true', help='Also send files that are current or were skipped (default: only new and stale ones)')
+    parser.add_argument('--changed-only', action='store_true', help=argparse.SUPPRESS)   # the default now; accepted for compatibility
     parser.add_argument('--model', default='sonnet')
     parser.add_argument('--command-json', help='Agent argv as a JSON array, with {prompt} and {model} placeholders')
     parser.add_argument('--allowed-tools', nargs='*', help='Tools for the default agent command (default: Read Glob Grep and this LM CLI)')
@@ -156,8 +158,8 @@ def main(argv=None):
     args.root, args.cwd = Path(args.root).resolve(), str(Path(args.cwd).resolve())
     if args.allowed_tools is None:
         args.allowed_tools = ['Read', 'Glob', 'Grep', f'Bash({sys.executable} {args.cli}:*)']
-    scan = lm(args, 'ingest-scan', '--limit', '1000000', *(['--source', args.source] if args.source else []), *(['--changed'] if args.changed_only else []))
-    items = [i for i in scan['items'] if not (args.changed_only and i['status'] == 'current')]
+    scan = lm(args, 'ingest-scan', '--limit', '1000000', *(['--source', args.source] if args.source else []), *([] if args.all else ['--changed']))
+    items = [i for i in scan['items'] if args.all or i['status'] in ('new', 'stale')]
     batches = [items[i:i + args.batch] for i in range(0, len(items), args.batch)][:args.max_batches]
     if args.dry_run:
         print(json.dumps({'ok': True, 'dry_run': True, 'domain': scan['domain'], 'files': sum(map(len, batches)), 'counts': scan['counts'],
@@ -176,6 +178,8 @@ def main(argv=None):
                 spent += row['cost_usd']
                 failed += bool(row['returncode'])
                 rows.append(row)
+                if row['skipped']:   # remembered at the files' present hashes, so they are not offered again until they change
+                    lm(args, 'ingest-skip', stdin=json.dumps({'skipped': row['skipped']}), check=False)
                 out.write(json.dumps(row, ensure_ascii=False) + '\n')
                 out.flush()
                 print(f"batch {row['batch']}: {len(row['digested'])} digested, {len(row['skipped'])} skipped, ${row['cost_usd']:.2f}"
@@ -184,7 +188,7 @@ def main(argv=None):
         after = {i['path']: i['status'] for i in lm(args, 'ingest-scan', '--limit', '1000000', *(['--source', args.source] if args.source else []))['items']} if rows else {}
         summary = {'ok': not failed, 'domain': scan['domain'], 'batches_run': len(rows), 'batches_planned': len(batches), 'files_digested': len({p for r in rows for p in r['digested']}),
                    'files_skipped': len({s['path'] for r in rows for s in r['skipped']}), 'cost_usd': round(spent, 4),
-                   'verified': {'current': sum(after.get(p) == 'current' for p in ran), 'still_open': sum(after.get(p) in ('new', 'stale') for p in ran)},
+                   'verified': {'current': sum(after.get(p) == 'current' for p in ran), 'skipped': sum(after.get(p) == 'skipped' for p in ran), 'still_open': sum(after.get(p) in ('new', 'stale') for p in ran)},
                    'batches_failed': failed, 'log': str(log)}
         out.write(json.dumps({'summary': summary}) + '\n')
     print(json.dumps(summary, indent=1))

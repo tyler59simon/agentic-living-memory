@@ -466,6 +466,7 @@ def main(argv=None):
     p=sub('sources')
     p=sub('source-sync');p.add_argument('name',nargs='?',help='One source; default: all of the domain');p.add_argument('--rebuild',action='store_true',help='Drop and re-read what was indexed (all sources, or just NAME)')
     p=sub('ingest-scan');p.add_argument('--source',help='One source (a `sources` name); default: all of the domain');p.add_argument('--limit',type=int,default=50);p.add_argument('--changed',action='store_true',help='Only files with no digest yet or a stale one')
+    p=sub('ingest-skip');p.add_argument('--payload-file',type=Path)
     p=sub('ask');p.add_argument('query',nargs='+',help='A question about the project');p.add_argument('--limit',type=int,default=5,help='Notes and source excerpts shown, at most, of each')
     p=sub('batch');p.add_argument('--payload-file',type=Path)
     p=sub('retag-plan');p.add_argument('--payload-file',type=Path)
@@ -903,6 +904,12 @@ def main(argv=None):
             from .digests import scan
             if not domain:raise ValueError('unbound_project')
             result=scan(root,domain,args.source,max(1,min(100000,args.limit)),args.changed,load_bindings(root))
+        elif cmd=='ingest-skip':
+            from .digests import record_skips
+            if not domain:raise ValueError('unbound_project')
+            data=_payload(args);items=data.get('skipped') if isinstance(data,dict) else data
+            if not isinstance(items,list):raise ValueError('ingest-skip takes {"skipped": [{"path", "reason"}, ...]}')
+            with store_lock(root):result={'ok':True,'domain':domain,'recorded':record_skips(root,domain,items,cwd,load_bindings(root))}
         elif cmd=='source-sync':
             from .sources import sync
             if not domain:raise ValueError('unbound_project')

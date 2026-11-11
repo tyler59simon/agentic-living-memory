@@ -10,7 +10,7 @@ from __future__ import annotations
 import fnmatch,hashlib,os,re
 from pathlib import Path
 from .common import domain_prefixes,load_bindings
-from .repository import inventory
+from .repository import inventory,read_json,canonical_json,now
 
 NAMED=re.compile(r'([a-z0-9][a-z0-9._-]+):(.+)\Z')   # `wiki:Retry-Policy.md`; a single letter before the colon is a drive
 SHOWN=3
@@ -118,6 +118,29 @@ def mark(hits,root,bindings=None):
             text=stale_note(dict(hit,sources=sources),root,bindings)
             if text:hit['stale']=text
 
+# ---- skip markers: files an agent judged not worth a digest ---------------------------------------------------------
+SKIPS='.ingest-skips.json'   # domains/<D>/: {path: {sha256, reason, at}}; a non-canonical sidecar (not validated, not backed up), like .signals-seen.json
+MAX_SKIPS=5000
+
+def skips(root,domain):
+    try:found=read_json(Path(root)/'domains'/domain/SKIPS,{})
+    except (OSError,ValueError):return {}
+    return found if isinstance(found,dict) else {}
+
+def record_skips(root,domain,items,cwd=None,bindings=None):
+    """Remember [{path, reason}] as skipped at the files' current hashes (a path that cannot be resolved is ignored); the newest MAX_SKIPS are kept. The count recorded."""
+    from .common import atomic_write
+    bindings=bindings if bindings is not None else load_bindings(root);found=skips(root,domain);count=0
+    for item in items:
+        try:sha=describe(root,domain,item['path'],cwd,bindings)
+        except (ValueError,KeyError,TypeError):continue
+        found[sha['path']]={'sha256':sha['sha256'],'reason':str(item.get('reason') or '')[:200],'at':now()};count+=1
+    if count:
+        kept=dict(sorted(found.items(),key=lambda kv:str((kv[1] or {}).get('at')))[-MAX_SKIPS:])
+        folder=Path(root)/'domains'/domain
+        if folder.is_dir():atomic_write(folder/SKIPS,canonical_json(kept))
+    return count
+
 # ---- ingest-scan: a ranked worklist ----------------------------------------------------------------------------------
 ADR=re.compile(r'(?:^|/)(?:adrs?|decisions?|decision-records?)/|(?:^|/)adr[-_ ]?\d',re.I)
 ENTRY=frozenset('main app cli server index __main__ manage wsgi asgi program startup application bootstrap'.split())
@@ -150,8 +173,8 @@ def _references(db,name,file_id):
 
 def scan(root,domain,source=None,limit=50,changed_only=False,bindings=None):
     """The ranked worklist of the domain's indexed files: {items, counts, total}. Each item has path (the form `--source` and `sources` use),
-    source, kind, size, status (new | stale | current, against the active notes whose `sources` list the path) and, when one exists, digest
-    (its ref); `file` is the path for `--file` when it lies in a bound folder; `abs` is where to read it. Reads the index and the files of existing digests only."""
+    source, kind, size, status (new | stale | current | skipped, against the active notes whose `sources` list the path) and, when one exists, digest
+    (its ref; skipped: an agent judged the file not worth a digest, see record_skips); `file` is the path for `--file` when it lies in a bound folder; `abs` is where to read it. Reads the index and the files of existing digests only."""
     from . import sources as library
     bindings=bindings if bindings is not None else load_bindings(root);specs=_specs(root,domain,bindings)
     if source is not None and source not in specs:raise ValueError(f'unknown source {source}; `sources` lists them')
@@ -179,15 +202,16 @@ def scan(root,domain,source=None,limit=50,changed_only=False,bindings=None):
     for n in inventory(domain,root):
         if n.get('status','active')=='active':
             for s in n.get('sources') or []:digests.setdefault(s['path'],[]).append((str(n.get('updated') or ''),n,s['sha256']))
-    counts={'new':0,'stale':0,'current':0};items=[]
+    counts={'new':0,'stale':0,'current':0,'skipped':0};items=[];skipped=skips(root,domain)
     for r in rows:
         status,ref='new',None
         if r['path'] in digests:
             found=sorted(digests[r['path']],key=lambda d:d[0],reverse=True);live=file_sha256(bases[r['source']]/r['rel'])
             current=next((d for d in found if d[2]==live),None);pick=current or found[0]
             status='current' if current else 'stale';ref=f"{domain}:{pick[1]['id']}"
+        elif isinstance(skipped.get(r['path']),dict) and skipped[r['path']].get('sha256')==file_sha256(bases[r['source']]/r['rel']):status='skipped'   # until the file changes
         counts[status]+=1
-        if changed_only and status=='current':continue
+        if changed_only and status in ('current','skipped'):continue
         item={'path':r['path'],'source':r['source'],'kind':r['kind'],'size':r['size'],'status':status,'abs':(bases[r['source']]/r['rel']).as_posix()}
         if ref:item['digest']=ref
         if not NAMED.match(r['path']):item['file']=r['path']
