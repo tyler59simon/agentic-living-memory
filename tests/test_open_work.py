@@ -3,7 +3,7 @@ from test_core import StoreFixture
 from core import runtime
 from core.cli import main
 from core.capture import finalize,status
-from core.notes import find_note,open_work,check_action
+from core.notes import find_note,open_work,check_action,unresolved_bugs
 from core.note_format import action_items,set_action,render
 from core.session_start import build_context
 
@@ -103,5 +103,66 @@ class OpenWork(StoreFixture):
         payload={'cwd':self.project(),'session_id':'quiet','prompt':'hi'}
         runtime.process('claude','user-prompt',payload,self.root);runtime.process('claude','stop',payload,self.root)
         self.assertFalse((self.root/'domains/demo/.last-session.json').exists())
+
+    def bug(self,title,summary,*details,**kw):return self.note(title,render(summary,details=details),type='bug',**kw)
+    def test_unresolved_bugs_are_active_bugs_without_a_recorded_cause_or_fix(self):
+        self.bug('Sync drops the last row','Rows go missing after a sync.')
+        self.bug('Cause known','Rows go missing.','**Root cause:** an off-by-one in the pager.')
+        self.bug('Fixed already','Rows went missing.','**Fix:** pad the pager.')
+        self.bug('Label without text','Rows went missing.','**Root cause:**')
+        resolved=self.bug('Resolved bug','Old.');self.cli('resolve','demo:'+resolved['id'])
+        self.note('A decision','We chose X.',type='decision')
+        self.assertEqual(sorted(n['title'] for _,n in unresolved_bugs(['demo'],self.root)),['Label without text','Sync drops the last row'])
+
+    def test_session_start_lists_unresolved_bugs_in_open_work(self):
+        bug=self.bug('Sync drops the last row','Rows go missing after a sync.')
+        text,_,_=build_context(self.project(),self.root)
+        self.assertIn('Open work (1 bug without a root cause;',text)
+        self.assertIn(f"- bug demo:{bug['id'][:8]} Sync drops the last row: no root cause recorded yet",text)
+        self.assertEqual(self.cli('update','demo:'+bug['id'],'--set-detail','**Root cause:** an off-by-one in the pager.')[0],0)
+        self.assertNotIn('Open work',build_context(self.project(),self.root)[0])
+
+    def test_a_bug_with_open_action_items_says_so_on_its_item_line_and_both_are_counted(self):
+        self.plan('Crash on empty file',['Find the cause'],kind='bug');self.plan('Rollout plan',['Deploy'])
+        self.bug('Sync drops the last row','Rows go missing after a sync.')
+        text,_,_=build_context(self.project(),self.root)
+        self.assertIn('Open work (2 items in 2 notes, 2 bugs without a root cause;',text)
+        self.assertIn('Crash on empty file — Find the cause (no root cause recorded yet)',text)
+        self.assertIn('Sync drops the last row: no root cause recorded yet',text)
+        self.assertNotIn('Rollout plan — Deploy (no root',text)
+
+    def test_a_bug_recorded_as_a_pitfall_is_a_gotcha_not_open_work(self):
+        self.bug('Never run mvnw.cmd from Git Bash','It exits 0 and builds nothing. Run ./mvnw instead.')
+        text,_,_=build_context(self.project(),self.root)
+        self.assertIn('Known gotchas',text);self.assertNotIn('Open work',text)
+
+    def test_unexplained_bug_lines_are_the_first_thing_to_go_when_the_budget_is_tight(self):
+        self.plan('Rollout plan',['Deploy to staging'])
+        for i in range(3):self.bug(f'Unexplained bug number {i} in area {i}',f'The exporter output differs in area {i}.',allow_similar=True)
+        trace={};full,_,_=build_context(self.project(),self.root,10000,trace=trace)
+        self.assertEqual(full.count('no root cause recorded yet'),2)   # at most OPEN_BUGS lines
+        self.assertIn('Open work (1 item in 1 note, 3 bugs without a root cause;',full);self.assertEqual((trace['degrade']['opened'],trace['degrade']['open_of']),(3,3))
+        lines=full.split('\n');start=next(i for i,l in enumerate(lines) if l.startswith('Open work'))
+        without_bugs=len('\n'.join(lines[:start+2]+lines[start+4:]))
+        trace={};tight,_,_=build_context(self.project(),self.root,without_bugs,trace=trace)
+        self.assertNotIn('no root cause recorded yet',tight)
+        self.assertIn('Rollout plan — Deploy to staging',tight);self.assertEqual(trace['degrade']['opened'],1)
+        self.assertIn('Other notes',tight)   # the bug lines went before the index did
+
+    def test_with_bugs_only_and_no_room_the_section_goes_rather_than_leaving_a_bare_header(self):
+        self.bug('Sync drops the last row','Rows go missing after a sync.')
+        full,_,_=build_context(self.project(),self.root,10000);self.assertIn('Open work (1 bug',full)
+        lines=full.split('\n');start=next(i for i,l in enumerate(lines) if l.startswith('Open work'))
+        tight,_,_=build_context(self.project(),self.root,len('\n'.join(lines[:start]+lines[start+2:])))
+        self.assertNotIn('Open work',tight);self.assertIn('Sync drops the last row',tight)   # still indexed
+
+    def test_follow_through_on_an_open_bug_suggests_recording_the_fix_and_resolving(self):
+        bug=self.bug('Lexer crash on empty file','src/lexer.py raises IndexError on an empty file.',files=['src/lexer.py'])
+        payload={'cwd':self.project(),'session_id':'bug','prompt':'fix the empty file crash'}
+        runtime.process('claude','session-start',payload,self.root);runtime.process('claude','user-prompt',payload,self.root)
+        runtime.process('claude','pre-tool-use',{**payload,'tool_name':'Edit','tool_input':{'file_path':str(self.base/'project'/'src'/'lexer.py')}},self.root)
+        reason=runtime.process('claude','stop',payload,self.root)['continue_reason']
+        s='demo:'+bug['id'][:8]
+        self.assertIn(f"CMD update {s} --session bug --set-detail '**Fix:** ...' then CMD resolve {s}",reason)
 
 if __name__=='__main__':unittest.main()

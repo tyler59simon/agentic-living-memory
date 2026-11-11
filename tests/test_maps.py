@@ -1,12 +1,14 @@
-import contextlib,io,json,unittest
+import contextlib,io,json,os,shutil,subprocess,unittest
+from datetime import datetime,timedelta,timezone
 from pathlib import Path
 from unittest.mock import patch
 from test_core import StoreFixture
 from core import runtime
 from core.cli import main
 from core.common import load_bindings
-from core.maps import named_repos,find_map,repo_of,candidate_repos
-from core.notes import find_note
+from core.maps import named_repos,find_map,repo_of,candidate_repos,changed_since,cited_paths,currency,freshness
+from core.notes import find_note,change
+from core import usage
 from core.init_domain import init_domain
 
 class Maps(StoreFixture):
@@ -180,5 +182,201 @@ class Maps(StoreFixture):
             self.assertIsNone(quick(hive))
             for i in range(3):self.tool('Read',{'file_path':str(self.hive/f'x{i}.py')})
             self.assertEqual(quick({**hive,'agent_id':'a9'}),{})   # explored: nothing left for anyone
+
+GIT=shutil.which('git')
+LONG_AGO='2020-01-01T00:00:00+00:00'
+
+def later(hours=1):return (datetime.now(timezone.utc)+timedelta(hours=hours)).isoformat(timespec='seconds')
+
+def git(repo,*args,when=None):
+    env={**os.environ,'GIT_AUTHOR_NAME':'t','GIT_AUTHOR_EMAIL':'t@example.org','GIT_COMMITTER_NAME':'t','GIT_COMMITTER_EMAIL':'t@example.org'}
+    if when:env.update(GIT_AUTHOR_DATE=when,GIT_COMMITTER_DATE=when)
+    return subprocess.run(['git','-C',str(repo),*args],check=True,capture_output=True,env=env,text=True).stdout
+
+def commit(repo,files,when,message='change'):
+    for name,text in files.items():
+        path=Path(repo)/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(text,encoding='utf-8')
+    git(repo,'add','-A');git(repo,'commit','-q','-m',message,when=when)
+
+@unittest.skipUnless(GIT,'git is not installed')
+class Staleness(StoreFixture):
+    """A map or brief is stale when a file it cites changed after it was written (core/maps.changed_since, cited_paths, currency)."""
+    def setUp(self):
+        super().setUp()
+        (self.root/'tag_taxonomy.json').write_text(json.dumps({'tags':['subject/project','concern/architecture','concern/decision','concern/knowledge']}))
+        self.project=self.base/'project';self.app=self.project/'app';self.app.mkdir(parents=True)
+        git(self.app,'init','-q');git(self.app,'symbolic-ref','HEAD','refs/heads/main')
+        self.app=self.app.resolve()
+        commit(self.app,{'pom.xml':'<v>1</v>','README.md':'one','src/Money.java':'long cents;','src/Other.java':'x','docs/adr/ADR-004-money.md':'# ADR-004\nlong cents\n'},LONG_AGO,'initial')
+        self.payload={'cwd':str(self.app),'session_id':'s1'}
+        self.bindings=load_bindings(self.root)
+    def cli(self,*argv):
+        out,err=io.StringIO(),io.StringIO()
+        with contextlib.redirect_stdout(out),contextlib.redirect_stderr(err):code=main(['--root',str(self.root),'--domain','demo',*argv])
+        return code,json.loads(out.getvalue() or err.getvalue())
+    def capture(self,kind='map',*extra):
+        code,made=self.cli('capture','--type',kind,'--file',str(self.app),'--title',f'app {kind}','--summary','A money service.',
+                           '--detail','**Layout:** src/Money.java holds the money type; src/ is the code.' if kind=='map' else '**Key decisions:** Money is long cents.',*extra)
+        self.assertEqual(code,0,made);self.ref='demo:'+made['id'];self.short=self.ref[:13]
+        return made
+    def hit(self,kind='map'):return find_map(self.app,self.root,load_bindings(self.root),kind=kind)
+    def adr_changed(self,when=None):
+        commit(self.app,{'docs/adr/ADR-004-money.md':'# ADR-004\nBigDecimal\n','pom.xml':'<v>2</v>','README.md':'two'},when or later(),'adr four')
+    def hook(self,event,**extra):return runtime.process('claude',event,{**self.payload,**extra},self.root)
+    def prompt(self,text='work on the app',**extra):return self.hook('user-prompt',prompt=text,**extra)
+    def tool(self,name,args,**extra):return self.hook('pre-tool-use',tool_name=name,tool_input=args,**extra)
+    def state(self):return json.loads(runtime._pointer(self.root,'s1').read_text(encoding='utf-8'))
+
+    def test_a_changed_decision_doc_and_build_file_make_the_map_stale(self):
+        self.capture();self.adr_changed()
+        hit=self.hit();changed=changed_since(self.app,hit['updated'])
+        self.assertEqual(changed,['README.md','docs/adr/ADR-004-money.md','pom.xml'])
+        self.assertEqual(cited_paths(hit,changed,self.app,self.bindings),['docs/adr/ADR-004-money.md','pom.xml'])
+        day=hit['updated'][:10]
+        self.assertIn(f'STALE: docs/adr/ADR-004-money.md, pom.xml changed since {day} — check and update this map',freshness(hit,self.app))
+        self.assertIn('STALE: docs/adr/ADR-004-money.md, pom.xml changed since',self.hook('session-start')['context'])
+        self.assertIn('STALE:',self.tool('Read',{'file_path':str(self.app/'src'/'Money.java')}).get('context',''))   # the pointer a read gets
+        self.hook('session-start')
+        text=self.prompt('work on the app')['context']
+        self.assertIn('Codebase map for app',text);self.assertIn('STALE: docs/adr/ADR-004-money.md, pom.xml changed since',text)
+        self.assertEqual(self.state()['repos'][self.app.as_posix()]['fresh']['changed'],['docs/adr/ADR-004-money.md','pom.xml'])
+
+    def test_ordinary_docs_and_ticket_edits_do_not_make_the_map_stale_but_a_decision_record_does(self):
+        # Docs-heavy teams edit docs/*.md and tickets every session; only decision records stale a whole-repo summary by themselves.
+        self.capture();commit(self.app,{'docs/runbook.md':'steps','team/board/LH-7.md':'ticket','CHANGELOG.md':'v1'},later())
+        hit=self.hit();self.assertEqual(cited_paths(hit,changed_since(self.app,hit['updated']),self.app,self.bindings),[])
+        commit(self.app,{'docs/decisions/0007-fees.md':'cap'},later(2))
+        self.assertEqual(cited_paths(self.hit(),changed_since(self.app,self.hit()['updated']),self.app,self.bindings),['docs/decisions/0007-fees.md'])
+
+    def test_changes_nobody_cites_do_not_make_it_stale_but_a_named_path_or_a_files_entry_does(self):
+        self.capture();commit(self.app,{'README.md':'two','src/Other.java':'y','notes.txt':'z'},later())
+        hit=self.hit();self.assertEqual(cited_paths(hit,changed_since(self.app,hit['updated']),self.app,self.bindings),[])
+        text=freshness(hit,self.app);self.assertNotIn('STALE',text);self.assertIn('updated '+hit['updated'][:10],text);self.assertIn('commit',text)
+        self.assertNotIn('STALE',self.hook('session-start')['context'])
+        commit(self.app,{'src/Money.java':'BigDecimal'},later(2))   # the body names it
+        self.assertIn('STALE: src/Money.java changed since',freshness(self.hit(),self.app,currency(self.hit(),self.app,self.bindings)[0]))
+        change(hit['id'],'demo','update',self.root,files=['app','app/src/Other.java'])   # now `files` lists another path
+        entry=currency(self.hit(),self.app,self.bindings)[0]
+        self.assertEqual(entry['changed'],['src/Money.java','src/Other.java'])
+
+    def test_a_merge_commit_is_handled(self):
+        self.capture()
+        git(self.app,'checkout','-q','-b','feature')
+        commit(self.app,{'docs/adr/ADR-004-money.md':'# ADR-004\nBigDecimal\n'},later(1),'adr on a branch')
+        git(self.app,'checkout','-q','main');commit(self.app,{'README.md':'main moved'},later(2),'main moved')
+        git(self.app,'merge','-q','--no-ff','-m','merge feature','feature',when=later(3))
+        self.assertEqual(git(self.app,'log','-1','--name-only','--format=').strip(),'')   # what `log --name-only` would have said of the merge
+        hit=self.hit()
+        self.assertEqual(changed_since(self.app,hit['updated']),['README.md','docs/adr/ADR-004-money.md'])
+        self.assertIn('STALE: docs/adr/ADR-004-money.md changed since',freshness(hit,self.app))
+
+    def test_a_cache_hit_runs_no_git_and_a_new_commit_or_revision_recomputes(self):
+        self.capture();self.adr_changed();hit=self.hit()
+        entry,computed=currency(hit,self.app,self.bindings)
+        self.assertTrue(computed);self.assertEqual(entry['head'],git(self.app,'rev-parse','HEAD').strip());self.assertEqual(entry['rev'],hit['revision'])
+        with patch('core.maps.subprocess.run') as run:
+            again,computed=currency(hit,self.app,self.bindings,entry)
+            self.assertFalse(computed);self.assertIs(again,entry);run.assert_not_called()
+        commit(self.app,{'src/Other.java':'z'},later(2))
+        self.assertTrue(currency(hit,self.app,self.bindings,entry)[1])
+        change(hit['id'],'demo','update',self.root,body=hit['body']+'\n\n* **Extra:** more.')
+        self.assertTrue(currency(self.hit(),self.app,self.bindings,entry)[1])
+        # Through the hooks: SessionStart pays once, later pointers and prompts read the session's entry.
+        self.hook('session-start')
+        calls=[]
+        real=subprocess.run
+        def counting(*a,**k):calls.append(a[0]);return real(*a,**k)
+        with patch('core.maps.subprocess.run',side_effect=counting):
+            self.assertIn('STALE:',self.tool('Read',{'file_path':str(self.app/'src'/'Money.java')}).get('context',''))
+            self.assertIn('STALE:',self.prompt('work on the app again')['context'])
+        self.assertEqual(calls,[])
+
+    def test_without_git_or_with_a_timeout_nothing_is_stale_and_nothing_fails(self):
+        self.capture();self.adr_changed();hit=self.hit()
+        for error in (subprocess.TimeoutExpired('git',2),FileNotFoundError('git'),OSError('boom')):
+            with self.subTest(error=type(error).__name__),patch('core.maps.subprocess.run',side_effect=error):
+                self.assertEqual(changed_since(self.app,hit['updated']),[])
+                text=freshness(hit,self.app);self.assertNotIn('STALE',text);self.assertIn('updated',text)
+                self.assertNotIn('STALE',self.hook('session-start')['context'])
+        plain=self.base/'plain';(plain/'.git').mkdir(parents=True)
+        self.assertEqual(changed_since(plain,hit['updated']),[]);self.assertEqual(changed_since(self.app,''),[])
+        self.assertEqual(changed_since(self.base/'missing',hit['updated']),[])
+        # A repo with nothing before the note was written cannot say what changed.
+        fresh=self.base/'fresh';fresh.mkdir();git(fresh,'init','-q');commit(fresh,{'a.txt':'a'},later())
+        self.assertEqual(changed_since(fresh,hit['updated']),[])
+
+    def test_the_changed_list_is_capped_and_the_names_shown_are_capped(self):
+        with patch('core.maps._git',side_effect=['abc\n','\n'.join(f'f{i}.txt' for i in range(600))]):
+            self.assertEqual(len(changed_since(self.app,'2026-01-01')),500)
+        names=[f'docs/adr/ADR-00{i}.md' for i in range(1,6)]
+        text=freshness({'updated':'2026-11-10T00:00:00+00:00'},self.app,{'changed':names,'count':5})
+        self.assertIn('STALE: docs/adr/ADR-001.md, docs/adr/ADR-002.md, docs/adr/ADR-003.md and 2 more changed since 2026-11-10 — check and update this map',text)
+        self.assertIn('5 commits since',text)
+
+    def edit_app(self):self.tool('Edit',{'file_path':str(self.app/'src'/'Money.java')})
+
+    def test_stop_asks_once_per_session_to_update_a_stale_map(self):
+        self.capture();self.adr_changed();self.hook('session-start');self.prompt()
+        self.edit_app()
+        stop=self.hook('stop')
+        self.assertEqual(self.state()['repos'][self.app.as_posix()]['fresh']['ref'],self.ref)
+        reason=stop['continue_reason']
+        self.assertIn(f'map {self.short} is stale (docs/adr/ADR-004-money.md, pom.xml changed since it was written): CMD read {self.short}, then CMD update {self.short} --session s1',reason)
+        self.assertIn("--set-detail '**Conventions:** ...' for each bullet that changed.",reason)
+        self.assertEqual([r['k'] for r in usage.events(self.root) if r['e']=='reminder'],['stale'])
+        self.prompt('next');self.edit_app()
+        self.assertEqual(self.hook('stop'),{})   # once per note per session
+        self.assertIn(self.ref,self.state()['stale_told'])
+
+    def test_stop_stays_quiet_when_the_map_was_updated_the_turn_did_not_touch_the_repo_or_nothing_cited_changed(self):
+        self.capture();self.adr_changed();self.hook('session-start');self.prompt()
+        self.edit_app()
+        code,_=self.cli('update',self.ref,'--set-detail','**Conventions:** Money is BigDecimal.')   # no session: no receipt, the revision moved
+        self.assertEqual(code,0)
+        self.assertEqual(self.hook('stop'),{})
+        self.assertNotIn('stale_told',self.state())
+        # A turn that touched nothing in the repo owes nothing.
+        self.hook('session-start',session_id='s2');self.hook('user-prompt',session_id='s2',prompt='talk')
+        self.assertEqual(self.hook('stop',session_id='s2'),{})
+        self.hook('user-prompt',session_id='s2',prompt='edit elsewhere');self.hook('pre-tool-use',session_id='s2',tool_name='Edit',tool_input={'file_path':str(self.project/'notes.txt')})
+        self.assertNotIn('is stale',self.hook('stop',session_id='s2').get('continue_reason',''))
+
+    def test_a_stale_brief_is_flagged_and_asked_about_too(self):
+        self.capture('brief');self.adr_changed()
+        start=self.hook('session-start')['context']
+        self.assertIn('Project brief:',start);self.assertIn('STALE: docs/adr/ADR-004-money.md, pom.xml changed since',start);self.assertIn('check and update this brief',start)
+        text=self.prompt()['context'];self.assertIn('Project brief — '+self.short,text);self.assertIn('STALE:',text)
+        self.assertEqual(self.state()['repos'][self.app.as_posix()]['fresh_brief']['ref'],self.ref)
+        self.edit_app()
+        reason=self.hook('stop')['continue_reason']
+        self.assertIn(f'project brief {self.short} is stale (docs/adr/ADR-004-money.md, pom.xml changed since it was written)',reason)
+        self.assertIn("--set-detail '**Key decisions:** ...'",reason)
+
+    def test_a_note_shared_from_another_clone_is_checked_against_the_active_checkout(self):
+        remote='https://github.com/acme/app.git'
+        clone=self.project/'clone';git(self.project,'clone','-q',str(self.app),str(clone));clone=clone.resolve()
+        git(clone,'remote','set-url','origin',remote);git(self.app,'remote','add','origin',remote)
+        map_short=self.capture()['id'][:8];self.capture('brief')
+        commit(clone,{'docs/adr/ADR-004-money.md':'# ADR-004\nBigDecimal\n','pom.xml':'<v>2</v>'},later(),'adr four in the clone')
+        self.assertEqual(self.hit('brief')['repo'],'github.com/acme/app')   # the notes are shared by identity, but the original checkout is untouched
+        extra={'cwd':str(clone)}
+        start=self.hook('session-start',**extra)['context']
+        line=next(l for l in start.splitlines() if l.startswith('Project brief:'))
+        self.assertIn('STALE: docs/adr/ADR-004-money.md, pom.xml changed since',line)
+        text=self.prompt(**extra)['context']
+        self.assertIn('Project brief — ',text);self.assertEqual(text.count('STALE:'),2)   # the map and the brief
+        repos=self.state()['repos']
+        self.assertEqual(repos[clone.as_posix()]['fresh_brief']['changed'],['docs/adr/ADR-004-money.md','pom.xml'])
+        self.assertNotIn(self.app.as_posix(),repos)
+        self.tool('Edit',{'file_path':str(clone/'src'/'Money.java')},**extra)
+        reason=self.hook('stop',**extra)['continue_reason']
+        self.assertIn(f'project brief {self.short} is stale',reason);self.assertIn(f'map demo:{map_short} is stale',reason)
+
+    def test_a_map_and_a_brief_are_both_reported_in_one_reminder(self):
+        self.capture();self.capture('brief');self.adr_changed()
+        self.hook('session-start');self.prompt();self.edit_app()
+        reason=self.hook('stop')['continue_reason']
+        self.assertEqual(reason.count('is stale'),2);self.assertEqual(reason.count('Living Memory:'),1)
+        self.assertIn('Also: ',reason)
 
 if __name__=='__main__':unittest.main()

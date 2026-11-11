@@ -79,7 +79,7 @@ One or two sentences: the fact, decision or problem.
 > A critical caveat or warning.
 ```
 
-- The frontmatter lists `title, type, status, tags, context` first and bookkeeping after them. Optional bookkeeping appears only when set: `files` (after `context`), and after `updated`: `review_by`, `confirmed` (the dates `confirm` recorded, at most 8, newest last), `supersedes`, `superseded_by`, then `origin` after `capture_key`.
+- The frontmatter lists `title, type, status, tags, context` first and bookkeeping after them. Optional bookkeeping appears only when set: `files` (after `context`), and after `updated`: `review_by`, `confirmed` (the dates `confirm` recorded, at most 8, newest last), `supersedes`, `superseded_by`, then `origin` after `capture_key`, then `repo` on maps and briefs: the git identity of the folder `files[0]` names (its `origin` remote normalized to `host/owner/repo`, or `file:` plus the resolved local path), set by capture and update and not editable. Clones and worktrees of one origin share one map and one brief; a map or brief matches by identity first, then by folder. A note whose folder has no origin carries no `repo`.
 - The `# 🎯` heading always comes from the `title` property. It is not stored in the body, so to rename a note, change `title`.
 - The Executive Summary is required. Every other section is optional, and empty sections are dropped.
 - **Action Items are only for `plan`, `bug` and `risk` notes.** Capturing them on another type, or changing a note to another type while they exist, is refused. Lasting facts go in Key Details.

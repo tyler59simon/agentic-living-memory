@@ -25,6 +25,30 @@ class Quality(StoreFixture):
     def test_plans_may_describe_unfinished_work(self):
         self.assertEqual(quality_warnings({'type': 'plan', 'body': 'Pending approval: next steps are A then B.'}), [])
 
+    def test_interim_hypotheses_in_bugs_knowledge_and_decisions_are_flagged(self):
+        said = 'this reads as an interim hypothesis'
+        flagged = ['Root cause unconfirmed; the cache is the likely cause.', 'Root cause unknown so far.', 'Our hypothesis is a race in the writer.',
+                   'The hypotheses so far: A or B.', 'We suspect the proxy.', 'Suspected: the parser.', 'The likely cause is the proxy.',
+                   'Not yet verified on Windows.', 'Not reproduced locally.', 'It is probably the DNS cache.']
+        for kind in ('bug', 'knowledge', 'decision'):
+            for body in flagged:
+                with self.subTest(kind=kind, body=body):
+                    self.assertTrue(any(said in w for w in quality_warnings({'type': kind, 'title': 'Slow start', 'body': body})))
+        result = capture('Startup is slow', 'Root cause unconfirmed; probably the license check.', TAGS, 'demo', self.root, type='bug')
+        self.assertTrue(any('**Hypothesis:**' in w and 'update it when the cause is known' in w for w in result['quality_warnings']))
+
+    def test_confirmed_causes_other_types_and_labelled_hypotheses_are_not_flagged(self):
+        said = 'interim hypothesis'
+        quiet = [('bug', 'The cause is the license check: it blocks on DNS. Fixed by a timeout.'), ('bug', 'Root cause: an off-by-one in the pager.'),
+                 ('knowledge', 'The cache is rebuildable from the notes.'), ('bug', 'It is improbable and unsuspecting.'),
+                 ('plan', 'We suspect the proxy; probably the DNS cache.'), ('runbook', 'Hypothesis: probably the proxy.'),
+                 ('bug', '**Hypothesis:** the license check, probably. Root cause unconfirmed.')]
+        for kind, body in quiet:
+            with self.subTest(kind=kind, body=body):
+                self.assertFalse(any(said in w for w in quality_warnings({'type': kind, 'title': 'Slow start', 'body': body})))
+        n = self.note('Startup is slow', 'The license check blocks on DNS; a timeout fixes it.', type='bug')
+        self.assertNotIn('quality_warnings', n)
+
     def test_update_reports_warnings_too(self):
         n = self.note()
         self.assertIn('quality_warnings', change(n['id'], 'demo', 'update', self.root, body='Awaiting the rebuild.'))

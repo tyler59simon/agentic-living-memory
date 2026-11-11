@@ -505,11 +505,13 @@ HINT_NOTES_PER_COMMAND=2
 
 def command_hints(text,state,root,domain,bindings,session,trace=None):
     """Context naming notes that warn about the shell command about to run, or None. A command shape (wrapper, program,
-    subcommands) whose hint was shown is not looked up again in the session, and a note is shown once per session. Like file hints, it reads the
+    subcommands, a generic program's long flags) whose hint was shown is not looked up again in the session, and a note is shown once per session. Like file hints, it reads the
     index without refreshing it: a missing or stale index gives no hint rather than slowing the tool call."""
     try:
         from .commands import signature,command_notes
-        keys=list(dict.fromkeys(hashlib.sha256(repr((s.wrapper,s.program,s.subs)).encode()).hexdigest()[:12] for s in signature(text)))
+        from .commands import GENERIC
+        # A generic program's long flags decide what matches (`git push --force`), so they are part of the shape.
+        keys=list(dict.fromkeys(hashlib.sha256(repr((s.wrapper,s.program,s.subs)+((tuple(sorted(f for f in s.flags if f.startswith('--'))),) if s.program in GENERIC else ())).encode()).hexdigest()[:12] for s in signature(text)))
         seen=set(state.get('command_seen',[]))
         if not keys or all(k in seen for k in keys):return None
         hinted=set(state.get('command_hints',[]))
@@ -558,6 +560,27 @@ def _track_repos(root,session,change):
 
 def _agent_key(payload):return str(payload.get('agent_id') or payload.get('agentId') or '')
 
+def note_currency(hit,folder,root,bindings,state,session,slot='fresh'):
+    """maps.currency for a map or brief about to be shown: what its cited files did since it was written. The entry is kept in the
+    session's repo state (state['repos'][folder][slot], 'fresh' for a map, 'fresh_brief' for a brief) and reused while the note and
+    HEAD are the same, so repeated pointers run no git; a stale one is what the Stop reminder asks about. {} when anything fails."""
+    try:
+        from .maps import currency
+        if folder is None:return {}
+        key=Path(folder).as_posix();cache=(_repos(state).get(key) or {}).get(slot)
+        entry,computed=currency(hit,Path(folder),bindings,cache if isinstance(cache,dict) else None)
+        if computed and entry.get('head') and session and session!='unknown':
+            stored=dict(entry,ref=f"{hit['domain']}:{hit['id']}")
+            def save(s):
+                repos=_repos(s);rec=dict(repos.pop(key,{}));rec[slot]=stored;repos[key]=rec
+                s['repos']=dict(list(repos.items())[-MAX_REPOS:])
+            try:_update(root,session,save)
+            except (OSError,TimeoutError):pass
+        return entry
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('runtime.note_currency',exc,root);return {}
+
 def _target_repos(name,args,cwd,bindings):
     """Repos a read-type tool call explores: the repo holding each path argument (else cwd's); for a subagent
     spawn, the repos its description and prompt name, plus cwd's."""
@@ -599,7 +622,7 @@ def explore(name,args,payload,cwd,root,bindings,state,session,hints=True):
             ref=f"{hit['domain']}:{hit['id']}";short=short_ref(hit['domain'],hit['id'])
             injected=not agent and shown.get(ref)==revision_key(hit)  # the main agent already has the body
             hinted=not injected and hints and not spawn
-            if hinted:lines.append(pointer_line(hit,repo)+f"\nRead it ({cmd} read {short}) before exploring further; explore only what it leaves out.")
+            if hinted:lines.append(pointer_line(hit,repo,entry=note_currency(hit,repo,root,bindings,state,session))+f"\nRead it ({cmd} read {short}) before exploring further; explore only what it leaves out.")
             changes[key]=('mapped',ref);rows.append({'repo':repo.name,'map':ref,'hint':hinted})
         else:
             changes[key]=('spawn' if name in SPAWN_TOOLS else 'read',None);rows.append({'repo':repo.name,'map':None})
@@ -634,7 +657,7 @@ def created_top_level(args,cwd,root,bindings):
         if hit:found.setdefault(repo.as_posix(),(f"{hit['domain']}:{hit['id']}",[]))[1].append(top.name)
     return found
 
-def prompt_maps(cwd,prompt,root,bindings,state,trace=None,briefed=None):
+def prompt_maps(cwd,prompt,root,bindings,state,trace=None,briefed=None,session=None):
     """(text or None, {ref: revision key} delivered, {repo path: map ref or None}) for the repos a prompt names
     and the repo holding cwd: a mapped repo's map body once per revision, followed by one-line summaries of the notes
     about that repo (refs appended to briefed); an unmapped one a single line, once."""
@@ -650,7 +673,7 @@ def prompt_maps(cwd,prompt,root,bindings,state,trace=None,briefed=None):
         if hit:
             ref=f"{hit['domain']}:{hit['id']}";seen[key]=ref
             if len(maps)<MAX_MAPS and shown.get(ref)!=revision_key(hit):
-                maps.append(map_block(hit,repo));delivered[ref]=revision_key(hit)
+                maps.append(map_block(hit,repo,entry=note_currency(hit,repo,root,bindings,state,session)));delivered[ref]=revision_key(hit)
                 lines_,refs_=repo_notes(hit,repo,root,bindings,shown,exclude=briefed)
                 if lines_:maps[-1]+='\n'+lines_;briefed.extend(refs_)
         else:
@@ -665,10 +688,10 @@ def prompt_maps(cwd,prompt,root,bindings,state,trace=None,briefed=None):
 
 BRIEF_NOTES_BUDGET=600
 
-def prompt_briefs(cwd,root,bindings,state,trace=None,briefed=None):
+def prompt_briefs(cwd,root,bindings,state,trace=None,briefed=None,session=None):
     """(brief block or None, {ref: revision key} delivered): the brief of the project folder holding cwd, once
     per revision per session, followed by one-line summaries of the notes it links to (refs appended to briefed)."""
-    from .briefs import find_brief,brief_block
+    from .briefs import find_brief,brief_block,brief_folder
     from .maps import repo_notes
     briefed=[] if briefed is None else briefed
     hit=find_brief(cwd,root,bindings)
@@ -677,7 +700,7 @@ def prompt_briefs(cwd,root,bindings,state,trace=None,briefed=None):
     fresh=bool(hit) and shown.get(ref)!=revision_key(hit)
     if isinstance(trace,dict):trace['brief']={'ref':ref,'injected':[ref] if fresh else []}
     if not fresh:return None,{}
-    block=brief_block(hit)
+    block=brief_block(hit,entry=note_currency(hit,brief_folder(hit,cwd,bindings),root,bindings,state,session,'fresh_brief'))
     lines_,refs_=repo_notes(hit,None,root,bindings,shown,budget=BRIEF_NOTES_BUDGET,files=False,exclude=briefed)
     if lines_:block+='\n'+lines_;briefed.extend(refs_)
     return block,{ref:revision_key(hit)}
@@ -1138,7 +1161,7 @@ def _process(harness,event,payload,root=None,info=None):
         if source=='compact' and session!='unknown':
             handed=handoff(root,domain,session,state,harness);prefix+=handed;detail['handoff_chars']=len(handed)
         # A session started inside a mapped repo sees a pointer to its map; the body comes when a prompt needs it.
-        pointer=session_map(cwd,root,bindings);detail['map']=bool(pointer)
+        pointer=session_map(cwd,root,bindings,state,session);detail['map']=bool(pointer)
         if pointer:prefix+=pointer+'\n'
         # Prompts and tool hints read the index without checking it: bring a stale one (older schema, notes edited outside the scripts) up to date now.
         try:
@@ -1147,7 +1170,9 @@ def _process(harness,event,payload,root=None,info=None):
         except Exception as exc:
             from .logs import swallowed
             swallowed('runtime.refresh_stale',exc,root)
-        text,shown,indexed=build_context(cwd,root,max(MIN_BUDGET,BUDGET-len(prefix)),session=session,trace=detail)
+        from .briefs import brief_folder
+        text,shown,indexed=build_context(cwd,root,max(MIN_BUDGET,BUDGET-len(prefix)),session=session,trace=detail,
+                                         currency=lambda hit:note_currency(hit,brief_folder(hit,cwd,bindings),root,bindings,state,session,'fresh_brief'))
         detail.update(shown=list(shown),indexed=indexed)
         if session!='unknown':
             # A new or compacted context has seen only what is injected now. Guidance shown in full is not
@@ -1171,11 +1196,11 @@ def _process(harness,event,payload,root=None,info=None):
         prompt=payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or payload.get('transformedPrompt') or ''
         delivered={};maps_text,map_refs,mapped=None,{},{};brief_text,brief_refs=None,{};briefed=[]
         if isinstance(prompt,str) and not MACHINE_PROMPT.match(prompt):
-            try:maps_text,map_refs,mapped=prompt_maps(cwd,prompt,root,bindings,state,detail,briefed)
+            try:maps_text,map_refs,mapped=prompt_maps(cwd,prompt,root,bindings,state,detail,briefed,session)
             except Exception as exc:
                 from .logs import swallowed
                 swallowed('runtime.prompt_maps',exc,root)
-            try:brief_text,brief_refs=prompt_briefs(cwd,root,bindings,state,detail,briefed)
+            try:brief_text,brief_refs=prompt_briefs(cwd,root,bindings,state,detail,briefed,session)
             except Exception as exc:
                 from .logs import swallowed
                 swallowed('runtime.prompt_briefs',exc,root)
@@ -1378,12 +1403,14 @@ def _process(harness,event,payload,root=None,info=None):
             s['docs_reminded']=list(dict.fromkeys(list(s.get('docs_reminded',[]))+[d['path'] for k,d in used if k=='doc']))[-MAX_DOCS_REMINDED:]
             s['briefed']=list(dict.fromkeys(list(s.get('briefed',[]))+[k for k,d in used if k in BRIEF_KINDS]))
             s['followed']=list(dict.fromkeys(list(s.get('followed',[]))+[d['ref'] for k,d in used if k=='follow']+[n['ref'] for k,d in used if k=='doc' for n in d['notes']]))[-MAX_HINTED:]
+            s['stale_told']=list(dict.fromkeys(list(s.get('stale_told',[]))+[d[1]['ref'] for k,d in used if k=='stale']))[-MAX_HINTED:]
         _update(root,session,reminded)
         maps=[(data[0],kind) for kind,data in used if kind in MAP_KINDS]
         if maps:
             def settled(repos):
                 # One map reminder per repo per session; the new top-level paths it named are settled too.
                 for key,kind in maps:
+                    if kind=='stale':continue   # asked once per note: stale_told
                     rec=dict(repos.pop(key,{}))
                     if kind=='unmapped':rec['reminded']=True
                     else:rec.pop('created',None)
@@ -1397,17 +1424,39 @@ def _process(harness,event,payload,root=None,info=None):
         result['continue_reason']=text
     return result
 
-def explore_pending(root,bindings,state):
-    """[(repo path, 'unmapped' | 'grown', data)] the Stop reminder should raise: a repo explored without a map
-    (one captured since quiets it), or new top-level paths in a mapped repo."""
+def explore_pending(root,bindings,state,domain=None,cwd=None):
+    """[(repo path, 'unmapped' | 'grown' | 'stale', data)] the Stop reminder should raise: a repo explored without a map
+    (one captured since quiets it), new top-level paths in a mapped repo, or a map or brief that was shown as stale, is unchanged
+    since and sits in a repo the turn touched (data: its ref, short ref, kind and the cited paths that changed)."""
     from .maps import find_map
-    pending=[]
+    pending=[];stale=[]
     for key,rec in _repos(state).items():
         if not isinstance(rec,dict):continue
         if rec.get('explored') and not rec.get('reminded') and not rec.get('map') and not find_map(Path(key),root,bindings):
             pending.append((key,'unmapped',None))
         elif rec.get('created') and rec.get('map'):pending.append((key,'grown',(rec['map'],list(rec['created']))))
-    return pending[:3]
+        stale+=[(key,slot,rec[slot]) for slot in ('fresh','fresh_brief') if isinstance(rec.get(slot),dict) and rec[slot].get('changed') and rec[slot].get('ref')]
+    return (pending+stale_pending(root,bindings,state,domain,cwd,stale))[:3]
+
+def stale_pending(root,bindings,state,domain,cwd,stale):
+    """[(repo path, 'stale', {ref, short, what, paths})] for the shown-stale notes in `stale` ((repo path, slot, currency entry))."""
+    from .maps import find_map
+    from .briefs import find_brief
+    from .common import domain_prefixes
+    from .notes import short_ref
+    told=set(state.get('stale_told',[]));touched=state.get('touched') or [];found=[]
+    prefixes=domain_prefixes(domain,bindings) if domain else []
+    def inside(repo,path):
+        q=Path(path);return any(c.is_relative_to(repo) for c in ([q] if q.is_absolute() else [b/path for b in prefixes]))
+    for key,slot,entry in stale:
+        if entry['ref'] in told:continue
+        repo=Path(key);here=git_root(cwd) if cwd else None
+        if not (any(inside(repo,p) for p in touched) or (state.get('shell') and state.get('mutating') and here and here.as_posix()==key)):continue
+        hit=(find_map if slot=='fresh' else find_brief)(repo,root,bindings)
+        # Updated (or replaced) since it was shown: nothing left to ask.
+        if not hit or f"{hit['domain']}:{hit['id']}"!=entry['ref'] or str(hit.get('revision') or '')!=entry.get('rev'):continue
+        found.append((key,'stale',{'ref':entry['ref'],'short':short_ref(hit['domain'],hit['id']),'what':'map' if slot=='fresh' else 'project brief','paths':list(entry['changed'])}))
+    return found
 
 def map_sentence(key,kind,data,session):
     from .notes import short_ref
@@ -1417,16 +1466,20 @@ def map_sentence(key,kind,data,session):
         return (f"this turn explored {name}, which has no codebase map. If that would spare a future session re-exploring it: "
                 f"CMD capture --session {session} --type map --file '{key}' --title '{name} codebase map' --summary '...' "
                 "--detail '**Layout:** ...' (and Entry points, Key modules, Data flow, Build/test/run, Conventions).")
+    if kind=='stale':
+        paths=data['paths'];names=', '.join(paths[:2])+(f' and {len(paths)-2} more' if len(paths)>2 else '');short=data['short']
+        return (f"{data['what']} {short} is stale ({names} changed since it was written): CMD read {short}, then CMD update {short} --session {session} "
+                f"--set-detail '{'**Conventions:**' if data['what']=='map' else '**Key decisions:**'} ...' for each bullet that changed.")
     ref,names=data;short=short_ref(*ref.split(':',1))
     return (f"new top-level paths in {name} ({', '.join(names)}): if they change its layout, update map {short} "
             f"(CMD read {short}, then CMD update {short} --session {session} --set-detail '**Layout:** ...' for each bullet that changed).")
 
 # Per-turn state a Stop clears (reminded keeps `touched` for a capture that answers it).
 TURN_STATE=('open_turns','mutating','signal','signal_hash','touched','docs','shell','turn_started')
-MAP_KINDS=('unmapped','grown')
+MAP_KINDS=('unmapped','grown','stale')
 BRIEF_KINDS=('unbriefed','brief')
 # Kinds that name their own reminder in the usage diary; the map kinds report as 'explored' or 'grown'.
-STOP_KINDS=frozenset(BLOCKING_SIGNALS|{'doc','follow'}|set(BRIEF_KINDS))
+STOP_KINDS=frozenset(BLOCKING_SIGNALS|{'doc','follow','stale'}|set(BRIEF_KINDS))
 STOP_TEXT_CAP=700
 STOP_DOCS=2
 STOP_NOTES=2
@@ -1455,7 +1508,7 @@ def stop_pending(root,bindings,state,session,turns,domain=None,cwd=None,planning
         except Exception as exc:
             from .logs import swallowed
             swallowed('runtime.brief_pending',exc,root)
-    if not planning and not receipted:pending+=[(kind,(key,data)) for key,kind,data in explore_pending(root,bindings,state)]
+    if not planning and not receipted:pending+=[(kind,(key,data)) for key,kind,data in explore_pending(root,bindings,state,domain,cwd)]
     return pending
 
 def brief_pending(root,bindings,state,session,turns,domain,cwd,pending,receipted=False):
@@ -1597,13 +1650,13 @@ def stop_text(pending,session,used=None):
         if isinstance(used,list):used.append((kind,data))
     return 'Living Memory: '+' '.join(parts)+closing
 
-def session_map(cwd,root,bindings):
+def session_map(cwd,root,bindings,state=None,session=None):
     """A pointer to the map of the repo holding cwd, else None; never fails the hook."""
     try:
         from .maps import find_map,pointer_line
         here=git_root(cwd)
         hit=find_map(here,root,bindings) if here else None
-        return pointer_line(hit,here) if hit else None
+        return pointer_line(hit,here,entry=note_currency(hit,here,root,bindings,state or {},session)) if hit else None
     except Exception as exc:
         from .logs import swallowed
         swallowed('runtime.session_map',exc,root);return None

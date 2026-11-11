@@ -83,12 +83,15 @@ def _infer_tags(item,root):
     return added
 
 def _redact(values):
-    """Replace credentials in title, body and context; [{kind, field}] for what was replaced."""
+    """Replace credentials in title, body, context and commands; [{kind, field}] for what was replaced."""
     from .repository import redact
     found=[]
     for field in ('title','body','context'):
         if isinstance(values.get(field),str):
             values[field],kinds=redact(values[field]);found+=[{'kind':k,'field':field} for k in kinds]
+    if isinstance(values.get('commands'),list):
+        for i,command in enumerate(values['commands']):
+            if isinstance(command,str):values['commands'][i],kinds=redact(command);found+=[{'kind':k,'field':'commands'} for k in kinds]
     return found
 
 def _receipt(args,domain,note_id,root,event=None):
@@ -648,13 +651,13 @@ def main(argv=None):
                 for key in ('type','context','review_by'):
                     if getattr(args,key) is not None:values[key]=getattr(args,key)
                 revision=values.pop('expected_revision',None) or args.expected_revision
+                if args.shell_command:values['commands']=list(find_note(n,d,root)[1].get('commands') or [])+args.shell_command
                 redacted=_redact(values) if args.redact else []
                 if args.session:
                     from .private import check as private_check
                     private_check(_session_state(root,args.session),values)
                 files,suggested=_file_args(args,d,root,find_note(n,d,root)[1].get('files') or [])
                 if files is not None:values['files']=files
-                if args.shell_command:values['commands']=list(find_note(n,d,root)[1].get('commands') or [])+args.shell_command
                 result=change(n,d,'update',root,revision,**values)
             if replaced:result['replaced']=replaced
             if redacted:result['redacted']=redacted

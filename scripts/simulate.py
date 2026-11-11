@@ -54,16 +54,35 @@ class Sim:
         atomic_write(self.root/'tag_taxonomy.json',canonical_json({'tags':s.get('taxonomy',DEFAULT_TAXONOMY)}))
         (self.root/'sandbox.json').write_text('{"sandbox": true}\n',encoding='utf-8')
         for folder in s.get('folders',[]):(self.base/folder).mkdir(parents=True,exist_ok=True)   # e.g. an unbound git repo
+        self.commit('old')
         for note in s.get('notes',[]):
             domain=note.get('domain','demo')
             if domain=='_global':ensure_global(self.root)
             extra={'files':note['files']} if note.get('files') else {}   # e.g. a codebase map's repo folder
             made=capture(note['title'],note.get('body',''),note.get('tags',DEFAULT_TAGS),domain,self.root,type=note.get('type','knowledge'),allow_similar=True,**extra)
             self.keys[note['key']]={'domain':domain,'id':made['id'],'path':made['path']}
+        self.commit('later')
         if s.get('transcript'):
             path=self.base/'transcript.jsonl'
             path.write_text(''.join(json.dumps(row)+'\n' for row in s['transcript']),encoding='utf-8')
             self.vars['transcript']=str(path)
+
+    def commit(self,when):
+        """Real git history for the scenario's "git" repos: [{"folder", "commits": [{"when": "old" | "later", "files": {path: text}}]}].
+        "old" commits are dated 2020 (before any note exists), "later" ones an hour ahead (after every note), so a map or brief
+        written between the two is stale by git's clock and can be asked about."""
+        from datetime import datetime,timedelta,timezone
+        date='2020-01-01T00:00:00+00:00' if when=='old' else (datetime.now(timezone.utc)+timedelta(hours=1)).isoformat(timespec='seconds')
+        env={**os.environ,'GIT_AUTHOR_NAME':'sim','GIT_AUTHOR_EMAIL':'sim@example.org','GIT_COMMITTER_NAME':'sim','GIT_COMMITTER_EMAIL':'sim@example.org','GIT_AUTHOR_DATE':date,'GIT_COMMITTER_DATE':date}
+        for repo in self.scenario.get('git',[]):
+            folder=self.base/repo['folder'];folder.mkdir(parents=True,exist_ok=True)
+            run=lambda *args:subprocess.run(['git','-C',str(folder),*args],check=True,capture_output=True,env=env)
+            if when=='old':run('init','-q');run('symbolic-ref','HEAD','refs/heads/main')
+            for item in repo.get('commits',[]):
+                if item.get('when','old')!=when:continue
+                for name,text in item.get('files',{}).items():
+                    path=folder/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(text,encoding='utf-8')
+                run('add','-A');run('commit','-q','-m',item.get('message','change'))
 
     # ---- templating ----
     def ref(self,key):

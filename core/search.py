@@ -205,7 +205,7 @@ def rebuild_index(domain,root=None):
             if model:db.execute('CREATE TABLE vectors(rowid INTEGER PRIMARY KEY,vec BLOB NOT NULL)')
             df=Counter()
             for n in notes:
-                values=(domain,n['id'],n.get('prefix','NOTE'),n['title'],n.get('type','knowledge'),n.get('status','active'),n.get('created'),n.get('updated'),n.get('review_by'),n.get('context',''),json.dumps(n.get('tags',[])),n['body'],n['path'],n['digest'],n['revision'],n.get('schema_version',1),json.dumps(n.get('files') or []),json.dumps(note_commands(n)),'')   # repo: Phase 3
+                values=(domain,n['id'],n.get('prefix','NOTE'),n['title'],n.get('type','knowledge'),n.get('status','active'),n.get('created'),n.get('updated'),n.get('review_by'),n.get('context',''),json.dumps(n.get('tags',[])),n['body'],n['path'],n['digest'],n['revision'],n.get('schema_version',1),json.dumps(n.get('files') or []),json.dumps(note_commands(n)),n.get('repo') or '')
                 cursor=db.execute('INSERT INTO notes VALUES('+','.join('?'*19)+')',values)
                 if n.get('status','active')=='active':df.update(stems(n['title']+' '+n['body']))
                 db.execute('INSERT INTO notes_fts(rowid,title,tags,body) VALUES(?,?,?,?)',(cursor.lastrowid,n['title'],' '.join(n.get('tags',[])),n['body']))

@@ -16,6 +16,8 @@ MAX_CHARS=200
 KNOWN_TOOLS=frozenset('mvn mvnw gradle gradlew npm npx yarn pnpm pip python py node cargo go make docker kubectl git dotnet java javac pytest terraform helm az aws gcloud psql sqlite3 curl'.split())
 # Common words as programs: a note about `git push --force` says nothing about `git status`, so these need a matching subcommand.
 GENERIC=frozenset('git python py node npm pip java dotnet docker kubectl curl'.split())
+INTERPRETERS=frozenset('python node ruby perl php deno bun'.split())
+INLINE=frozenset('-c -e -p --eval --print'.split())   # code on the command line instead of a script
 SHELL_LANGS=frozenset('sh bash shell powershell pwsh cmd console zsh bat batch'.split())
 WRAPPERS=frozenset('cmd bash sh zsh dash ksh powershell pwsh wsl'.split())
 EXTENSIONS=('.cmd','.bat','.exe','.sh','.ps1','.com')
@@ -106,8 +108,11 @@ def _sig(wrapper,tokens):
         i=args.index(rest[0]);program=_program(rest[0]);args=args[i+1:]
     if not program or program[0] in '-$':return None
     subs=[];flags=set()
-    for a in args:
+    # An interpreter's script is its discriminating operand even as a path: `python scripts/build.py` is not `python scripts/other.py`.
+    script=next((i for i,a in enumerate(args) if not a.startswith('-')),None) if program in INTERPRETERS and not INLINE.intersection(args) else None
+    for i,a in enumerate(args):
         if a.startswith('-') and len(a)>1:flags.add(a.split('=',1)[0].lower())
+        elif i==script:subs.append(a.replace('\\','/').removeprefix('./').lower())
         elif len(subs)<2 and _WORD.fullmatch(a):subs.append(a.lower())
     return Sig(wrapper,program,tuple(subs),frozenset(flags))
 
@@ -160,9 +165,10 @@ def extract(title,body,explicit=()):
         for block in _FENCE.finditer(text):
             if block[2].lower() in SHELL_LANGS:candidates+=_lines(block[3])
         candidates+=_SPAN.findall(_FENCE.sub('',text))
+    from .repository import find_secret
     for candidate in candidates:
         text=' '.join(candidate.split())
-        if text and len(text)<=MAX_CHARS and _is_command(text):found.append(text)
+        if text and len(text)<=MAX_CHARS and _is_command(text) and not find_secret(text):found.append(text)   # never index a credential
     seen=set();result=[]
     for text in found:
         if text.casefold() not in seen:seen.add(text.casefold());result.append(text)
