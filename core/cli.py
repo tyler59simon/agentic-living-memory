@@ -150,6 +150,9 @@ def doctor(root,cwd,explicit=None,domain=None):
     from .systems import listing as systems_listing
     try:warnings+=['systems: '+w for w in systems_listing(root)['warnings']]
     except ValueError as exc:warnings.append(f'systems.json: {exc}')
+    from .sources import listing as sources_listing
+    try:warnings+=['sources: '+w for w in sources_listing(root)['warnings']]
+    except ValueError as exc:warnings.append(f'sources.json: {exc}')
     stale=staleness_warning(root,sum(counts.values()))
     if stale:warnings.append(stale)
     from .logs import summary as log_summary
@@ -219,7 +222,8 @@ def _sectioned(args,body=''):
     from .note_format import render
     return render(args.summary or '',args.detail or (),args.link or (),args.action or (),args.done or (),args.important or '',body)
 
-READ_ONLY={'search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems'}
+# source-sync writes only the derived knowledge-base index (as search --rebuild does the notes' one), so subagents and viewers may run it.
+READ_ONLY={'search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','ask','sources','source-sync'}
 # Viewer: a human-facing app browsing the store. Read-only, and its reads are not usage evidence for the diary.
 VIEWER=READ_ONLY|{'taxonomy','review','diff','inspect-plan'}
 SERVE_API=2
@@ -300,6 +304,50 @@ def note_links(root,domains,status):
             'edges':[{'from':a,'to':b,'kind':k} for (a,b),k in sorted(edges.items())],
             'unresolved':[{'from':a,'target':t} for a,t in sorted(unresolved)]}
 
+def _note_hits(root,domain,query,scope,limit,rebuild,filters,config,globals_,primary,foreign):
+    """The search command's answer: relevance-gated notes across the active, parent and global domains (foreign ones as a fallback)."""
+    from .search import search_domains
+    from .runtime import relevance_gate,parent_domains
+    gate=relevance_gate(query,root);gated=True
+    # As for prompts: global notes rank like the project's own, a parent's count half.
+    weights={**{g:2 for g in globals_},domain:2,**{p:1 for p in parent_domains(domain,config) if p!=domain}}
+    def run(domains):
+        # Relevance is judged within each domain before the merge, as for prompts, so weak local hits
+        # cannot bury a strong match in a parent or global domain. An explicit search still answers:
+        # when nothing passes the gate, the best ungated matches are returned and marked.
+        nonlocal gated
+        hits=search_domains(query,domains,limit,root,filters or None,rebuild,weights=weights,keep=gate)
+        if hits:gated=True;return hits
+        gated=False;return search_domains(query,domains,limit,root,filters or None,rebuild,weights=weights)
+    domains=list(dict.fromkeys(sorted(load_bindings(root).get('domains',{}))+globals_)) if scope=='all' else primary
+    hits=run(domains);fallback=False
+    if not hits and scope=='fallback' and foreign:domains=foreign;hits=run(domains);fallback=True
+    for hit in hits:hit['sourceScope']='active' if hit['domain']==domain else 'global' if hit['domain'] in globals_ else 'foreign';hit.pop('path',None)
+    result={'ok':True,'mode':scope,'domains':domains,'fallback':fallback,'relevant':gated,'results':hits}
+    if hits and not gated:result['hint']='No note passed the relevance check; these are the closest matches, least likely to apply.'
+    return result
+
+def _search_scope(root,domain):
+    """(bindings, global domains that exist, the domains a search covers first, foreign domains) for a domain."""
+    from .runtime import parent_domains
+    config=load_bindings(root);scope=config.get('search_scope',{})
+    globals_=[g for g in (canonical_domain(g,root) for g in scope.get('global_domains',['_global'])) if (root/'domains'/g).exists()]
+    return config,globals_,list(dict.fromkeys([domain]+parent_domains(domain,config)+globals_)),scope.get('foreign_domains',[])
+
+def _ask(root,domain,query,limit):
+    """Notes first (the search command's ranking), then source excerpts from the project knowledge base, each labelled."""
+    from . import sources
+    if not query.strip():raise ValueError('ask needs a question')
+    limit=max(1,min(20,limit));config,globals_,primary,foreign=_search_scope(root,domain)
+    found=_note_hits(root,domain,query,'fallback',limit,False,{},config,globals_,primary,foreign)
+    notes=[dict(h,label='note') for h in found['results']];excerpts=sources.search(root,domain,query,limit);info=sources.state(root,domain)
+    result={'ok':True,'query':query,'domain':domain,'notes':notes,'sources':excerpts,'relevant':found['relevant'],
+            'knowledge_base':dict(info,syncing=sources.syncing(root,domain)) if info else {'files':0,'syncing':sources.syncing(root,domain)}}
+    if notes and not found['relevant']:result['hint']='No note passed the relevance check; the notes are the closest matches, least likely to apply.'
+    if not info:result['knowledge_base']['hint']='No knowledge-base index yet: run source-sync (it also starts at session start). Sources: `sources`.'
+    elif not excerpts:result['knowledge_base']['hint']='No source excerpt matched; try other words, or read the files.'
+    return result
+
 def error_code(message):
     """stale, conflict or invalid, from the message's own wording: the text before any quoted value or ': detail',
     so a note title, tag or path inside the message cannot change the code."""
@@ -367,7 +415,7 @@ def main(argv=None):
     for facet in CAPTURE_FACETS:p.add_argument('--'+facet,action='append',default=[])
     p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
     sections_args(p);_file_flags(p)
-    p=sub('search');p.add_argument('query',nargs='?',default='');p.add_argument('--file',help='Notes about this file or folder: listed in their files property, or named in the body');p.add_argument('--scope',choices=['active','fallback','all'],default='fallback');p.add_argument('--limit',type=int,default=5);p.add_argument('--filter',action='append',default=[]);p.add_argument('--rebuild',action='store_true')
+    p=sub('search');p.add_argument('query',nargs='?',default='');p.add_argument('--file',help='Notes about this file or folder: listed in their files property, or named in the body');p.add_argument('--scope',choices=['active','fallback','all'],default='fallback');p.add_argument('--limit',type=int,default=5);p.add_argument('--filter',action='append',default=[]);p.add_argument('--rebuild',action='store_true');p.add_argument('--sources',action='store_true',help='Source excerpts from the project knowledge base only')
     p=sub('read');p.add_argument('reference');p.add_argument('--max-chars',type=int,default=16000);p.add_argument('--metadata-only',action='store_true')
     p=sub('update');p.add_argument('reference');p.add_argument('--title');p.add_argument('--body');p.add_argument('--body-file',type=Path);p.add_argument('--tag',action='append');p.add_argument('--type',choices=NOTE_TYPES);p.add_argument('--context');p.add_argument('--review-by');p.add_argument('--expected-revision');p.add_argument('--payload-file',type=Path);p.add_argument('--session');p.add_argument('--turn')
     for facet in FACET_FLAGS:p.add_argument('--'+facet,action='append')
@@ -409,6 +457,10 @@ def main(argv=None):
     p=sub('projects');p.add_argument('--status',choices=['active','paused','archived','any'],default='any')
     p=sub('system-plan');p.add_argument('action',choices=['create','update','retire']);p.add_argument('--payload-file',type=Path)
     p=sub('systems');p.add_argument('--status',choices=['active','deprecated','retired','any'],default='any')
+    p=sub('source-plan');p.add_argument('action',choices=['add','remove','implicit']);p.add_argument('--payload-file',type=Path)
+    p=sub('sources')
+    p=sub('source-sync');p.add_argument('name',nargs='?',help='One source; default: all of the domain');p.add_argument('--rebuild',action='store_true',help='Drop and re-read what was indexed (all sources, or just NAME)')
+    p=sub('ask');p.add_argument('query',nargs='+',help='A question about the project');p.add_argument('--limit',type=int,default=5,help='Notes and source excerpts shown, at most, of each')
     p=sub('batch');p.add_argument('--payload-file',type=Path)
     p=sub('retag-plan');p.add_argument('--payload-file',type=Path)
     p=sub('remap-plan');p.add_argument('--payload-file',type=Path)
@@ -554,6 +606,12 @@ def main(argv=None):
         elif cmd=='search':
             from .search import search_domains,search_domain
             if not domain:raise ValueError('unbound_project')
+            if args.sources:
+                if args.file or args.filter:raise ValueError('--sources takes only a query (and --limit)')
+                if not args.query.strip():raise ValueError('search needs a query')
+                from . import sources
+                result={'ok':True,'mode':'sources','domain':domain,'results':sources.search(root,domain,args.query,max(1,min(20,args.limit))),'knowledge_base':sources.state(root,domain)}
+                invocation['result']=result;print(json.dumps(result,ensure_ascii=False,separators=(',',':')));return 0
             config=load_bindings(root);scope=config.get('search_scope',{});globals_=scope.get('global_domains',['_global'])
             globals_=[canonical_domain(g,root) for g in globals_]
             globals_=[g for g in globals_ if (root/'domains'/g).exists()]
@@ -576,24 +634,7 @@ def main(argv=None):
                     invocation['result']=result;print(json.dumps(result,ensure_ascii=False,separators=(',',':')));return 0
                 filters['file']=wanted
             if not args.query.strip():raise ValueError('search needs a query, or --file PATH')
-            from .runtime import relevance_gate
-            gate=relevance_gate(args.query,root);gated=True
-            # As for prompts: global notes rank like the project's own, a parent's count half.
-            weights={**{g:2 for g in globals_},domain:2,**{p:1 for p in parent_domains(domain,config) if p!=domain}}
-            def run(domains):
-                # Relevance is judged within each domain before the merge, as for prompts, so weak local hits
-                # cannot bury a strong match in a parent or global domain. An explicit search still answers:
-                # when nothing passes the gate, the best ungated matches are returned and marked.
-                nonlocal gated
-                hits=search_domains(args.query,domains,args.limit,root,filters or None,args.rebuild,weights=weights,keep=gate)
-                if hits:gated=True;return hits
-                gated=False;return search_domains(args.query,domains,args.limit,root,filters or None,args.rebuild,weights=weights)
-            domains=list(dict.fromkeys(sorted(load_bindings(root).get('domains',{}))+globals_)) if args.scope=='all' else primary
-            hits=run(domains);fallback=False
-            if not hits and args.scope=='fallback' and foreign:domains=foreign;hits=run(domains);fallback=True
-            for hit in hits:hit['sourceScope']='active' if hit['domain']==domain else 'global' if hit['domain'] in globals_ else 'foreign';hit.pop('path',None)
-            result={'ok':True,'mode':args.scope,'domains':domains,'fallback':fallback,'relevant':gated,'results':hits}
-            if hits and not gated:result['hint']='No note passed the relevance check; these are the closest matches, least likely to apply.'
+            result=_note_hits(root,domain,args.query,args.scope,args.limit,args.rebuild,filters,config,globals_,primary,foreign)
         elif cmd=='read':
             from .notes import find_note
             d,n=_reference(args.reference,domain,root);path,note=find_note(n,d,root)
@@ -835,6 +876,20 @@ def main(argv=None):
         elif cmd=='systems':
             from .systems import listing
             result=listing(root,args.status)
+        elif cmd=='source-plan':
+            from .sources import source_plan
+            result=source_plan(root,args.action,_payload(args),domain)
+            result['hint']='Review with inspect-plan PLAN_ID, then apply PLAN_ID --expected-plan-sha256 DIGEST; source-sync then indexes it.'
+        elif cmd=='sources':
+            from .sources import listing
+            result=listing(root,domain)
+        elif cmd=='source-sync':
+            from .sources import sync
+            if not domain:raise ValueError('unbound_project')
+            result=sync(root,domain,args.name,args.rebuild)
+        elif cmd=='ask':
+            if not domain:raise ValueError('unbound_project')
+            result=_ask(root,domain,' '.join(args.query),args.limit)
         elif cmd=='taxonomy':result=read_json(root/'tag_taxonomy.json',{'tags':[]})
         elif cmd=='batch':
             import contextlib,io

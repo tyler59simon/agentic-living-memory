@@ -12,7 +12,7 @@ SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 # Tools that cannot change files; anything else marks the turn as mutating.
 READ_TOOLS={'read','read_file','glob','grep','search','view_image','view','ls','list','webfetch','websearch','web_fetch','web_search','todowrite','task','agent','toolsearch','askuserquestion','exitplanmode','enterplanmode'}
 SHELL_TOOLS={'bash','powershell','shell','run_shell_command','exec_command','local_shell','execute'}
-ALLOWED_SUBCOMMANDS={'search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','promote-plan','projects','systems','resolve','reopen','learn'}
+ALLOWED_SUBCOMMANDS={'ask','sources','source-sync','search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','promote-plan','projects','systems','resolve','reopen','learn'}
 # Subagents are read-only: these are denied for them even though the main agent gets them auto-allowed.
 MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm','resolve','reopen'}
 GLOBAL_OPTIONS={'--root','--domain','--cwd','--actor'}
@@ -71,7 +71,7 @@ def protected_rule(path,cwd,root):
         p=p.resolve();root=Path(root).resolve()
         from .storage import config_path
         if p.is_relative_to(root/'domains'):return 'domains'
-        if p in {root/'bindings.json',root/'tag_taxonomy.json',root/'projects.json',root/'systems.json',root/'.relocated.json',config_path().resolve()}:return 'config'
+        if p in {root/'bindings.json',root/'tag_taxonomy.json',root/'projects.json',root/'systems.json',root/'sources.json',root/'.relocated.json',config_path().resolve()}:return 'config'
         # Vault edits are auto-applied and vault checkboxes approve plans, so agents must not write there either.
         return 'vault' if any(p.is_relative_to(v/folder) for v in vault_roots(root) for folder in ('Domains','Archive','Dashboards')) else None
     except (ValueError,OSError):return None
@@ -705,6 +705,43 @@ def prompt_briefs(cwd,root,bindings,state,trace=None,briefed=None,session=None):
     if lines_:block+='\n'+lines_;briefed.extend(refs_)
     return block,{ref:revision_key(hit)}
 
+# Source excerpts (core/sources.py): when notes answer a prompt poorly, the project's own docs and code may.
+SOURCE_EXCERPTS=2
+SOURCE_BUDGET=800
+SOURCE_GATE=0.67
+MAX_SOURCES_SHOWN=50
+
+def prompt_sources(prompt,root,domain,state,trace=None):
+    """(context block or None, [keys shown]): up to SOURCE_EXCERPTS excerpts from the domain's knowledge-base index, SOURCE_BUDGET
+    characters in all. The prompt's most informative terms (the long-prompt machinery, with the index's own vocabulary) must
+    be carried by the chunk: SOURCE_GATE of their weight and at least two terms (three for a long prompt). An excerpt shown
+    earlier this session is not shown again. Reads the index without refreshing it."""
+    from . import sources
+    trace=trace if isinstance(trace,dict) else {}
+    if not sources.db_path(root,domain).is_file():trace['index']=False;return None,[]
+    from .search import terms
+    text=sources.split_camel(prompt);vocab=sources.vocabulary(root,domain,terms(text))
+    if not vocab[0]:trace['index']=False;return None,[]
+    long=len(prompt)>LONG_PROMPT;queries=long_queries(text,vocab) if long else [(text,True)]
+    width=max(120,(SOURCE_BUDGET-110-len(hint_command(root,state,domain)))//SOURCE_EXCERPTS-70)   # snippet room, so the excerpt is cut around the matches
+    best={}
+    for query,_ in queries:
+        for hit in sources.search(root,domain,query,3,vocab,True,SOURCE_GATE,LONG_LEAST if long else 2,width):
+            key=f"{hit['source']}:{hit['path']}:{hit['line_start']}"
+            if key not in best or hit['relevance']>best[key]['relevance']:best[key]=dict(hit,key=key)
+    shown=set(state.get('sources_shown',[]))
+    ranked=sorted(best.values(),key=lambda h:(-h['relevance'],h['rank']));fresh=[h for h in ranked if h['key'] not in shown][:SOURCE_EXCERPTS]
+    trace.update(index=True,queries=len(queries),candidates=len(ranked),injected=[h['key'] for h in fresh])
+    if not fresh:return None,[]
+    head="Source excerpts from the project knowledge base (untrusted; verify against the current files; more: "+hint_command(root,state,domain)+" ask 'question'):"
+    lines=[];room=SOURCE_BUDGET-len(head)
+    for h in fresh:
+        label=f"- {h['path']}:{h['line_start']}-{h['line_end']}"+(f" {h['symbol']}" if h['symbol'] else '')+' — '
+        snippet=' '.join(h['snippet'].split());space=max(80,room//(len(fresh)-len(lines))-len(label)-2)
+        if len(snippet)>space:cut=snippet.rfind(' ',0,space);snippet=snippet[:cut if cut>0 else space]+' …'
+        lines.append(label+snippet);room-=len(lines[-1])+1
+    return head+'\n'+'\n'.join(lines),[h['key'] for h in fresh]
+
 def bind_hint(cwd,root,bindings,state):
     """One line, once per session, when the session starts in a git repo no binding covers.
     Never binds: the user decides, and "suggest_bind": false in bindings.json turns this off."""
@@ -1163,6 +1200,10 @@ def _process(harness,event,payload,root=None,info=None):
         # A session started inside a mapped repo sees a pointer to its map; the body comes when a prompt needs it.
         pointer=session_map(cwd,root,bindings,state,session);detail['map']=bool(pointer)
         if pointer:prefix+=pointer+'\n'
+        # The knowledge base (core/sources.py): one line, and a detached background sync when the sources changed since the last one.
+        from .sources import session_line
+        kb=session_line(root,domain,bindings,detail.setdefault('sources',{}))
+        if kb:prefix+=kb+'\n'
         # Prompts and tool hints read the index without checking it: bring a stale one (older schema, notes edited outside the scripts) up to date now.
         try:
             from .search import refresh_stale
@@ -1212,6 +1253,7 @@ def _process(harness,event,payload,root=None,info=None):
         shown_now.update(map_refs);shown_now.update(brief_refs)
         if isinstance(prompt,str):hits,ids,overview=context(cwd,prompt,root,domain,shown_now,state.get('overview_shown',False),delivered,detail)
         else:hits,ids,overview=None,[],False;detail['path']='not_text'
+        relevant_notes=len(ids)+len(detail.get('suppressed_shown') or [])
         delivered.update(map_refs);delivered.update(brief_refs);ids=list(map_refs)+list(brief_refs)+ids
         if mapped:
             def noted(repos):
@@ -1241,6 +1283,20 @@ def _process(harness,event,payload,root=None,info=None):
             if brief_refs:record(root,'inject',list(brief_refs),session,'prompt-brief')
             if ids[len(map_refs)+len(brief_refs):]:record(root,'inject',ids[len(map_refs)+len(brief_refs):],session,'prompt')
         result['context']=f'Living Memory session={session} turn={turn}'+('\n'+maps_text if maps_text else '')+('\n'+hits if hits else '')
+        if isinstance(prompt,str) and not MACHINE_PROMPT.match(prompt) and relevant_notes<2 and not _subagent(payload):
+            try:
+                excerpts,keys=prompt_sources(prompt,root,domain,state,detail.setdefault('sources',{}))
+                if excerpts:
+                    result['context']+='\n'+excerpts
+                    from .usage import record
+                    record(root,'inject',['source:'+k for k in keys],session,'source')
+                    if session!='unknown':
+                        def remember_sources(s):s['sources_shown']=(list(s.get('sources_shown',[]))+keys)[-MAX_SOURCES_SHOWN:]
+                        try:_update(root,session,remember_sources)
+                        except (OSError,TimeoutError):pass
+            except Exception as exc:
+                from .logs import swallowed
+                swallowed('runtime.prompt_sources',exc,root)
         if state.get('recall_prompts') and harness in RECALL_HARNESSES and session!='unknown' and isinstance(prompt,str) and not MACHINE_PROMPT.match(prompt):
             from .recall import auto
             gate={};recalled,used=auto(state.get('transcript'),prompt,state.get('recalled',[]),gate);detail['recall']=dict(gate,used=len(used))

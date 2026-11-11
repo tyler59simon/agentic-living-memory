@@ -1,0 +1,30 @@
+{
+ "name": "knowledge-base",
+ "description": "A bound repo is a knowledge-base source without setup: the first session start says its index is being built (the background sync is switched off in the sandbox, so the scenario runs source-sync itself), ask then answers with a cited source excerpt and never an indexed credential, the next session start reports the files indexed, and a prompt the notes cannot answer gets the project's own excerpt once while unrelated prompts get nothing.",
+ "git": [
+  {"folder": "project/billing", "commits": [
+   {"when": "old", "files": {
+    "README.md": "# Billing Service\n\n## Retry policy\n\nFailed payment captures are retried with exponential backoff. The first retry waits 30 seconds and each later retry doubles the wait.\n\n## Deployment\n\nReleases ship through the blue-green pipeline.\n",
+    "src/ledger.py": "def reconcile_ledger(db):\n    \"\"\"Nightly job comparing the balance snapshot with the folded events.\"\"\"\n    return db.read('balance_snapshot')\n",
+    "config.py": "AWS_ACCESS_KEY = \"AKIAIOSFODNN7EXAMPLE\"\nREGION = \"eu-west-1\"\n"}}]}
+ ],
+ "secrets": ["AKIAIOSFODNN7EXAMPLE"],
+ "steps": [
+  {"hook": "session-start", "expect": {"context_contains": ["Knowledge base: the first index is being built", "CMD ask '...'"], "detail": {"sources": {"stale": true, "spawned": false}}}},
+  {"cli": ["ask", "exponential backoff retry"], "expect": {"exit": 0, "result_contains": ["\"sources\":[]", "No knowledge-base index yet"]}},
+  {"cli": ["source-sync"], "expect": {"exit": 0, "result": {"ok": true, "files": 3}}},
+  {"cli": ["ask", "exponential backoff retry for failed payment captures"], "expect": {"exit": 0, "result_contains": ["source excerpt", "README.md:", "Billing Service > Retry policy", "exponential backoff"]}},
+  {"cli": ["ask", "AWS access key region"], "expect": {"exit": 0, "result_contains": ["config.py", "redacted"], "result_excludes": ["AKIAIOSFODNN7EXAMPLE"]}},
+  {"cli": ["search", "--sources", "reconcile ledger snapshot"], "expect": {"exit": 0, "result_contains": ["src/ledger.py", "reconcile_ledger"]}},
+  {"cli": ["sources"], "expect": {"exit": 0, "result": {"ok": true}, "result_contains": ["\"implicit\":true", "\"state\":\"indexed\""]}},
+  {"session": "s2"},
+  {"hook": "session-start", "expect": {"context_contains": ["Knowledge base: 3 files indexed", "CMD ask '...'"], "detail": {"sources": {"stale": false, "spawned": false, "files": 3}}}},
+  {"hook": "user-prompt", "payload": {"prompt": "how does the exponential backoff retry for failed payment captures work"},
+   "expect": {"context_contains": ["Source excerpts from the project knowledge base", "README.md:", "exponential backoff"], "detail": {"sources": {"index": true}}}},
+  {"hook": "user-prompt", "payload": {"prompt": "how does the exponential backoff retry for failed payment captures work"}, "expect": {"context_excludes": ["Source excerpts"]}},
+  {"hook": "user-prompt", "payload": {"prompt": "what is the weather forecast for lisbon tomorrow"}, "expect": {"context_excludes": ["Source excerpts"]}},
+  {"hook": "user-prompt", "payload": {"prompt": "continue"}, "expect": {"context_excludes": ["Source excerpts"]}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Bash", "tool_input": {"command": "{memory} ask 'retry backoff'"}}, "only": ["claude", "codex"], "expect": {"allow": true}},
+  {"hook": "stop", "expect": {"reminder": null}}
+ ]
+}

@@ -93,11 +93,64 @@ def scale(count,semantic_from=None,runs=7):
         print(json.dumps(value));return value
       finally:semantic._unload()   # the model file is memory-mapped; Windows cannot delete the folder while it is
 
+# The knowledge base (core/sources.py) at scale: a first sync, an idle one, ask and the two hook paths on a repo of generated files.
+SOURCE_TARGETS={'first_sync_s':60,'idle_sync_s':5,'ask_p95_ms':300,'session_extra_ms':100,'prompt_extra_p95_ms':40}
+TOPICS=('invoice ledger payment settlement refund currency tenant shard replica gateway proxy cluster build release artifact pipeline quota '
+        'limit policy audit secret rotate backup restore snapshot journal webhook parser lexer renderer export import vault queue index schema').split()
+
+def sources_scale(count=5000,runs=30):
+    """Time the knowledge base on `count` small generated files (markdown, Python and Java in nested folders, a few lines each).
+    Returns first_sync_s, idle_sync_s (nothing changed), ask_p95_ms (notes plus excerpts, in process), session_check_ms (the
+    staleness check alone), session_extra_ms and _p95_ms (a SessionStart with the knowledge-base line against one without) and
+    prompt_extra_p95_ms (a prompt hook with the excerpt lookup against one without)."""
+    import os,random
+    from unittest.mock import patch
+    from core import runtime,sources
+    from core.cli import _ask
+    rng=random.Random(11)
+    with tempfile.TemporaryDirectory(prefix='living-memory-sources-',ignore_cleanup_errors=True) as directory,patch.dict(os.environ,{'LIVING_MEMORY_NO_BACKGROUND':'1'}):
+        base=Path(directory);root=base/'store';repo=base/'project'/'repo';init_domain('kb',[str(base/'project')],root);(repo/'.git').mkdir(parents=True)
+        for i in range(count):
+            folder=repo/'src'/f'pkg{i%40}'/f'mod{i%7}';folder.mkdir(parents=True,exist_ok=True);words=rng.choices(TOPICS,k=40)
+            kind=i%3
+            if kind==0:(folder/f'doc{i}.md').write_text(f'# {words[0].title()} {words[1]} {i}\n\n'+' '.join(words[2:20])+f'.\n\n## {words[3].title()} rules\n\n'+' '.join(words[20:])+f' unique{i}.\n',encoding='utf-8')
+            elif kind==1:(folder/f'mod{i}.py').write_text(f'\"\"\"{" ".join(words[:8])}\"\"\"\n\nclass {words[0].title()}Handler{i}:\n    def {words[1]}_{words[2]}(self, x):\n        # {" ".join(words[8:20])}\n        return x\n\n    def {words[3]}_{words[4]}(self):\n        return "{" ".join(words[20:30])}"\n',encoding='utf-8')
+            else:(folder/f'Svc{i}.java').write_text(f'public class {words[0].title()}Service{i} {{\n    /** {" ".join(words[:10])} */\n    public void {words[1]}{words[2].title()}(String a) {{\n        // {" ".join(words[10:25])}\n    }}\n}}\n',encoding='utf-8')
+        started=time.perf_counter();first=sources.sync(root,'kb');first_s=time.perf_counter()-started
+        started=time.perf_counter();idle=sources.sync(root,'kb');idle_s=time.perf_counter()-started
+        topic=lambda i:TOPICS[i%len(TOPICS)];questions=[f'how does the {topic(i)} {topic(i+11)} {topic(i+5)} work' for i in range(runs)]
+        asked=[]
+        for q in questions:
+            started=time.perf_counter();_ask(root,'kb',q,5);asked.append((time.perf_counter()-started)*1000)
+        started=time.perf_counter();sources.stale(root,'kb');check=(time.perf_counter()-started)*1000
+        payload={'cwd':str(base/'project'),'session_id':'bench'};runtime.process('claude','session-start',payload,root)
+        def starts(on):
+            samples=[]
+            for i in range(runs):
+                with patch.object(sources,'session_line',(lambda *a,**k:'') if not on else sources.session_line):
+                    started=time.perf_counter();runtime.process('claude','session-start',{**payload,'session_id':f's{on}{i}'},root);samples.append((time.perf_counter()-started)*1000)
+            return sorted(samples)
+        def prompts(on):
+            samples=[]
+            for i,q in enumerate(questions):
+                text=f'what is the {topic(i+3)} {topic(i+17)} {topic(i+9)} policy for tenant{i}'
+                with patch.object(runtime,'prompt_sources',(lambda *a,**k:(None,[])) if not on else runtime.prompt_sources):
+                    started=time.perf_counter();runtime.process('claude','user-prompt',{**payload,'session_id':f'p{on}{i}','prompt':text},root);samples.append((time.perf_counter()-started)*1000)
+            return sorted(samples)
+        off=prompts(False);on=prompts(True);p95=lambda xs:xs[int(len(xs)*.95)-1];start_off=starts(False);start_on=starts(True)
+        value={'schema':1,'files':count,'indexed_files':first['files'],'chunks':first['chunks'],'first_sync_s':round(first_s,2),'idle_sync_s':round(idle_s,2),'idle_unchanged':idle['sources'][0]['unchanged'],
+               'ask_median_ms':round(statistics.median(asked),1),'ask_p95_ms':round(p95(sorted(asked)),1),'session_check_ms':round(check,1),'session_off_p95_ms':round(p95(start_off),1),'session_on_p95_ms':round(p95(start_on),1),'session_extra_ms':round(statistics.median(start_on)-statistics.median(start_off),1),'session_extra_p95_ms':round(p95(start_on)-p95(start_off),1),
+               'prompt_off_p95_ms':round(p95(off),1),'prompt_on_p95_ms':round(p95(on),1),'prompt_extra_p95_ms':round(p95(on)-p95(off),1),'targets':SOURCE_TARGETS}
+        value['met']=value['first_sync_s']<=SOURCE_TARGETS['first_sync_s'] and value['idle_sync_s']<=SOURCE_TARGETS['idle_sync_s'] and value['ask_p95_ms']<=SOURCE_TARGETS['ask_p95_ms'] and value['session_extra_ms']<=SOURCE_TARGETS['session_extra_ms'] and value['prompt_extra_p95_ms']<=SOURCE_TARGETS['prompt_extra_p95_ms']
+        print(json.dumps(value));return value
+
 if __name__=='__main__':
     import argparse
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--scale',type=int,help='Time a prompt hook and a capture on a synthetic store of this many notes')
     parser.add_argument('--semantic-from',type=Path,help='With --scale: a store whose installed semantic model is copied into the synthetic one')
+    parser.add_argument('--sources',type=int,help='Time the knowledge base (sync, ask, the hook paths) on this many generated files')
     args=parser.parse_args()
+    if args.sources:raise SystemExit(0 if sources_scale(args.sources)['met'] else 1)
     if args.scale:raise SystemExit(0 if scale(args.scale,args.semantic_from)['met'] else 1)
     main()
