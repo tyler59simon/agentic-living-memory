@@ -110,7 +110,7 @@ def normalize_remote(url,base=None) -> str|None:
         except (OSError,ValueError):return None
     def remote(host,path):
         host=host.rpartition('@')[2].lower();path=re.sub(r'(?i)\.git$','',path.strip().strip('/')).strip('/')
-        return f'{host}/{path}' if path else host
+        return f'{host}/{path.casefold()}' if path else host   # hosts such as GitHub treat Owner/Repo and owner/repo alike
     scheme=re.match(r'([a-z][a-z0-9+.-]*)://(.*)',text,re.I)
     if scheme:
         if scheme[1].lower()=='file':return local(scheme[2])

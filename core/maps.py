@@ -171,6 +171,8 @@ def changed_since(repo,updated,timeout=2):
         return [l.strip() for l in (out or '').splitlines() if l.strip()][:MAX_CHANGED]
     except (OSError,ValueError,subprocess.SubprocessError):return []
 
+STALE_DOC_GLOBS=('**/adr/**','**/adrs/**','**/decisions/**')
+
 def cited_paths(hit,changed,repo=None,bindings=None):
     """The paths among `changed` (repo-relative) that this map or brief cites."""
     import fnmatch
@@ -187,7 +189,10 @@ def cited_paths(hit,changed,repo=None,bindings=None):
         found=_resolve(raw,hit['domain'],bindings or {}) if hit.get('domain') else None
         try:listed.add((found.relative_to(repo).as_posix() if found is not None and repo is not None else normalize_file(raw)).casefold())
         except ValueError:listed.add(normalize_file(raw).casefold())
-    docs=set(decision_docs(changed,bindings))
+    # Only decision records make a whole-repo summary stale by themselves; an ordinary docs or ticket edit does not
+    # (those count only when the map names them), or every docs-heavy session would be asked to update its map.
+    from .triggers import matches
+    docs={p for p in decision_docs(changed,bindings) if matches(p,STALE_DOC_GLOBS)}
     def cites(path):
         parts=path.split('/')
         return (path.casefold() in listed or path in docs or path.casefold() in named

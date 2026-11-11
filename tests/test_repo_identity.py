@@ -14,7 +14,7 @@ from core.repository import validate
 from core.search import rebuild_index
 
 ORIGIN = 'git@github.com:Acme/ledger.git'
-IDENTITY = 'github.com/Acme/ledger'
+IDENTITY = 'github.com/acme/ledger'   # identities casefold the path: hosts treat Owner/Repo and owner/repo alike
 
 
 def make_repo(folder, origin=None):
@@ -104,7 +104,7 @@ class Identity(unittest.TestCase):
         sub.mkdir()
         (sub / '.git').write_text('gitdir: ../.git/modules/sub\n', encoding='utf-8')
         self.assertEqual(git_dir(sub), module.resolve())
-        self.assertEqual(repo_identity(sub), 'github.com/Acme/sub')
+        self.assertEqual(repo_identity(sub), 'github.com/acme/sub')
         # A .git file that names nothing is no repository.
         (sub / '.git').write_text('gitdir: ../nowhere\n', encoding='utf-8')
         self.assertIsNone(repo_identity(sub))
@@ -193,7 +193,7 @@ class SharedMaps(StoreFixture):
             validate({**note, 'repo': ['github.com/x/y']}, 'demo', self.root)
         # An update refreshes it (pointing the map at another repo changes it) and never makes a note without a remote carry one.
         change(made['id'], 'demo', 'update', self.root, files=['ws/other'])
-        self.assertEqual(find_note(made['id'], 'demo', self.root)[1]['repo'], 'github.com/Acme/hive')
+        self.assertEqual(find_note(made['id'], 'demo', self.root)[1]['repo'], 'github.com/acme/hive')
         make_repo(self.project / 'ws' / 'local')
         change(made['id'], 'demo', 'update', self.root, files=['ws/local'])
         self.assertNotIn('repo', find_note(made['id'], 'demo', self.root)[1])

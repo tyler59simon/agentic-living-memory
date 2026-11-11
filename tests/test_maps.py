@@ -241,6 +241,13 @@ class Staleness(StoreFixture):
         self.assertIn('Codebase map for app',text);self.assertIn('STALE: docs/adr/ADR-004-money.md, pom.xml changed since',text)
         self.assertEqual(self.state()['repos'][self.app.as_posix()]['fresh']['changed'],['docs/adr/ADR-004-money.md','pom.xml'])
 
+    def test_ordinary_docs_and_ticket_edits_do_not_make_the_map_stale_but_a_decision_record_does(self):
+        # Docs-heavy teams edit docs/*.md and tickets every session; only decision records stale a whole-repo summary by themselves.
+        self.capture();commit(self.app,{'docs/runbook.md':'steps','team/board/LH-7.md':'ticket','CHANGELOG.md':'v1'},later())
+        hit=self.hit();self.assertEqual(cited_paths(hit,changed_since(self.app,hit['updated']),self.app,self.bindings),[])
+        commit(self.app,{'docs/decisions/0007-fees.md':'cap'},later(2))
+        self.assertEqual(cited_paths(self.hit(),changed_since(self.app,self.hit()['updated']),self.app,self.bindings),['docs/decisions/0007-fees.md'])
+
     def test_changes_nobody_cites_do_not_make_it_stale_but_a_named_path_or_a_files_entry_does(self):
         self.capture();commit(self.app,{'README.md':'two','src/Other.java':'y','notes.txt':'z'},later())
         hit=self.hit();self.assertEqual(cited_paths(hit,changed_since(self.app,hit['updated']),self.app,self.bindings),[])
