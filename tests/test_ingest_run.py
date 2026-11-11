@@ -1,0 +1,119 @@
+"""scripts/ingest_run.py driven with a FAKE agent (a small Python script that reads the prompt, calls the real LM CLI against a temp store to
+capture a digest per listed file, and prints a JSON report with a cost): batching, --changed-only, --budget-usd, --dry-run, idempotent
+reruns, and a changed file's new digest replacing the old one. No real claude or codex process is ever started."""
+import json,re,subprocess,sys,unittest
+from pathlib import Path
+from test_digests import Digests,put
+from core import sources
+from core.repository import inventory
+
+SCRIPT=Path(__file__).resolve().parents[1]/'scripts'/'ingest_run.py'
+CLI=Path(__file__).resolve().parents[1]/'living_memory.py'
+FAKE='''
+import json,re,subprocess,sys
+from pathlib import Path
+root,cli,cwd,calls,*options=sys.argv[1:]
+cost=float(options[options.index('--cost')+1]) if '--cost' in options else 0.5
+prompt=sys.stdin.read()
+with open(calls,'a',encoding='utf-8') as f:f.write(json.dumps(prompt)+'\\n')
+if '--fail' in options:sys.exit(3)
+digested,skipped=[],[]
+for line in prompt.splitlines():
+    found=re.match(r'^\\d+\\. ("(?:[^"\\\\]|\\\\.)*") \\((\\w+), (\\d+) bytes, (\\w+)(, no --file)?\\) read: (.+)$',line)
+    if not found:continue
+    path=json.loads(found[1]);kind=found[2];status=found[4];abs_=found[6]
+    if '--skip-util' in options and path.endswith('util.py'):skipped.append({'path':path,'reason':'trivial'});continue
+    wording=len(Path(abs_).read_text(encoding='utf-8'))
+    args=[sys.executable,cli,'--root',root,'--domain','demo','--cwd',cwd,'capture','--type','decision' if kind=='adr' else 'knowledge',
+          '--title',f'{path}: a {kind} file of the kb','--summary',f'What {path} is.','--detail',f'**Facts:** {path} is {status}, {wording} characters long ({path}:1).',
+          '--subject','project','--concern','architecture','--source',path]
+    if not found[5]:args+=['--file',path]
+    done=subprocess.run(args,capture_output=True,text=True,encoding='utf-8')
+    if done.returncode:print(done.stdout,done.stderr,file=sys.stderr);sys.exit(4)
+    digested.append(path)
+report={'digested':digested,'skipped':skipped}
+if '--wrap' in options:print(json.dumps({'type':'result','is_error':False,'total_cost_usd':cost,'result':'Done.\\n'+json.dumps(report)}))
+else:print(json.dumps({**report,'cost_usd':cost}))
+'''
+
+class IngestRun(Digests):
+    def setUp(self):
+        super().setUp()
+        (self.repo/'src'/'server.py').write_bytes(('def serve():\n    pass\n'+'# padding\n'*60).encode())
+        self.agent=self.base/'agent';self.agent.mkdir();(self.agent/'fake_agent.py').write_text(FAKE,encoding='utf-8')
+        self.calls=self.agent/'calls.jsonl';self.log=self.agent/'run.jsonl'
+        sources.sync(self.root,'demo')
+    def prompts(self):return [json.loads(l) for l in self.calls.read_text(encoding='utf-8').splitlines()] if self.calls.exists() else []
+    def listed(self,prompt):return [json.loads(m[1]) for m in (re.match(r'\d+\. ("(?:[^"\\]|\\.)*")',l) for l in prompt.splitlines()) if m]
+    def run_script(self,*extra,agent=(),expect=0):
+        command=[sys.executable,str(self.agent/'fake_agent.py'),str(self.root),str(CLI),str(self.project),str(self.calls),*agent]
+        done=subprocess.run([sys.executable,'-X','utf8',str(SCRIPT),'--root',str(self.root),'--domain','demo','--cwd',str(self.project),'--log',str(self.log),
+                             '--command-json',json.dumps(command),*extra],capture_output=True,text=True,encoding='utf-8',timeout=300)
+        self.assertEqual(done.returncode,expect,done.stdout+done.stderr)
+        return json.loads(done.stdout) if done.stdout.strip().startswith('{') else None
+    def active(self):return [n for n in inventory('demo',self.root) if n.get('status','active')=='active']
+    def total(self):return self.cli('ingest-scan','--limit','100')[1]['total']
+
+class Batches(IngestRun):
+    def test_dry_run_prints_the_batches_and_prompts_and_runs_no_agent(self):
+        out=self.run_script('--batch','3','--dry-run')
+        self.assertTrue(out['dry_run']);self.assertEqual(out['files'],self.total());self.assertEqual(len(out['batches']),-(-self.total()//3))
+        first=out['batches'][0];self.assertEqual(first['paths'],['kb/docs/adr/0003-use-event-sourcing.md','kb/README.md','kb/docs/guide.md'])
+        for text in ('capture --type TYPE','--source','--file','300-1,200 characters','decision for decision records','project brief','codebase map','"digested"','read: '):self.assertIn(text,first['prompt'])
+        self.assertFalse(self.calls.exists());self.assertEqual(self.active(),[])
+
+    def test_files_go_to_the_agent_in_ranked_batches_and_get_digests(self):
+        out=self.run_script('--batch','3',agent=('--skip-util',));total=self.total()
+        prompts=self.prompts();self.assertEqual(len(prompts),-(-total//3));self.assertTrue(all(len(self.listed(p))<=3 for p in prompts))
+        order=[path for p in prompts for path in self.listed(p)];self.assertEqual(order[:3],['kb/docs/adr/0003-use-event-sourcing.md','kb/README.md','kb/docs/guide.md'])
+        self.assertEqual(len(order),total)
+        self.assertEqual((out['batches_run'],out['files_digested'],out['files_skipped']),(len(prompts),total-1,1));self.assertEqual(out['cost_usd'],0.5*len(prompts))
+        self.assertEqual(out['verified'],{'current':total-1,'still_open':1});self.assertTrue(out['ok'])
+        notes=self.active();self.assertEqual(len(notes),total-1)
+        adr=next(n for n in notes if n['sources'][0]['path']=='kb/docs/adr/0003-use-event-sourcing.md');self.assertEqual(adr['type'],'decision')
+        rows=[json.loads(l) for l in self.log.read_text(encoding='utf-8').splitlines()]
+        self.assertEqual([r['batch'] for r in rows[:-1]],list(range(1,len(prompts)+1)));self.assertIn('summary',rows[-1]);self.assertEqual(rows[0]['skipped'],[])
+
+    def test_max_batches_limits_the_run(self):
+        out=self.run_script('--batch','2','--max-batches','2');self.assertEqual((out['batches_run'],out['batches_planned']),(2,2));self.assertEqual(len(self.active()),4)
+        self.assertEqual(self.cli('ingest-scan','--limit','100')[1]['counts']['current'],4)
+
+    def test_the_budget_stops_further_batches(self):
+        out=self.run_script('--batch','2','--budget-usd','1.0');self.assertEqual(out['batches_run'],2);self.assertEqual(out['cost_usd'],1.0);self.assertGreater(out['batches_planned'],2)
+        self.assertEqual(len(self.prompts()),2)
+
+    def test_a_claude_style_wrapped_report_gives_its_cost_and_digests(self):
+        out=self.run_script('--batch','4','--max-batches','1',agent=('--wrap','--cost','0.25'));self.assertEqual((out['cost_usd'],out['files_digested']),(0.25,4))
+
+    def test_parallel_runs_the_batches_in_waves(self):
+        out=self.run_script('--batch','3','--parallel','2');self.assertEqual(out['batches_run'],-(-self.total()//3));self.assertEqual(len(self.active()),self.total())
+
+    def test_a_failing_agent_is_reported_and_the_run_exits_nonzero(self):
+        out=self.run_script('--batch','4','--max-batches','1',agent=('--fail',),expect=1)
+        self.assertFalse(out['ok']);self.assertEqual((out['batches_failed'],out['files_digested']),(1,0));self.assertEqual(self.active(),[])
+
+class Reruns(IngestRun):
+    def test_a_rerun_writes_nothing_new(self):
+        self.run_script('--batch','4');before={n['id']:n['revision'] for n in self.active()};self.assertTrue(before)
+        out=self.run_script('--batch','4');after={n['id']:n['revision'] for n in self.active()}
+        self.assertEqual(after,before);self.assertEqual(out['verified']['current'],len(before))
+        self.assertEqual(len([n for n in inventory('demo',self.root,retired=True)]),len(before))   # not even a retired copy
+
+    def test_changed_only_sends_new_and_stale_files_and_nothing_else(self):
+        self.run_script('--batch','4');self.calls.unlink()
+        out=self.run_script('--changed-only');self.assertEqual(out['batches_run'],0);self.assertFalse(self.calls.exists())
+        put(self.repo/'README.md',self.repo.joinpath('README.md').read_text(encoding='utf-8')+'## Timeouts\n\nFive seconds.\n')
+        put(self.repo/'docs'/'ops.md','# On-call\n\nPage the billing team.\n');sources.sync(self.root,'demo')
+        out=self.run_script('--changed-only');prompts=self.prompts();self.assertEqual(len(prompts),1)
+        self.assertEqual(sorted(self.listed(prompts[0])),['kb/README.md','kb/docs/ops.md'])
+        self.assertIn('stale',prompts[0]);self.assertIn('new',prompts[0]);self.assertEqual(out['verified'],{'current':2,'still_open':0})
+
+    def test_a_stale_file_is_re_digested_by_replacing_the_old_digest(self):
+        self.run_script('--batch','4');old=next(n for n in self.active() if n['sources'][0]['path']=='kb/README.md')
+        put(self.repo/'README.md',self.repo.joinpath('README.md').read_text(encoding='utf-8')+'## Timeouts\n\nFive seconds.\n');sources.sync(self.root,'demo')
+        out=self.run_script('--changed-only');self.assertEqual(out['files_digested'],1)
+        active=[n for n in self.active() if n['sources'][0]['path']=='kb/README.md'];self.assertEqual(len(active),1);self.assertNotEqual(active[0]['id'],old['id'])
+        retired={n['id']:n for n in inventory('demo',self.root,retired=True)}[old['id']];self.assertEqual(retired['status'],'superseded');self.assertEqual(retired['superseded_by'],active[0]['id'])
+        self.assertEqual(self.cli('ingest-scan','--changed','--limit','100')[1]['counts']['stale'],0)
+
+if __name__=='__main__':unittest.main()

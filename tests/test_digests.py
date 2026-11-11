@@ -1,0 +1,251 @@
+"""Digest notes (remediation phase 5): `sources` provenance (path + sha256) on any note, staleness when the file changes, the STALE prefix
+where a digest is injected, review and follow-through, ingest-scan's ranked worklist, and capture-key idempotency."""
+import contextlib,hashlib,io,json,os,shutil,sys,unittest
+from pathlib import Path
+from unittest.mock import patch
+from test_core import StoreFixture
+from core import digests,runtime,sources
+from core.cli import main
+from core.notes import find_note
+from core.repository import clean_sources,inventory,validate
+
+README='# Billing Service\n\n## Retry policy\n\nFailed payment captures are retried with exponential backoff. The first retry waits 30 seconds.\n'
+ADR='# 0003 Use event sourcing\n\nStatus: accepted\n\nThe ledger is an append-only event log.\n'
+LEDGER='"""Ledger."""\n\ndef reconcile_ledger(db):\n    return db.read("balance_snapshot")\n'+'# padding\n'*60
+MAIN='import ledger\n\ndef main():\n    ledger.reconcile_ledger(None)\n'
+UTIL='def tiny():\n    return 1\n'
+
+def sha(text):return hashlib.sha256(text.encode()).hexdigest()
+def put(path,text):Path(path).write_bytes(text.encode())   # bytes as written: no newline translation, so the hash is sha(text)
+
+class Digests(StoreFixture):
+    """A bound project holding a git repo `kb/` with docs and code."""
+    def setUp(self):
+        super().setUp()
+        self.project=self.base/'project';self.repo=self.project/'kb'
+        for rel,text in {'README.md':README,'docs/adr/0003-use-event-sourcing.md':ADR,'src/ledger.py':LEDGER,'src/main.py':MAIN,'src/util.py':UTIL,
+                         'docs/guide.md':'# Guide\n\nHow to run the billing service locally.\n','tests/test_ledger.py':'import ledger\n'+'# padding\n'*60}.items():
+            path=self.repo/rel;path.parent.mkdir(parents=True,exist_ok=True);put(path,text)
+        (self.repo/'.git').mkdir()
+        self.scratch=self.base/'scratch';self.scratch.mkdir()
+    def cli(self,*argv,domain='demo'):
+        out,err=io.StringIO(),io.StringIO()
+        with contextlib.redirect_stdout(out),contextlib.redirect_stderr(err):
+            try:code=main(['--root',str(self.root),'--cwd',str(self.project),*(['--domain',domain] if domain else []),*argv])
+            except SystemExit as exc:code=exc.code
+        text=out.getvalue() or err.getvalue()
+        return code,(json.loads(text) if text.strip().startswith(('{','[')) else text)
+    def digest(self,path,title=None,*extra,detail='**Rule:** failed payment captures are retried with exponential backoff (README.md:5).'):
+        return self.cli('capture','--title',title or f'{path}: digest','--summary','What it is.','--detail',detail,
+                        '--subject','project','--concern','architecture','--source',path,'--file',path,*extra)
+    def note_of(self,made):return find_note(made['id'],'demo',self.root)[1]
+    def hook(self,event,session='s1',**extra):
+        return runtime.process('claude',event,{'cwd':str(self.project),'session_id':session,'prompt':'go','scratchpad_dir':str(self.scratch),**extra},self.root)
+
+class Provenance(Digests):
+    def test_capture_stores_the_path_relative_to_the_bound_folder_and_the_current_hash(self):
+        code,made=self.digest('kb/README.md');self.assertEqual(code,0,made)
+        self.assertEqual(self.note_of(made)['sources'],[{'path':'kb/README.md','sha256':sha(README)}])
+        self.assertEqual(made['status'],'created')
+
+    def test_an_absolute_path_and_a_cwd_relative_one_store_the_same_path(self):
+        code,made=self.digest(str(self.repo/'README.md'));self.assertEqual(code,0,made)
+        self.assertEqual(self.note_of(made)['sources'][0]['path'],'kb/README.md')
+
+    def test_a_path_outside_the_bound_folders_and_registered_sources_is_refused(self):
+        outside=self.base/'elsewhere.md';outside.write_text('x',encoding='utf-8')
+        code,error=self.digest(str(outside));self.assertNotEqual(code,0);self.assertIn('outside the bound folders',json.dumps(error))
+        code,error=self.digest('kb/missing.md');self.assertNotEqual(code,0);self.assertIn('no such file',json.dumps(error))
+
+    def test_a_file_of_a_registered_source_outside_the_bound_folders_is_named_by_its_source(self):
+        wiki=self.base/'wiki';wiki.mkdir();put(wiki/'Retry-Policy.md','# Retry\n\nBackoff.\n')
+        from core.repository import canonical_json
+        put(self.root/'sources.json',canonical_json({'version':1,'sources':[{'name':'wiki','domain':'demo','kind':'git-wiki','path':str(wiki),'include':[],'exclude':[]}],'implicit':{}}))
+        code,made=self.digest(str(wiki/'Retry-Policy.md'));self.assertEqual(code,0,made)
+        self.assertEqual(self.note_of(made)['sources'][0]['path'],'wiki:Retry-Policy.md')
+        self.assertEqual(digests.changed(self.note_of(made)['sources'],'demo',self.root),[])
+        put(wiki/'Retry-Policy.md','# Retry\n\nChanged.\n')
+        self.assertEqual(digests.changed(self.note_of(made)['sources'],'demo',self.root),['wiki:Retry-Policy.md'])
+
+    def test_update_source_rehashes_one_path_and_keeps_the_others(self):
+        code,made=self.digest('kb/README.md');ref=f"demo:{made['id']}"
+        self.assertEqual(self.cli('update',ref,'--source','kb/docs/guide.md')[0],0)
+        paths=[s['path'] for s in self.note_of(made)['sources']];self.assertEqual(paths,['kb/README.md','kb/docs/guide.md'])
+        put(self.repo/'README.md',README+'more\n')
+        self.assertEqual(self.cli('update',ref,'--source','kb/README.md')[0],0)
+        found={s['path']:s['sha256'] for s in self.note_of(made)['sources']}
+        self.assertEqual(found['kb/README.md'],sha(README+'more\n'));self.assertEqual(len(found),2)
+
+    def test_sources_validation(self):
+        good={'path':'a.md','sha256':'0'*64}
+        self.assertEqual(clean_sources([dict(good,path='a\\b.md')]),[{'path':'a/b.md','sha256':'0'*64}])
+        for bad in ('x',[{'path':'a.md'}],[dict(good,sha256='xyz')],[dict(good,sha256='A'*64)],[dict(good,path='p'*301)],[dict(good,path='')],[dict(good,extra=1)],[dict(good,path=3)],[dict(good,path=str(i)) for i in range(21)],['a.md']):
+            with self.subTest(bad=str(bad)[:40]),self.assertRaises(ValueError):clean_sources(bad)
+        self.assertEqual(len(clean_sources([dict(good,path=str(i)) for i in range(20)])),20)
+        made=self.note('Plain note','Nothing digested.');note=self.note_of(made)
+        for bad in ('x',[{'path':'a.md','sha256':'zz'}]):
+            with self.subTest(note=str(bad)),self.assertRaises(ValueError):validate({**note,'sources':bad},'demo',self.root)
+
+    def test_a_payload_capture_may_carry_sources_and_a_flag_beside_it_is_refused(self):
+        body=json.dumps({'title':'Payload digest','body':'A note.\n','tags':['subject/project','concern/architecture'],'sources':[{'path':'kb/README.md','sha256':sha(README)}]})
+        with patch('sys.stdin',io.StringIO(body)):code,made=self.cli('capture')
+        self.assertEqual(code,0,made);self.assertEqual(self.note_of(made)['sources'][0]['path'],'kb/README.md')
+        with patch('sys.stdin',io.StringIO(body)):code,error=self.cli('capture','--source','kb/README.md')
+        self.assertNotEqual(code,0);self.assertIn('--source',json.dumps(error))
+
+class Staleness(Digests):
+    def setUp(self):
+        super().setUp()
+        code,self.made=self.digest('kb/README.md');self.assertEqual(code,0,self.made)
+        self.ref=f"demo:{self.made['id']}";self.short='demo:'+self.made['id'][:8]
+    def sources(self):return self.note_of(self.made)['sources']
+
+    def test_a_changed_or_missing_file_makes_the_digest_stale(self):
+        self.assertEqual(digests.changed(self.sources(),'demo',self.root),[])
+        put(self.repo/'README.md',README+'new\n')
+        self.assertEqual(digests.changed(self.sources(),'demo',self.root),['kb/README.md'])
+        self.assertEqual(digests.stale_text(['kb/README.md']),'STALE: kb/README.md changed since this digest')
+        (self.repo/'README.md').unlink()
+        self.assertEqual(digests.changed(self.sources(),'demo',self.root),['kb/README.md'])
+        self.assertEqual(digests.stale_text(['a','b','c','d']),'STALE: a, b, c and 1 more changed since this digest')
+
+    def test_a_note_in_a_domain_without_bound_folders_is_never_called_stale(self):
+        self.assertEqual(digests.changed(self.sources(),'_global',self.root),[])
+
+    def test_the_prompt_hit_says_stale_until_the_digest_is_updated(self):
+        prompt='how does the exponential backoff retry for failed payment captures work'
+        self.assertNotIn('STALE',runtime.context(str(self.project),prompt,self.root,'demo')[0])
+        put(self.repo/'README.md',README+'new\n')
+        text=runtime.context(str(self.project),prompt,self.root,'demo',shown=())[0]
+        self.assertIn('STALE: kb/README.md changed since this digest — ',text);self.assertIn('README.md: digest',text)
+
+    def test_session_start_lines_carry_the_prefix(self):
+        from core.session_start import build_context
+        put(self.repo/'README.md',README+'new\n')
+        text=build_context(str(self.project),self.root)[0]
+        self.assertIn('STALE: kb/README.md changed since this digest — kb/README.md: digest',text)
+        self.assertEqual(self.cli('confirm',self.short)[0],0)
+        self.assertNotIn('STALE',build_context(str(self.project),self.root)[0])
+
+    def test_a_file_hint_carries_the_prefix(self):
+        put(self.repo/'README.md',README+'new\n')
+        self.hook('user-prompt')
+        text=self.hook('pre-tool-use',tool_name='Edit',tool_input={'file_path':'kb/README.md'})['context']
+        self.assertIn('Living Memory notes about kb/README.md',text);self.assertIn('STALE: kb/README.md changed since this digest — ',text)
+
+    def test_ask_and_search_mark_the_hit_and_hide_the_source_list(self):
+        question='exponential backoff retry failed payment captures'
+        code,found=self.cli('ask',question);self.assertEqual(code,0,found)
+        self.assertNotIn('stale',found['notes'][0]);self.assertNotIn('sources',found['notes'][0])
+        put(self.repo/'README.md',README+'new\n')
+        code,found=self.cli('ask',question);hit=found['notes'][0]
+        self.assertEqual(hit['stale'],'STALE: kb/README.md changed since this digest');self.assertTrue(hit['snippet'].startswith('STALE: kb/README.md'))
+        self.assertNotIn('sources',hit)
+        code,found=self.cli('search','exponential backoff retry');self.assertEqual(found['results'][0]['stale'],hit['stale'])
+
+    def test_review_lists_stale_digests_and_confirm_or_update_clears_them(self):
+        code,found=self.cli('review');self.assertEqual((found['due'],found['stale_digests']),(0,0))
+        put(self.repo/'README.md',README+'new\n')
+        code,found=self.cli('review');self.assertEqual((found['due'],found['stale_digests']),(1,1))
+        self.assertEqual(found['notes'][0]['ref'],self.ref);self.assertIn('kb/README.md changed',found['notes'][0]['stale'])
+        self.assertEqual(self.cli('confirm',self.ref)[0],0)
+        self.assertEqual(self.sources()[0]['sha256'],sha(README+'new\n'))
+        self.assertEqual(self.cli('review')[1]['due'],0)
+        put(self.repo/'README.md',README+'newer\n')
+        self.assertEqual(self.cli('review')[1]['stale_digests'],1)
+        self.assertEqual(self.cli('update',self.ref,'--set-detail','**Rule:** backoff doubles each time.')[0],0)
+        self.assertEqual(self.sources()[0]['sha256'],sha(README+'newer\n'));self.assertEqual(self.cli('review')[1]['stale_digests'],0)
+
+    def test_a_tag_only_update_does_not_pretend_the_file_was_checked(self):
+        put(self.repo/'README.md',README+'new\n')
+        self.assertEqual(self.cli('update',self.ref,'--context','x')[0],0)
+        self.assertEqual(self.cli('review')[1]['stale_digests'],1)
+
+    def test_editing_a_digested_file_asks_the_digest_at_stop(self):
+        self.hook('user-prompt');hint=self.hook('pre-tool-use',tool_name='Edit',tool_input={'file_path':'kb/README.md'})
+        self.assertIn('Living Memory notes about kb/README.md',hint['context'])
+        reason=self.hook('stop')['continue_reason']
+        self.assertIn('You edited kb/README.md',reason);self.assertIn(self.short,reason);self.assertIn('CMD confirm '+self.short,reason)
+
+    def test_a_digest_with_only_a_source_and_no_files_entry_still_follows_its_file(self):
+        code,other=self.cli('capture','--title','Guide digest','--summary','How to run it.','--detail','**Run:** make run (docs/guide.md:1).','--subject','project','--concern','architecture','--source','kb/docs/guide.md')
+        self.assertEqual(code,0,other);self.assertNotIn('files',self.note_of(other))
+        self.hook('user-prompt');text=self.hook('pre-tool-use',tool_name='Edit',tool_input={'file_path':'kb/docs/guide.md'})['context']
+        self.assertIn('Guide digest',text)
+        self.assertIn('Guide digest',self.hook('stop')['continue_reason'])
+
+class Idempotency(Digests):
+    def test_the_same_file_content_is_digested_once_whatever_the_wording(self):
+        code,first=self.digest('kb/README.md');self.assertEqual(first['status'],'created')
+        code,again=self.digest('kb/README.md','kb/README.md: another wording');self.assertEqual((code,again['status'],again['id']),(0,'existing',first['id']))
+        self.assertEqual(len(inventory('demo',self.root)),1)
+
+    def test_a_changed_file_replaces_the_old_digest_instead_of_duplicating_it(self):
+        code,first=self.digest('kb/README.md')
+        put(self.repo/'README.md',README+'## New section\n\nTimeouts are 5 seconds.\n')
+        code,second=self.digest('kb/README.md',None,detail='**Rule:** timeouts are 5 seconds (README.md:7).');self.assertEqual((code,second['status']),(0,'created'),second)
+        self.assertEqual(second['superseded'],[f"demo:{first['id']}"])
+        active=[n for n in inventory('demo',self.root) if n.get('status','active')=='active'];self.assertEqual([n['id'] for n in active],[second['id']])
+        self.assertEqual(digests.changed(active[0]['sources'],'demo',self.root),[])
+
+    def test_digests_of_different_files_may_have_similar_titles_but_a_plain_note_may_not_copy_one(self):
+        self.digest('kb/README.md','kb/README.md: billing service overview');code,other=self.digest('kb/docs/guide.md','kb/docs/guide.md: billing service overview')
+        self.assertEqual((code,other['status']),(0,'created'),other)
+        code,error=self.cli('capture','--title','kb/README.md: billing service overview!','--summary','A plain note.','--subject','project','--concern','architecture')
+        self.assertNotEqual(code,0);self.assertIn('possible_duplicate',json.dumps(error))
+
+    def test_a_digest_of_other_files_does_not_replace_a_note(self):
+        code,first=self.digest('kb/README.md');code,other=self.digest('kb/docs/guide.md')
+        self.assertEqual(other['status'],'created');self.assertNotIn('superseded',other);self.assertEqual(len(inventory('demo',self.root)),2)
+
+class Scan(Digests):
+    def setUp(self):
+        super().setUp()
+        put(self.repo/'src'/'server.py','def serve():\n    pass\n'+'# padding\n'*60)
+        put(self.repo/'pom.xml','<project>\n'+'<!-- padding -->\n'*40+'</project>\n')
+        sources.sync(self.root,'demo')
+    def scan(self,*argv):
+        code,found=self.cli('ingest-scan',*argv);self.assertEqual(code,0,found);return found
+    def test_the_worklist_is_ranked_adrs_readmes_docs_entry_points_then_modules(self):
+        items=self.scan('--limit','100')['items'];paths=[i['path'] for i in items]
+        self.assertEqual(paths[0],'kb/docs/adr/0003-use-event-sourcing.md')
+        self.assertEqual(paths[1],'kb/README.md');self.assertEqual(paths[2],'kb/docs/guide.md')
+        kinds=[i['kind'] for i in items];self.assertEqual(kinds[:3],['adr','readme','doc'])
+        entry=[i['path'] for i in items if i['kind'] in ('entry','build')];self.assertEqual(entry,['kb/pom.xml','kb/src/main.py','kb/src/server.py'])
+        self.assertLess(paths.index('kb/src/server.py'),paths.index('kb/src/ledger.py'))   # entry points before modules
+        self.assertLess(paths.index('kb/src/ledger.py'),paths.index('kb/src/util.py'))      # a referenced, larger module before a tiny one
+        self.assertEqual(items[paths.index('kb/src/util.py')]['kind'],'other')
+        self.assertEqual(items[paths.index('kb/tests/test_ledger.py')]['kind'],'test')
+        for item in items:self.assertEqual(set(item)-{'digest','file'},{'path','source','kind','size','status','abs'});self.assertTrue(Path(item['abs']).is_file())
+        self.assertTrue(all(i['status']=='new' for i in items))
+
+    def test_references_count_other_files_that_mention_the_module(self):
+        found=self.scan('--limit','100');modules=[i for i in found['items'] if i['kind']=='module'];self.assertEqual(modules[0]['path'],'kb/src/ledger.py')
+
+    def test_status_follows_the_digests(self):
+        code,made=self.digest('kb/README.md');self.digest('kb/docs/guide.md')
+        put(self.repo/'docs'/'guide.md','# Guide\n\nChanged.\n')
+        found=self.scan('--limit','100');by={i['path']:i for i in found['items']}
+        self.assertEqual((by['kb/README.md']['status'],by['kb/README.md']['digest']),('current',f"demo:{made['id']}"))
+        self.assertEqual(by['kb/docs/guide.md']['status'],'stale');self.assertIn('digest',by['kb/docs/guide.md'])
+        self.assertEqual(by['kb/src/main.py']['status'],'new');self.assertNotIn('digest',by['kb/src/main.py'])
+        self.assertEqual((found['counts']['current'],found['counts']['stale']),(1,1));self.assertEqual(found['total'],sum(found['counts'].values()))
+        changed=self.scan('--limit','100','--changed');self.assertEqual({i['status'] for i in changed['items']},{'new','stale'});self.assertNotIn('kb/README.md',[i['path'] for i in changed['items']])
+
+    def test_a_superseded_digest_no_longer_counts(self):
+        code,made=self.digest('kb/README.md');self.cli('supersede',f"demo:{made['id']}",'--by',self.digest('kb/docs/guide.md')[1]['id'])
+        by={i['path']:i for i in self.scan('--limit','100')['items']};self.assertEqual(by['kb/README.md']['status'],'new')
+
+    def test_limit_source_and_errors(self):
+        self.assertEqual(len(self.scan('--limit','3')['items']),3)
+        name=next(s['name'] for s in sources.resolve(self.root,'demo'));self.assertEqual(self.scan('--source',name)['total'],self.scan()['total'])
+        code,error=self.cli('ingest-scan','--source','nope');self.assertNotEqual(code,0);self.assertIn('unknown source',json.dumps(error))
+
+    def test_no_index_says_to_sync_and_subagents_may_scan(self):
+        os.unlink(sources.db_path(self.root,'demo'))
+        code,error=self.cli('ingest-scan');self.assertNotEqual(code,0);self.assertIn('source-sync',json.dumps(error))
+        sources.sync(self.root,'demo')
+        code,found=self.cli('--actor','subagent','ingest-scan','--limit','2');self.assertEqual(code,0);self.assertIn('ingest-scan',runtime.ALLOWED_SUBCOMMANDS)
+        self.assertNotEqual(self.cli('--actor','subagent','capture','--title','x','--summary','y')[0],0)
+
+if __name__=='__main__':unittest.main()

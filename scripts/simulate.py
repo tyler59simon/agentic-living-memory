@@ -59,6 +59,9 @@ class Sim:
             domain=note.get('domain','demo')
             if domain=='_global':ensure_global(self.root)
             extra={'files':note['files']} if note.get('files') else {}   # e.g. a codebase map's repo folder
+            if note.get('sources'):
+                from core.digests import describe
+                extra['sources']=[describe(self.root,domain,path) for path in note['sources']]   # digests: file paths relative to the project, hashed as they are now
             made=capture(note['title'],note.get('body',''),note.get('tags',DEFAULT_TAGS),domain,self.root,type=note.get('type','knowledge'),allow_similar=True,**extra)
             self.keys[note['key']]={'domain':domain,'id':made['id'],'path':made['path']}
         self.commit('later')

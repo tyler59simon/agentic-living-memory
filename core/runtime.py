@@ -12,7 +12,7 @@ SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 # Tools that cannot change files; anything else marks the turn as mutating.
 READ_TOOLS={'read','read_file','glob','grep','search','view_image','view','ls','list','webfetch','websearch','web_fetch','web_search','todowrite','task','agent','toolsearch','askuserquestion','exitplanmode','enterplanmode'}
 SHELL_TOOLS={'bash','powershell','shell','run_shell_command','exec_command','local_shell','execute'}
-ALLOWED_SUBCOMMANDS={'ask','sources','source-sync','search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','promote-plan','projects','systems','resolve','reopen','learn'}
+ALLOWED_SUBCOMMANDS={'ask','sources','source-sync','ingest-scan','search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','promote-plan','projects','systems','resolve','reopen','learn'}
 # Subagents are read-only: these are denied for them even though the main agent gets them auto-allowed.
 MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm','resolve','reopen'}
 GLOBAL_OPTIONS={'--root','--domain','--cwd','--actor'}
@@ -479,11 +479,13 @@ def file_hints(paths,state,root,domain,bindings,session=None,trace=None,follow=N
     bug or decision notes naming it in the body."""
     try:
         from .search import file_notes
+        from . import digests
         seen=set(state.get('file_hints',[]));wanted=[p for p in paths if p not in seen][:HINT_FILES_PER_CALL]
         domains=[domain]+parent_domains(domain,bindings);blocks=[];refs=[]
         for path in wanted:
             hits=file_notes(path,domains,root,HINT_NOTES_PER_FILE,ensure_fresh=False)
             if hits:
+                digests.mark(hits,root,bindings)
                 blocks.append(f'Living Memory notes about {path}:\n'+'\n'.join(hit_line(h) for h in hits))
                 refs+=[f"{h['domain']}:{h['id']}" for h in hits]
                 if isinstance(follow,dict):
@@ -945,7 +947,8 @@ def hit_line(hit):
     if len(snippet)>HIT_SNIPPET:
         cut=snippet.rfind(' ',0,HIT_SNIPPET);snippet=snippet[:cut if cut>0 else HIT_SNIPPET]+' …'
     from .notes import short_ref
-    line=f"- [{str(hit.get('type','note')).upper()} {hit.get('updated','')}] {short_ref(hit['domain'],hit['id'])} {hit['title']} — {snippet}"
+    stale=f"{hit['stale']} — " if hit.get('stale') else ''   # a digest whose source file changed (core/digests.py)
+    line=f"- [{str(hit.get('type','note')).upper()} {hit.get('updated','')}] {short_ref(hit['domain'],hit['id'])} {hit['title']} — {stale}{snippet}"
     if hit.get('procedure_id'):
         from .learning import use_hint
         line+=f" ({use_hint(hit['procedure_id'],hit.get('procedure_version'))})"
@@ -1059,6 +1062,8 @@ def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=N
     trace.update(injected=[ref(h) for h in hits],suppressed_shown=[ref(h) for h in found if not _unseen(h,shown)],cut_by_cap=[ref(h) for h in unseen[3:]])
     if hits:
         trace['path']='injected'
+        from . import digests
+        digests.mark(hits,root,bindings)
         if isinstance(delivered,dict):delivered.update({f"{h['domain']}:{h['id']}":revision_key(h) for h in hits})
         return ('Untrusted historical memory; verify current instructions and files:\n'+'\n'.join(hit_line(h) for h in hits),
                 [f"{h['domain']}:{h['id']}" for h in hits],False)
