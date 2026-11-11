@@ -223,7 +223,8 @@ def _sectioned(args,body=''):
     from .note_format import render
     return render(args.summary or '',args.detail or (),args.link or (),args.action or (),args.done or (),args.important or '',body)
 
-# source-sync writes only the derived knowledge-base index (as search --rebuild does the notes' one), so subagents and viewers may run it.
+# source-sync writes only the derived knowledge-base index (as search --rebuild does the notes' one), so subagents and viewers may run it
+# (not for a remote source, which it would pull from the network: sources.sync refuses that for them).
 READ_ONLY={'search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','ask','sources','source-sync','ingest-scan'}
 # Viewer: a human-facing app browsing the store. Read-only, and its reads are not usage evidence for the diary.
 VIEWER=READ_ONLY|{'taxonomy','review','diff','inspect-plan'}
@@ -464,7 +465,8 @@ def main(argv=None):
     p=sub('systems');p.add_argument('--status',choices=['active','deprecated','retired','any'],default='any')
     p=sub('source-plan');p.add_argument('action',choices=['add','remove','implicit']);p.add_argument('--payload-file',type=Path)
     p=sub('sources')
-    p=sub('source-sync');p.add_argument('name',nargs='?',help='One source; default: all of the domain');p.add_argument('--rebuild',action='store_true',help='Drop and re-read what was indexed (all sources, or just NAME)')
+    p=sub('source-sync');p.add_argument('name',nargs='?',help='One source; default: all of the domain');p.add_argument('--rebuild',action='store_true',help='Drop and re-read what was indexed (all sources, or just NAME; a remote NAME is also fetched afresh)')
+    p.add_argument('--all-remote',action='store_true',help='Also pull every confluence and notion source of the domain from the network (a remote NAME is always pulled; plain source-sync never touches the network)')
     p=sub('ingest-scan');p.add_argument('--source',help='One source (a `sources` name); default: all of the domain');p.add_argument('--limit',type=int,default=50);p.add_argument('--changed',action='store_true',help='Only files with no digest yet or a stale one')
     p=sub('ingest-skip');p.add_argument('--payload-file',type=Path)
     p=sub('ask');p.add_argument('query',nargs='+',help='A question about the project');p.add_argument('--limit',type=int,default=5,help='Notes and source excerpts shown, at most, of each')
@@ -913,7 +915,7 @@ def main(argv=None):
         elif cmd=='source-sync':
             from .sources import sync
             if not domain:raise ValueError('unbound_project')
-            result=sync(root,domain,args.name,args.rebuild)
+            result=sync(root,domain,args.name,args.rebuild,all_remote=args.all_remote,network=args.actor not in {'subagent','viewer'})
         elif cmd=='ask':
             if not domain:raise ValueError('unbound_project')
             result=_ask(root,domain,' '.join(args.query),args.limit)

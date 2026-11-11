@@ -6,8 +6,9 @@ source-plan (hash-approved, journaled, undoable), like projects.json. `sync` wal
 files and vendored folders, honours the top-level .gitignore, redacts credentials, cuts every file into chunks of about
 1,200 characters at headings or top-level definitions, and keeps them in domains/<D>/sources.sqlite3: derived data
 (FTS5, optional vectors), never canonical, never backed up, rebuilt by `source-sync --rebuild`. Only (mtime, size)
-then sha256 decide what is re-chunked. Layer 2 (agent-written digests) and layer 3 (live wiki connectors) would add
-kinds and callers; the registry and the chunk table are what they would share."""
+then sha256 decide what is re-chunked. Layer 2 (agent-written digests) reads the same index; layer 3 (core/connectors.py) adds the
+`confluence` and `notion` kinds: their pages are pulled into sources-cache/<name>/ only by an explicit `source-sync NAME` (or
+`--all-remote`) and indexed from there like an html-export or Markdown folder, with each page's title and URL as its citation."""
 from __future__ import annotations
 import hashlib,math,os,re,sqlite3,subprocess,sys,tempfile,time
 from collections import Counter
@@ -16,9 +17,10 @@ from .common import atomic_write,canonical_domain,domain_prefixes,file_lock,load
 from .repository import canonical_json,find_secrets,now,read_json,store_lock
 from .projects import SLUG,_repos,_text
 
-KINDS=('folder','html-export','git-wiki')
-FIELDS={'add':{'name','domain','kind','path','include','exclude'},'remove':{'name'},'implicit':{'domain','enabled'}}
-VERSION=1   # chunker and schema: a different one in the database means a full rebuild
+from .connectors import REMOTE,FIELDS as REMOTE_FIELDS
+KINDS=('folder','html-export','git-wiki')+REMOTE
+FIELDS={'add':{'name','domain','kind','path','include','exclude'}|REMOTE_FIELDS,'remove':{'name'},'implicit':{'domain','enabled'}}
+VERSION=2   # chunker and schema: a different one in the database means a full rebuild
 MAX_BYTES=1<<20
 TARGET=1200
 OVERLAP=150
@@ -88,6 +90,14 @@ def source_plan(root,action,payload,domain=None):
             return plan(root,{'sources.json':_registry([s for s in entries if s['name']!=name],implicit)},'source_remove',[],{'name':name,'files':1})
         if name in {s['name'] for s in entries}:raise ValueError(f'Source {name} already exists')
         if payload.get('kind') not in KINDS:raise ValueError('kind must be one of '+', '.join(KINDS))
+        if payload['kind'] in REMOTE:
+            from .connectors import validate
+            for value in payload.values():   # the token itself must never reach sources.json: token_env names a variable
+                found=find_secrets('\n'.join(v for v in ([value] if isinstance(value,str) else value if isinstance(value,list) else []) if isinstance(v,str)))
+                if found:raise ValueError(f'Potential credential detected ({found[0][0]}) in the source fields; token_env takes the NAME of an environment variable, never the token')
+            entry=dict({'name':name,'domain':_bound(root,payload.get('domain') or domain),'kind':payload['kind']},**validate(payload['kind'],payload),added=now())
+            return plan(root,{'sources.json':_registry(entries+[entry],implicit)},'source_add',[],{'name':name,'domain':entry['domain'],'kind':entry['kind'],'base_url':entry['base_url'],'token_env':entry['token_env'],'files':1})
+        if set(payload)&REMOTE_FIELDS:raise ValueError(f"{', '.join(sorted(set(payload)&REMOTE_FIELDS))} apply to confluence and notion sources only")
         if not isinstance(payload.get('path'),str):raise ValueError('add requires path (an absolute folder)')
         folder=_repos([payload['path']])[0]
         if not Path(folder).is_dir():raise ValueError(f'path is not a folder: {folder}')
@@ -133,13 +143,18 @@ def implicit_sources(domain,bindings,deadline=None):
         found.append({'name':name.lower(),'domain':domain,'kind':'folder','path':repo.as_posix(),'include':[],'exclude':[],'implicit':True})
     return found
 
+def _located(root,entry):
+    """A registry entry as a source spec: a remote source's folder is its cache, sources-cache/<name>/ in the store."""
+    from .connectors import cache_dir
+    return dict(entry,implicit=False,**({'path':cache_dir(root,entry['name']).as_posix(),'include':[],'exclude':[]} if entry.get('kind') in REMOTE else {}))
+
 def resolve(root,domain,bindings=None,deadline=None):
     """The domain's sources: registered ones, then implicit repos unless the registry turned them off. A broken registry
     leaves only the implicit ones."""
     bindings=bindings if bindings is not None else load_bindings(root)
     try:registry=load(root)
     except ValueError:registry={'sources':[]}
-    found=[dict(s,implicit=False) for s in registry['sources'] if s.get('domain')==domain and s.get('kind') in KINDS and isinstance(s.get('path'),str)]
+    found=[_located(root,s) for s in registry['sources'] if s.get('domain')==domain and s.get('kind') in KINDS and (s['kind'] in REMOTE or isinstance(s.get('path'),str))]
     taken={s['name'] for s in found}
     if registry.get('implicit',{}).get(domain,True) is not False:found+=[s for s in implicit_sources(domain,bindings,deadline) if s['name'] not in taken]
     for spec in found:   # the memory store is not project source, whatever folder it sits in
@@ -206,7 +221,7 @@ def walk(base,spec,deadline=None,ordered=True):
     """(is_dir, rel path, size, mtime_ns) for every folder and candidate file of a source, in name order unless ordered is False: no
     links, hidden or vendored folders, nothing the top-level .gitignore or the source's exclude globs name. Stops at the deadline."""
     base=Path(base);rules=gitignore(base);include=_patterns(spec.get('include') or []);exclude=_patterns(spec.get('exclude') or [])
-    extensions=DOC_EXT|(HTML_EXT if spec.get('kind','folder') in {'html-export','git-wiki'} else CODE_EXT)
+    extensions=DOC_EXT|(HTML_EXT if spec.get('kind','folder') in {'html-export','git-wiki','confluence','notion'} else CODE_EXT)
     stack=['']
     while stack:
         rel=stack.pop()
@@ -471,7 +486,7 @@ def _stems(symbol,path,text):
 
 SCHEMA=('CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT)',
  'CREATE TABLE source(name TEXT PRIMARY KEY,kind TEXT,root TEXT,implicit INTEGER,config TEXT,files INTEGER DEFAULT 0,chunks INTEGER DEFAULT 0,synced TEXT)',
- 'CREATE TABLE file(id INTEGER PRIMARY KEY,source TEXT NOT NULL,path TEXT NOT NULL,mtime_ns INTEGER,size INTEGER,sha256 TEXT,chunks INTEGER DEFAULT 0,skipped TEXT,redacted INTEGER DEFAULT 0,UNIQUE(source,path))',
+ 'CREATE TABLE file(id INTEGER PRIMARY KEY,source TEXT NOT NULL,path TEXT NOT NULL,mtime_ns INTEGER,size INTEGER,sha256 TEXT,chunks INTEGER DEFAULT 0,skipped TEXT,redacted INTEGER DEFAULT 0,url TEXT,title TEXT,UNIQUE(source,path))',
  'CREATE TABLE chunk(id INTEGER PRIMARY KEY,file_id INTEGER NOT NULL,source TEXT NOT NULL,path TEXT NOT NULL,kind TEXT,symbol TEXT,line_start INTEGER,line_end INTEGER,sha256 TEXT)',
  'CREATE INDEX chunk_file ON chunk(file_id)',
  "CREATE VIRTUAL TABLE chunk_fts USING fts5(symbol,path,names,text,tokenize='porter unicode61')",
@@ -520,6 +535,12 @@ def _read(base,rel,size):
     try:return (base/rel).read_bytes()
     except OSError:return False
 
+def _pages(folder):
+    """{page id: {title, url, path, ...}} from a remote source's cache manifest ({} without a readable one)."""
+    try:found=read_json(Path(folder)/'manifest.json',{}).get('pages')
+    except (OSError,ValueError,AttributeError):return {}
+    return found if isinstance(found,dict) else {}
+
 def _sync_source(db,spec,delta,force=False):
     """Bring one source's rows up to date; returns its counts. Only files whose (mtime, size) differ are read, and only
     those whose sha256 differs are re-chunked."""
@@ -533,6 +554,7 @@ def _sync_source(db,spec,delta,force=False):
                (name,spec['kind'],spec['path'],int(bool(spec.get('implicit'))),config))
     have={path:(i,m,s,h) for i,path,m,s,h in db.execute('SELECT id,path,mtime_ns,size,sha256 FROM file WHERE source=?',(name,))}
     seen=set();todo=[]
+    pages={p.get('path'):(p.get('url') or None,p.get('title')) for p in (_pages(base) if spec['kind'] in REMOTE else {}).values() if isinstance(p,dict)}   # a page's URL and title, for its citation
     for is_dir,rel,size,mtime in walk(base,spec):
         if is_dir:continue
         if len(seen)>=MAX_FILES:count['truncated']=1;break
@@ -557,7 +579,7 @@ def _sync_source(db,spec,delta,force=False):
                 if old:_drop_file(db,old[0],delta);db.execute('DELETE FROM file WHERE id=?',(old[0],));count['changed']+=1
                 else:count['added']+=1
                 if reason:count['skipped']+=1
-                file_id=db.execute('INSERT INTO file(source,path,mtime_ns,size,sha256,chunks,skipped,redacted) VALUES(?,?,?,?,?,?,?,?)',(name,rel,mtime,size,digest,len(chunks),reason,redacted)).lastrowid
+                file_id=db.execute('INSERT INTO file(source,path,mtime_ns,size,sha256,chunks,skipped,redacted,url,title) VALUES(?,?,?,?,?,?,?,?,?,?)',(name,rel,mtime,size,digest,len(chunks),reason,redacted,*pages.get(rel,(None,None)))).lastrowid
                 count['redacted']+=redacted
                 for c in chunks:
                     cid=db.execute('INSERT INTO chunk(file_id,source,path,kind,symbol,line_start,line_end,sha256) VALUES(?,?,?,?,?,?,?,?)',
@@ -591,14 +613,28 @@ def _embed(db,root,deadline):
 
 def _lock(root,domain,timeout):return file_lock(Path(root)/'hooks'/f'sources-{domain}.lock',timeout=timeout)
 
-def sync(root,domain,name=None,rebuild=False,wait=300):
+def sync(root,domain,name=None,rebuild=False,wait=300,all_remote=False,network=True):
     """Incremental sync of the domain's sources into its index. name limits it to one source; rebuild drops what was
-    indexed (a whole new database, or just that source's rows with name). One sync per domain at a time: another
-    caller waits up to `wait` seconds, then gets status 'busy'."""
+    indexed (a whole new database, or just that source's rows with name; for a remote source it also re-fetches every
+    page). One sync per domain at a time: another caller waits up to `wait` seconds, then gets status 'busy'.
+    The network is reached only here and only on request: a remote (confluence, notion) source named by `name`, or every
+    one of the domain's with all_remote, is pulled into its cache first (network=False refuses); otherwise remote sources
+    are just re-indexed from the cache they already have. A pull that failed is raised after the index is brought up to date."""
     root=Path(root).resolve();domain=canonical_domain(domain,root)
+    pulled=[s for s in resolve(root,domain) if s['kind'] in REMOTE and ((s['name']==name) if name else all_remote)] if name or all_remote else []
+    if pulled and not network:raise ValueError('Subagents and viewers cannot sync a remote source (it reaches the network); run it as the main agent')
+    from .connectors import pull,prune
+    pulls=[pull(root,s,full=bool(rebuild and name)) for s in pulled]
     try:
-        with _lock(root,domain,wait):return _sync(root,domain,name,rebuild)
-    except TimeoutError:return {'ok':True,'status':'busy','domain':domain,'hint':'Another sync of this domain is running; ask works on the index that exists.'}
+        with _lock(root,domain,wait):result=_sync(root,domain,name,rebuild)
+    except TimeoutError:result={'ok':True,'status':'busy','domain':domain,'hint':'Another sync of this domain is running; ask works on the index that exists.'}
+    if not name and result.get('status')!='busy':
+        try:prune(root,{s['name'] for s in load(root)['sources']})   # the cache of a source that was removed
+        except ValueError:pass
+    if pulls:
+        result['pulled']=pulls;failed=[f"{p['name']}: {p['error']}" for p in pulls if p['error']]
+        if failed:raise ValueError('Remote sync failed, the cache kept what it had: '+'; '.join(failed))
+    return result
 
 def _sync(root,domain,name,rebuild):
     started=time.time();clock=time.perf_counter();specs=resolve(root,domain)
@@ -648,7 +684,7 @@ def listing(root,domain=None,bindings=None):
     root=Path(root);warnings=[];rows=[]
     try:registry=load(root)
     except ValueError as exc:registry={'sources':[]};warnings.append(str(exc))
-    specs=resolve(root,domain,bindings) if domain else [dict(s,implicit=False) for s in registry['sources']]
+    specs=resolve(root,domain,bindings) if domain else [_located(root,s) for s in registry['sources'] if s.get('kind') in KINDS]
     held={}
     db=_readonly(root,domain) if domain else None
     if db:
@@ -657,9 +693,15 @@ def listing(root,domain=None,bindings=None):
         finally:db.close()
     for s in specs:
         f,c,when=held.get(s['name'],(0,0,None))
-        rows.append({'name':s['name'],'domain':s.get('domain'),'kind':s['kind'],'path':s['path'],'include':s.get('include') or [],'exclude':s.get('exclude') or [],
-                     'implicit':bool(s.get('implicit')),'files':f,'chunks':c,'synced':when,'state':'indexed' if when else 'not synced'})
-        if not Path(s['path']).is_dir():warnings.append(f"{s['name']}: folder does not exist: {s['path']}")
+        row={'name':s['name'],'domain':s.get('domain'),'kind':s['kind'],'path':s['path'],'include':s.get('include') or [],'exclude':s.get('exclude') or [],
+             'implicit':bool(s.get('implicit')),'files':f,'chunks':c,'synced':when,'state':'indexed' if when else 'not synced'}
+        if s['kind'] in REMOTE:   # nothing is fetched here: the numbers are those of the last explicit `source-sync NAME`
+            from .connectors import summary,MAX_PAGES
+            remote=summary(root,s['name']);row.update(base_url=s.get('base_url'),token_env=s.get('token_env'),remote=remote,state='indexed' if when else 'not synced' if not remote['synced'] else 'fetched, not indexed')
+            if remote['error']:warnings.append(f"{s['name']}: last remote sync failed ({remote['error'].get('at')}): {remote['error'].get('message')}")
+            if remote['truncated']:warnings.append(f"{s['name']}: only the first {MAX_PAGES} pages were cached")
+        elif not Path(s['path']).is_dir():warnings.append(f"{s['name']}: folder does not exist: {s['path']}")
+        rows.append(row)
     for s in registry['sources']:
         if s.get('domain') and not (root/'domains'/str(s['domain'])).is_dir() and s['domain'] not in load_bindings(root).get('domains',{}):warnings.append(f"{s['name']}: domain {s['domain']} is not bound")
     off=[d for d,v in registry.get('implicit',{}).items() if v is False]
@@ -680,6 +722,7 @@ def stale(root,domain,bindings=None,limit=STALE_SECONDS):
         cutoff=int(info['epoch']*1e9)
         for spec in specs:
             top=Path(spec['path'])
+            if spec['kind'] in REMOTE and not top.is_dir():continue   # not pulled yet: nothing to read
             if top.stat().st_mtime_ns>cutoff or any(g.is_file() and g.stat().st_mtime_ns>cutoff for g in (top/'.git'/'HEAD',top/'.git'/'index')):return True   # a commit, checkout or add
             for _,_,_,mtime in walk(top,spec,deadline,False):
                 if mtime>cutoff:return True
@@ -788,13 +831,13 @@ def search(root,domain,query,limit=5,vocab=None,informative=False,gate=None,leas
         wanted={stem(w) for w in words};rows=[];listed=set()
         for joiner in (' AND ',' OR '):
             match=joiner.join('"'+w+'"' for w in words)
-            batch=db.execute('SELECT c.id,c.source,c.path,c.kind,c.symbol,c.line_start,c.line_end,f.text,bm25(chunk_fts,6.0,3.0,1.5,1.0) FROM chunk_fts f JOIN chunk c ON c.id=f.rowid WHERE chunk_fts MATCH ? ORDER BY bm25(chunk_fts,6.0,3.0,1.5,1.0) LIMIT 60',(match,)).fetchall()
+            batch=db.execute('SELECT c.id,c.source,c.path,c.kind,c.symbol,c.line_start,c.line_end,f.text,bm25(chunk_fts,6.0,3.0,1.5,1.0),fl.url,fl.title FROM chunk_fts f JOIN chunk c ON c.id=f.rowid JOIN file fl ON fl.id=c.file_id WHERE chunk_fts MATCH ? ORDER BY bm25(chunk_fts,6.0,3.0,1.5,1.0) LIMIT 60',(match,)).fetchall()
             rows+=[r for r in batch if r[0] not in listed];listed|={r[0] for r in batch}
             if len(rows)>=limit*3 or len(words)==1:break
         rows=_fuse_vectors(db,root,query,rows)
         roots={n:r for n,r in db.execute('SELECT name,root FROM source')}
         out=[];per_file={};taken=[]
-        for cid,source,path,kind,symbol,start,end,text,score in rows[:40]:
+        for cid,source,path,kind,symbol,start,end,text,score,url,title in rows[:40]:
             have=_stems(symbol,path,text);hit=[w for w in words if _covers(have,w)]
             share=sum(weight[w] for w in hit)/sum(weight.values())
             if gate is not None and (len(hit)<max(2,least) or share<gate):continue
@@ -804,6 +847,7 @@ def search(root,domain,query,limit=5,vocab=None,informative=False,gate=None,leas
             if kind=='html':a,b=start,end
             out.append({'type':'source','label':'source excerpt','source':source,'path':path,'file':(Path(roots.get(source,''))/path).as_posix(),'kind':kind,'symbol':symbol,'line_start':a,'line_end':b,
                         'citation':f'{path}:{a}-{b}','snippet':piece,'score':round(-score,3),'relevance':round(share,2),'matched':len(hit),'terms':len(words),'rank':len(out)+1})
+            if url:out[-1].update(url=url,title=title or path,file=url,citation=f'{title or path} <{url}>')   # a wiki page is cited by its title and address, not its cache file
             if len(out)>=limit:break
         return out
     except sqlite3.Error:return []

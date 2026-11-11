@@ -154,8 +154,8 @@ def classify(rel,source_kind='folder'):
     low=rel.casefold();name=low.rsplit('/',1)[-1];stem,ext=os.path.splitext(name)
     if ext in library.DOC_EXT or ext in library.HTML_EXT:
         if ADR.search(low):return 0,'adr'
-        if stem=='readme' or (stem in library.BARE_DOCS) or '/' not in rel:return 1,'readme' if stem=='readme' else 'doc'
-        return 2,'wiki' if ext in library.HTML_EXT or source_kind in ('html-export','git-wiki') else 'doc'
+        if stem=='readme' or (stem in library.BARE_DOCS) or ('/' not in rel and source_kind not in library.REMOTE):return 1,'readme' if stem=='readme' else 'doc'
+        return 2,'wiki' if ext in library.HTML_EXT or source_kind in ('html-export','git-wiki')+library.REMOTE else 'doc'
     if any(fnmatch.fnmatch(name,b.casefold()) for b in BUILD_NAMES):return 3,'build'
     if stem in ENTRY:return 3,'entry'
     if TESTISH.search(low):return 5,'test'
