@@ -1,0 +1,44 @@
+{
+ "name": "map-staleness",
+ "description": "A map is stale when a file it cites (a decision document, a build file, a path it names) changed after it was written: SessionStart, prompts and read hints say STALE with the changed names, a change nobody cites does not, and Stop asks once per session to update it when the turn touched the repo, unless it was updated meanwhile.",
+ "harnesses": ["claude", "codex"],
+ "git": [
+  {"folder": "project/billing-ledger", "commits": [
+   {"when": "old", "files": {"pom.xml": "<v>1</v>", "README.md": "one", "src/Money.java": "long cents;", "docs/adr/ADR-004-money.md": "# ADR-004\nlong cents\n"}},
+   {"when": "later", "files": {"pom.xml": "<v>2</v>", "README.md": "two", "docs/adr/ADR-004-money.md": "# ADR-004\nBigDecimal\n"}}
+  ]},
+  {"folder": "project/media-toolkit", "commits": [
+   {"when": "old", "files": {"README.md": "one", "src/util.py": "x = 1"}},
+   {"when": "later", "files": {"README.md": "two", "src/other.py": "y = 2"}}
+  ]}
+ ],
+ "notes": [
+  {"key": "appmap", "type": "map", "files": ["billing-ledger"], "tags": ["subject/project", "concern/architecture"], "title": "billing-ledger codebase map",
+   "body": "A money service.\n\n* **Layout:** src/Money.java holds the money type.\n* **Conventions:** Money is long cents."},
+  {"key": "libmap", "type": "map", "files": ["media-toolkit"], "tags": ["subject/project", "concern/architecture"], "title": "media-toolkit codebase map",
+   "body": "A utility library.\n\n* **Layout:** src/util.py holds the helpers."}
+ ],
+ "steps": [
+  {"hook": "session-start"},
+  {"hook": "user-prompt", "payload": {"prompt": "work on the media toolkit"}, "expect": {"context_contains": ["Codebase map for media-toolkit", "{short:@libmap}"], "context_excludes": ["STALE"]}},
+  {"hook": "user-prompt", "payload": {"prompt": "work on the billing ledger"},
+   "expect": {"context_contains": ["Codebase map for billing-ledger", "STALE: docs/adr/ADR-004-money.md, pom.xml changed since", "check and update this map"], "context_excludes": ["STALE: README"]}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/billing-ledger/src/Money.java"}}, "expect": {"mutation": "tracked"}},
+  {"hook": "stop", "expect": {"reminder": "stale", "detail": {"pending": ["stale"], "explore_pending": [["billing-ledger", "stale"]]},
+   "reminder_contains": ["map {short:@appmap} is stale (docs/adr/ADR-004-money.md, pom.xml changed since it was written)", "CMD read {short:@appmap}", "CMD update {short:@appmap} --session {session}", "'**Conventions:** ...'"]}},
+  {"hook": "user-prompt", "payload": {"prompt": "one more change to the billing ledger"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/billing-ledger/src/Money.java"}}, "expect": {"mutation": "tracked"}},
+  {"hook": "stop", "expect": {"stop_reason": "files_only", "reminder": null}},
+  {"session": "s2"},
+  {"hook": "session-start", "payload": {"cwd": "{project}/billing-ledger"}, "expect": {"context_contains": ["STALE: docs/adr/ADR-004-money.md, pom.xml changed since"]}},
+  {"hook": "user-prompt", "payload": {"prompt": "fix the money rounding in the billing ledger"}},
+  {"cli": ["update", "@appmap", "--set-detail", "**Conventions:** Money is BigDecimal (ADR-004)."], "expect": {"exit": 0}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/billing-ledger/src/Money.java"}}, "expect": {"mutation": "tracked"}},
+  {"hook": "stop", "expect": {"stop_reason": "files_only", "reminder": null}},
+  {"session": "s3"},
+  {"hook": "session-start"},
+  {"hook": "user-prompt", "payload": {"prompt": "talk about the media toolkit"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/media-toolkit/src/util.py"}}, "expect": {"mutation": "tracked"}},
+  {"hook": "stop", "expect": {"stop_reason": "files_only", "reminder": null}}
+ ]
+}

@@ -191,7 +191,10 @@ QUALITY_CHECKS=(
      'test counts go stale; keep the outcome or the gotcha, not the count'),
     (re.compile(r'(?i)\bcommits?\s+[0-9a-f]{7,40}\b|\bplan\s+[0-9a-f]{32}\b'),
      'commit and plan identifiers are already recorded by git and the journal'),
+    (re.compile(r'(?i)\b(?:root cause (?:unconfirmed|unknown|unclear)|hypothes[ie]s|suspect(?:ed)?|likely cause|not (?:yet )?(?:confirmed|verified|reproduced)|probably)\b'),
+     'this reads as an interim hypothesis: say so in the note (e.g. **Hypothesis:** ...) and update it when the cause is known'),
 )
+INTERIM_TYPES=('bug','knowledge','decision')
 
 def quality_warnings(note):
     title=note.get('title','');body=note.get('body','')
@@ -199,6 +202,8 @@ def quality_warnings(note):
     for pattern,message in QUALITY_CHECKS:
         unfinished=message.startswith('describes an unfinished')
         if unfinished and note.get('type')=='plan':continue
+        # A hypothesis already labelled as one (**Hypothesis:** ...) is what the check asks for.
+        if message.startswith('this reads as an interim') and (note.get('type') not in INTERIM_TYPES or re.search(r'(?i)\*\*hypothesis',body)):continue
         # Open steps belong in a bug or risk note's Action Items; elsewhere they are a passing state.
         text=title+'\n'+(without_actions(body) if unfinished and note.get('type') in ACTION_TYPES else body)
         if pattern.search(text):found.append(message)
@@ -268,6 +273,13 @@ def near_titles(title,notes,low=0.6,high=0.8):
     scored=sorted(((scorer.score(title,n['title']),n) for n in notes),key=lambda s:-s[0])
     return [n for s,n in scored if low<=s<high][:3]
 
+def _set_identity(note,files,domain,root):
+    """A map or brief carries the git identity of its folder (`repo`, system-managed), so a clone of the same origin finds it."""
+    from .maps import note_identity
+    identity=note_identity(files,domain,read_json(Path(root)/'bindings.json',{}))
+    if identity:note['repo']=identity
+    else:note.pop('repo',None)
+
 def build_note(title,body,tags,domain,root,note_type='knowledge',context='',key=None,review_by=None,supersedes=(),files=None,origin=None,note_id=None,extra_tags=(),commands=None):
     """(path, note, file text) for a new active note, validated like every capture. Writes nothing; capture and
     ingest-plan both create notes through it."""
@@ -281,6 +293,7 @@ def build_note(title,body,tags,domain,root,note_type='knowledge',context='',key=
     commands=clean_commands(commands)
     if commands:note['commands']=commands
     if origin:note['origin']=str(origin)
+    if note_type in KEYED_TYPES:_set_identity(note,files,domain,root)
     validate(note,domain,root,new=True,extra_tags=extra_tags)
     path=Path(root)/'domains'/domain/'notes'/f"{note['prefix']} - {slug(title)}-{note['id'][:8]}.md"
     return path,note,serialize(note)
@@ -468,6 +481,8 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
             # Updating a time-sensitive note makes it current again.
             review=default_review_by(note['type'])
             if review:note['review_by']=review
+        if note['type'] in KEYED_TYPES:_set_identity(note,clean_files(note.get('files')),domain,root)
+        else:note.pop('repo',None)
         if note['type'] in KEYED_TYPES and note.get('status','active')=='active' and ('type' in values or 'files' in values):
             # One map per repo (brief per project folder) holds for updates too: retyping a note, or pointing one at another folder, must not make a second.
             from .maps import capture_conflict
@@ -584,6 +599,17 @@ def open_work(domains,root=None,tags=()):
             if note.get('type') not in ACTION_TYPES or any(t not in (note.get('tags') or []) for t in tags):continue
             items=[(i+1,text) for i,(done,text) in enumerate(action_items(note.get('body',''))) if not done and text]
             if items:found.append((domain,note,items))
+    return sorted(found,key=lambda f:str(f[1].get('updated') or ''),reverse=True)
+
+CAUSE_LABEL=re.compile(r'(?im)^\s*[-*+]?\s*\*\*(?:root cause|fix):?\*\*:?\s*\S')
+
+def unresolved_bugs(domains,root=None):
+    """[(domain, note)] for active bug notes with no `**Root cause:**` or `**Fix:**` detail, newest first: a bug whose cause nobody has recorded."""
+    found=[]
+    for domain in dict.fromkeys(domains):
+        try:notes=inventory(domain,root)
+        except (OSError,ValueError):continue
+        found+=[(domain,n) for n in notes if n.get('type')=='bug' and not CAUSE_LABEL.search(n.get('body',''))]
     return sorted(found,key=lambda f:str(f[1].get('updated') or ''),reverse=True)
 
 CONFIRM_KEEP=8

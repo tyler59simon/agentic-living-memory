@@ -67,6 +67,86 @@ def git_root(cwd) -> Path|None:
     except (OSError,ValueError):return None
     return next((p for p in (here,*here.parents) if (p/'.git').exists()),None)
 
+def git_dir(repo) -> Path|None:
+    """The git directory of a work tree root: its .git folder, or the folder a .git file's `gitdir:` line names (worktrees, submodules)."""
+    try:
+        dot=Path(repo)/'.git'
+        if dot.is_dir():return dot
+        if dot.is_file():
+            match=re.match(r'gitdir:\s*(.+)',dot.read_text(encoding='utf-8',errors='replace').strip())
+            if match:
+                target=Path(match[1].strip());target=target if target.is_absolute() else dot.parent/target
+                return target.resolve() if target.is_dir() else None
+    except (OSError,ValueError):pass
+    return None
+
+def _common_dir(gd: Path) -> Path:
+    """Where a linked worktree's repository-wide files (config, packed-refs, refs) live: its `commondir`, else the git directory itself."""
+    try:
+        target=Path((gd/'commondir').read_text(encoding='utf-8',errors='replace').strip());return (target if target.is_absolute() else gd/target).resolve()
+    except (OSError,ValueError):return gd
+
+def _origin_url(config: str) -> str|None:
+    inside=False
+    for line in config.splitlines():
+        line=line.strip()
+        if line.startswith('['):inside=bool(re.match(r'\[\s*remote\s+"origin"\s*\]',line,re.I));continue
+        if inside:
+            match=re.match(r'url\s*=\s*(.*)',line,re.I)
+            if match and match[1].strip().strip('"'):return match[1].strip().strip('"')
+    return None
+
+def normalize_remote(url,base=None) -> str|None:
+    """A git remote url as the identity every clone of that repo shares: `host/owner/repo` (scheme, credentials, port,
+    .git and trailing slashes dropped, host lowercase; https, ssh and scp-like forms agree), or `file:` plus the
+    casefolded resolved path for a local remote (relative paths resolve against base)."""
+    text=str(url or '').strip()
+    if not text:return None
+    def local(path):
+        if re.match(r'/[A-Za-z]:[/\\]',path):path=path[1:]   # file:///C:/x
+        try:
+            found=Path(path).expanduser();found=found if found.is_absolute() or base is None else Path(base)/found
+            return 'file:'+found.resolve().as_posix().casefold()
+        except (OSError,ValueError):return None
+    def remote(host,path):
+        host=host.rpartition('@')[2].lower();path=re.sub(r'(?i)\.git$','',path.strip().strip('/')).strip('/')
+        return f'{host}/{path}' if path else host
+    scheme=re.match(r'([a-z][a-z0-9+.-]*)://(.*)',text,re.I)
+    if scheme:
+        if scheme[1].lower()=='file':return local(scheme[2])
+        host,_,path=scheme[2].partition('/');return remote(re.sub(r':\d*$','',host),path)
+    scp=re.match(r'(?:[^@/\\]+@)?([^/\\:@]{2,}):(.+)',text)   # git@host:owner/repo (a single letter is a drive)
+    return remote(scp[1],scp[2]) if scp else local(text)
+
+def repo_identity(repo) -> str|None:
+    """What every clone and worktree of one repository has in common: its normalized `origin` url, read from the common git
+    config without running git. None for a folder that is not a work tree root or has no origin."""
+    gd=git_dir(repo)
+    if gd is None:return None
+    try:url=_origin_url((_common_dir(gd)/'config').read_text(encoding='utf-8',errors='replace'))
+    except OSError:return None
+    return normalize_remote(url,repo) if url else None
+
+def repo_label(repo) -> str:
+    """The name a repo goes by in titles and lines: the last segment of its identity (the same in every clone), else its folder name."""
+    return (repo_identity(repo) or '').rsplit('/',1)[-1] or Path(repo).name
+
+def head_oid(repo) -> str|None:
+    """The commit HEAD points to, read from the .git files (HEAD, loose refs, packed-refs) without running git."""
+    gd=git_dir(repo)
+    if gd is None:return None
+    try:
+        head=(gd/'HEAD').read_text(encoding='utf-8',errors='replace').strip()
+        if not head.startswith('ref:'):return head or None
+        ref=head[4:].strip();common=_common_dir(gd)
+        for folder in (gd,common):
+            try:return (folder/ref).read_text(encoding='utf-8',errors='replace').strip() or None
+            except OSError:continue
+        for line in (common/'packed-refs').read_text(encoding='utf-8',errors='replace').splitlines():
+            if line.endswith(' '+ref):return line.split(' ',1)[0]
+    except OSError:pass
+    return None
+
 def safe_domain(name: str) -> str:
     if not isinstance(name,str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]*",name) or name in {".",".."}:
         raise ValueError("invalid domain")

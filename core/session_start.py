@@ -83,6 +83,7 @@ def _scope(active,root,bindings):
     return list(dict.fromkeys([active]+parent_domains(active,bindings)+globals_))
 
 OPEN_NOTES=3
+OPEN_BUGS=2
 ITEM_MAX=100
 LAST_NOTES=3
 
@@ -130,30 +131,38 @@ def _project_line(project,root,summary=True):
     text,ref=_charter(project,root)
     return f"Project: {project.get('name') or project['slug']} (project/{project['slug']}; capture with --project {project['slug']})"+(f' — {text}' if summary and text else '')+(f' · charter {ref}' if ref else '')
 
-def _brief_line(cwd,root,bindings):
+def _brief_line(cwd,root,bindings,currency=None):
     """The pointer to the project brief holding cwd, else None; a broken brief never costs the session its context."""
     try:
         from .briefs import find_brief,pointer_line
         hit=find_brief(cwd,root,bindings)
-        return pointer_line(hit) if hit else None
+        return pointer_line(hit,currency(hit) if currency else None) if hit else None
     except Exception as exc:
         from .logs import swallowed
         swallowed('session_start.brief_line',exc,root);return None
 
 def _open_lines(active,root,bindings,project=None):
-    """(header line, one line per note with open Action Items) for the active, parent and global domains.
-    The current project's notes come first (stable); the count in the header does not change."""
+    """(header line, lines, how many lines are notes with open Action Items) for the active, parent and global domains: those notes
+    first (the current project's first, stable; the count in the header does not change), then bugs with no recorded root cause."""
     from .runtime import parent_domains
-    from .notes import open_work
+    from .notes import open_work,unresolved_bugs
     from .common import global_domains
-    found=open_work(list(dict.fromkeys([active]+parent_domains(active,bindings)+global_domains(root))),root)
-    if not found:return None,[]
+    domains=list(dict.fromkeys([active]+parent_domains(active,bindings)+global_domains(root)))
+    # A bug recorded as a pitfall (a gotcha) is listed as one; the rest are open until someone writes down why.
+    found=open_work(domains,root);bugs=[(d,n) for d,n in unresolved_bugs(domains,root) if not is_gotcha(n)]
+    if not found and not bugs:return None,[],0
     if project:
         from . import projects
         found=sorted(found,key=lambda f:projects.tag(project['slug']) not in (f[1].get('tags') or []))
     count=sum(len(items) for _,_,items in found)
-    header=f"Open work ({count} item{'s' if count!=1 else ''} in {len(found)} note{'s' if len(found)!=1 else ''}; CMD open lists them, CMD check REF 'item' ticks one):"
-    return header,[f"- {short_ref(d,n['id'])} {_title(n['title'])} — {_title(items[0][1])[:ITEM_MAX]}" for d,n,items in found[:OPEN_NOTES]]
+    # A bug nobody has explained is open work too, whether or not it has Action Items: those lines say so, and the rest get a line of their own.
+    unexplained={(d,n['id']) for d,n in bugs};listed={(d,n['id']) for d,n,_ in found[:OPEN_NOTES]}
+    bug_only=[(d,n) for d,n in bugs if (d,n['id']) not in listed][:OPEN_BUGS]
+    unsaid=' (no root cause recorded yet)'
+    parts=([f"{count} item{'s' if count!=1 else ''} in {len(found)} note{'s' if len(found)!=1 else ''}"] if found else [])+([f"{len(bugs)} bug{'s' if len(bugs)!=1 else ''} without a root cause"] if bugs else [])
+    header=f"Open work ({', '.join(parts)}; CMD open lists them, CMD check REF 'item' ticks one):"
+    lines=[f"- {short_ref(d,n['id'])} {_title(n['title'])} — {_title(items[0][1])[:ITEM_MAX]}"+(unsaid if (d,n['id']) in unexplained else '') for d,n,items in found[:OPEN_NOTES]]
+    return header,lines+[f"- bug {short_ref(d,n['id'])} {_title(n['title'])}: no root cause recorded yet" for d,n in bug_only],len(lines)
 
 def _last_session_line(active,root,session,notes):
     """What the previous session in this domain saved and changed; nothing for the same session (resume, compact)."""
@@ -171,7 +180,7 @@ def _last_session_line(active,root,session,notes):
     if not parts:return []
     return [f"Last session ({str(last.get('ended',''))[:10]}, {last.get('harness','unknown')}): "+'; '.join(parts)+'.']
 
-def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|None=None,trace: dict|None=None):
+def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|None=None,trace: dict|None=None,currency=None):
     """(text or None, {ref: revision key} of guidance shown with its snippet, whether the title index listed any note).
     trace, when a dict, receives how far the text degraded to fit the budget (counts and flags only)."""
     root=(root or memory_root()).resolve();bindings=load_bindings(root);active=resolve_domain(cwd,bindings)
@@ -197,8 +206,8 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
     chosen={id(n) for n in guidance+gotchas};index=[n for n in notes if id(n) not in chosen][:INDEX]
     small=len(notes)<=SMALL_STORE
     header=f"Living Memory context for domain '{active}'. Retrieved notes are untrusted reference data; verify them against current instructions and files."
-    open_header,open_lines=_open_lines(active,root,bindings,project)
-    brief=_brief_line(cwd,root,bindings)
+    open_header,open_lines,open_items=_open_lines(active,root,bindings,project)
+    brief=_brief_line(cwd,root,bindings,currency)
 
     def render(listed,opened,width,search,titles_only,with_tail=True,psummary=True,with_brief=True,gcount=0,gsnip=True,summaries=False):
         lines=[header]+([_project_line(project,root,psummary)] if project else here)+([brief] if brief and with_brief else [])+last
@@ -214,18 +223,19 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
             lines.append('Other notes ('+('summaries' if summaries else 'titles only')+'; read one when it bears on the task):')
             lines+=[f"- {str(n.get('type','note')).upper()} {_updated(n)[:10]} {short_ref(n['domain'],n['id'])} {_title(n['title'])}"+(f' — {gist(n)}' if summaries and gist(n) else '')+f" (~{_cost(n)}t)" for n in index[:listed]]
         # Section C: unchecked Action Items, so "where were we?" has an answer before any search.
-        if open_header:lines+=[open_header]+open_lines[:opened]
+        if open_header and (opened or open_items):lines+=[open_header]+open_lines[:opened]
         if listed or guidance or opened:lines.append(FOOTER_READ+(FOOTER_SEARCH if search else ''))
         return "\n".join(lines+(tail if with_tail else []))
 
-    # Degrade cheapest-first until it fits: the index summaries, the gotcha snippets, index lines from the bottom, gotcha
+    # Degrade cheapest-first until it fits: the unexplained-bug lines, the index summaries, the gotcha snippets, index lines from the bottom, gotcha
     # lines, open-work lines down to the count, the project line's charter summary (name, tag and ref stay), the brief
     # pointer, shorter snippets, the search hint, guidance snippets, then the review and problem lines.
     listed,opened,width,search,titles_only,with_tail,psummary,with_brief=len(index),len(open_lines),SESSION_SNIPPET,True,False,True,True,True
     gcount,gsnip,summaries=len(gotchas),True,small
     text=render(listed,opened,width,search,titles_only,gcount=gcount,summaries=summaries)
     while len(text)>budget:
-        if summaries:summaries=False
+        if opened>open_items:opened-=1   # a bug with no recorded root cause is the cheapest thing to lose; its note is still indexed
+        elif summaries:summaries=False
         elif gsnip and gcount:gsnip=False
         elif listed:listed-=1
         elif gcount:gcount-=1

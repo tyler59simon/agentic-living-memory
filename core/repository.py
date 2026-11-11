@@ -251,7 +251,7 @@ def parse_text(raw, path=""):
 
 # Frontmatter order: the properties a person reads first, then bookkeeping.
 FRONT_KEYS = ("title", "type", "status", "tags", "context", "files", "commands")
-SYSTEM_KEYS = ("id", "domain", "created", "updated", "review_by", "confirmed", "supersedes", "superseded_by", "schema_version", "capture_key", "origin")
+SYSTEM_KEYS = ("id", "domain", "created", "updated", "review_by", "confirmed", "supersedes", "superseded_by", "schema_version", "capture_key", "origin", "repo")
 MAX_FILES = 30
 
 
@@ -431,6 +431,8 @@ def validate(note, domain, root=None, new=False, extra_tags=()):
         raise ValueError("Tags must be a string list")
     if "files" in note and (not isinstance(note["files"], list) or any(not isinstance(f, str) for f in note["files"])):
         raise ValueError("files must be a list of paths")
+    if "repo" in note and not isinstance(note["repo"], str):
+        raise ValueError("repo must be text (the git identity of the folder a map or brief is about)")
     if "commands" in note:
         from .commands import MAX_COMMANDS, MAX_CHARS
         if not isinstance(note["commands"], list) or any(not isinstance(c, str) or not c.strip() or len(c) > MAX_CHARS for c in note["commands"]) or len(note["commands"]) > MAX_COMMANDS:
