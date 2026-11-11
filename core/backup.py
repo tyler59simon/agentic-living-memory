@@ -18,7 +18,7 @@ INTERVAL_HOURS=24
 STALE_HOURS=48
 # Hooks skip automatic snapshots of very large stores; doctor already flags that size.
 AUTO_MAX_NOTES=1500
-TOP_LEVEL=('bindings.json','tag_taxonomy.json','projects.json','systems.json','schema-version.json')
+TOP_LEVEL=('bindings.json','tag_taxonomy.json','projects.json','systems.json','schema-version.json','learning.json')
 MEMBER=re.compile(r'domains/[A-Za-z0-9_.-]+/(?:notes|archive)/(?:[^/\\]+/)*[^/\\]+\.md')
 NAME=re.compile(r'lm-(\d{8}-\d{6})(?:-(\d+))?\.zip')
 
@@ -33,10 +33,17 @@ def canonical_files(root):
             base=domain/folder
             if base.is_dir() and not base.is_symlink():
                 found+=sorted(p.relative_to(root).as_posix() for p in base.rglob('*.md') if p.is_file() and not p.is_symlink())
+        learning=domain/'learning'
+        if learning.is_dir() and not learning.is_symlink():
+            for p in sorted(learning.rglob('*.json')):
+                rel=p.relative_to(root).as_posix()
+                confined(root,rel)
+                if _allowed(rel):found.append(rel)
     return found
 
 def _allowed(name):
-    return name in TOP_LEVEL or bool(MEMBER.fullmatch(name)) and '..' not in name.split('/')
+    learning=re.fullmatch(r'domains/[A-Za-z0-9_.-]+/learning/(?:tasks|attempts|evidence|candidates|procedures|versions|uses|feedback)/[a-f0-9.-]+\.json',name)
+    return (name in TOP_LEVEL or bool(MEMBER.fullmatch(name)) or bool(learning)) and '..' not in name.split('/')
 
 def snapshots(root):
     """Existing snapshots, newest first: by timestamp, then by same-second sequence (lm-T.zip, lm-T-1.zip, ...)."""

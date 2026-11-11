@@ -136,6 +136,7 @@ def _move_set(moves,root):
     root=Path(root);targets={};steps=[];changes={};expected={}
     for move in moves:
         note=move['note'];source=Path(note['path']);status=move.get('status') or note.get('status','active')
+        if note.get('learning_procedure'):raise ValueError(f"Learned procedures move domains through review: learn procedure promote-plan {note['learning_procedure'][:8]} --target DOMAIN")
         destination=root/'domains'/move['target']/('notes' if status=='active' else 'archive')/source.name
         if destination.exists() or destination in targets.values():
             raise ValueError('Promotion filename collision: '+destination.relative_to(root).as_posix())
@@ -428,6 +429,8 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
     read through it, so steps build on each other instead of overwriting one another."""
     pending=pending or {}
     path,note=find_note(note_id,domain,root)
+    if note.get('learning_procedure'):
+        raise ValueError('Learned procedures change through candidate review or learn procedure controls')
     if expected_revision and note['revision']!=expected_revision:raise ValueError('stale_revision')
     expected={path.relative_to(root).as_posix():note['revision']}
     if pending.get(path.relative_to(root).as_posix()):note=parse_changed(pending[path.relative_to(root).as_posix()],note)
@@ -544,6 +547,14 @@ def change(note_id,domain,action,root=None,expected_revision=None,plan_only=Fals
     root=Path(root or memory_root()).resolve()
     domain=canonical_domain(domain,root)
     with store_lock(root):
+        _,current=find_note(note_id,domain,root)
+        if current.get('learning_procedure'):
+            if action!='update':
+                raise ValueError(f"Learned procedures change through learn procedure suspend|resume|retire-plan|promote-plan {current['learning_procedure'][:8]}; "
+                                 'an update of the title or body is staged for review')
+            if expected_revision and current['revision']!=expected_revision:raise ValueError('stale_revision')
+            from .learning import stage_edit
+            return stage_edit(root,domain,current,values,preview=plan_only)
         changes,expected,target=_change_set(note_id,domain,action,root,expected_revision,**values)
         if plan_only:
             from .governance import plan

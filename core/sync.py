@@ -311,7 +311,12 @@ def sync(domain,vault,root=None,trigger=None):
                     if 'files' in updated:
                         updated['files']=clean_files(updated['files'])
                         if not updated['files']:updated.pop('files')
-                    updated['body']=proposed_note['body'];updated=normalize(updated)
+                    updated['body']=proposed_note['body'];updated=normalize(updated);proposal=None
+                    if note.get('learning_procedure'):
+                        from .learning import stage_edit
+                        if updated['body']!=note['body'] or updated['title']!=note['title']:
+                            proposal=stage_edit(root,domain,note,dict(title=updated['title'],body=updated['body']))
+                        updated=dict(note)
                     if serialize({**updated,'updated':''})!=serialize({**normalize(note),'updated':''}):
                         updated['updated']=now()
                         canonical_target,changes,expected=_canonical_changes(note,updated,domain,root)
@@ -330,6 +335,11 @@ def sync(domain,vault,root=None,trigger=None):
                         after_rel=note_rel(domain,canonical_target.name);after_source=new_hash
                         after_hash=place(note_id,old_rel,after_rel,new_text,overlay_text,overlay_hash);copied+=1
                         conflict=None
+                        if proposal and proposal.get('candidate_id'):
+                            # Approved procedures change only through review: the vault shows the approved version again.
+                            conflict={'message':f"Learned procedure: your edit was saved as review proposal {proposal['candidate_id'][:8]}; "
+                                                'the approved version stays published until it is approved (Hivemind Review → Learning).',
+                                      'staged':f'domains/{domain}/staged/{note_id}-{overlay_hash[:12]}.md'}
                 except ValueError as exc:
                     pending=True;staged+=1
                     entry={**{k:v for k,v in entry.items() if k not in ('pending_plan','pending_action','conflict')},'pending_hash':overlay_hash,'pending_error':str(exc)}

@@ -92,7 +92,11 @@ def file_notes(path,domains,root=None,limit=2,ensure_fresh=True):
             try:rows=db.execute("SELECT id,title,type,updated,files,body,path,revision FROM notes WHERE status='active'").fetchall()
             finally:db.close()
         except sqlite3.Error:continue
+        from .learning import published
+        try:manifests,servable=published(root,domain)
+        except (ValueError,OSError):manifests,servable={},set()
         for note_id,title,kind,updated,files,body,note_path,revision in rows:
+            if note_id in manifests and note_id not in servable:continue
             try:listed=json.loads(files or '[]')
             except ValueError:listed=[]
             group=0 if file_matches(listed,path) else 1 if mentions_file(body,path) else None
@@ -100,6 +104,8 @@ def file_notes(path,domains,root=None,limit=2,ensure_fresh=True):
             if group is not None:
                 ranked.append((group,str(updated or ''),{'id':note_id,'domain':domain,'title':title,'type':kind or 'knowledge','updated':str(updated or '')[:10],
                                'match':'files' if group==0 else 'body','snippet':snippet(body,terms(path))}))
+                if note_id in manifests:
+                    ranked[-1][2].update(procedure_id=manifests[note_id]['id'],procedure_version=manifests[note_id]['current_version'])
     ranked.sort(key=lambda r:r[1],reverse=True);ranked.sort(key=lambda r:r[0])
     return [hit for _,_,hit in ranked[:max(1,limit)]]
 def _embedding_text(note):
@@ -227,6 +233,8 @@ def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False):
         notes=inventory(domain,root,retired=True);fresh=_fresh(domain,root,notes)
         if not fresh and rebuild:rebuild_index(domain,root);fresh=True
         if filters and not fresh:raise ValueError('stale_filtered_index: rebuild required before filtered search')
+        from .learning import approved_notes
+        notes=approved_notes(root,domain,notes,actionable=True)
         active=[n for n in notes if n.get('status','active')=='active']
         if filters:
             # Filters narrow the active notes; retired ones need an explicit status filter.
@@ -266,6 +274,8 @@ def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False):
                            'tags':note.get('tags',[]),'status':note.get('status','active'),'snippet':snippet(note['body'],tokens),'score':score,'rank':len(output)+1,'engine':engine,
                            'revision':note['revision'],'sourceField':field,'sourceScope':'active','coverage':coverage[note['id']],
                            'titleOverlap':len(wanted&title),'titleTerms':len(title),'queryTerms':len(wanted),'relevance':round(coverage[note['id']],2)})
+            if note.get('learning_procedure'):
+                output[-1].update(procedure_id=note['learning_procedure'],procedure_version=note['learning_version'],evidence_status=note.get('learning_state'))
             if similarity is not None:output[-1]['similarity']=round(similarity.get(note['id'],0.0),4)
         return output
 

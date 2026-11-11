@@ -1,5 +1,9 @@
 # Architecture
 
+## Reviewed learning extension
+
+`core/learning.py` adds explicit task evidence, isolated candidates, immutable procedure versions and actual-use feedback through the existing CLI/stdio bridge. Canonical Markdown remains authoritative for ordinary notes; journaled per-domain JSON sidecars govern learning state and evidence. Approved runbooks are projections of immutable versions. No model work runs in retrieval or hooks. See [learning contracts, operations and limits](LEARNING.md).
+
 The local system follows a Bootstrap → Resolve → Read → Evaluate → Persist flow, with the adaptations and limits documented below.
 
 ```mermaid
