@@ -27,9 +27,15 @@ def find_brief(cwd,root=None,bindings=None):
     return best[1] if best else None
 
 def project_dir(cwd,bindings):
-    """The folder a new brief for cwd is keyed by: the deepest folder bound to cwd's domain that holds it, else cwd."""
+    """The folder a new brief for cwd is keyed by: the git repo holding cwd when it lies inside the bound folder
+    (a domain bound to a parent of several repos gets one brief per repo, as maps do), else the deepest bound
+    folder holding cwd, else cwd."""
+    from .common import git_root
     here=Path(cwd).resolve();domain=resolve_domain(here,bindings)
-    return next((p for p in domain_prefixes(domain,bindings) if here.is_relative_to(p)),here)
+    base=next((p for p in domain_prefixes(domain,bindings) if here.is_relative_to(p)),None)
+    repo=git_root(here)
+    if base and repo and repo.is_relative_to(base):return repo
+    return base or here
 
 def project_key(folder,bindings):
     """What `--file` should say for a project folder: '.' for the domain's first bound folder (the one '.' means), else its path."""

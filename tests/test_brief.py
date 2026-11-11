@@ -63,8 +63,17 @@ class BriefType(BriefFixture):
         self.assertEqual(find_brief(self.project/'docs',self.root,bindings)['title'],'project project brief')
         code,again=self.cli('--domain','demo','capture','--type','map','--file','app','--title','app map again','--summary','x','--detail','**Layout:** y','--allow-similar')
         self.assertIn('map_exists conflict',json.dumps(again))                        # the map message is unchanged
-        self.assertEqual(project_dir(app,bindings),self.project.resolve());self.assertEqual(project_key(self.project.resolve(),bindings),'.')
+        # app is a git repo inside the bound folder: like a map, its brief is keyed to the repo, not the parent binding.
+        self.assertEqual(project_dir(app,bindings),app);self.assertEqual(project_dir(self.project/'docs',bindings),self.project.resolve())
+        self.assertEqual(project_key(self.project.resolve(),bindings),'.')
         self.assertEqual(project_key(app,bindings),app.as_posix())
+
+    def test_parent_binding_with_several_repos_keys_one_brief_per_repo(self):
+        # A domain bound to a folder of several repos (one sandbox for many projects) asks for each repo's own brief.
+        other=self.project/'tools';(other/'.git').mkdir(parents=True);bindings=load_bindings(self.root)
+        self.assertEqual(project_dir(other/'src',bindings),other.resolve())
+        self.assertEqual(project_dir(self.project/'app'/'src',bindings),(self.project/'app').resolve())
+        self.assertNotEqual(project_dir(other,bindings),project_dir(self.project/'app',bindings))
 
     def test_retyping_a_note_into_a_second_brief_is_refused(self):
         self.assertEqual(self.capture_brief()[0],0)
