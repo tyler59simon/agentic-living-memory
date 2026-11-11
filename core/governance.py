@@ -16,7 +16,7 @@ def plan(root, changes, kind, domains=(), summary=None, guards=None):
             expected[rel]=digest(p.read_bytes()) if p.exists() else None
         value={'schema':2,'id':uuid.uuid4().hex,'kind':kind,'domains':sorted(set(domains)),
                'created':now(),'changes':changes,'expected':expected,'summary':summary or {'files':len(changes)}}
-        if guards:value['guards']={k:(v if k in ('read_set','learning_admission') else sorted(set(v))) for k,v in guards.items() if v}
+        if guards:value['guards']={k:(v if k in ('read_set','learning_admission','learning_unreferenced') else sorted(set(v))) for k,v in guards.items() if v}
         value['digest']=hashlib.sha256(canonical_json(value).encode()).hexdigest()
         path=root/'.plans'/(value['id']+'.json');atomic_write(path,canonical_json(value))
         return {'ok':True,'plan_id':value['id'],'digest':value['digest'],'kind':kind,'summary':value['summary']}
@@ -54,6 +54,14 @@ def _check_guards(root,value):
         for note in inventory(admission['domain'],root,retired=True):
             if note['title'].casefold()==admission['title'].casefold() and note.get('learning_procedure')!=admission['procedure_id']:
                 raise ValueError('stale plan: another note now has this procedure title')
+    for domain in guards.get('learning_enabled',[]):
+        from .learning import _enabled
+        if not _enabled(root,domain):raise ValueError('stale plan: learning is disabled for '+domain)
+    unreferenced=guards.get('learning_unreferenced')
+    if unreferenced:
+        from .learning import referenced
+        if set(unreferenced['attempts'])&referenced(root,unreferenced['domain'])[1]:
+            raise ValueError('stale plan: a pruned learning record is referenced again')
     for item in guards.get('absent_learning_imports',[]):
         domain,key=item.split(':',1)
         from .learning import rows

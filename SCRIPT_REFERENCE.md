@@ -1,6 +1,6 @@
 # Compact script reference
 
-For `learn ENTITY ACTION [ID]`, JSON payloads, review plans and `export --include-learning`, see [Reviewed learning](LEARNING.md). `version.capabilities.learning` advertises support independently of the stdio envelope API.
+For `learn` (no arguments prints a guide), `learn record`, `learn ENTITY ACTION [ID]` with flags or JSON payloads, review plans (promote, rollback, retire, delete, prune) and `export --include-learning`, see [Reviewed learning](LEARNING.md). `version.capabilities.learning` advertises support independently of the stdio envelope API.
 
 Use `python living_memory.py COMMAND --help` for exact arguments. Common options are `--root STORE`, `--domain DOMAIN`, `--cwd PROJECT`, and `--actor main|subagent|viewer`. Outputs are compact JSON. Stable references are `domain:id`; a REF may also be `domain:` plus a unique 8+ character ID prefix (the short form injected lines show), a bare ID or prefix in the active domain, or an active note's exact title (case-insensitive, active and parent domains; ambiguous matches fail with `ambiguous_ref`). IDs are unique across the store, so a `domain:id` whose note has since moved (promoted to the global domain, or remapped) still finds it in its new domain. Outputs and receipts always carry full IDs. Revisions hash the full note file.
 

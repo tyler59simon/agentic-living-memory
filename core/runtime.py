@@ -12,7 +12,7 @@ SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 # Tools that cannot change files; anything else marks the turn as mutating.
 READ_TOOLS={'read','read_file','glob','grep','search','view_image','view','ls','list','webfetch','websearch','web_fetch','web_search','todowrite','task','agent','toolsearch','askuserquestion','exitplanmode','enterplanmode'}
 SHELL_TOOLS={'bash','powershell','shell','run_shell_command','exec_command','local_shell','execute'}
-ALLOWED_SUBCOMMANDS={'search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','promote-plan','projects','systems','resolve','reopen'}
+ALLOWED_SUBCOMMANDS={'search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','promote-plan','projects','systems','resolve','reopen','learn'}
 # Subagents are read-only: these are denied for them even though the main agent gets them auto-allowed.
 MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm','resolve','reopen'}
 GLOBAL_OPTIONS={'--root','--domain','--cwd','--actor'}
@@ -178,6 +178,18 @@ def _subcommand(words):
         if token=='--json':index+=1;continue
         return token
     return None
+
+def learn_operation(text,grammar=None):
+    """(entity, action) of an exact, unchained `learn` invocation; (None, None) when absent."""
+    parsed=_parsed(text,grammar)
+    if not parsed:return None,None
+    words=parsed[0];index=0;found=[]
+    while index<len(words) and len(found)<3:
+        token=words[index]
+        if token in GLOBAL_OPTIONS:index+=2;continue
+        if token.startswith('--'):index+=1;continue
+        found.append(token);index+=1
+    return (found[1] if len(found)>1 else None),(found[2] if len(found)>2 else None)
 
 def memory_subcommand(text,grammar=None):
     """Subcommand of an exact, unchained living_memory.py invocation, else None. grammar: see shell_grammar."""
@@ -747,7 +759,11 @@ def hit_line(hit):
     if len(snippet)>HIT_SNIPPET:
         cut=snippet.rfind(' ',0,HIT_SNIPPET);snippet=snippet[:cut if cut>0 else HIT_SNIPPET]+' …'
     from .notes import short_ref
-    return f"- [{str(hit.get('type','note')).upper()} {hit.get('updated','')}] {short_ref(hit['domain'],hit['id'])} {hit['title']} — {snippet}"
+    line=f"- [{str(hit.get('type','note')).upper()} {hit.get('updated','')}] {short_ref(hit['domain'],hit['id'])} {hit['title']} — {snippet}"
+    if hit.get('procedure_id'):
+        from .learning import use_hint
+        line+=f" ({use_hint(hit['procedure_id'],hit.get('procedure_version'))})"
+    return line
 
 def revision_key(note):return str(note.get('revision') or '')[:12]
 
@@ -1059,11 +1075,17 @@ def _process(harness,event,payload,root=None,info=None):
             return result
         text=shell_command(args) if name in SHELL_TOOLS else '';grammar=shell_grammar(name)
         subcommand=memory_subcommand(text,grammar) if text else None;detail['subcommand']=subcommand
-        if subcommand in MUTATING_SUBCOMMANDS and _subagent(payload):
+        learn_write=learn_settings=False
+        if subcommand=='learn':
+            from .learning import is_read
+            entity,action=learn_operation(text,grammar);learn_write=not is_read(entity,action)
+            # Turning learning on or off is the user's call, so it keeps the host's normal prompt.
+            learn_settings=(entity,action)==('config','set')
+        if (subcommand in MUTATING_SUBCOMMANDS or learn_write) and _subagent(payload):
             detail['decision']='deny:subagent'
             result['deny']='Living Memory: subagents are read-only. Return the proposed note to the main agent instead of running '+subcommand+'.'
             return result
-        if subcommand in ALLOWED_SUBCOMMANDS:
+        if subcommand in ALLOWED_SUBCOMMANDS and not learn_settings:
             # Another store, or an input file from outside the project, is the user's call: no auto-approval.
             if auto_allowed(text,grammar,root,cwd,payload.get('scratchpad_dir') or payload.get('scratchpadDir')):
                 result['allow']='Living Memory read/capture script command.'

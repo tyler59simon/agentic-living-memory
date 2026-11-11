@@ -20,7 +20,8 @@ def export(root,domain,out,types=(),tags=(),retired=False,include_learning=False
     root=Path(root).resolve();out=Path(out).expanduser().resolve()
     if out.is_relative_to(root/'domains'):raise ValueError('Write the bundle outside the store domains')
     if out.exists():raise ValueError(f'{out} already exists; choose a new file')
-    notes=[n for n in inventory(domain,root,retired=retired) if (not types or n.get('type') in types) and all(t in n.get('tags',[]) for t in tags)]
+    # Retired notes only on request; suspended learned procedures are still active notes, so they export too.
+    notes=[n for n in inventory(domain,root,retired=True) if (retired or n.get('status','active')=='active') and (not types or n.get('type') in types) and all(t in n.get('tags',[]) for t in tags)]
     if not notes:raise ValueError('No notes match')
     entries=[];used=set()
     out.parent.mkdir(parents=True,exist_ok=True);temp=out.with_name('.'+out.name+'.tmp')
@@ -84,7 +85,9 @@ def import_plan(root,source,domain=None):
     manifest,members=_read(source)
     target=canonical_domain(domain or str(manifest.get('domain') or ''),root)
     if target not in read_json(root/'bindings.json',{}).get('domains',{}):raise ValueError(f"Domain '{target}' is not bound here; bind it or pass --domain")
-    imported_records={name:__import__('json').loads(data) for name,data in members.items() if name.startswith('learning/')}
+    import json
+    try:imported_records={name:json.loads(data.decode('utf-8')) for name,data in members.items() if name.startswith('learning/')}
+    except (UnicodeError,ValueError) as exc:raise ValueError('Bundle learning record is not valid JSON') from exc
     members={name:data for name,data in members.items() if not name.startswith('learning/')}
     parsed={};seen={};learning_candidates=[]
     for name,data in sorted(members.items()):
@@ -99,11 +102,13 @@ def import_plan(root,source,domain=None):
             pid=note['learning_procedure']
             v=imported_records.get(f'learning/versions/{pid}.{note["learning_version"]}.json')
             if not v:raise ValueError('Bundle is missing the procedure version')
-            from .learning import _candidate,_record,_safe
+            from .learning import _candidate,_record,_safe,import_closure
             proposal=_record(target,_candidate(root,target,{'content':v['content'],'evidence_ids':[],
-                              'step_evidence':[[] for _ in v['content']['steps']]}))
+                              'step_evidence':[[] for _ in v['content']['steps']],
+                              'tags':[t for t in v.get('tags',[]) if t in taxonomy(root)]}))
             proposal['imported_from']={'domain':manifest['domain'],'procedure_id':pid,'version':v['version']}
-            proposal['imported_records']=imported_records
+            # Inert provenance: this procedure's own evidence chain, never local verification.
+            proposal['imported_records']=import_closure(imported_records,pid)
             proposal['import_key']=hashlib.sha256(source.read_bytes()+pid.encode()).hexdigest()
             _safe(proposal);learning_candidates.append(proposal)
         else:

@@ -412,7 +412,17 @@ def main(argv=None):
     p=sub('recall');p.add_argument('query');p.add_argument('--session',required=True);p.add_argument('--limit',type=int,default=5);p.add_argument('--all',action='store_true',help='Search the whole transcript, not only what precedes the latest compaction')
     p=sub('capture-finalize');p.add_argument('--session',required=True);p.add_argument('--turn',help='Defaults to the latest prompt of the session');p.add_argument('--note',action='append',default=[])
     p=sub('list');p.add_argument('--status',choices=['active','resolved','archived','superseded','any'],default='active');p.add_argument('--type',choices=NOTE_TYPES,action='append');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)');p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--with-summary',action='store_true',help='Add summary, files and actions {open, done} to each row');p.add_argument('--offset',type=int,default=0);p.add_argument('--limit',type=int,default=200)
-    p=sub('learn');p.add_argument('entity',choices=['config','task','attempt','evidence','candidate','procedure','version','use','feedback']);p.add_argument('action');p.add_argument('reference',nargs='?');p.add_argument('--payload-file',type=Path);p.add_argument('--all-domains',action='store_true')
+    from .learning import ENTITIES,RESULTS,METHODS,OUTCOMES,USAGES,CONTRIBUTIONS
+    p=sub('learn');p.add_argument('entity',nargs='?',choices=ENTITIES,help='Omit for the guide');p.add_argument('action',nargs='?');p.add_argument('reference',nargs='?')
+    p.add_argument('--payload-file',type=Path,help='JSON payload; without flags, the payload is read from stdin');p.add_argument('--all-domains',action='store_true')
+    for flag in ('objective','family','project','key','task','attempt','retry-of','observer','excerpt','limitations','source','reason',
+                 'expected-revision','procedure','deviations','use','target','title','summary','fallback','session','kind'):p.add_argument('--'+flag)
+    for flag in ('criterion','evidence','tag','use-when','do-not-use-when','step','done-when'):p.add_argument('--'+flag,action='append')
+    p.add_argument('--result',choices=RESULTS);p.add_argument('--method',choices=METHODS);p.add_argument('--outcome',choices=OUTCOMES)
+    p.add_argument('--usage',choices=USAGES);p.add_argument('--contribution',choices=CONTRIBUTIONS)
+    p.add_argument('--version',dest='learn_version',type=int,help='Procedure version (default: current)');p.add_argument('--days',type=int)
+    p.add_argument('--enable',dest='enabled',action='store_const',const=True);p.add_argument('--disable',dest='enabled',action='store_const',const=False)
+    p.add_argument('--global',dest='global_',action='store_const',const=True)
     p=sub('domains')
     p=sub('links');p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--status',choices=['active','any'],default='active',help='any: include archived, resolved and superseded notes')
     p=sub('version')
@@ -451,7 +461,10 @@ def main(argv=None):
             # Snapshots exist to repair a damaged store, so restoring must not depend on readable bindings.
             if cmd not in {'restore-plan','inspect-plan','apply','backup','history'}:raise
             domain=None
-        learning_read=cmd=='learn' and args.action in {'read','list','evaluate','status'}
+        if cmd=='learn':
+            from .learning import is_read
+            learning_read=is_read(args.entity,args.action)
+        else:learning_read=False
         if args.actor=='subagent' and cmd not in READ_ONLY and not learning_read:raise ValueError('Subagents are read-only; return mutation proposals to the main agent')
         if args.actor=='viewer' and cmd not in VIEWER and not learning_read:raise ValueError('Viewers are read-only; run changes as --actor main')
         if cmd=='serve':return serve(root,cwd,set(subs.choices)-{'serve','setup'})
@@ -581,6 +594,9 @@ def main(argv=None):
             d,n=_reference(args.reference,domain,root);path,note=find_note(n,d,root)
             result={k:v for k,v in note.items() if k not in {'body','path','digest'}}
             if not args.metadata_only:result.update(body=note['body'][:max(0,min(64000,args.max_chars))],truncated=len(note['body'])>args.max_chars)
+            if note.get('learning_procedure') and note.get('learning_state')=='active':
+                from .learning import use_hint
+                result['hint']=use_hint(note['learning_procedure'],note.get('learning_version'))
             if args.actor!='viewer':
                 from .usage import record
                 record(root,'read',[f'{d}:{n}'])
@@ -597,9 +613,19 @@ def main(argv=None):
             result=note_links(root,domains,args.status)
         elif cmd=='version':result={'ok':True,'api':SERVE_API,'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'learning':1}}
         elif cmd=='learn':
-            from .learning import dispatch
-            result=dispatch(root,domain,args.entity,args.action,args.reference,
-                            {} if learning_read else _payload(args),args.all_domains)
+            from .learning import dispatch,flag_payload
+            payload={}
+            if not learning_read:
+                flags=flag_payload(args.entity,args.action,vars(args))
+                # A JSON payload comes from --payload-file, or from stdin when no flags were given (the stdio bridge).
+                if args.payload_file:payload=_payload(args)
+                elif not flags and sys.stdin and not sys.stdin.isatty():
+                    raw=sys.stdin.read()
+                    if len(raw.encode())>1024*1024:raise ValueError('Payload exceeds 1 MiB')
+                    payload=json.loads(raw) if raw.strip() else {}
+                if not isinstance(payload,dict):raise ValueError('Learning payload must be a JSON object')
+                payload.update(flags)
+            result=dispatch(root,domain,args.entity,args.action,args.reference,payload,args.all_domains)
         elif cmd=='update':
             from .notes import change
             d,n=_reference(args.reference,domain,root)

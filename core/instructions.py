@@ -29,7 +29,7 @@ def usage(session='SESSION'):
             f"\nKeep current: CMD update REF --session {session} --set-detail '**Label:** new fact' or --add-detail/--add-link/--add-action '...' (--detail/--link/--action/--body overwrite) [--title '...']; replaced: capture ... --supersedes REF; still true: CMD confirm REF; due notes: CMD review."
             f"\nResuming: CMD open first; tick a done item: CMD check REF 'item' --session {session}; finished: CMD resolve REF."
             f'\nNo per-turn receipt unless Stop asks (then: CMD capture-finalize --session {session}).'
-            '\nLearning: CMD learn; review before admission.')
+            '\nLearning: for a checked, recurring fix see CMD learn.')
 
 def static_protocol(harness):
     """Machine-independent protocol text for instruction files: no interpreter paths, domains or sessions."""

@@ -1,7 +1,8 @@
 """Isolated maintenance trials. --self-test tests fixtures, not model efficacy.
 
-An optional argv JSON command receives one JSON task on stdin and returns JSON.
-No shell interpolation, downloads or model invocation without an explicit command.
+An optional argv JSON command receives one JSON task on stdin and returns JSON; scripts/agents/run_agent.py
+adapts a CLI agent (claude -p, codex exec) to that contract. No shell interpolation, downloads or model
+invocation without an explicit command.
 """
 import argparse
 import contextlib
@@ -61,22 +62,38 @@ def setup(root, scenario, variant='training'):
     return context
 
 
+# What each reference repair checks, recorded as the training run's acceptance evidence.
+CHECKS = {
+    'stale-index': 'canonical note bytes unchanged, index fresh, expected note returned by search',
+    'stale-plan': 'apply refused as stale and the newer canonical note kept',
+    'interrupted-operation': 'operation rolled forward with its intended content and no unfinished operations',
+    'restore': 'restored note readable with its original content',
+}
+
+
 def reference(root, context):
-    scenario = context['scenario']
-    if scenario == 'stale-index': rebuild_index('demo', root)
+    """The scripted repair. `actions` lists what it did as CLI steps; the learned procedure is built from them."""
+    scenario = context['scenario']; actions = []
+    if scenario == 'stale-index':
+        rebuild_index('demo', root); actions.append("CMD search 'EXPECTED TERM' --rebuild (rebuilds the disposable index only)")
     elif scenario == 'stale-plan':
         p = context['plan']
+        actions.append('CMD inspect-plan PLAN_ID, then CMD apply PLAN_ID --expected-plan-sha256 DIGEST')
         try: governance.apply(root, p['plan_id'], p['digest'])
         except ValueError as exc:
             if 'stale' not in str(exc).lower(): raise
-            return dict(outcome='succeeded', refused_stale=True)
+            actions.append('On "stale plan", stop: keep the newer canonical note; do not regenerate or force the plan')
+            return dict(outcome='succeeded', refused_stale=True, actions=actions)
         raise AssertionError('Stale plan unexpectedly applied')
-    elif scenario == 'interrupted-operation': repository.recover(root, context['operation_id'])
+    elif scenario == 'interrupted-operation':
+        repository.recover(root, context['operation_id'])
+        actions.append('CMD doctor to find the unfinished operation, then CMD recover OPERATION_ID (forward)')
     else:
         p = backup.restore_plan(root, context['backup'])
         governance.inspect_plan(root, p['plan_id'])
         governance.apply(root, p['plan_id'], p['digest'])
-    return dict(outcome='succeeded')
+        actions += ['CMD restore-plan BACKUP', 'CMD inspect-plan PLAN_ID', 'CMD apply PLAN_ID --expected-plan-sha256 DIGEST']
+    return dict(outcome='succeeded', actions=actions)
 
 
 def verify(root, context, report):
@@ -106,22 +123,22 @@ def seed(root, scenario, mode):
         report = reference(train, context)
         if not verify(train, context, report): raise AssertionError('Training fixture failed')
     def call(entity, action, ident=None, **p): return learning.dispatch(root, 'demo', entity, action, ident, p)
-    task = call('task', 'create', objective='Training '+scenario, family='alm.'+scenario, acceptance_criteria=['repair verified'])['record']
-    attempt = call('attempt', 'start', task_id=task['id'])['record']
-    evidence = call('evidence', 'add', attempt_id=attempt['id'], criterion='repair verified', result='pass', method='tool_check',
-                    observer='deterministic training fixture', excerpt='Reference repair passed scenario verifier: '+scenario,
-                    limitations='Synthetic fixture; no model benefit or generalization established')['record']
-    call('attempt', 'close', attempt['id'], expected_revision=attempt['revision'], outcome='succeeded')
-    c = call('candidate', 'create', content=dict(title='Maintenance procedure '+scenario, body=recipe,
-             use_when=['Matching ALM maintenance condition'], do_not_use_when=['Different maintenance condition'],
-             steps=[recipe], done_when=['Scenario acceptance check passes'], fallback='Inspect state without deleting canonical notes'),
-             evidence_ids=[evidence['id']], step_evidence=[[evidence['id']]])['record']
+    # The learned procedure is what the training run did and checked, not the hand-written recipe.
+    recorded = call('record', 'create', objective=SCENARIOS[scenario][0], family='alm.'+scenario, acceptance_criteria=['repair verified'],
+                    outcome='succeeded', evidence=[dict(result='pass', method='tool_check', observer='scenario verifier',
+                    excerpt='Reference repair passed: '+CHECKS[scenario],
+                    limitations='Synthetic training store; no model benefit or generalization established')])
+    eid = recorded['evidence'][0]['id']
+    c = call('candidate', 'create', content=dict(title='Maintenance procedure '+scenario, body=SCENARIOS[scenario][0],
+             use_when=[SCENARIOS[scenario][0]], do_not_use_when=['Canonical notes themselves are corrupt'],
+             steps=report['actions'], done_when=[CHECKS[scenario]], fallback='Inspect state with doctor; never delete canonical notes'),
+             evidence_ids=[eid], step_evidence=[[eid] for _ in report['actions']])['record']
     p = call('candidate', 'promote-plan', c['id'], expected_revision=c['revision'])
     governance.apply(root, p['plan_id'], p['digest'])
     return dict(procedure_id=p['summary']['procedure_id'], version=1)
 
 
-def run(command=None, repeats=1, self_test=False):
+def run(command=None, repeats=1, self_test=False, timeout=600):
     results = []
     for repeat in range(repeats):
         for scenario in SCENARIOS:
@@ -145,7 +162,6 @@ def run(command=None, repeats=1, self_test=False):
                     if scenario == 'interrupted-operation':
                         (root/'fixture-result.txt').unlink()
                         operation='learning-benchmark-trial'
-                        original=repository._write
                         with patch.object(repository,'_write',side_effect=OSError('fixture interruption')):
                             try:repository.transaction(root,{'fixture-result.txt':'recovered'},'fixture',operation_id=operation)
                             except OSError:pass
@@ -158,7 +174,7 @@ def run(command=None, repeats=1, self_test=False):
                         if self_test: report=reference(root,context)
                         else:
                             child=subprocess.run(command,input=json.dumps(request),text=True,encoding='utf-8',capture_output=True,
-                                                 timeout=120,env=dict(os.environ,PYTHONUTF8='1'),cwd=temp)
+                                                 timeout=timeout,env=dict(os.environ,PYTHONUTF8='1'),cwd=temp)
                             if child.returncode: raise ValueError('Agent command failed: '+child.stderr[:500])
                             report=json.loads(child.stdout)
                             if not isinstance(report,dict):raise ValueError('Agent report must be an object')
@@ -178,11 +194,12 @@ if __name__ == '__main__':
     group=parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--self-test',action='store_true');group.add_argument('--command-json')
     parser.add_argument('--repeats',type=int,default=1)
+    parser.add_argument('--timeout',type=int,default=600,help='Seconds per agent trial (default 600)')
     args=parser.parse_args()
     command=json.loads(args.command_json) if args.command_json else None
     if command is not None and (not isinstance(command,list) or not command or any(not isinstance(x,str) for x in command)):
         parser.error('--command-json must be a nonempty argv array')
     if not 1<=args.repeats<=10:parser.error('--repeats must be between 1 and 10')
-    result=run(command,args.repeats,args.self_test)
+    result=run(command,args.repeats,args.self_test,args.timeout)
     print(json.dumps(result,indent=2))
     sys.exit(0 if all(r['checked_success'] for r in result['results']) else 1)

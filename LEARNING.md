@@ -1,66 +1,77 @@
-# Reviewed procedural learning (pilot)
+# Reviewed procedural learning
 
-Learning is available in every domain by default. It records only explicit agent submissions, not transcripts or every tool call. There is no model service, automatic promotion, or outcome-based ranking change. Explicit preference capture keeps its existing workflow.
+Agents record verified work, propose procedures from it, and the user approves what becomes a published runbook. Learning is on in every domain by default. It records only what agents explicitly submit: no transcripts, no tool-call capture, no model service, no automatic admission and no outcome-based ranking. Explicit preference capture keeps its existing workflow.
 
-Use `version` to check `capabilities.learning == 1`. All commands below accept the usual `--root`, `--domain`, `--cwd` and actor options. Structured writes take JSON on stdin or `--payload-file`. Reads (`list`, `read`, `evaluate`, `status`) support viewer/subagent actors; writes do not. Each reply is JSON. Hivemind uses the same commands through `serve --stdio`.
+`version` advertises `capabilities.learning == 1`. Every `learn` command accepts the usual `--root`, `--domain`, `--cwd` and `--actor` options and replies with JSON. `CMD learn` with no arguments prints a short guide. Hivemind uses the same commands through `serve --stdio`.
 
-## One complete loop
+## When agents use it
 
-1. `learn task create`: submit `{objective, family, acceptance_criteria: [string], project?: slug, idempotency_key?: string}`. Keep objectives bounded. A family describes comparable work, not all engineering work.
-2. `learn attempt start`: submit `{task_id, retry_of?: attempt_id, source_origin_id?: string, environment?: object}`. Preserve the source ID when importing a copy; retries retain one attempt-family identity.
-3. `learn evidence add`: submit `{attempt_id, criterion, result, method, observer, excerpt, limitations, source?}`. Criterion must exactly match a task acceptance criterion. Result is `pass`, `fail`, or `unknown`. Method is `tool_check`, `user_acceptance`, `external_check`, or `agent_assertion`. State what a check did not cover.
-4. `learn attempt close ID`: submit `{expected_revision, outcome, reason?}`. Outcomes are `succeeded`, `partial`, `failed`, `abandoned`, `unknown`. A closed success is not automatically verified.
-5. `learn candidate create`: submit the candidate below. Capture failed/contradicting evidence too. Do not count copies or retries as independent experience.
-6. `learn candidate evaluate ID`: inspect eligibility, errors, provisional warnings and title conflicts. This checks evidence structure/coverage; it cannot prove a procedure caused success.
-7. Review the candidate in **Hivemind → Review → Learning**, or run `learn candidate promote-plan ID` with `{expected_revision}`. Inspect the resulting plan and evidence before explicitly applying its exact digest with the existing `apply` command. Agents must not auto-apply it.
-8. On a subsequent task, record `learn use report` with `{attempt_id, procedure_id, version, usage, deviations?}`. Usage is `selected`, `used`, `partially_used`, `ignored`, or `inapplicable`. Reading a note is not use.
-9. After closing that attempt, `learn feedback add` with `{use_id, contribution?, evidence_ids?, reason?, corrects?}`. Contribution defaults to `unknown`; a non-unknown claim requires evidence from that attempt and a reason. Task outcome and contribution remain separate.
+After a checked fix or workflow that is likely to recur in this environment (an install quirk, a repair, a release step), record it and propose a procedure. One-off tasks and generic knowledge a model already has are not worth a procedure.
 
-Create operations accept `idempotency_key`; replaying the same payload returns the original record. An expected revision is the record's returned byte hash, not a timestamp. Re-read after mutations. Record references are full returned IDs within the explicit domain.
-
-```json
-{
-  "content": {
-    "title": "Repair a stale disposable index",
-    "body": "Rebuild the index when canonical notes are valid but search is stale.",
-    "use_when": ["Canonical notes are readable and the index is stale"],
-    "do_not_use_when": ["Canonical notes themselves are corrupt"],
-    "steps": ["Rebuild the domain index, then check the expected search result"],
-    "done_when": ["The expected note is returned and the index is fresh"],
-    "fallback": "Inspect canonical notes and doctor output; do not delete source notes"
-  },
-  "project": null,
-  "evidence_ids": ["RETURNED_EVIDENCE_ID"],
-  "step_evidence": [["RETURNED_EVIDENCE_ID"]],
-  "contradictions": []
-}
+```text
+CMD learn record --objective 'Repair a stale index' --family 'alm.index' --criterion 'expected note returned' \
+    --result pass --method tool_check --observer 'search' --excerpt 'search returned the note' \
+    --limitations 'one store checked' --outcome succeeded
+CMD learn candidate create --title 'Repair a stale disposable index' --summary 'Rebuild the index when notes are valid but search is stale.' \
+    --use-when 'Canonical notes are readable and search is stale' --step 'Rebuild the domain index' --step 'Search for the expected note' \
+    --done-when 'The expected note is returned' --fallback 'Inspect notes and doctor output; never delete canonical notes' --evidence EVIDENCE_ID
+CMD learn candidate evaluate CANDIDATE_ID
 ```
 
-Each step must cite supporting evidence. At least one successful attempt must cover every acceptance criterion with non-assertion evidence. The reviewer still judges whether the evidence supports the actual steps and applicability. One supporting task produces a **provisional** procedure, not an established fact or causal confidence score.
+`learn record` creates the task, a closed attempt and its evidence in one transaction. With flags it records one check per `--criterion`; give several checks with a JSON payload (`evidence: [...]`). Its reply names the evidence IDs and the next command. The user then approves in **Hivemind → Review → Learning**, or applies `learn candidate promote-plan ID --expected-revision REV` with the existing `apply`. Agents never apply admission plans.
+
+When search, read or prompt context returns a learned procedure, the hit names it and the command to report use: `CMD learn use report --procedure ID --usage used|partially_used|ignored|inapplicable`, then `CMD learn feedback add --use ID --outcome succeeded|partial|failed`. Reading a note is not use.
+
+In Claude Code, exact `learn` invocations are auto-allowed for the main agent except `learn config set`, which stays the user's call. Subagents may only read (`list`, `read`, `candidate evaluate`, `config status`, the guide); their learning writes are denied.
+
+## Records and the full loop
+
+The flag forms map onto JSON payloads; `--payload-file FILE`, or stdin when no flag is given, takes the full JSON. Flags override payload keys. Record references accept a full ID or a unique 8+ character prefix; version IDs are `PROCEDURE_ID.NUMBER`.
+
+1. `learn task create`: `{objective, family, acceptance_criteria: [string], project?: slug, idempotency_key?}`. Keep objectives bounded; a family groups comparable work.
+2. `learn attempt start`: `{task_id, retry_of?, source_origin_id?, environment?: object}`. Retries keep one attempt family; preserve the source ID when importing a copy.
+3. `learn evidence add`: `{attempt_id, criterion, result, method, observer, excerpt, limitations, source?}`. Criterion matches a task criterion exactly. Result is `pass`, `fail` or `unknown`; method is `tool_check`, `user_acceptance`, `external_check` or `agent_assertion`. State what the check did not cover.
+4. `learn attempt close ID`: `{expected_revision, outcome, reason?}`. Outcomes are `succeeded`, `partial`, `failed`, `abandoned`, `unknown`. A closed success is not automatically verified.
+5. `learn candidate create`: `{content: {title, body, use_when, do_not_use_when, steps, done_when, fallback}, evidence_ids, step_evidence?, project?, tags?, contradictions?}`. `step_evidence` holds one evidence list per step; omitted, every step cites all the evidence and evaluation warns the reviewer to confirm it. `tags` adds registered tags (platform, technology, system) to the runbook. Record failed or contradicting evidence too; copies and retries are not independent experience.
+6. `learn candidate evaluate ID`: eligibility, errors, warnings and title conflicts. It checks evidence structure and coverage; it cannot prove a procedure caused success.
+7. Review and approval as above. `learn candidate update ID` takes `expected_revision` plus the fields to change (content fields not given keep their values); `reject` and `defer` take `expected_revision` and an optional `reason`.
+8. `learn use report`: `{procedure_id, version?, usage, deviations?, attempt_id?, session?}`. Version defaults to the current one. Without an attempt, feedback states the outcome itself.
+9. `learn feedback add`: `{use_id, outcome?, contribution?, evidence_ids?, reason?, corrects?}`. Contribution defaults to `unknown`; any other value needs evidence and a reason. Task outcome and contribution stay separate.
+
+Create operations accept `idempotency_key`; replaying the same payload returns the original record, a different payload is a conflict. An expected revision is the record's returned byte hash. Re-read after mutations.
+
+**Eligibility.** Every step cites supporting evidence, at least one successful attempt covers every acceptance criterion with non-assertion evidence, no evidence is failed, corrected or deleted, scope matches, learning is enabled for the domain, and no other note has the title. One supporting task gives a **provisional** procedure; two or more distinct tasks give **corroborated**. Neither is a causal confidence score, and the reviewer still judges whether the evidence supports the actual steps.
 
 ## Inspection and control
 
-- `learn ENTITY list [--all-domains]` and `learn ENTITY read ID`: inspect tasks, attempts, evidence, candidates, procedures, versions, uses or feedback. ENTITY names are singular. Version IDs are `PROCEDURE_ID.NUMBER`.
-- `learn candidate update ID`: submit the complete candidate fields plus `expected_revision`. `reject` and `defer` need only the expected revision. Admitted/rejected candidates are finalized; create a new candidate for a procedure revision.
-- `learn procedure suspend ID` / `resume ID`: expected revision required. Resume rechecks evidence. Suspended/disabled procedures are excluded from normal search and automatic context; history remains inspectable.
-- `learn procedure rollback-plan ID`: `{expected_revision, version}`. Rechecks the old evidence and republishes as a new version after review; never rewrites historical versions.
-- `learn evidence correct ID`: full replacement evidence plus `expected_revision`; suspends dependent current procedures. `delete-plan` creates an approved deletion plan and suspends affected procedures. Historical unavailable evidence references remain visible. Journals/backups may retain old data under their existing retention policies; deletion is not secure erasure.
-- `learn config status`: effective/global/domain settings. `learn config set`: `{enabled: false}` disables the current domain; `{enabled: false, global: true}` disables learning globally. Re-enable with true. Controls are also in Hivemind.
+- `learn ENTITY list [--all-domains]` and `learn ENTITY read ID` for task, attempt, evidence, candidate, procedure, version, use and feedback. A malformed record is listed under `problems` and does not hide the others.
+- `learn procedure suspend ID` / `resume ID` (`expected_revision`, optional `reason`): suspended procedures leave search and context; history stays readable. Resume rechecks the evidence.
+- `learn procedure retire-plan ID` (`expected_revision`, `reason?`): a reviewed plan that archives the runbook and retires the procedure. Retired procedures cannot be revised; propose a new one. Ordinary `archive`, `supersede` and `resolve` refuse learned runbooks and point here.
+- `learn procedure rollback-plan ID` (`expected_revision`, `version`): rechecks that version's evidence and republishes it as a new version once approved. Nothing is written until the plan is applied; history is never rewritten.
+- `learn procedure promote-plan ID` (`expected_revision`, `target?` default `_global`): copies the current version's evidence chain into the target domain with a draft candidate there, for review in that domain. The original stays published; retire it once the copy is approved. Top-level `promote-plan` refuses learned runbooks and points here.
+- `learn evidence correct ID`: full replacement evidence plus `expected_revision`. Active procedures that depend on it are suspended; resume fails until a new candidate cites the replacement.
+- `learn evidence delete-plan ID`: a reviewed plan that replaces the evidence with a tombstone (attempt link and deletion time only) and suspends dependent procedures. References stay explainable and doctor stays clean. Journals and backups keep old data until their own retention ends; deletion is not secure erasure.
+- `learn task prune-plan [--days 90]`: a reviewed plan that removes tasks older than the cutoff, with their attempts and evidence, when no candidate, version, use or feedback depends on them. A plan that would remove something referenced since it was made fails as stale.
+- `learn config status`; `learn config set --enable|--disable [--global]`. Disabling stops new tasks, attempts, evidence, candidates, admissions and runbook edits in that domain (or everywhere). Approved procedures stay published, and use and feedback still record; suspend a procedure to unpublish it. A pending admission plan fails while learning is disabled. Controls are also in Hivemind.
 
-Changing evidence/configuration/candidate/target versions between review and apply invalidates approval. Inspect the fresh proposal again; do not automatically refresh and apply. Approval authorizes this publication only, not future external actions in a runbook.
+Changing evidence, configuration, the candidate or the target version between review and apply invalidates approval. Inspect the fresh proposal again; do not refresh and apply automatically. Approval authorizes this publication only, not future external actions in a runbook.
 
 ## Editing and storage contract
 
-Canonical records live in `domains/DOMAIN/learning/{tasks,attempts,evidence,candidates,procedures,versions,uses,feedback}/ID.json`. Global/domain controls live in `learning.json`. These are durable, journaled records, not disposable indexes or 30-day receipts. Only the CLI writes them. Backups and store relocation include them.
+Canonical records live in `domains/DOMAIN/learning/{tasks,attempts,evidence,candidates,procedures,versions,uses,feedback}/ID.json`; global and domain switches in `learning.json`. These are durable, journaled records, not disposable indexes or 30-day receipts. Only the CLI writes them. Backups and store relocation include them.
 
-Approved procedure versions are immutable. Their Markdown runbook is a readable projection. Ordinary title/body edits create candidates and preserve the approved version. Obsidian sync stages edits the same way. If a canonical file was edited externally, reads/search serve the approved snapshot; `doctor` reports the discrepancy. Use `learn procedure capture-edit ID` with `{expected_revision}` to stage that edit and restore the projection. A malformed external file requires repair from backup/approved history.
+Approved procedure versions are immutable, and the Markdown runbook is a readable projection: its Key Details list each field one item per line. An ordinary `update` of a learned runbook's title or body becomes a candidate and the approved version stays published (`plan REF update` previews the proposal without saving it). Obsidian edits are staged the same way, and the vault shows the approved version again with a note naming the proposal. If the canonical file was edited externally, reads and search serve the approved snapshot and `doctor` reports the difference; `learn procedure capture-edit ID` (`expected_revision`) stages that edit and restores the projection. A malformed external file needs repair from a backup or approved history.
 
-Evidence excerpts are limited to 8 KiB each and 64 KiB per attempt. Oversized submissions are rejected, not silently truncated. Credential-looking content is rejected before writes; remove/redact sensitive material before submission. Heuristic credential checks do not guarantee all confidential data is detected. Unreferenced records are not automatically pruned in this pilot.
+Learned runbooks are served from their manifests. If `learning.json` is unreadable, learned runbooks are still served and only learning writes fail; if a procedure manifest is unreadable, that runbook is withheld until `doctor` or a restore repairs it. Manually written runbooks are never affected.
 
-Default `export` includes readable notes without learning authority metadata or evidence. Explicit `export --include-learning` includes procedure history and evidence dependencies. `import-plan` retains those dependencies as inert provenance in a new candidate; imported evidence does not confer local verification, and new local evidence/review is required before admission. Keep client material within its authorized domain; no automatic global promotion exists.
+Evidence excerpts are limited to 8 KiB each and 64 KiB per attempt; oversized submissions are rejected, not truncated. Credential-looking content is rejected before writes; redact sensitive material before submitting. Heuristic credential checks do not catch every kind of confidential data.
 
-## Evaluation and subsequent releases
+Default `export` includes readable notes, suspended learned runbooks among them, without learning metadata or evidence; importing such a bundle adds the approved text as an ordinary runbook. `export --include-learning` includes procedure history and evidence. Its `import-plan` turns each procedure into a draft candidate carrying only that procedure's own evidence chain as inert provenance: imported evidence confers no local verification, and new local evidence and review are required before admission. Keep client material within its authorized domain; nothing is promoted to the global domain without review.
 
-Run `scripts/eval_learning.py --self-test` for isolated maintenance scenarios and verifier checks. To evaluate a real agent, provide its argv as `--command-json '[...]'`; each trial receives JSON on stdin with its task, isolated store, allowed repair interface and reporting contract. It must return JSON with outcome, reported usage and optional token counts. The harness compares baseline, manual-runbook and learned-runbook conditions on separate stores and reports checked success, time and reported token costs. It never launches a model by default. The scripted self-test validates fixtures, not learning efficacy.
+## Evaluation
 
-Before enabling broader automation, compare repeatable held-out tasks against equally curated manual runbooks and inspect misapplication/review effort. Later releases cover purpose-scoped style profiles, opt-in edit-derived preference proposals, consolidation/source-refresh review and passive harness adapters. None of those is silently enabled by this pilot.
+`scripts/eval_learning.py --self-test` runs isolated maintenance scenarios (stale index, stale plan, interrupted operation, restore) through baseline, manual-runbook and learned-runbook conditions and checks the verifiers. It validates fixtures, not learning efficacy. In the learned condition the procedure is built from what a separate training run did and checked; the manual condition gets a hand-written recipe.
+
+To evaluate a real agent, pass its argv as `--command-json '[...]'` (and `--timeout SECONDS`, default 600). `scripts/agents/run_agent.py -- AGENT ARGS {prompt}` adapts command-line agents such as `claude -p` and `codex exec` to the trial contract: it builds the prompt from the task and returns the agent's final JSON report with any token counts it reports. The harness compares conditions on separate held-out stores and reports checked success, time and reported token costs. It never launches a model by default, and agent-reported usage is not independently verified. Compare repeatable held-out tasks against equally curated manual runbooks, and inspect misapplications and review effort, before relying on learned procedures more broadly.
+
+Later releases cover purpose-scoped writing preferences, opt-in edit-derived preference proposals, consolidation and source-refresh review, and passive harness adapters. Records already carry a proposal `kind` (currently `procedure`) so those releases extend the same review lifecycle. None of them is enabled silently.
