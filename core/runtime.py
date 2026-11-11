@@ -467,10 +467,16 @@ FILE_HINT_HARNESSES={'claude','codex'}
 MAX_FILE_HINTS=200
 HINT_FILES_PER_CALL=3
 HINT_NOTES_PER_FILE=2
+MAX_HINTED=100
+FOLLOW_BODY_TYPES={'bug','decision'}
+MAX_DOCS=10
+MAX_DOCS_REMINDED=50
 
-def file_hints(paths,state,root,domain,bindings,session=None,trace=None):
+def file_hints(paths,state,root,domain,bindings,session=None,trace=None,follow=None):
     """(context naming notes about files about to be changed, paths looked up). Each file is looked up
-    once per session; a missing or stale index gives no hint rather than slowing the tool call."""
+    once per session; a missing or stale index gives no hint rather than slowing the tool call. follow, when a
+    dict, receives path -> refs of the notes a later update should be asked of: those listing the file, and
+    bug or decision notes naming it in the body."""
     try:
         from .search import file_notes
         seen=set(state.get('file_hints',[]));wanted=[p for p in paths if p not in seen][:HINT_FILES_PER_CALL]
@@ -480,6 +486,9 @@ def file_hints(paths,state,root,domain,bindings,session=None,trace=None):
             if hits:
                 blocks.append(f'Living Memory notes about {path}:\n'+'\n'.join(hit_line(h) for h in hits))
                 refs+=[f"{h['domain']}:{h['id']}" for h in hits]
+                if isinstance(follow,dict):
+                    owed=[f"{h['domain']}:{h['id']}" for h in hits if h.get('match')=='files' or h.get('type') in FOLLOW_BODY_TYPES]
+                    if owed:follow[path]=owed
         if refs:
             from .usage import record
             record(root,'inject',list(dict.fromkeys(refs)),session,'file-hint')
@@ -489,6 +498,38 @@ def file_hints(paths,state,root,domain,bindings,session=None,trace=None):
     except Exception as exc:
         from .logs import swallowed
         swallowed('runtime.file_hints',exc,root);return None,[]
+
+MAX_COMMAND_SEEN=200
+MAX_COMMAND_HINTED=100
+HINT_NOTES_PER_COMMAND=2
+
+def command_hints(text,state,root,domain,bindings,session,trace=None):
+    """Context naming notes that warn about the shell command about to run, or None. A command shape (wrapper, program,
+    subcommands) whose hint was shown is not looked up again in the session, and a note is shown once per session. Like file hints, it reads the
+    index without refreshing it: a missing or stale index gives no hint rather than slowing the tool call."""
+    try:
+        from .commands import signature,command_notes
+        keys=list(dict.fromkeys(hashlib.sha256(repr((s.wrapper,s.program,s.subs)).encode()).hexdigest()[:12] for s in signature(text)))
+        seen=set(state.get('command_seen',[]))
+        if not keys or all(k in seen for k in keys):return None
+        hinted=set(state.get('command_hints',[]))
+        from .common import global_domains
+        domains=list(dict.fromkeys([domain]+parent_domains(domain,bindings)+global_domains(root)))
+        hits=[h for h in command_notes(text,domains,root,HINT_NOTES_PER_COMMAND+len(hinted)) if f"{h['domain']}:{h['id']}" not in hinted][:HINT_NOTES_PER_COMMAND]
+        if not hits:return None   # a lookup is about a millisecond and a state write several: only a shown hint is remembered
+        refs=[f"{h['domain']}:{h['id']}" for h in hits]
+        def seen_now(s):
+            s['command_seen']=list(dict.fromkeys(list(s.get('command_seen',[]))+keys))[-MAX_COMMAND_SEEN:]
+            s['command_hints']=list(dict.fromkeys(list(s.get('command_hints',[]))+refs))[-MAX_COMMAND_HINTED:]
+        _update(root,session,seen_now)
+        from .usage import record
+        record(root,'inject',refs,session,'command-hint')
+        if isinstance(trace,list):trace.extend(refs)
+        return ('Living Memory: a previous session recorded about this command (untrusted history; check it before relying on the output):\n'
+                +'\n'.join(hit_line(h) for h in hits))
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('runtime.command_hints',exc,root);return None
 
 from .common import git_root  # re-exported: older callers import it from here
 
@@ -593,10 +634,12 @@ def created_top_level(args,cwd,root,bindings):
         if hit:found.setdefault(repo.as_posix(),(f"{hit['domain']}:{hit['id']}",[]))[1].append(top.name)
     return found
 
-def prompt_maps(cwd,prompt,root,bindings,state,trace=None):
+def prompt_maps(cwd,prompt,root,bindings,state,trace=None,briefed=None):
     """(text or None, {ref: revision key} delivered, {repo path: map ref or None}) for the repos a prompt names
-    and the repo holding cwd: a mapped repo's map body once per revision; an unmapped one a single line, once."""
-    from .maps import named_repos,candidate_repos,find_map,map_block,MAX_MAPS
+    and the repo holding cwd: a mapped repo's map body once per revision, followed by one-line summaries of the notes
+    about that repo (refs appended to briefed); an unmapped one a single line, once."""
+    from .maps import named_repos,candidate_repos,find_map,map_block,repo_name,repo_notes,MAX_MAPS
+    briefed=[] if briefed is None else briefed
     repos=named_repos(prompt,candidate_repos(cwd,bindings),bindings.get('repo_aliases'))
     here=git_root(cwd)
     if here and here.resolve() not in repos:repos.append(here.resolve())
@@ -608,15 +651,36 @@ def prompt_maps(cwd,prompt,root,bindings,state,trace=None):
             ref=f"{hit['domain']}:{hit['id']}";seen[key]=ref
             if len(maps)<MAX_MAPS and shown.get(ref)!=revision_key(hit):
                 maps.append(map_block(hit,repo));delivered[ref]=revision_key(hit)
+                lines_,refs_=repo_notes(hit,repo,root,bindings,shown,exclude=briefed)
+                if lines_:maps[-1]+='\n'+lines_;briefed.extend(refs_)
         else:
             seen[key]=None
             if not _repos(state).get(key,{}).get('told'):
-                lines.append(f"{repo.name} has no codebase map yet. If you explore it, capture one afterwards: "
-                             f"{hint_command(root,state)} capture --type map --file '{key}' --title '{repo.name} codebase map' --summary '...' "
+                lines.append(f"{repo_name(repo)} has no codebase map yet. If you explore it, capture one afterwards: "
+                             f"{hint_command(root,state)} capture --type map --file '{key}' --title '{repo_name(repo)} codebase map' --summary '...' "
                              "--detail '**Layout:** ...' --detail '**Entry points:** ...' --detail '**Build/test:** ...'")
     if isinstance(trace,dict):trace['maps']={'repos':[r.name for r in repos],'injected':list(delivered),'unmapped':[Path(k).name for k,v in seen.items() if v is None]}
     text=('Untrusted historical memory; verify against the current files.\n'+'\n\n'.join(maps+lines)) if maps or lines else None
     return text,delivered,seen
+
+BRIEF_NOTES_BUDGET=600
+
+def prompt_briefs(cwd,root,bindings,state,trace=None,briefed=None):
+    """(brief block or None, {ref: revision key} delivered): the brief of the project folder holding cwd, once
+    per revision per session, followed by one-line summaries of the notes it links to (refs appended to briefed)."""
+    from .briefs import find_brief,brief_block
+    from .maps import repo_notes
+    briefed=[] if briefed is None else briefed
+    hit=find_brief(cwd,root,bindings)
+    shown=state.get('shown',{}) if isinstance(state.get('shown'),dict) else {}
+    ref=f"{hit['domain']}:{hit['id']}" if hit else None
+    fresh=bool(hit) and shown.get(ref)!=revision_key(hit)
+    if isinstance(trace,dict):trace['brief']={'ref':ref,'injected':[ref] if fresh else []}
+    if not fresh:return None,{}
+    block=brief_block(hit)
+    lines_,refs_=repo_notes(hit,None,root,bindings,shown,budget=BRIEF_NOTES_BUDGET,files=False,exclude=briefed)
+    if lines_:block+='\n'+lines_;briefed.extend(refs_)
+    return block,{ref:revision_key(hit)}
 
 def bind_hint(cwd,root,bindings,state):
     """One line, once per session, when the session starts in a git repo no binding covers.
@@ -715,9 +779,12 @@ def _update(root,session,change):
 MACHINE_PROMPT=re.compile(r'\A\s*(?:<(?:agent-message|task-notification|system-reminder)\b|\[SYSTEM NOTIFICATION)')
 HIT_SNIPPET=220
 # Conversation is where preferences, corrections and decisions are stated, and those turns often edit no files.
-# Deterministic and conservative. A match adds one line to that prompt's context; only an explicit request to
-# remember (BLOCKING_SIGNALS) can also hold the turn open at Stop, so that is the kind matched most narrowly.
-QUOTED=re.compile(r'```.*?(?:```|\Z)|<(pasted_content|system-reminder|agent-message|task-notification)\b.*?(?:</\1>|\Z)|^[ \t]*>[^\r\n]*$',re.S|re.M|re.I)
+# Deterministic and conservative. A match adds one line to that prompt's context; a request to remember, a decision
+# or a directive (BLOCKING_SIGNALS) can also hold the turn open at Stop, so those are matched most narrowly.
+# Fenced code and machine tags are never read. Pasted blocks and blockquotes (a memo, a ticket) are read only for a directive.
+IGNORED=re.compile(r'```.*?(?:```|\Z)|<(system-reminder|agent-message|task-notification)\b.*?(?:</\1>|\Z)',re.S|re.I)
+QUOTED=re.compile(r'<pasted_content\b[^>]*>(.*?)(?:</pasted_content>|\Z)|^[ \t]*>[ \t]*([^\r\n]*)$',re.S|re.M|re.I)
+QUOTED_CHARS=2000
 # Statements are judged one at a time. Each pattern's ^ is the start of a statement.
 STATEMENT_BREAK=re.compile(r'(?<=[.!?])\s+|\n+')
 # A remark about this task only is not something to keep: "please don't touch the tests for now".
@@ -730,23 +797,82 @@ SIGNALS=(
     # ("the API should always use HTTPS").
     ('preference',re.compile(r"\b(?:i(?:'d)? prefer|i'?d rather|i (?:hate|don'?t like)|from now on|going forward|in (?:the )?future|please (?:don'?t|do not|never|always)|stop doing|don'?t ever|by default,? use"
                              r"|(?:you should|you must|we) (?:always|never)|i (?:always|never) (?:use|want|like|do))\b|^\s*(?:always|never)\s+\w",re.I)),
-    ('decision',re.compile(r"\b(?:let'?s (?:go with|use)|we(?:'ll| will) (?:go with|use)|we decided|i(?:'ve)? decided|go with option)\b",re.I)),
+    # A bare "must", "approved" or "regulator" describes the task, so only a statement addressed to the team
+    # ("we must never ...") or a decision's own wording counts.
+    ('decision',re.compile(r"\b(?:let'?s (?:go with|use)|we(?:'ll| will) (?:go with|use)|we decided|i(?:'ve)? decided|go with option|we(?:'ve| have)? (?:agreed|chosen|settled on)"
+                           r"|the decision is|effective (?:immediately|today|from|as of)|(?:is|are) (?:not )?(?:allowed|permitted|prohibited)|(?:we|you|the team) must (?:never|not|always|stay|remain))\b|\bdecision:",re.I)),
 )
+# A memo quoted in the prompt states a directive: one strong phrase, or two weaker ones.
+DIRECTIVE_STRONG=re.compile(r"\b(?:decided|decision|directive|policy|effective (?:immediately|today|from|as of)|must never|must not|may not)\b",re.I)
+DIRECTIVE_WEAK=tuple(re.compile(p,re.I) for p in (r"\bmust (?:be|use|stay|remain|always)\b",r"\b(?:replac(?:es|ing)|supersed(?:es|ing)|no longer)\b",
+                                                   r"\b(?:going forward|from now on|in future)\b",r"\b(?:all|every|each) [\w -]{0,40}\b(?:must|shall)\b"))
 SIGNAL_TEXT={'remember':('asked you to remember something','--type TYPE --concern CONCERN'),
              'correction':('corrected you','--type knowledge --concern correction'),
              'preference':('stated a preference','--type preference --concern preference'),
-             'decision':('made a decision','--type decision --concern decision')}
+             'decision':('made a decision','--type decision --concern decision'),
+             'directive':('shared a directive (a memo, ticket or decision record)','--type decision --concern decision --link SOURCE')}
 # Kinds whose missing capture decision still holds the turn open at Stop. The others are raised once, in the
 # prompt's own context, where acting on them costs no extra turn.
-BLOCKING_SIGNALS=frozenset({'remember'})
+BLOCKING_SIGNALS=frozenset({'remember','decision','directive'})
+
+def _statements(text):
+    return [s for s in STATEMENT_BREAK.split(text) if s.strip() and not s.rstrip().endswith('?') and not TRANSIENT.search(s)]
+
+def signal_of(prompt,skip=None):
+    """(kind, the statement that carries it) for the user's own words, else (None, None). Pasted and
+    harness-generated text is ignored, and so are questions ("why does it never use the cache?") and remarks
+    about this task only. Quoted text (a blockquote, a pasted block) yields only a 'directive'. skip, when
+    given, is called with a statement and returns True for one already settled, which then signals nothing."""
+    if not isinstance(prompt,str) or MACHINE_PROMPT.match(prompt):return None,None
+    plain=IGNORED.sub(' ',prompt)
+    statements=[s for s in _statements(QUOTED.sub(' ',plain)) if not (skip and skip(s))]
+    for kind,pattern in SIGNALS:
+        found=next((s for s in statements if pattern.search(s)),None)
+        if found:return kind,found
+    quoted=[s for s in _statements('\n'.join(m[1] or m[2] or '' for m in QUOTED.finditer(plain))[:QUOTED_CHARS]) if not (skip and skip(s))]
+    strong=next((s for s in quoted if DIRECTIVE_STRONG.search(s)),None)
+    if strong:return 'directive',strong
+    weak=[(s,p) for s in quoted for p in DIRECTIVE_WEAK if p.search(s)]
+    if len({p for _,p in weak})>=2:return 'directive',weak[0][0]
+    return None,None
 
 def durable_signal(prompt):
     """The kind of durable statement the user's own words carry ('preference', 'correction', 'decision',
-    'remember'), else None. Pasted, quoted and harness-generated text is ignored, and so are questions
-    ("why does it never use the cache?") and remarks about this task only."""
-    if not isinstance(prompt,str) or MACHINE_PROMPT.match(prompt):return None
-    statements=[s for s in STATEMENT_BREAK.split(QUOTED.sub(' ',prompt)) if s.strip() and not s.rstrip().endswith('?') and not TRANSIENT.search(s)]
-    return next((kind for kind,pattern in SIGNALS if any(pattern.search(s) for s in statements)),None)
+    'remember', or 'directive' from a quoted memo), else None."""
+    return signal_of(prompt)[0]
+
+# Which statements already raised a signal, so a standing header repeated in every brief is not raised again.
+# A non-canonical sidecar per domain, like .last-session.json: salted hashes of the normalized statement only.
+SIGNALS_SEEN='.signals-seen.json'
+MAX_SIGNALS_SEEN=500
+
+def _statement_hash(salt,statement):
+    from .private import _hash,_words
+    return _hash(salt,_words(statement))
+
+def signals_seen(root,domain):
+    """(raised, hashed): raised(statement) is True for a statement settled before; hashed(statement) is its
+    salted hash, which creates the sidecar's salt when there is none."""
+    path=root/'domains'/domain/SIGNALS_SEEN
+    row=read_json(path,{}) or {};row=row if isinstance(row,dict) else {}
+    raised=lambda statement:bool(row.get('salt')) and _statement_hash(row['salt'],statement) in (row.get('seen') or [])
+    def hashed(statement):
+        if not row.get('salt'):
+            import secrets
+            row['salt']=secrets.token_hex(16)
+            try:atomic_write(path,canonical_json(row))
+            except OSError:pass
+        return _statement_hash(row['salt'],statement)
+    return raised,hashed
+
+def settle_signal(root,domain,value):
+    """Remember a statement's hash once its turn is settled (reminded, captured, finalized or closed)."""
+    if not value or not domain:return
+    try:
+        path=root/'domains'/domain/SIGNALS_SEEN;row=read_json(path,{}) or {}
+        seen=[h for h in row.get('seen',[]) if h!=value]+[value]
+        if row.get('salt') and seen!=row.get('seen'):atomic_write(path,canonical_json({**row,'seen':seen[-MAX_SIGNALS_SEEN:]}))
+    except (OSError,ValueError,AttributeError):pass
 
 def signal_nudge(signal,session):
     """The one line a prompt with a durable statement adds to its own context."""
@@ -775,10 +901,13 @@ def _unseen(hit,shown):
     seen=shown.get(ref) if isinstance(shown,dict) else None
     return bool(seen) and seen!=revision_key(hit)
 
-def relevance_gate(query,root,trace=None):
+def relevance_gate(query,root,trace=None,body=True,least=0):
     """The prompt hook's relevance test as a search_domains `keep` filter: enough of the query's informative
     words in a note's title or body, or (with a semantic model) a close match in meaning. trace, when a list,
-    receives one row per candidate: ref, rank, engine, engine score, relevance, similarity and the verdict."""
+    receives one row per candidate: ref, rank, engine, engine score, relevance, similarity and the verdict.
+    body=False ignores body coverage: for a query spread over a whole long prompt, words found in a note's body
+    match by chance ("each", "one", "change"), so only its title (or its meaning) can vouch for the note. least is
+    the number of query words body coverage must find: a short piece of a long prompt covers itself too easily."""
     from .search import query_terms,stem
     from .semantic import threshold
     count=len({stem(t) for t in query_terms(query or '')});near=threshold(root)
@@ -789,7 +918,7 @@ def relevance_gate(query,root,trace=None):
             if not informative:gate='dropped:no_informative'   # only words that appear in most notes
             # One-word prompts ("continue", "yes") inject only on a title hit.
             elif informative==1:gate='kept:title' if overlap else 'dropped:one_word_no_title'
-            elif hit.get('coverage',0)>=0.5 and (informative<4 or hit.get('coverage',0)>0.5):gate='kept:coverage'
+            elif body and hit.get('coverage',0)>=0.5 and (informative<4 or hit.get('coverage',0)>0.5) and round(hit.get('coverage',0)*informative)>=least:gate='kept:coverage'
             elif overlap>=2 or (title and overlap/title>=0.5):gate='kept:title'
             # Same meaning in other words ("laid out" for "layout"): only a close semantic match counts.
             elif near is not None and hit.get('similarity',0)>=near:gate='kept:semantic'
@@ -802,6 +931,36 @@ def relevance_gate(query,root,trace=None):
                               'relevance':hit.get('relevance'),'similarity':hit.get('similarity'),'gate':gate})
         return kept
     return relevant
+
+# A task brief is mostly boilerplate: past this many characters a prompt is searched in pieces, so the assignment
+# in the middle is not lost to the team header and the closing checklist.
+LONG_PROMPT=600
+LONG_SEGMENTS=4
+LONG_LEAST=3
+HEADING=re.compile(r'^\s{0,3}#{1,6}\s')
+
+def prompt_segments(text):
+    """The prompt's paragraphs: split at markdown headings (which open a segment) and blank lines."""
+    segments=[[]]
+    for line in text.splitlines():
+        if not line.strip():segments.append([])
+        elif HEADING.match(line) and segments[-1]:segments.append([line])
+        else:segments[-1].append(line)
+    return ['\n'.join(s) for s in segments if s]
+
+def long_queries(prompt,vocab):
+    """[(query, body)] for a long prompt: the last segment (the ask usually comes last) and the three richest others by
+    summed IDF, then the whole prompt's most informative terms. Each query is at most 16 terms the notes' own vocabulary
+    selected. A segment is judged by the usual gate; the whole-prompt query (body False) only by titles. Empty and
+    repeated queries are dropped."""
+    from .search import idf_terms,idf_sum
+    segments=prompt_segments(prompt);segments=segments if len(segments)>1 else []
+    rest=sorted(segments[:-1],key=lambda s:-idf_sum(s,vocab))[:LONG_SEGMENTS-1]
+    queries={}
+    for text,body in [(s,True) for s in ([segments[-1]]+rest if segments else [])]+[(prompt,False)]:
+        query=' '.join(idf_terms(text,vocab))
+        if query and query not in queries:queries[query]=body
+    return list(queries.items())
 
 def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=None,trace=None):
     """Relevant memory for a prompt: (text or None, ids injected, overview shown). A note shown earlier
@@ -820,7 +979,20 @@ def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=N
     domains=list(dict.fromkeys([active]+parents+global_domains))
     # Global notes hold in every project, so they rank like the project's own; a parent's count half.
     weights={**{g:2 for g in global_domains},active:2,**{p:1 for p in parents if p!=active}}
-    found=search_domains(prompt,domains,10,root,weights=weights,keep=relevant)
+    queries=None
+    if len(prompt)>LONG_PROMPT:
+        from .search import vocabulary,terms
+        vocab=vocabulary(domains,root,terms(prompt))
+        queries=long_queries(prompt,vocab) if vocab[0] else None
+    if queries:
+        # Each query has its own relevance gate; a note any query finds counts once, at its best rank.
+        trace['queries']=len(queries);best={}
+        for text,body in queries:
+            for h in search_domains(text,domains,10,root,weights=weights,keep=relevance_gate(text,root,trace['candidates'],body,LONG_LEAST)):
+                key=(h['domain'],h['id'])
+                if key not in best or h['score']>best[key]['score']:best[key]=h
+        found=sorted(best.values(),key=lambda h:(-h['score'],h['domain'],h['id']))
+    else:found=search_domains(prompt,domains,10,root,weights=weights,keep=relevant)
     if not found and scope.get('foreign_domains'):found=search_domains(prompt,scope['foreign_domains'],10,root,keep=relevant)
     seen=set(shown);ref=lambda h:f"{h['domain']}:{h['id']}"
     unseen=[h for h in found if _unseen(h,shown)];hits=unseen[:3]
@@ -925,12 +1097,16 @@ def _process(harness,event,payload,root=None,info=None):
             # Plan mode cannot save anything, so a statement there is not a reminder's business.
             planning=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()=='plan'
             text=payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or payload.get('transformedPrompt') or ''
-            signal=None if planning else durable_signal(text)
+            raised,hashed=signals_seen(root,domain) if domain else (None,None)
+            signal,source=(None,None) if planning else signal_of(text,raised)
+            # Only the kind and a salted hash of the statement are kept, never the prompt text; the hash settles at Stop.
+            shash=hashed(source) if signal and hashed else None
             from . import private
             detail.update(signal=signal,private_spans=len(private.spans(text)) if isinstance(text,str) and not MACHINE_PROMPT.match(text) else 0)
             def opened(s):
+                if not s.get('open_turns'):s['turn_started']=time.time()  # the turn's first prompt: shell edits are found by mtime
                 s['turn']=turn;s['open_turns']=(list(s.get('open_turns',[]))+[turn])[-20:]
-                if signal:s['signal']=signal  # only the kind is kept, never the prompt text
+                if signal:s['signal']=signal;s['signal_hash']=shash
                 # <private> spans: salted shingle hashes only, so a capture that copies one can be refused.
                 if isinstance(text,str) and not MACHINE_PROMPT.match(text) and private.remember(s,text):s['private_turn']=turn
                 if transcript:s['transcript']=transcript
@@ -964,6 +1140,13 @@ def _process(harness,event,payload,root=None,info=None):
         # A session started inside a mapped repo sees a pointer to its map; the body comes when a prompt needs it.
         pointer=session_map(cwd,root,bindings);detail['map']=bool(pointer)
         if pointer:prefix+=pointer+'\n'
+        # Prompts and tool hints read the index without checking it: bring a stale one (older schema, notes edited outside the scripts) up to date now.
+        try:
+            from .search import refresh_stale
+            detail['reindexed']=refresh_stale(domain,root)
+        except Exception as exc:
+            from .logs import swallowed
+            swallowed('runtime.refresh_stale',exc,root)
         text,shown,indexed=build_context(cwd,root,max(MIN_BUDGET,BUDGET-len(prefix)),session=session,trace=detail)
         detail.update(shown=list(shown),indexed=indexed)
         if session!='unknown':
@@ -986,19 +1169,25 @@ def _process(harness,event,payload,root=None,info=None):
         result['context']=_cap(prefix+(text or ''),HARD_CAP)
     elif event=='user-prompt':
         prompt=payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or payload.get('transformedPrompt') or ''
-        delivered={};maps_text,map_refs,mapped=None,{},{}
+        delivered={};maps_text,map_refs,mapped=None,{},{};brief_text,brief_refs=None,{};briefed=[]
         if isinstance(prompt,str) and not MACHINE_PROMPT.match(prompt):
-            try:maps_text,map_refs,mapped=prompt_maps(cwd,prompt,root,bindings,state,detail)
+            try:maps_text,map_refs,mapped=prompt_maps(cwd,prompt,root,bindings,state,detail,briefed)
             except Exception as exc:
                 from .logs import swallowed
                 swallowed('runtime.prompt_maps',exc,root)
-        # A map injected now counts as shown, so the note search below does not repeat it as a hit.
+            try:brief_text,brief_refs=prompt_briefs(cwd,root,bindings,state,detail,briefed)
+            except Exception as exc:
+                from .logs import swallowed
+                swallowed('runtime.prompt_briefs',exc,root)
+        # The project brief leads the orientation: what the project is, then how its repos are organized.
+        if brief_text:maps_text='Untrusted historical memory; verify against the current files.\n'+brief_text+('\n\n'+maps_text.split('\n',1)[1] if maps_text else '')
+        # A map or brief injected now counts as shown, so the note search below does not repeat it as a hit.
         shown_now=state.get('shown',{})
         shown_now=dict(shown_now) if isinstance(shown_now,dict) else dict.fromkeys(shown_now if isinstance(shown_now,list) else [],'')
-        shown_now.update(map_refs)
+        shown_now.update(map_refs);shown_now.update(brief_refs)
         if isinstance(prompt,str):hits,ids,overview=context(cwd,prompt,root,domain,shown_now,state.get('overview_shown',False),delivered,detail)
         else:hits,ids,overview=None,[],False;detail['path']='not_text'
-        delivered.update(map_refs);ids=list(map_refs)+ids
+        delivered.update(map_refs);delivered.update(brief_refs);ids=list(map_refs)+list(brief_refs)+ids
         if mapped:
             def noted(repos):
                 for key,ref in mapped.items():
@@ -1018,10 +1207,14 @@ def _process(harness,event,payload,root=None,info=None):
                 if overview:s['overview_shown']=True
             try:_update(root,session,remember)
             except (OSError,TimeoutError):pass
+        if briefed:
+            from .usage import record
+            detail['briefed']=list(briefed);record(root,'inject',briefed,session,'map-brief')
         if ids:
             from .usage import record
             if map_refs:record(root,'inject',list(map_refs),session,'prompt-map')
-            if ids[len(map_refs):]:record(root,'inject',ids[len(map_refs):],session,'prompt')
+            if brief_refs:record(root,'inject',list(brief_refs),session,'prompt-brief')
+            if ids[len(map_refs)+len(brief_refs):]:record(root,'inject',ids[len(map_refs)+len(brief_refs):],session,'prompt')
         result['context']=f'Living Memory session={session} turn={turn}'+('\n'+maps_text if maps_text else '')+('\n'+hits if hits else '')
         if state.get('recall_prompts') and harness in RECALL_HARNESSES and session!='unknown' and isinstance(prompt,str) and not MACHINE_PROMPT.match(prompt):
             from .recall import auto
@@ -1105,6 +1298,10 @@ def _process(harness,event,payload,root=None,info=None):
             except Exception as exc:
                 from .logs import swallowed
                 swallowed('runtime.explore',exc,root)
+        # What the agent is about to run is looked up even when the command only reads: a note may warn that a build exits 0 and builds nothing.
+        if name in SHELL_TOOLS and text and not subcommand and session!='unknown' and domain and harness in FILE_HINT_HARNESSES and bindings.get('command_hints',True) is not False:
+            detail['command_hints']=[];hint=command_hints(text,state,root,domain,bindings,session,detail['command_hints'])
+            if hint:result['context']='\n'.join(filter(None,[result.get('context'),hint]))
         if not skip and name not in SHELL_TOOLS:
             try:created=created_top_level(args,cwd,root,bindings)
             except Exception as exc:
@@ -1120,11 +1317,20 @@ def _process(harness,event,payload,root=None,info=None):
         if not skip:
             paths=touched_paths(args,payload,cwd,root,domain,bindings,shell=name in SHELL_TOOLS)
             detail['touched']=len(paths);detail['hints']=[]
-            hints,looked=file_hints(paths,state,root,domain,bindings,session,detail['hints']) if harness in FILE_HINT_HARNESSES else (None,[])
-            if hints:result['context']=hints
-            if not state.get('mutating') or set(paths)-set(state.get('touched',[])) or looked:
+            follow={}
+            hints,looked=file_hints(paths,state,root,domain,bindings,session,detail['hints'],follow) if harness in FILE_HINT_HARNESSES else (None,[])
+            if hints:result['context']='\n'.join(filter(None,[result.get('context'),hints]))
+            # Decision documents (ADRs, changelogs, boards) changed this turn; Stop asks for a note about them.
+            from .triggers import decision_docs
+            docs=decision_docs(paths,bindings);detail['docs']=len(docs)
+            if not state.get('mutating') or set(paths)-set(state.get('touched',[])) or looked or (name in SHELL_TOOLS and not state.get('shell')):
                 def touch(s):
                     s['mutating']=True
+                    if name in SHELL_TOOLS:s['shell']=True   # shell edits often use relative paths no hook can see; Stop asks git
+                    if docs:s['docs']=list(dict.fromkeys(list(s.get('docs',[]))+docs))[:MAX_DOCS]
+                    if follow:
+                        hinted={p:r for p,r in (s.get('hinted') or {}).items() if p not in follow};hinted.update(follow)
+                        s['hinted']=dict(list(hinted.items())[-MAX_HINTED:])
                     s['touched']=list(dict.fromkeys(list(s.get('touched',[]))+paths))[:MAX_TOUCHED]
                     s['touched_session']=list(dict.fromkeys(list(s.get('touched_session',[]))+paths))[-MAX_TOUCHED_SESSION:]
                     if looked:s['file_hints']=list(dict.fromkeys(list(s.get('file_hints',[]))+looked))[-MAX_FILE_HINTS:]
@@ -1134,59 +1340,61 @@ def _process(harness,event,payload,root=None,info=None):
         _record_last_session(root,domain,session,state)
         turns=list(dict.fromkeys(list(state.get('open_turns',[]))+([turn] if turn else [])))
         def close(s):
-            s.pop('open_turns',None);s.pop('mutating',None);s.pop('signal',None);s.pop('touched',None)
+            for key in TURN_STATE:s.pop(key,None)
         signal=state.get('signal');detail.update(turns=len(turns),mutating=bool(state.get('mutating')),signal=signal)
-        # Plan mode cannot save, so a repo explored there is reminded about at the next Stop outside plan mode.
+        # The turn ends here whatever happens next, so its statement is settled: a header repeated in every brief raises once.
+        settle_signal(root,domain,state.get('signal_hash'))
+        # Plan mode cannot save anything, so a repo explored there is reminded about at the next Stop outside plan mode.
         planning=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()=='plan'
-        try:pending=[] if planning else explore_pending(root,bindings,state)
+        try:pending=stop_pending(root,bindings,state,session,turns,domain,cwd,planning)
         except Exception as exc:
             from .logs import swallowed
-            swallowed('runtime.explore_pending',exc,root);pending=[]
-        detail['explore_pending']=[(Path(k).name,kind) for k,kind,_ in pending]
+            swallowed('runtime.stop_pending',exc,root);pending=[]
+        detail['explore_pending']=[(Path(data[0]).name,kind) for kind,data in pending if kind in MAP_KINDS]
+        detail['pending']=[kind for kind,_ in pending]
         # File changes alone end the turn quietly: the agent already decides silently at the end of each turn,
-        # and Claude Code prints every Stop continuation in the user's terminal. A preference, correction or
-        # decision was raised in its own prompt's context, so it ends quietly too. Two things still hold the turn:
-        # an explicit request to remember that got no capture decision, and a repo explored without a codebase
-        # map (or grown at its top level), because rebuilding that orientation costs a whole exploration.
-        asked=signal if signal in BLOCKING_SIGNALS else None
-        quiet=('receipt' if any(capture_status(session,t,root) for t in turns) else 'no_change' if not (state.get('mutating') or signal or pending)
-               else 'no_turns' if not turns else None if asked or pending else 'nudged' if signal in SIGNAL_TEXT else 'files_only')
+        # and Claude Code prints every Stop continuation in the user's terminal. A preference or correction was
+        # raised in its own prompt's context, so it ends quietly too. What still holds the turn is knowledge that
+        # is easily lost: an explicit request to remember, a decision or directive the user stated, a decision
+        # document edited, an edit to a file a note is about, and a repo explored without a codebase map (or
+        # grown at its top level), because rebuilding that orientation costs a whole exploration.
+        quiet=('receipt' if not pending and any(capture_status(session,t,root) for t in turns) else 'no_change' if not (state.get('mutating') or signal or pending)
+               else 'no_turns' if not turns else None if pending else 'nudged' if signal in SIGNAL_TEXT else 'files_only')
         if quiet:
             detail['reason']=quiet;_update(root,session,close);return {}
         latest=turns[-1];reminder=root/'.turns'/(turn_key(session,latest)+'.reminded')
         if payload.get('stop_hook_active') or payload.get('stopHookActive') or reminder.exists():
             detail['reason']='stop_active' if payload.get('stop_hook_active') or payload.get('stopHookActive') else 'already_reminded';_update(root,session,close);return {}
         atomic_write(reminder,'reminded\n')
+        used=[];text=stop_text(pending,session,used)
         def reminded(s):
             # The reminder settles these turns: a later turn is not reminded again about this one's statement
             # or changes, even when the harness sends no stop_hook_active follow-up. The turn's touched files
             # stay for a capture that answers the reminder, and `reminded` lets that capture count as a signal capture.
-            s.pop('open_turns',None);s.pop('mutating',None);s.pop('signal',None)
+            for key in TURN_STATE:
+                if key!='touched':s.pop(key,None)
             s['reminded']={'turn':latest,'signal':signal}
+            # Each document and each note is asked about once per session.
+            s['docs_reminded']=list(dict.fromkeys(list(s.get('docs_reminded',[]))+[d['path'] for k,d in used if k=='doc']))[-MAX_DOCS_REMINDED:]
+            s['briefed']=list(dict.fromkeys(list(s.get('briefed',[]))+[k for k,d in used if k in BRIEF_KINDS]))
+            s['followed']=list(dict.fromkeys(list(s.get('followed',[]))+[d['ref'] for k,d in used if k=='follow']+[n['ref'] for k,d in used if k=='doc' for n in d['notes']]))[-MAX_HINTED:]
         _update(root,session,reminded)
-        if pending:
+        maps=[(data[0],kind) for kind,data in used if kind in MAP_KINDS]
+        if maps:
             def settled(repos):
                 # One map reminder per repo per session; the new top-level paths it named are settled too.
-                for key,kind,_ in pending:
+                for key,kind in maps:
                     rec=dict(repos.pop(key,{}))
                     if kind=='unmapped':rec['reminded']=True
                     else:rec.pop('created',None)
                     repos[key]=rec
             _track_repos(root,session,settled)
         from .usage import record
-        kind=asked or ('explored' if any(k=='unmapped' for _,k,_ in pending) else 'grown')
+        lead=(used or pending)[0][0]
+        kind=lead if lead in STOP_KINDS else 'explored' if any(k=='unmapped' for k,_ in used) else 'grown'
         detail['reason']='reminded:'+kind
         record(root,'reminder',session=session,kind=kind)
-        # Short on purpose: Claude Code shows it in the terminal. CMD is defined by the session context, and
-        # --turn defaults to the session's latest prompt, which is this one.
-        maps=' '.join(map_sentence(key,k,data,session) for key,k,data in pending)
-        finalize=f"otherwise CMD capture-finalize --session {session}."
-        if asked:
-            said,hint=SIGNAL_TEXT[asked]
-            result['continue_reason']=(f"Living Memory: the user {said}{' (files changed too)' if state.get('mutating') else ''}. "
-                                       f"Durable: update its note or CMD capture --session {session} {hint} --title '...' --summary '...'; "
-                                       +finalize+(' Also: '+maps if maps else ''))
-        else:result['continue_reason']=f"Living Memory: {maps} {finalize[0].upper()+finalize[1:]}"
+        result['continue_reason']=text
     return result
 
 def explore_pending(root,bindings,state):
@@ -1203,7 +1411,8 @@ def explore_pending(root,bindings,state):
 
 def map_sentence(key,kind,data,session):
     from .notes import short_ref
-    name=Path(key).name
+    from .maps import repo_name
+    name=repo_name(key)
     if kind=='unmapped':
         return (f"this turn explored {name}, which has no codebase map. If that would spare a future session re-exploring it: "
                 f"CMD capture --session {session} --type map --file '{key}' --title '{name} codebase map' --summary '...' "
@@ -1211,6 +1420,182 @@ def map_sentence(key,kind,data,session):
     ref,names=data;short=short_ref(*ref.split(':',1))
     return (f"new top-level paths in {name} ({', '.join(names)}): if they change its layout, update map {short} "
             f"(CMD read {short}, then CMD update {short} --session {session} --set-detail '**Layout:** ...' for each bullet that changed).")
+
+# Per-turn state a Stop clears (reminded keeps `touched` for a capture that answers it).
+TURN_STATE=('open_turns','mutating','signal','signal_hash','touched','docs','shell','turn_started')
+MAP_KINDS=('unmapped','grown')
+BRIEF_KINDS=('unbriefed','brief')
+# Kinds that name their own reminder in the usage diary; the map kinds report as 'explored' or 'grown'.
+STOP_KINDS=frozenset(BLOCKING_SIGNALS|{'doc','follow'}|set(BRIEF_KINDS))
+STOP_TEXT_CAP=700
+STOP_DOCS=2
+STOP_NOTES=2
+BOILERPLATE_HEADINGS={'context','decision','decisions','consequences','status','background','summary','overview','alternatives','options','notes','rationale','changelog','unreleased'}
+
+def stop_pending(root,bindings,state,session,turns,domain=None,cwd=None,planning=False):
+    """[(kind, data)] the Stop reminder may raise, most important first. Kinds: remember, decision, directive (the
+    user's own statement); doc (a decision document changed this turn); follow (a file a note is about was edited);
+    unbriefed, brief (the project has no brief, or a decision this turn may have outdated it); unmapped, grown (a
+    repo explored without a map, or grown at its top level)."""
+    pending=[];signal=state.get('signal')
+    # A receipt settles the turn, so only the brief (which a captured decision may have outdated) is still asked about.
+    receipted=any(capture_status(session,t,root) for t in turns)
+    if signal in BLOCKING_SIGNALS and not receipted:pending.append((signal,{'files':bool(state.get('mutating'))}))
+    if state.get('mutating') and domain and not receipted:
+        for name,find in (('doc',lambda:doc_pending(root,bindings,state,domain,cwd)),('follow',lambda:follow_pending(root,state))):
+            try:found=find()
+            except Exception as exc:
+                from .logs import swallowed
+                swallowed('runtime.'+name+'_pending',exc,root);continue
+            # A note a document reminder already offers to update is not asked about a second time.
+            named={n['ref'] for kind,data in pending if kind=='doc' for n in data['notes']}
+            pending+=[(kind,data) for kind,data in found if not (kind=='follow' and data['ref'] in named)]
+    if domain and cwd and not planning:
+        try:pending+=brief_pending(root,bindings,state,session,turns,domain,cwd,pending,receipted)
+        except Exception as exc:
+            from .logs import swallowed
+            swallowed('runtime.brief_pending',exc,root)
+    if not planning and not receipted:pending+=[(kind,(key,data)) for key,kind,data in explore_pending(root,bindings,state)]
+    return pending
+
+def brief_pending(root,bindings,state,session,turns,domain,cwd,pending,receipted=False):
+    """[('unbriefed', {name, dir})] when the project has no brief and the turn did something worth briefing (a
+    decision document, a decision or directive, or any change in a domain with MIN_NOTES notes); [('brief', {short})]
+    when a decision was made or recorded this turn (a decision document, a decision or directive, a decision note
+    saved) and the brief was not updated. Each once per session. A turn with a receipt already made its capture
+    decision, so it is asked about an outdated brief (a decision note was saved) but not about a missing one."""
+    from .briefs import find_brief,project_dir,project_key,active_count,MIN_NOTES
+    from .maps import repo_name
+    from .notes import short_ref
+    from .search import active_notes
+    asked=set(state.get('briefed',[]));signal=state.get('signal')
+    if set(BRIEF_KINDS)<=asked:return []
+    docs=bool(state.get('docs')) or any(kind=='doc' for kind,_ in pending)
+    saved=[r for t in turns for r in (capture_status(root=root,session=session,turn=t) or {}).get('notes',[])]
+    hit=find_brief(cwd,root,bindings)
+    if hit:
+        ref=f"{hit['domain']}:{hit['id']}"
+        decided=docs or signal in {'decision','directive'} or any(kind=='decision' for _,kind in active_notes(saved,root).values())
+        if 'brief' in asked or not decided or ref in saved:return []
+        return [('brief',{'short':short_ref(hit['domain'],hit['id']),'title':hit['title']})]
+    if 'unbriefed' in asked or receipted:return []
+    if docs or signal in BLOCKING_SIGNALS or (state.get('mutating') and active_count(domain,root,MIN_NOTES)>=MIN_NOTES):
+        folder=project_dir(cwd,bindings);return [('unbriefed',{'dir':project_key(folder,bindings),'name':repo_name(folder)})]
+    return []
+
+def _doc_file(shown,prefixes):
+    """The file a path shown to notes names, else None."""
+    for base in prefixes:
+        if (base/shown).is_file():return base/shown
+    p=Path(shown);return p if p.is_absolute() and p.is_file() else None
+
+def doc_query(path,file):
+    """Search words for a document: its H1 and H2 headings (the first 8 KB), else its file name."""
+    heads=[]
+    try:text=file.read_bytes()[:8192].decode('utf-8','replace') if file else ''
+    except OSError:text=''
+    for match in re.finditer(r'(?m)^#{1,2}[ \t]+(.+?)[ \t#]*$',text):
+        if match[1].strip().casefold() not in BOILERPLATE_HEADINGS:heads.append(match[1].strip())
+    return (' '.join(heads) or re.sub(r'[-_.]+',' ',Path(path).stem))[:300]
+
+def doc_notes(root,bindings,domain,path,file):
+    """Notes a changed document may update: those listing or naming its path, then those matching its headings."""
+    from .search import file_notes,search_domains
+    from .notes import short_ref
+    domains=[domain]+parent_domains(domain,bindings)
+    hits=file_notes(path,domains,root,2,ensure_fresh=False)
+    query=doc_query(path,file)
+    if query:
+        try:hits+=search_domains(query,domains,2,root,keep=relevance_gate(query,root))
+        except (OSError,ValueError):pass
+    from .session_start import _title
+    found={}
+    for h in hits:found.setdefault(f"{h['domain']}:{h['id']}",{'ref':f"{h['domain']}:{h['id']}",'short':short_ref(h['domain'],h['id']),'title':_title(h['title'])})
+    return list(found.values())[:STOP_NOTES]
+
+def doc_pending(root,bindings,state,domain,cwd):
+    """[('doc', {path, notes})] for decision documents changed this turn that no reminder has covered yet: the
+    paths PreToolUse recorded, and, after shell edits (whose relative paths no hook can see), the files git
+    reports changed since the turn began."""
+    from .common import domain_prefixes,display_path
+    from .triggers import decision_docs,changed_since
+    prefixes=domain_prefixes(domain,bindings);shown=list(state.get('docs',[]));files={}
+    if state.get('shell') and state.get('turn_started') and cwd:
+        here=git_root(cwd)
+        repos=list(dict.fromkeys(([here] if here else [])+[Path(k) for k in _repos(state)]))[:3]
+        for repo in repos:
+            for path in changed_since(repo,state['turn_started']):
+                try:p=path.resolve()
+                except OSError:continue
+                if p.is_relative_to(root) or not any(p.is_relative_to(x) for x in prefixes):continue
+                name=display_path(p,prefixes)
+                if name:files[name]=p;shown.append(name)
+    done=set(state.get('docs_reminded',[]))
+    docs=[d for d in decision_docs(shown,bindings) if d not in done][:STOP_DOCS]
+    return [('doc',{'path':d,'notes':doc_notes(root,bindings,domain,d,files.get(d) or _doc_file(d,prefixes))}) for d in docs]
+
+def follow_pending(root,state):
+    """[('follow', {ref, short, title, type, path})]: notes a hint named for a file that was edited this turn and
+    have not been updated, confirmed or asked about in this session."""
+    from .search import active_notes
+    from .notes import short_ref
+    from .session_start import _title
+    hinted=state.get('hinted') if isinstance(state.get('hinted'),dict) else {}
+    skip=set(state.get('saved',[]))|set(state.get('followed',[]));wanted={}
+    for path in state.get('touched',[]):
+        for ref in hinted.get(path,[]):
+            if ref not in skip:wanted.setdefault(ref,path)
+    active=active_notes(list(wanted)[:STOP_NOTES+1],root)
+    return [('follow',{'ref':ref,'short':short_ref(*ref.split(':',1)),'title':_title(active[ref][0]),'type':active[ref][1],'path':wanted[ref]}) for ref in wanted if ref in active]
+
+def _stop_part(kind,data,session):
+    if kind in BLOCKING_SIGNALS:
+        said,hint=SIGNAL_TEXT[kind]
+        return (f"The user {said}{' (files changed too)' if data.get('files') else ''}. "
+                f"Durable: update its note or CMD capture --session {session} {hint} --title '...' --summary '...'.")
+    if kind=='doc':
+        text=(f"You changed {data['path']}. Record its load-bearing decision as a concise note pointing to it "
+              f"(CMD capture --session {session} --type decision --title '...' --summary '...' --link '{data['path']}')")
+        named=data['notes']
+        if named:text+=(', or update the note it changes: '+'; '.join(f"{n['short']} {n['title']}" for n in named)
+                        +f" (CMD update {named[0]['short']} --session {session} --set-detail '**Label:** ...')")
+        return text+'.'
+    if kind=='follow':
+        s=data['short']
+        text=(f"You edited {data['path']}, which note {s} {data['title']} covers. Still true: CMD confirm {s} --session {session}; "
+              f"changed: CMD update {s} --session {session} --set-detail '**Label:** ...'.")
+        if data.get('type')=='bug':text+=f" If this fixed it: CMD update {s} --session {session} --set-detail '**Fix:** ...' then CMD resolve {s}."
+        return text
+    if kind=='unbriefed':
+        return (f"{data['name']} has no project brief (goals, owners, phase, key decisions): "
+                f"CMD capture --session {session} --type brief --file '{data['dir']}' --title '{data['name']} project brief' --summary '...' "
+                "--detail '**Goals and scope:** ...' (and Team and ownership, Current phase, Key decisions).")
+    if kind=='brief':
+        return (f"a decision was made or recorded this turn: if project brief {data['short']} no longer matches it, "
+                f"CMD update {data['short']} --session {session} --set-detail '**Key decisions:** ...' (or Team and ownership, Current phase, status and blockers).")
+    return map_sentence(data[0],kind,data[1],session)
+
+def stop_text(pending,session,used=None):
+    """The Stop continuation for what stop_pending found, about STOP_TEXT_CAP characters: the first item always,
+    later ones while they fit, at most STOP_DOCS documents and STOP_NOTES notes named. Short refs and exact
+    commands, closing with how to say nothing is durable. used, when a list, receives the items the text covers."""
+    parts=[];docs=notes=0;closing=f" Nothing durable: CMD capture-finalize --session {session}."
+    for kind,data in pending:
+        if kind=='doc':
+            if docs>=STOP_DOCS:continue
+            data={**data,'notes':data['notes'][:max(0,STOP_NOTES-notes)]}
+        if kind=='follow' and notes>=STOP_NOTES:continue
+        fits=lambda text:not parts or len('Living Memory: '+' '.join(parts+[text]))+len(closing)<=STOP_TEXT_CAP
+        part=_stop_part(kind,data,session)
+        if kind in MAP_KINDS+BRIEF_KINDS and parts:part='Also: '+part
+        # A document that does not fit with its notes is still asked about, with fewer of them.
+        while not fits(part) and kind=='doc' and data['notes']:data={**data,'notes':data['notes'][:-1]};part=_stop_part(kind,data,session)
+        if not fits(part):continue
+        parts.append(part)
+        if kind=='doc':docs+=1;notes+=len(data['notes'])
+        if kind=='follow':notes+=1
+        if isinstance(used,list):used.append((kind,data))
+    return 'Living Memory: '+' '.join(parts)+closing
 
 def session_map(cwd,root,bindings):
     """A pointer to the map of the repo holding cwd, else None; never fails the hook."""

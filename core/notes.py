@@ -4,12 +4,12 @@ import argparse,json,re,uuid
 from datetime import date
 from pathlib import Path
 from .common import memory_root,safe_domain,canonical_domain
-from .repository import inventory,parse,serialize,validate,read_json,transaction,reconcile,store_lock,now,digest,clean_files
-from .note_types import prefix_for,normalize,effective_type,default_review_by
+from .repository import inventory,parse,serialize,validate,read_json,transaction,reconcile,store_lock,now,digest,clean_files,clean_commands
+from .note_types import prefix_for,normalize,effective_type,default_review_by,KEYED_TYPES
 from .note_format import format_body,without_actions,ACTION_TYPES
 
 # Fields an agent may change directly (journaled and undoable, no plan) with `update`.
-UPDATABLE=('title','body','tags','type','context','review_by','files')
+UPDATABLE=('title','body','tags','type','context','review_by','files','commands')
 
 def slug(value):return re.sub(r'[^a-z0-9]+','-',value.casefold()).strip('-')[:64] or 'note'
 def taxonomy(root):
@@ -268,7 +268,7 @@ def near_titles(title,notes,low=0.6,high=0.8):
     scored=sorted(((scorer.score(title,n['title']),n) for n in notes),key=lambda s:-s[0])
     return [n for s,n in scored if low<=s<high][:3]
 
-def build_note(title,body,tags,domain,root,note_type='knowledge',context='',key=None,review_by=None,supersedes=(),files=None,origin=None,note_id=None,extra_tags=()):
+def build_note(title,body,tags,domain,root,note_type='knowledge',context='',key=None,review_by=None,supersedes=(),files=None,origin=None,note_id=None,extra_tags=(),commands=None):
     """(path, note, file text) for a new active note, validated like every capture. Writes nothing; capture and
     ingest-plan both create notes through it."""
     stamp=now()
@@ -278,6 +278,8 @@ def build_note(title,body,tags,domain,root,note_type='knowledge',context='',key=
     if supersedes:note['supersedes']=sorted(set(supersedes))
     files=clean_files(files)
     if files:note['files']=files
+    commands=clean_commands(commands)
+    if commands:note['commands']=commands
     if origin:note['origin']=str(origin)
     validate(note,domain,root,new=True,extra_tags=extra_tags)
     path=Path(root)/'domains'/domain/'notes'/f"{note['prefix']} - {slug(title)}-{note['id'][:8]}.md"
@@ -310,7 +312,7 @@ def _cross_similar(title,body,note_type,domain,root):
     globals_=set(global_domains(root));to_global=domain in globals_
     order=lambda d:(0 if d in globals_ else 1 if related(d,domain,root) else 2,d)
     for other in sorted((d for d in domain_folders(root) if d!=domain),key=order):
-        notes=[n for n in inventory(other,root) if n.get('status','active')=='active' and not (note_type=='map' and effective_type(n)=='map')]
+        notes=[n for n in inventory(other,root) if n.get('status','active')=='active' and not (note_type in KEYED_TYPES and effective_type(n)==note_type)]
         similar=similar_title(title,notes) if notes else None
         if not similar:continue
         if other in globals_ or related(other,domain,root):return 'visible',other,similar
@@ -362,9 +364,9 @@ def capture(title,body,tags,domain,root=None,**metadata):
             if note['title'].casefold()==title.strip().casefold() and note['body'].strip()==body.strip():
                 if effective_type(note)!=selected_type:raise ValueError('Existing note has a different type; update that note instead')
                 return {'ok':True,'id':note['id'],'status':'duplicate','path':note['path']}
-        # A map is one per repo, enforced by its repo folder (maps.capture_conflict below). Every map is titled
-        # "<repo> codebase map", so comparing map titles would refuse the second repo's map as a duplicate.
-        other_map=lambda n:selected_type=='map' and effective_type(n)=='map'
+        # A map is one per repo and a brief one per project folder, enforced by that folder (maps.capture_conflict below).
+        # Every map is titled "<repo> codebase map", so comparing titles would refuse the second repo's map as a duplicate.
+        other_map=lambda n:selected_type in KEYED_TYPES and effective_type(n)==selected_type
         if not allow_similar:
             replaced=set(supersedes)
             similar=similar_title(title,[n for n in existing if n.get('status','active')=='active' and n['id'] not in replaced and not other_map(n)])
@@ -390,15 +392,15 @@ def capture(title,body,tags,domain,root=None,**metadata):
                 raise ValueError(f"possible_duplicate conflict: similar to {ref} \"{match['title']}\" in another project. If it holds for both "
                                  f"projects, run `promote-plan {ref}` and then update it; pass allow_similar only for a genuinely distinct note")
             absorbed=(other,match)   # 'supersede': the new global note replaces the project one
-        review_by=metadata.pop('review_by',None);context=metadata.pop('context','');files=metadata.pop('files',None);origin=metadata.pop('origin',None)
+        review_by=metadata.pop('review_by',None);context=metadata.pop('context','');files=metadata.pop('files',None);origin=metadata.pop('origin',None);commands=metadata.pop('commands',None)
         if metadata:raise ValueError('Unsupported capture metadata: '+', '.join(metadata))
-        if selected_type=='map':
-            # One map per repo: a second capture would split what the next session reads.
+        if selected_type in KEYED_TYPES:
+            # One map per repo, one brief per project folder: a second capture would split what the next session reads.
             from .maps import capture_conflict
-            conflict=capture_conflict(clean_files(files),domain,root,read_json(root/'bindings.json',{}),set(supersedes))
+            conflict=capture_conflict(clean_files(files),domain,root,read_json(root/'bindings.json',{}),set(supersedes),selected_type)
             if conflict:raise ValueError(conflict)
         replaces=supersedes+([absorbed[1]['id']] if absorbed else [])
-        path,note,text=build_note(title,body,tags,domain,root,selected_type,context=context,key=key,review_by=review_by,supersedes=replaces,files=files,origin=origin)
+        path,note,text=build_note(title,body,tags,domain,root,selected_type,context=context,key=key,review_by=review_by,supersedes=replaces,files=files,origin=origin,commands=commands)
         changes={path.relative_to(root).as_posix():text};expected={}
         for old in supersedes:
             # The new note and the retirement of what it replaces commit together.
@@ -454,6 +456,10 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
             files=clean_files(values['files'])
             if files:note['files']=files
             else:note.pop('files',None)
+        if 'commands' in values:
+            commands=clean_commands(values['commands'])
+            if commands:note['commands']=commands
+            else:note.pop('commands',None)
         if 'review_by' in values:
             review=_review_date(values['review_by'])
             if review:note['review_by']=review
@@ -462,10 +468,10 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
             # Updating a time-sensitive note makes it current again.
             review=default_review_by(note['type'])
             if review:note['review_by']=review
-        if note['type']=='map' and note.get('status','active')=='active' and ('type' in values or 'files' in values):
-            # One map per repo holds for updates too: retyping a note, or pointing a map at another repo, must not make a second one.
+        if note['type'] in KEYED_TYPES and note.get('status','active')=='active' and ('type' in values or 'files' in values):
+            # One map per repo (brief per project folder) holds for updates too: retyping a note, or pointing one at another folder, must not make a second.
             from .maps import capture_conflict
-            conflict=capture_conflict(clean_files(note.get('files')),domain,root,read_json(root/'bindings.json',{}),{note['id']})
+            conflict=capture_conflict(clean_files(note.get('files')),domain,root,read_json(root/'bindings.json',{}),{note['id']},note['type'])
             if conflict:raise ValueError(conflict)
     elif action=='confirm':
         # "Still true": a dated confirmation and a fresh review date, without touching content or `updated`.
@@ -497,7 +503,7 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
     target=path if action=='delete' else folder/f"{note['prefix']} - {slug(note['title'])}-{note_id[:8]}.md"
     # `updated` means the content changed; it drives recency and review age. A tag-, snooze- or files-only edit
     # (triage, backfill) must not reorder recency lists or reset the review clock; confirm never bumps it either.
-    if action!='confirm' and not (action=='update' and set(values)<={'tags','review_by','files'}):note['updated']=now()
+    if action!='confirm' and not (action=='update' and set(values)<={'tags','review_by','files','commands'}):note['updated']=now()
     note['path']=str(target)
     if target.parent!=path.parent and action!='delete':
         # Moving between notes/ and archive/: the note's own relative links must still reach their files.

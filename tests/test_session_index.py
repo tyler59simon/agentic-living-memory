@@ -23,11 +23,18 @@ class SessionIndex(StoreFixture):
         payload = {'cwd': str(self.base / 'project'), 'session_id': session, 'prompt': text}
         return runtime.process('claude', 'user-prompt', payload, self.root)['context']
 
+    def large_store(self):
+        """Index lines carry summaries only in a small store; these tests are about the titles-only layout."""
+        patcher = patch.object(session_start, 'SMALL_STORE', 0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def many(self, count, body='x' * 300, kind='knowledge'):
         return [capture(f'{TOPICS[i % len(TOPICS)]} note {i}', body + f' item{i}', TAGS, 'demo', self.root, type=kind, allow_similar=True)
                 for i in range(count)]
 
     def test_guidance_in_full_then_titles_with_costs(self):
+        self.large_store()
         pref = capture('Prefer small commits', 'Keep commits small and focused.', TAGS, 'demo', self.root, type='preference')
         other = capture('Webcam conclusion', 'Likely hardware. ' * 40, TAGS, 'demo', self.root)
         text, shown, indexed = self.build()
@@ -91,6 +98,7 @@ class SessionIndex(StoreFixture):
         self.assertIn('Other notes', self.start('other'))
 
     def test_long_titles_are_cut_at_a_word(self):
+        self.large_store()
         capture('Very long title ' + ' '.join(f'word{i}' for i in range(40)), 'Body.', TAGS, 'demo', self.root)
         line = next(l for l in self.build()[0].splitlines() if 'Very long title' in l)
         title = line.split(' ', 4)[4].rsplit(' (~', 1)[0]

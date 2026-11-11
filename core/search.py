@@ -2,6 +2,7 @@
 from __future__ import annotations
 import hashlib,json,math,re,sqlite3,struct,tempfile,os
 from collections import Counter
+from functools import lru_cache
 from pathlib import Path
 from .common import memory_root,safe_domain,canonical_domain
 from .repository import inventory,parse as parse_note,store_lock,digest
@@ -22,6 +23,7 @@ COMMON_MIN_NOTES=8
 def terms(text):
     return [t for t in re.findall(r'[^\W_]+',text.casefold(),re.UNICODE) if t not in STOP and len(t)>1]
 
+@lru_cache(maxsize=1<<16)
 def stem(token):
     """Light English suffix folding, close enough to FTS5's porter stemmer for overlap checks."""
     for suffix,keep in (('ies','y'),('sses','ss'),('ing',''),('ed',''),('es',''),('s','')):
@@ -29,17 +31,46 @@ def stem(token):
             return token[:-len(suffix)]+keep
     return token
 
-def stems(text):return {stem(t) for t in terms(text)}
+def stems(text):return {stem(t) for t in set(re.findall(r'[^\W_]+',text.casefold(),re.UNICODE)) if t not in STOP and len(t)>1}   # terms() without its order, stemming each word once
 
-def query_terms(text):
-    """Distinct search terms; very long prompts keep their start and end (the question is usually last)."""
+def df_of(vocab,token):
+    """How many notes carry this word. The light stemmer and FTS5's porter differ on a final e ("rotates"/"rotate"), so both spellings count."""
+    s=stem(token);return max(vocab.get(s,0),vocab.get(s[:-1] if s.endswith('e') else s+'e',0))
+
+def _weighted(text,vocab):
+    """[(log(N/df), position, term)] for the distinct terms some note carries, leaving out words most notes carry."""
+    total,df=vocab;ranked=[]
+    for position,t in enumerate(dict.fromkeys(terms(text))):
+        n=df_of(df,t)
+        if n and not (total>=COMMON_MIN_NOTES and n>COMMON_SHARE*total):ranked.append((math.log(total/n),position,t))
+    return ranked
+
+def idf_terms(text,vocab,limit=MAX_TERMS//2):
+    """The prompt's most informative terms, in prompt order: words no note carries (df=0) cannot match and words most
+    notes carry say nothing, so both go; the rest rank by log(N/df), ties to later terms (the task usually comes last).
+    vocab is (N, {stem: df}) from `vocabulary`."""
+    best=sorted(_weighted(text,vocab),reverse=True)[:limit]
+    return [t for _,_,t in sorted(best,key=lambda r:r[1])]
+
+def idf_sum(text,vocab):
+    """How much the text says about this domain's notes: the summed log(N/df) of its terms."""
+    return sum(w for w,_,_ in _weighted(text,vocab))
+
+def query_terms(text,vocab=None):
+    """Distinct search terms. A very long prompt keeps its most informative terms when the notes' vocabulary is known
+    (see idf_terms), else its start and end (the question is usually last)."""
     unique=list(dict.fromkeys(terms(text)))
-    if len(unique)>MAX_TERMS:unique=unique[:MAX_TERMS//2]+unique[-MAX_TERMS//2:]
+    if len(unique)>MAX_TERMS:
+        if vocab and vocab[0]:unique=idf_terms(text,vocab)
+        else:unique=unique[:MAX_TERMS//2]+unique[-MAX_TERMS//2:]
     return unique
 
 def domain_dir(domain,root=None):return Path(root or memory_root())/'domains'/canonical_domain(domain,Path(root or memory_root()))
 # Bump when the index schema changes, so an index built by older code counts as stale and is rebuilt.
-INDEX_VERSION=2
+INDEX_VERSION=3
+# What stored vectors were made from: the model and how a note becomes embedding text. Separate from INDEX_VERSION,
+# so a schema change rebuilds the index without re-embedding every note.
+EMBED_VERSION=2
 # An installed semantic model is part of the fingerprint, so installing or removing it makes the index stale.
 # Without one the fingerprint is unchanged, so lexical indexes built by earlier releases stay fresh.
 def _fingerprint(notes,model=None):
@@ -72,6 +103,22 @@ def _unchanged(note_path,revision):
     """The canonical file still has the exact bytes the index row was built from."""
     try:return digest(Path(note_path).read_bytes())==revision
     except OSError:return False
+
+def active_notes(refs,root=None):
+    """{'domain:id': (title, type)} for the active notes among these refs, from the derived index (a hook never
+    parses the whole store for a title). A missing index or a retired note is simply absent."""
+    root=Path(root or memory_root()).resolve();found={}
+    for domain in dict.fromkeys(r.split(':',1)[0] for r in refs):
+        ids=[r.split(':',1)[1] for r in refs if r.startswith(domain+':')]
+        try:
+            db_path=domain_dir(domain,root)/'search.sqlite3'
+            if not db_path.exists():continue
+            db=sqlite3.connect(db_path.as_uri()+'?mode=ro',uri=True)
+            try:rows=db.execute(f"SELECT id,title,type FROM notes WHERE status='active' AND id IN ({','.join('?'*len(ids))})",ids).fetchall()
+            finally:db.close()
+        except (ValueError,sqlite3.Error):continue
+        found.update({f'{domain}:{i}':(title,kind or 'knowledge') for i,title,kind in rows})
+    return found
 
 def file_notes(path,domains,root=None,limit=2,ensure_fresh=True):
     """Active notes about a file: those listing it in `files` first, then those naming it in the body;
@@ -115,10 +162,10 @@ def _embedding_text(note):
 
 def _vector_identity(root):
     """What stored vectors depend on besides each note's own text: the model (its name and pinned revision) and
-    how a note becomes embedding text (INDEX_VERSION). None without a model."""
+    how a note becomes embedding text (EMBED_VERSION). None without a model."""
     from . import semantic
     name=semantic.installed(root)
-    return f"{INDEX_VERSION}:{name}@{semantic.MODELS.get(name,{}).get('revision','')}" if name else None
+    return f"{EMBED_VERSION}:{name}@{semantic.MODELS.get(name,{}).get('revision','')}" if name else None
 
 def _stored_vectors(path,identity):
     """{(note id, revision): vector blob} from the index about to be replaced, when the same model made them.
@@ -132,6 +179,16 @@ def _stored_vectors(path,identity):
         finally:db.close()
     except (sqlite3.Error,TypeError,IndexError):return {}   # an index from before vectors were tracked, or a damaged one
 
+def note_commands(note):
+    """The shell commands a note records, for the `commands` column: its `commands` property plus those found in its text (core/commands.py)."""
+    explicit=[c for c in (note.get('commands') or []) if isinstance(c,str)]
+    try:
+        from .commands import extract
+        return extract(note['title'],note['body'],explicit)
+    except Exception as exc:   # a derived hint must never stop an index rebuild
+        from .logs import swallowed
+        swallowed('search.note_commands',exc,None);return explicit
+
 def rebuild_index(domain,root=None):
     from . import semantic
     root=Path(root or memory_root()).resolve(); directory=domain_dir(domain,root);directory.mkdir(parents=True,exist_ok=True)
@@ -141,19 +198,23 @@ def rebuild_index(domain,root=None):
         fd,name=tempfile.mkstemp(prefix='.search-',suffix='.sqlite3',dir=directory);os.close(fd)
         db=sqlite3.connect(name)
         try:
-            db.execute('CREATE TABLE notes(domain TEXT,id TEXT,prefix TEXT,title TEXT,type TEXT,status TEXT,created TEXT,updated TEXT,review_by TEXT,context TEXT,tags TEXT,body TEXT,path TEXT,sha256 TEXT,revision TEXT,schema_version INTEGER,files TEXT,PRIMARY KEY(domain,id))')
+            db.execute('CREATE TABLE notes(domain TEXT,id TEXT,prefix TEXT,title TEXT,type TEXT,status TEXT,created TEXT,updated TEXT,review_by TEXT,context TEXT,tags TEXT,body TEXT,path TEXT,sha256 TEXT,revision TEXT,schema_version INTEGER,files TEXT,commands TEXT,repo TEXT,PRIMARY KEY(domain,id))')
+            db.execute('CREATE TABLE vocab(stem TEXT PRIMARY KEY,df INTEGER NOT NULL)')
             db.execute("CREATE VIRTUAL TABLE notes_fts USING fts5(title,tags,body,tokenize='porter unicode61')")
             db.execute('CREATE TABLE metadata(fingerprint TEXT,vectors TEXT)')
             if model:db.execute('CREATE TABLE vectors(rowid INTEGER PRIMARY KEY,vec BLOB NOT NULL)')
+            df=Counter()
             for n in notes:
-                values=(domain,n['id'],n.get('prefix','NOTE'),n['title'],n.get('type','knowledge'),n.get('status','active'),n.get('created'),n.get('updated'),n.get('review_by'),n.get('context',''),json.dumps(n.get('tags',[])),n['body'],n['path'],n['digest'],n['revision'],n.get('schema_version',1),json.dumps(n.get('files') or []))
-                cursor=db.execute('INSERT INTO notes VALUES('+','.join('?'*17)+')',values)
+                values=(domain,n['id'],n.get('prefix','NOTE'),n['title'],n.get('type','knowledge'),n.get('status','active'),n.get('created'),n.get('updated'),n.get('review_by'),n.get('context',''),json.dumps(n.get('tags',[])),n['body'],n['path'],n['digest'],n['revision'],n.get('schema_version',1),json.dumps(n.get('files') or []),json.dumps(note_commands(n)),'')   # repo: Phase 3
+                cursor=db.execute('INSERT INTO notes VALUES('+','.join('?'*19)+')',values)
+                if n.get('status','active')=='active':df.update(stems(n['title']+' '+n['body']))
                 db.execute('INSERT INTO notes_fts(rowid,title,tags,body) VALUES(?,?,?,?)',(cursor.lastrowid,n['title'],' '.join(n.get('tags',[])),n['body']))
                 if not model:continue
                 blob=kept.get((n['id'],n['revision']))
                 if blob is None:
                     vector=model.embed(_embedding_text(n));blob=semantic.to_blob(vector) if vector else None
                 if blob:db.execute('INSERT INTO vectors VALUES(?,?)',(cursor.lastrowid,blob))
+            db.executemany('INSERT INTO vocab VALUES(?,?)',df.items())
             db.execute('INSERT INTO metadata VALUES(?,?)',(_fingerprint(notes,semantic.installed(root)),identity));db.commit();db.close();os.replace(name,directory/'search.sqlite3')
         finally:
             db.close()
@@ -168,6 +229,19 @@ def _fresh(domain,root,notes):
         try:return db.execute('SELECT fingerprint FROM metadata').fetchone()[0]==_fingerprint(notes,installed(root))
         finally:db.close()
     except (sqlite3.Error,IndexError,TypeError):return False
+
+# SessionStart rebuilds a stale index of up to this many notes; a larger one waits for the next write or `reconcile`.
+REFRESH_MAX=1000
+def refresh_stale(domain,root=None):
+    """Rebuild this domain's index when it is stale (built by older code, or the notes changed outside the scripts).
+    Hooks read indexes without checking them, so a stale one means no file hints, no vocabulary and canonical-scan
+    search. Stored vectors are reused, so only changed notes are embedded. True when rebuilt."""
+    root=Path(root or memory_root()).resolve()
+    if not (domain_dir(domain,root)/'notes').is_dir():return False
+    with store_lock(root):
+        notes=inventory(domain,root,retired=True)
+        if len(notes)>REFRESH_MAX or _fresh(domain,root,notes):return False
+        rebuild_index(domain,root);return True
 
 def _fallback(tokens,notes):
     if not tokens:return []
@@ -224,6 +298,25 @@ def snippet(body,tokens,width=SNIPPET):
         space=text.rfind(' ',start,end)
         if space>start:end=space
     return ('… ' if start else '')+text[start:end]+(' …' if end<len(text) else '')
+
+def vocabulary(domains,root=None,wanted=None):
+    """(N, {stem: df}) over the active notes of these domains, from their indexes (read-only: a hook never rebuilds).
+    An index built before the vocabulary table existed adds nothing. wanted, when given, limits the stems read."""
+    root=Path(root or memory_root()).resolve();total=0;df=Counter()
+    ask=sorted({v for w in (wanted or ()) for v in (stem(w),stem(w)[:-1] if stem(w).endswith('e') else stem(w)+'e')})
+    for domain in dict.fromkeys(domains):
+        try:
+            db_path=domain_dir(domain,root)/'search.sqlite3'
+            if not db_path.exists():continue
+            db=sqlite3.connect(db_path.as_uri()+'?mode=ro',uri=True)
+            try:
+                count=db.execute("SELECT count(*) FROM notes WHERE status='active'").fetchone()[0]
+                if wanted is None:rows=db.execute('SELECT stem,df FROM vocab').fetchall()
+                else:rows=[r for i in range(0,len(ask),500) for r in db.execute(f"SELECT stem,df FROM vocab WHERE stem IN ({','.join('?'*len(ask[i:i+500]))})",ask[i:i+500])]
+            finally:db.close()
+        except (ValueError,sqlite3.Error):continue
+        total+=count;df.update(dict(rows))
+    return total,dict(df)
 
 def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False):
     root=Path(root or memory_root()).resolve();tokens=query_terms(query)

@@ -27,8 +27,8 @@ class NoteTypes(StoreFixture):
     def test_all_types_derive_prefix_without_storing_it(self):
         (self.base/'project').mkdir(exist_ok=True)
         for selected in NOTE_TYPES:
-            # A codebase map names the repo folder it describes; '.' is the bound project folder.
-            result=self.note(selected,'Unique content '+selected,type=selected,**({'files':['.']} if selected=='map' else {}))
+            # A codebase map names the repo folder it describes, a brief the project folder; '.' is the bound project folder.
+            result=self.note(selected,'Unique content '+selected,type=selected,**({'files':['.']} if selected in ('map','brief') else {}))
             path,note=find_note(result['id'],'demo',self.root)
             self.assertTrue(path.name.startswith(selected.upper()+' - '))
             self.assertEqual(note['prefix'],selected.upper())

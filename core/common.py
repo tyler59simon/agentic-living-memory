@@ -22,7 +22,7 @@ def _entries(bindings: dict):
     ds=bindings.get("domains",bindings)
     if isinstance(ds,dict):
         for name,value in ds.items():
-            if name in {"version","defaults","global"} or not isinstance(value,dict): continue
+            if name in {"version","defaults","global","decision_docs"} or not isinstance(value,dict): continue
             prefixes=value.get("prefixes",value.get("paths",[]))
             if isinstance(prefixes,str): prefixes=[prefixes]
             root=value.get("root") or value.get("path")

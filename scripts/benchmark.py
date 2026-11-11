@@ -23,7 +23,8 @@ def main():
         output=Path(__file__).resolve().parents[1]/'.cache/benchmark.json';output.parent.mkdir(parents=True,exist_ok=True);output.write_text(json.dumps(value,indent=2),encoding='utf-8');print(json.dumps(value))
 
 # What keeps a hook inside its timeout, and a write tolerable, as a store grows (in-process, median).
-TARGETS={'prompt_ms':400,'capture_ms':1500}
+TARGETS={'prompt_ms':400,'capture_ms':1500,'bash_pre_extra_p95_ms':15}
+LONG_RUNS=20
 WORDS=('cache deploy rollback session token queue index schema migration retry timeout webhook parser lexer renderer export import vault ledger '
        'invoice tenant shard replica gateway proxy cluster build release artifact pipeline lint format logger metric tracer alert budget quota '
        'limit policy audit secret rotate backup restore snapshot journal').split()
@@ -65,10 +66,29 @@ def scale(count,semantic_from=None,runs=7):
             return round(statistics.median(samples),1)
         ask=lambda i:runtime.process('claude','user-prompt',{**payload,'prompt':f'how does the {WORDS[i]} {WORDS[i+9]} retry policy work'},root)
         prompt=timed(ask);warm=timed(lambda i:ask(i+runs),cold=False)
+        # A ~3 KB task brief (team boilerplate around a one-sentence assignment), as a coordinator sends a sub-agent.
+        boiler=('Team rules for this sprint. Never push and never touch other branches. Work in your own worktree only. Role: backend engineer, '
+                'owning the service layer; the reviewer reads every diff. Report format: three bullets, what changed, what you verified, what is left. ')
+        sections=lambda i:'\n\n'.join(['# Team brief',boiler*3+f'Owner: note {i+5}.','## Your assignment',f'Check note {i+20} and note {i+60} on the {WORDS[i]} {WORDS[i+9]} retry policy, then note {i+100}.','## Background',boiler*3+f'See note {i+130}.','## Checklist',boiler*3+f'Then note {i+170}.'])
+        brief=lambda i:runtime.process('claude','user-prompt',{**payload,'session_id':f'brief{i}','prompt':sections(i)},root)
+        longs=[]
+        for i in range(LONG_RUNS):
+            repository._PARSED.clear();start=time.perf_counter();brief(i);longs.append((time.perf_counter()-start)*1000)
+        longs.sort()
+        # PreToolUse on a Bash call: command hints off (the lookup stubbed out) against on. Every call is a new command shape
+        # in a new session, so none is skipped as already looked up; the hit rows run a command three notes warn about.
+        for i in range(3):capture(f'Command gotcha {i} zebra{i}',f'Running `./deploy{i} apply` skips the lint step and exits 0.',['subject/project','concern/knowledge'],'scale',root)
+        from unittest.mock import patch
+        def bash(kind,i):
+            start=time.perf_counter();runtime.process('claude','pre-tool-use',{**payload,'session_id':f'{kind}{i}','tool_name':'Bash','tool_input':{'command':f'./{"deploy"+str(i%3) if kind=="hit" else "build"+str(i)} apply'}},root)
+            return (time.perf_counter()-start)*1000
+        with patch.object(runtime,'command_hints',lambda *a,**k:None):base=sorted(bash('base',i) for i in range(LONG_RUNS))
+        miss=sorted(bash('miss',i) for i in range(LONG_RUNS));hit=sorted(bash('hit',i) for i in range(LONG_RUNS))
+        p95=lambda xs:xs[int(len(xs)*.95)-1]
         written=timed(lambda i:capture(f'Scale capture {i} zebra{i}',f'Distinct fact number {i} about quokka{i}.',['subject/project','concern/knowledge'],'scale',root))
         started_ms=timed(lambda i:runtime.process('claude','session-start',{**payload,'session_id':f'scale{i}'},root))
-        value={'schema':1,'notes':count,'semantic':bool(semantic_from),'runs':runs,'first_index_build_ms':built,'prompt_ms':prompt,'prompt_warm_ms':warm,
-               'capture_ms':written,'session_start_ms':started_ms,'targets_ms':TARGETS,'met':prompt<=TARGETS['prompt_ms'] and written<=TARGETS['capture_ms'],
+        value={'schema':1,'notes':count,'semantic':bool(semantic_from),'runs':runs,'first_index_build_ms':built,'prompt_ms':prompt,'prompt_warm_ms':warm,'prompt_long_ms':round(statistics.median(longs),1),'prompt_long_p95_ms':round(longs[int(len(longs)*.95)-1],1),
+                              'capture_ms':written,'session_start_ms':started_ms,'bash_pre_off_ms':round(statistics.median(base),1),'bash_pre_off_p95_ms':round(p95(base),1),'bash_pre_ms':round(statistics.median(miss),1),'bash_pre_p95_ms':round(p95(miss),1),'bash_pre_hit_ms':round(statistics.median(hit),1),'bash_pre_hit_p95_ms':round(p95(hit),1),'targets_ms':TARGETS,'met':prompt<=TARGETS['prompt_ms'] and written<=TARGETS['capture_ms'] and max(p95(miss),p95(hit))-p95(base)<=TARGETS['bash_pre_extra_p95_ms'],
                'includes':'everything a hook or command does in one new process; excludes interpreter start, imports and the first model load'}
         print(json.dumps(value));return value
       finally:semantic._unload()   # the model file is memory-mapped; Windows cannot delete the folder while it is

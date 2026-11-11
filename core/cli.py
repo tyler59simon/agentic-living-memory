@@ -63,6 +63,7 @@ def _file_args(args,domain,root,existing=()):
 def _file_flags(p):
     p.add_argument('--file',action='append',help='A file this note is about, relative to the project (repeatable)')
     p.add_argument('--files',choices=['auto','none'],help="auto: add the files changed this turn (needs --session); none: clear the list")
+    p.add_argument('--command',dest='shell_command',action='append',help='A shell command this note warns about, so running it surfaces the note (repeatable; update adds to the list)')
 
 FACET_FLAGS=('subject','concern','platform','technology')
 CAPTURE_FACETS=FACET_FLAGS+('project','system')
@@ -72,7 +73,7 @@ def _facet_tags(args,facets=FACET_FLAGS):
 
 # Defaults when a capture names no subject/ or concern/ tag; used only if the tag is in the taxonomy.
 SUBJECT_BY_TYPE={'preference':'subject/user'}
-CONCERN_BY_TYPE={'decision':'concern/decision','preference':'concern/preference','bug':'concern/bug','knowledge':'concern/knowledge','policy':'concern/workflow','map':'concern/architecture','runbook':'concern/workflow'}
+CONCERN_BY_TYPE={'decision':'concern/decision','preference':'concern/preference','bug':'concern/bug','knowledge':'concern/knowledge','policy':'concern/workflow','map':'concern/architecture','runbook':'concern/workflow','brief':'concern/knowledge'}
 def _infer_tags(item,root):
     from .notes import taxonomy
     known=taxonomy(root);tags=list(item.get('tags') or []);kind=item.get('type') or 'knowledge';added=[]
@@ -359,7 +360,7 @@ def main(argv=None):
     def sub(name):p=subs.add_parser(name);common(p,True);return p
     p=sub('setup');p.add_argument('--location',type=Path);p.add_argument('--non-interactive',action='store_true');p.add_argument('--source',type=Path);p.add_argument('--apply-plan');p.add_argument('--inspect-plan');p.add_argument('--expected-plan-sha256')
     p=sub('bind');p.add_argument('name');p.add_argument('prefix',nargs='+')
-    p=sub('capture');p.add_argument('items',nargs='*');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='');p.add_argument('--prefix',help='Compatibility assertion only; must equal the uppercase type');p.add_argument('--type',choices=NOTE_TYPES,help='Note type (default: knowledge)');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help='REF of a note this one replaces; it is retired in the same transaction');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk/map notes get a default')
+    p=sub('capture');p.add_argument('items',nargs='*');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='');p.add_argument('--prefix',help='Compatibility assertion only; must equal the uppercase type');p.add_argument('--type',choices=NOTE_TYPES,help='Note type (default: knowledge)');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help='REF of a note this one replaces; it is retired in the same transaction');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk/map/runbook/brief notes get a default')
     for facet in CAPTURE_FACETS:p.add_argument('--'+facet,action='append',default=[])
     p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
     sections_args(p);_file_flags(p)
@@ -491,12 +492,13 @@ def main(argv=None):
                 if args.review_by:data['review_by']=args.review_by
                 files,_=_file_args(args,domain,root)
                 if files:data['files']=files
+                if args.shell_command:data['commands']=args.shell_command
             else:
                 # A payload carries its own fields, so a flag beside it would be dropped without a word: refuse it.
                 # The session is the exception: the private-text check, the origin and the receipt depend on it.
                 beside=[('--title',args.title),('--tag',args.tag),('--tags',args.tags),('--prefix',args.prefix),('--type',args.type),('--context',args.context),
                         ('--idempotency-key',args.idempotency_key),('--allow-similar',args.allow_similar),('--supersedes',args.supersedes),
-                        ('--review-by',args.review_by),('--file',args.file),('--files',args.files)]+[('--'+f,getattr(args,f)) for f in CAPTURE_FACETS]
+                        ('--review-by',args.review_by),('--file',args.file),('--files',args.files),('--command',args.shell_command)]+[('--'+f,getattr(args,f)) for f in CAPTURE_FACETS]
                 ignored=[flag for flag,given in beside if given]
                 if ignored:raise ValueError('A JSON payload carries its own fields; put these in the payload instead of passing '+', '.join(ignored))
                 if args.turn and not args.session:raise ValueError('--turn needs --session')
@@ -629,7 +631,7 @@ def main(argv=None):
         elif cmd=='update':
             from .notes import change
             d,n=_reference(args.reference,domain,root)
-            values=_payload(args) if args.payload_file or not any(getattr(args,k) is not None for k in ('title','body','body_file','tag','type','context','review_by','file','files','subject','concern','platform','technology')+SECTION_ARGS+AMEND_ARGS) else {}
+            values=_payload(args) if args.payload_file or not any(getattr(args,k) is not None for k in ('title','body','body_file','tag','type','context','review_by','file','files','shell_command','subject','concern','platform','technology')+SECTION_ARGS+AMEND_ARGS) else {}
             if args.title is not None:values['title']=args.title
             if args.body is not None:values['body']=args.body
             if args.body_file:values['body']=args.body_file.read_text(encoding='utf-8-sig')
@@ -652,6 +654,7 @@ def main(argv=None):
                     private_check(_session_state(root,args.session),values)
                 files,suggested=_file_args(args,d,root,find_note(n,d,root)[1].get('files') or [])
                 if files is not None:values['files']=files
+                if args.shell_command:values['commands']=list(find_note(n,d,root)[1].get('commands') or [])+args.shell_command
                 result=change(n,d,'update',root,revision,**values)
             if replaced:result['replaced']=replaced
             if redacted:result['redacted']=redacted
@@ -733,7 +736,8 @@ def main(argv=None):
             from .notes import confirm
             d,n=_reference(args.reference,domain,root)
             result=confirm(n,d,root);result.pop('path',None)
-            if result.get('status')!='unchanged':_receipt(args,d,n,root,'confirm')
+            # Confirming is a memory decision for the turn even when the note was already confirmed today.
+            _receipt(args,d,n,root,'confirm' if result.get('status')!='unchanged' else None)
         elif cmd in {'resolve','reopen'}:
             # Finished work leaves the active set in one journaled, undoable step; reopen brings it back.
             from .notes import change,short_ref

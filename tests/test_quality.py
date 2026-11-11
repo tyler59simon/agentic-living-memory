@@ -32,6 +32,9 @@ class Quality(StoreFixture):
     def test_protocol_and_reminder_steer_away_from_moment_notes(self):
         self.assertIn('most turns do not', runtime.PROTOCOL)
         self.assertIn('Skip progress snapshots, test counts', runtime.PROTOCOL)
+        self.assertIn('concise note that points to the source', runtime.PROTOCOL)
+        self.assertIn('--link', runtime.PROTOCOL)
+        self.assertIn('mark an unconfirmed cause as a hypothesis', runtime.PROTOCOL)
         payload = {'cwd': str(self.base / 'project'), 'session_id': 'q', 'prompt': 'remember that we edit in place'}
         runtime.process('claude', 'user-prompt', payload, self.root)
         runtime.process('claude', 'pre-tool-use', {**payload, 'tool_name': 'Edit', 'tool_input': {'file_path': str(self.base / 'project/x.py')}}, self.root)

@@ -1,7 +1,9 @@
 """The note type is the source of truth for human-readable prefixes and review horizons."""
 from datetime import date, datetime, timedelta, timezone
 
-NOTE_TYPES = ('knowledge', 'decision', 'preference', 'context', 'status', 'bug', 'plan', 'risk', 'research', 'policy', 'map', 'runbook')
+NOTE_TYPES = ('knowledge', 'decision', 'preference', 'context', 'status', 'bug', 'plan', 'risk', 'research', 'policy', 'map', 'runbook', 'brief')
+# One active note per folder, keyed by the first `files` entry (core/maps.py): a repo's codebase map, a project folder's brief.
+KEYED_TYPES = ('map', 'brief')
 LEGACY_TYPES = {'correction': 'knowledge', 'progress': 'status'}
 
 
@@ -30,8 +32,9 @@ def normalize(note, selected=None):
 
 
 # Time-sensitive types go stale: they get a review date at capture and on every body update.
-# A codebase map drifts as the code moves, so it is checked more often than durable knowledge; a runbook drifts as operations change.
-REVIEW_DAYS = {'status': 30, 'plan': 30, 'bug': 60, 'risk': 90, 'map': 90, 'runbook': 90}
+# A codebase map drifts as the code moves, so it is checked more often than durable knowledge; a runbook drifts as operations change;
+# a project brief carries the current phase and blockers, so it is checked as often as a status.
+REVIEW_DAYS = {'status': 30, 'plan': 30, 'bug': 60, 'risk': 90, 'map': 90, 'runbook': 90, 'brief': 30}
 # Notes without a review date are due once they have not changed for this long.
 STALE_DAYS = 180
 

@@ -1,0 +1,23 @@
+{
+ "name": "command-hints",
+ "description": "An agent about to run a shell command a note warns about is shown that note: the exact command in either spelling of the cmd switch, once per session, the fixed command as a related match in another session, and nothing for a command no note mentions.",
+ "harnesses": ["claude", "codex"],
+ "notes": [
+  {"key": "gotcha", "type": "bug", "title": "Maven wrapper from Git Bash builds nothing", "body": "Running `cmd /c mvnw.cmd` from Git Bash builds nothing and exits 0; use ./mvnw."},
+  {"key": "cache", "title": "Cache eviction policy", "body": "The cache uses LRU eviction with a 500 entry cap. Clear it with `make clean-cache`."}
+ ],
+ "steps": [
+  {"hook": "session-start"},
+  {"hook": "user-prompt", "payload": {"prompt": "go on"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Bash", "tool_input": {"command": "cmd //c mvnw.cmd -q -B verify"}}, "expect": {"command_hints": ["@gotcha"], "context_contains": ["a previous session recorded about this command", "{short:@gotcha}", "builds nothing and exits 0"], "mutation": "tracked"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Bash", "tool_input": {"command": "cmd /c mvnw.cmd verify"}}, "expect": {"command_hints": [], "context_excludes": ["a previous session recorded"]}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Bash", "tool_input": {"command": "./mvnw -q verify"}}, "expect": {"command_hints": []}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Bash", "tool_input": {"command": "git status"}}, "expect": {"command_hints": [], "context_excludes": ["a previous session recorded"]}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Bash", "tool_input": {"command": "make clean-cache"}}, "expect": {"command_hints": ["@cache"], "context_contains": ["LRU eviction"]}},
+  {"session": "s2"},
+  {"hook": "session-start"},
+  {"hook": "user-prompt", "payload": {"prompt": "build it"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Bash", "tool_input": {"command": "./mvnw -q verify"}}, "expect": {"command_hints": ["@gotcha"], "context_contains": ["{short:@gotcha}"]}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Bash", "tool_input": {"command": "grep -rn mvnw src"}}, "expect": {"command_hints": [], "context_excludes": ["a previous session recorded"]}}
+ ]
+}

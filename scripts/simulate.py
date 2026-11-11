@@ -260,6 +260,10 @@ class Sim:
             if bool(reply.get('deny'))!=('deny' in outcome):fail(f"log outcome {sorted(outcome)} disagrees with the reply's deny")
             if bool(reply.get('reminder'))!=('continue_reason' in outcome):fail(f"log outcome {sorted(outcome)} disagrees with the reply's reminder")
             if event!='pre-compact' and bool(reply.get('context'))!=('context' in outcome):fail(f"log outcome {sorted(outcome)} disagrees with the reply's context")
+            if event=='pre-tool-use':
+                from core.notes import short_ref
+                for ref in detail.get('command_hints') or []:
+                    if short_ref(*ref.split(':',1)) not in (reply.get('context') or ''):fail(f'command hint {ref} is logged but is not in the delivered context')
             if event=='user-prompt':
                 from core.notes import short_ref
                 injected=detail.get('injected') or []
@@ -274,6 +278,16 @@ class Sim:
                     if short_ref(*ref.split(':',1)) not in context:fail(f'map {ref} is logged as injected but is not in the delivered context')
                 mapped={r['ref'] for r in diary if r.get('e')=='inject' and r.get('k')=='prompt-map'}
                 if mapped!=set(maps):fail(f'usage diary injected maps {sorted(mapped)}, log says {sorted(maps)}')
+                briefs=(detail.get('brief') or {}).get('injected') or []
+                for ref in briefs:
+                    if short_ref(*ref.split(':',1)) not in context:fail(f'brief {ref} is logged as injected but is not in the delivered context')
+                briefed={r['ref'] for r in diary if r.get('e')=='inject' and r.get('k')=='prompt-brief'}
+                if briefed!=set(briefs):fail(f'usage diary injected briefs {sorted(briefed)}, log says {sorted(briefs)}')
+                listed=detail.get('briefed') or []
+                for ref in listed:
+                    if short_ref(*ref.split(':',1)) not in context:fail(f'repo note {ref} is logged as listed but is not in the delivered context')
+                repo_noted={r['ref'] for r in diary if r.get('e')=='inject' and r.get('k')=='map-brief'}
+                if repo_noted!=set(listed):fail(f'usage diary listed repo notes {sorted(repo_noted)}, log says {sorted(listed)}')
             if self.content:
                 logged=(line.get('content') or {});delivered={'context':reply.get('context') if event!='pre-compact' else None,'continue_reason':reply.get('reminder')}
                 for key,value in delivered.items():
@@ -322,8 +336,11 @@ class Sim:
                 if not reply.get('reminder'):fail('expected a Stop reminder in the reply')
                 check('reminder',detail.get('reason'),'reminded:'+e['reminder'])
         if 'stop_reason' in e:check('stop_reason',detail.get('reason'),e['stop_reason'])
+        for text in e.get('reminder_contains',[]):
+            if text not in (reply.get('reminder') or ''):fail(f'reminder lacks {text!r}')
         if 'mutation' in e:check('mutation',detail.get('mutation'),e['mutation'])
         if 'hints' in e:check('hints',self.names(detail.get('hints')),self.names(e['hints']))
+        if 'command_hints' in e:check('command_hints',self.names(detail.get('command_hints')),self.names(e['command_hints']))
         if 'recall' in e:check('recall hits',(detail.get('recall') or {}).get('hits',0),e['recall'])
         if 'private_notice' in e:
             from core.private import NOTICE

@@ -161,7 +161,8 @@ class Maps(StoreFixture):
 
     def test_protocol_carves_the_codebase_map_out_of_the_skip_rule(self):
         from core.instructions import PROTOCOL,usage
-        self.assertIn('Exception: one codebase map (type map) per repo',PROTOCOL)
+        self.assertIn('One codebase map (type map) per repo: read it before exploring, capture or update it after',PROTOCOL)
+        self.assertNotIn('anything git, code or docs already record',PROTOCOL)
         self.assertIn('map',usage())   # the type list; the full capture shape comes with each map hint and reminder
 
     def test_fast_path_answers_only_what_the_runtime_has_settled(self):

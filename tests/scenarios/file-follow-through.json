@@ -1,0 +1,37 @@
+{
+ "name": "file-follow-through",
+ "description": "A note named before an edit is asked about at Stop (confirm or update; a bug note also gets the fix and resolve commands), once per note per session; confirming settles the turn even when the note was already confirmed; a knowledge note that only names the file in its body owes nothing.",
+ "harnesses": ["claude", "codex"],
+ "notes": [
+  {"key": "parser", "title": "Notes parser gotcha", "body": "Frontmatter keys keep their order.", "files": ["core/notes.py"]},
+  {"key": "crash", "type": "bug", "title": "Lexer crash on empty file", "body": "src/lexer.py raises IndexError when the file is empty."},
+  {"key": "named", "title": "Ref resolution", "body": "Short refs are resolved in core/cli.py by _reference."}
+ ],
+ "steps": [
+  {"hook": "session-start"},
+  {"hook": "user-prompt", "payload": {"prompt": "fix the notes parser"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/core/notes.py"}}, "expect": {"hints": ["@parser"]}},
+  {"hook": "stop", "expect": {"reminder": "follow", "detail": {"pending": ["follow", "unbriefed"]}, "reminder_contains": ["You edited core/notes.py", "{short:@parser} Notes parser gotcha", "CMD confirm {short:@parser} --session {session}", "CMD update {short:@parser} --session {session}", "has no project brief"]}},
+  {"hook": "user-prompt", "payload": {"prompt": "one more fix"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/core/notes.py"}}, "expect": {"hints": []}},
+  {"hook": "stop", "expect": {"stop_reason": "files_only", "reminder": null}},
+  {"hook": "user-prompt", "payload": {"prompt": "fix the empty file crash"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/src/lexer.py"}}, "expect": {"hints": ["@crash"]}},
+  {"hook": "stop", "expect": {"reminder": "follow", "reminder_contains": ["{short:@crash} Lexer crash on empty file", "'**Fix:** ...' then CMD resolve {short:@crash}"]}},
+  {"hook": "user-prompt", "payload": {"prompt": "touch the resolver"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/core/cli.py"}}, "expect": {"hints": ["@named"]}},
+  {"hook": "stop", "expect": {"stop_reason": "files_only", "reminder": null}},
+  {"session": "s2"},
+  {"hook": "session-start"},
+  {"hook": "user-prompt", "payload": {"prompt": "fix the notes parser again"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/core/notes.py"}}, "expect": {"hints": ["@parser"]}},
+  {"cli": ["confirm", "@parser", "--session", "{session}"], "expect": {"exit": 0, "status": "confirm"}},
+  {"hook": "stop", "expect": {"stop_reason": "receipt", "reminder": null}},
+  {"session": "s3"},
+  {"hook": "session-start"},
+  {"hook": "user-prompt", "payload": {"prompt": "and once more"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/core/notes.py"}}, "expect": {"hints": ["@parser"]}},
+  {"cli": ["confirm", "@parser", "--session", "{session}"], "expect": {"exit": 0, "status": "unchanged"}},
+  {"hook": "stop", "expect": {"stop_reason": "receipt", "reminder": null}}
+ ]
+}
