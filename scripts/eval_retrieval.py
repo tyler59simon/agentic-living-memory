@@ -14,7 +14,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from core import runtime,session_start
 from core.notes import resolve_ref,short_ref
 
-SIGNAL_KINDS=('remember','correction','preference','decision')
+SIGNAL_KINDS=('remember','correction','preference','decision','directive')
 
 def _build(fixture,root):
     """A temporary store holding the fixture's notes; returns (cwd, domain, {key: 'domain:id'})."""

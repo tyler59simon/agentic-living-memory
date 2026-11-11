@@ -1,0 +1,28 @@
+{
+ "name": "doc-edit-reminder",
+ "description": "Editing a decision document (an ADR) holds the turn open once and names the document and the notes it may update; the same document is not asked about again in the session, an excluded folder and ordinary source files end quietly, and a capture that points at the document answers the reminder.",
+ "notes": [
+  {"key": "money", "title": "Money representation", "body": "Amounts are stored as long cents.", "files": ["docs/adr/ADR-004-money.md"]}
+ ],
+ "steps": [
+  {"hook": "session-start"},
+  {"hook": "user-prompt", "payload": {"prompt": "write down the money decision"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Write", "tool_input": {"file_path": "{project}/docs/adr/ADR-004-money.md"}}, "expect": {"mutation": "tracked", "detail": {"docs": 1}}},
+  {"hook": "stop", "expect": {"reminder": "doc", "detail": {"pending": ["doc"]}, "reminder_contains": ["You changed docs/adr/ADR-004-money.md", "--link 'docs/adr/ADR-004-money.md'", "{short:@money} Money representation", "Nothing durable: CMD capture-finalize --session {session}"]}},
+  {"hook": "stop", "expect": {"stop_reason": "no_change", "reminder": null}},
+  {"hook": "user-prompt", "payload": {"prompt": "tweak the wording"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/docs/adr/ADR-004-money.md"}}, "expect": {"mutation": "tracked"}},
+  {"hook": "stop", "expect": {"stop_reason": "files_only", "reminder": null}},
+  {"hook": "user-prompt", "payload": {"prompt": "summarize standup"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Write", "tool_input": {"file_path": "{project}/docs/standup/monday.md"}}, "expect": {"detail": {"docs": 0}}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/src/money.py"}}, "expect": {"detail": {"docs": 0}}},
+  {"hook": "stop", "expect": {"stop_reason": "files_only", "reminder": null}},
+  {"hook": "user-prompt", "payload": {"prompt": "record the id decision"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Write", "tool_input": {"file_path": "{project}/docs/adr/ADR-005-ids.md"}}},
+  {"hook": "stop", "expect": {"reminder": "doc", "reminder_contains": ["You changed docs/adr/ADR-005-ids.md"]}},
+  {"hook": "user-prompt", "payload": {"prompt": "and the changelog"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/CHANGELOG.md"}}},
+  {"cli": ["capture", "--session", "{session}", "--type", "decision", "--title", "Changelog records user-visible changes", "--summary", "Every release lists user-visible changes in CHANGELOG.md.", "--link", "CHANGELOG.md"], "expect": {"exit": 0, "status": "created"}},
+  {"hook": "stop", "expect": {"stop_reason": "receipt", "reminder": null}}
+ ]
+}

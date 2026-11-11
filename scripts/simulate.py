@@ -322,6 +322,8 @@ class Sim:
                 if not reply.get('reminder'):fail('expected a Stop reminder in the reply')
                 check('reminder',detail.get('reason'),'reminded:'+e['reminder'])
         if 'stop_reason' in e:check('stop_reason',detail.get('reason'),e['stop_reason'])
+        for text in e.get('reminder_contains',[]):
+            if text not in (reply.get('reminder') or ''):fail(f'reminder lacks {text!r}')
         if 'mutation' in e:check('mutation',detail.get('mutation'),e['mutation'])
         if 'hints' in e:check('hints',self.names(detail.get('hints')),self.names(e['hints']))
         if 'recall' in e:check('recall hits',(detail.get('recall') or {}).get('hits',0),e['recall'])

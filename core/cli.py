@@ -733,7 +733,8 @@ def main(argv=None):
             from .notes import confirm
             d,n=_reference(args.reference,domain,root)
             result=confirm(n,d,root);result.pop('path',None)
-            if result.get('status')!='unchanged':_receipt(args,d,n,root,'confirm')
+            # Confirming is a memory decision for the turn even when the note was already confirmed today.
+            _receipt(args,d,n,root,'confirm' if result.get('status')!='unchanged' else None)
         elif cmd in {'resolve','reopen'}:
             # Finished work leaves the active set in one journaled, undoable step; reopen brings it back.
             from .notes import change,short_ref

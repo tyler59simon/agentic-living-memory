@@ -73,6 +73,22 @@ def _unchanged(note_path,revision):
     try:return digest(Path(note_path).read_bytes())==revision
     except OSError:return False
 
+def active_notes(refs,root=None):
+    """{'domain:id': (title, type)} for the active notes among these refs, from the derived index (a hook never
+    parses the whole store for a title). A missing index or a retired note is simply absent."""
+    root=Path(root or memory_root()).resolve();found={}
+    for domain in dict.fromkeys(r.split(':',1)[0] for r in refs):
+        ids=[r.split(':',1)[1] for r in refs if r.startswith(domain+':')]
+        try:
+            db_path=domain_dir(domain,root)/'search.sqlite3'
+            if not db_path.exists():continue
+            db=sqlite3.connect(db_path.as_uri()+'?mode=ro',uri=True)
+            try:rows=db.execute(f"SELECT id,title,type FROM notes WHERE status='active' AND id IN ({','.join('?'*len(ids))})",ids).fetchall()
+            finally:db.close()
+        except (ValueError,sqlite3.Error):continue
+        found.update({f'{domain}:{i}':(title,kind or 'knowledge') for i,title,kind in rows})
+    return found
+
 def file_notes(path,domains,root=None,limit=2,ensure_fresh=True):
     """Active notes about a file: those listing it in `files` first, then those naming it in the body;
     newest first within each group. Hooks pass ensure_fresh=False: a missing index gives nothing, and a

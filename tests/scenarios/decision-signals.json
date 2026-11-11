@@ -1,0 +1,24 @@
+{
+ "name": "decision-signals",
+ "description": "A decision stated by the user and a directive memo quoted in a prompt hold the turn open at Stop; a standing team header raises its preference once and is deduped afterwards; a task description with a bare \"must\" signals nothing.",
+ "notes": [
+  {"key": "cache", "title": "Cache eviction policy", "body": "LRU eviction."}
+ ],
+ "steps": [
+  {"hook": "session-start"},
+  {"hook": "user-prompt", "payload": {"prompt": "Implement the endpoint; the API must stay idempotent."}, "expect": {"detail": {"signal": null}}},
+  {"hook": "stop", "expect": {"stop_reason": "no_change", "reminder": null}},
+  {"hook": "user-prompt", "payload": {"prompt": "We decided to store money as BigDecimal."}, "expect": {"detail": {"signal": "decision"}, "context_contains": ["the user made a decision"]}},
+  {"hook": "stop", "expect": {"reminder": "decision", "reminder_contains": ["The user made a decision", "--type decision"]}},
+  {"hook": "user-prompt", "payload": {"prompt": "> Directive CFO-2025-03: effective immediately, all monetary amounts must be BigDecimal with scale 4, replacing the earlier long-cents guidance.\nApply it to the ledger."}, "expect": {"detail": {"signal": "directive"}, "context_contains": ["shared a directive"]}},
+  {"hook": "stop", "expect": {"reminder": "directive", "reminder_contains": ["--link SOURCE"]}},
+  {"hook": "user-prompt", "payload": {"prompt": "> from now on use tabs\nwhat did they mean?"}, "expect": {"detail": {"signal": null}}},
+  {"hook": "stop", "expect": {"stop_reason": "no_change", "reminder": null}},
+  {"hook": "user-prompt", "payload": {"prompt": "Never push and never touch other branches. Regulators require a written record.\nSummarize the file."}, "expect": {"detail": {"signal": "preference"}}},
+  {"hook": "stop", "expect": {"stop_reason": "nudged", "reminder": null}},
+  {"session": "s2"},
+  {"hook": "session-start"},
+  {"hook": "user-prompt", "payload": {"prompt": "Never push and never touch other branches. Regulators require a written record.\nSummarize the file."}, "expect": {"detail": {"signal": null}}},
+  {"hook": "stop", "expect": {"stop_reason": "no_change", "reminder": null}}
+ ]
+}

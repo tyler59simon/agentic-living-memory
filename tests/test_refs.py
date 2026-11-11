@@ -118,6 +118,7 @@ class TitleLookup(StoreFixture):
 
     def test_protocol_asks_for_titles_with_the_user(self):
         self.assertIn('Name notes to the user by title', runtime.PROTOCOL)
+        self.assertIn('update REF (still true: confirm REF)', runtime.PROTOCOL)
 
 
 if __name__ == '__main__':

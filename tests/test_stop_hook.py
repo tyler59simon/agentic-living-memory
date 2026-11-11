@@ -102,7 +102,7 @@ class StopHook(StopFixture):
 
 class ConversationalSignal(StopFixture):
     """Preferences, corrections and decisions are stated in conversation. Each is raised once, in its own
-    prompt's context; only an explicit request to remember also holds the turn open at Stop."""
+    prompt's context; a request to remember and a decision (or a directive memo) also hold the turn open at Stop."""
     KINDS = [('From now on, use tabs in this repo', 'stated a preference'),
              ("I'd prefer short commit messages", 'stated a preference'),
              ('No, the cache lives in AppData', 'corrected you'),
@@ -121,11 +121,11 @@ class ConversationalSignal(StopFixture):
                 self.assertIn('the user ' + phrase, context)
                 self.assertIn('CMD capture --session session', context)
 
-    def test_only_a_request_to_remember_holds_the_turn_open(self):
+    def test_only_a_request_to_remember_or_a_decision_holds_the_turn_open(self):
         for prompt, phrase in self.KINDS:
             with self.subTest(prompt=prompt):
                 reason = self.said(prompt).get('continue_reason', '')
-                if phrase.startswith('asked you to remember'):
+                if phrase.startswith(('asked you to remember', 'made a decision')):
                     self.assertIn(phrase, reason)
                     self.assertIn('capture-finalize', reason)
                 else:
