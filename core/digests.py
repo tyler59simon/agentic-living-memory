@@ -12,7 +12,7 @@ from pathlib import Path
 from .common import domain_prefixes,load_bindings
 from .repository import inventory,read_json,canonical_json,now
 
-NAMED=re.compile(r'([a-z0-9][a-z0-9._-]+):(.+)\Z')   # `wiki:Retry-Policy.md`; a single letter before the colon is a drive
+NAMED=re.compile(r'([a-z0-9][a-z0-9._-]+):(.+)\Z')   # `wiki:Retry-Policy.md`; a single letter before the colon is a drive, so source-plan add refuses registry names under 2 characters
 SHOWN=3
 REF_CANDIDATES=300   # code files whose references are counted, largest first
 MIN_MODULE=400

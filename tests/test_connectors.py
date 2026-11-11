@@ -130,9 +130,9 @@ class Registry(Wiki):
                (dict(ok,space='ENG',page_ids=['AKIAIOSFODNN7EXAMPLE']),'credential'),(dict(ok,space=None),'needs a space'),(dict(ok,space='bad space'),'space must be'),(dict(ok,root_page='abc'),'root_page must be'),
                (dict(ok,page_ids='100'),'page_ids must be a list'),(dict(ok,database_ids=[nid(1)]),'does not apply to a confluence'),(dict(ok,path=str(self.project)),'does not apply to a confluence'),
                (dict(ok,include=['*.md']),'does not apply to a confluence'),(dict(ok,token='x'),'Unknown payload fields'),(dict(ok,api_path='rest/api'),'api_path must be'),(dict(ok,api_path='/a/../b'),'api_path must be'),
-               ({'name':'n','kind':'notion','token_env':'NOTION_TOKEN'},'needs database_ids or page_ids'),({'name':'n','kind':'notion','token_env':'NOTION_TOKEN','database_ids':['not-an-id']},'database_ids must be'),
-               ({'name':'n','kind':'notion','token_env':'NOTION_TOKEN','database_ids':[nid(1)],'space':'ENG'},'does not apply to a notion'),
-               ({'name':'f','kind':'folder','path':str(self.project),'base_url':'https://example.com'},'apply to confluence and notion sources only'))
+               ({'name':'nt','kind':'notion','token_env':'NOTION_TOKEN'},'needs database_ids or page_ids'),({'name':'nt','kind':'notion','token_env':'NOTION_TOKEN','database_ids':['not-an-id']},'database_ids must be'),
+               ({'name':'nt','kind':'notion','token_env':'NOTION_TOKEN','database_ids':[nid(1)],'space':'ENG'},'does not apply to a notion'),
+               ({'name':'fl','kind':'folder','path':str(self.project),'base_url':'https://example.com'},'apply to confluence and notion sources only'))
         for payload,message in cases:
             with self.subTest(message=message,payload={k:v for k,v in payload.items() if 'token' not in k}):
                 code,error=self.cli('source-plan','add',stdin=json.dumps(payload));self.assertEqual(code,2,error);self.assertIn(message,str(error));self.assertNotIn('sk-abcdefgh',str(error))

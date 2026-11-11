@@ -85,6 +85,7 @@ def source_plan(root,action,payload,domain=None):
             return plan(root,{'sources.json':_registry(entries,implicit)},'source_implicit',[],{'domain':named,'enabled':payload['enabled'],'files':1})
         name=payload.get('name')
         if not isinstance(name,str) or not SLUG.fullmatch(name):raise ValueError('name must match [a-z0-9][a-z0-9-]{0,39}')
+        if action=='add' and len(name)<2:raise ValueError('name must be at least 2 characters: `w:Page.md` reads as a Windows drive, so a one-letter source could not be named in a digest\'s `sources`')
         if action=='remove':
             if name not in {s['name'] for s in entries}:raise ValueError(f'Unknown source {name}')
             return plan(root,{'sources.json':_registry([s for s in entries if s['name']!=name],implicit)},'source_remove',[],{'name':name,'files':1})
@@ -101,6 +102,8 @@ def source_plan(root,action,payload,domain=None):
         if not isinstance(payload.get('path'),str):raise ValueError('add requires path (an absolute folder)')
         folder=_repos([payload['path']])[0]
         if not Path(folder).is_dir():raise ValueError(f'path is not a folder: {folder}')
+        top=Path(folder).resolve()
+        if top==root or root in top.parents:raise ValueError(f'path is the memory store or inside it, which holds memory and not project source: {folder}')   # a folder that merely holds the store is fine: the store is skipped
         entry={'name':name,'domain':_bound(root,payload.get('domain') or domain),'kind':payload['kind'],'path':folder,
                'include':_globs(payload.get('include'),'include'),'exclude':_globs(payload.get('exclude'),'exclude'),'added':now()}
         found=find_secrets('\n'.join([name,folder]+entry['include']+entry['exclude']))
@@ -157,10 +160,15 @@ def resolve(root,domain,bindings=None,deadline=None):
     found=[_located(root,s) for s in registry['sources'] if s.get('domain')==domain and s.get('kind') in KINDS and (s['kind'] in REMOTE or isinstance(s.get('path'),str))]
     taken={s['name'] for s in found}
     if registry.get('implicit',{}).get(domain,True) is not False:found+=[s for s in implicit_sources(domain,bindings,deadline) if s['name'] not in taken]
+    store=Path(root).resolve();kept=[]
     for spec in found:   # the memory store is not project source, whatever folder it sits in
-        try:spec['exclude']=list(spec.get('exclude') or [])+['/'+Path(root).resolve().relative_to(Path(spec['path']).resolve()).as_posix()]
+        try:
+            top=Path(spec['path']).resolve()
+            if spec['kind'] not in REMOTE and (top==store or store in top.parents):continue   # the store itself, or a folder inside it (a remote source's cache is meant to be there)
+            spec['exclude']=list(spec.get('exclude') or [])+['/'+store.relative_to(top).as_posix()]   # a folder holding the store skips it
         except (ValueError,OSError):pass
-    return found
+        kept.append(spec)
+    return kept
 
 # ---- gitignore, globs and the walk ----------------------------------------------------------------------------------
 def _glob_re(pattern):
@@ -544,7 +552,7 @@ def _pages(folder):
 def _sync_source(db,spec,delta,force=False):
     """Bring one source's rows up to date; returns its counts. Only files whose (mtime, size) differ are read, and only
     those whose sha256 differs are re-chunked."""
-    name=spec['name'];base=Path(spec['path']);config=_config(spec)
+    name=spec['name'];base=Path(spec['path']);config=_config(spec);began=time.time()
     known=db.execute('SELECT config FROM source WHERE name=?',(name,)).fetchone()
     count=dict.fromkeys(('added','changed','removed','unchanged','skipped','redacted'),0)
     if force or (known and known[0]!=config):
@@ -590,7 +598,7 @@ def _sync_source(db,spec,delta,force=False):
     for path,(file_id,*_) in have.items():
         if path not in seen:_drop_file(db,file_id,delta);db.execute('DELETE FROM file WHERE id=?',(file_id,));count['removed']+=1
     files,chunks=db.execute('SELECT count(*),coalesce(sum(chunks),0) FROM file WHERE source=? AND skipped IS NULL',(name,)).fetchone()
-    db.execute('UPDATE source SET files=?,chunks=?,synced=? WHERE name=?',(files,chunks,now(),name))
+    db.execute('UPDATE source SET files=?,chunks=?,synced=? WHERE name=?',(files,chunks,now(),name));_set_meta(db,'epoch:'+name,began)   # per source: a sync of another one says nothing about this one's files
     return dict(count,name=name,files=files,chunks=chunks)
 
 def _embed(db,root,deadline):
@@ -657,7 +665,7 @@ def _sync(root,domain,name,rebuild):
             for (gone,) in db.execute('SELECT name FROM source').fetchall():
                 if gone not in {s['name'] for s in specs}:
                     for (file_id,) in db.execute('SELECT id FROM file WHERE source=?',(gone,)).fetchall():_drop_file(db,file_id,delta)
-                    db.execute('DELETE FROM file WHERE source=?',(gone,));db.execute('DELETE FROM source WHERE name=?',(gone,))
+                    db.execute('DELETE FROM file WHERE source=?',(gone,));db.execute('DELETE FROM source WHERE name=?',(gone,));db.execute('DELETE FROM meta WHERE key=?',('epoch:'+gone,))
             _apply_vocab(db,delta)
         vectors=_embed(db,root,time.monotonic()+EMBED_SECONDS)
         _set_meta(db,'synced',now());_set_meta(db,'synced_epoch',started);db.commit()
@@ -712,22 +720,24 @@ def stale(root,domain,bindings=None,limit=STALE_SECONDS):
     started, found by a stat walk of at most `limit` seconds (it stops at the first change). Never raises."""
     try:
         deadline=time.monotonic()+limit;specs=resolve(root,domain,bindings,deadline)
-        if not specs:return False
         info=state(root,domain)
+        if not specs:return bool(info and info['sources'])   # nothing resolves now: rows of sources that went away are still there to prune
         if not info:return True
         db=_readonly(root,domain)
-        try:held=dict(db.execute('SELECT name,config FROM source').fetchall())
+        try:held=dict(db.execute('SELECT name,config FROM source').fetchall());epochs={k[6:]:v for k,v in db.execute("SELECT key,value FROM meta WHERE key LIKE 'epoch:%'")}
         finally:db.close()
         if {s['name']:_config(s) for s in specs}!=held:return True
-        cutoff=int(info['epoch']*1e9)
+        oldest=info['epoch']
         for spec in specs:
-            top=Path(spec['path'])
+            try:began=float(epochs.get(spec['name']) or 0)   # when this source's own last sync began (none: an index from before that was kept)
+            except ValueError:began=0.0
+            cutoff=int(began*1e9);oldest=min(oldest,began);top=Path(spec['path'])
             if spec['kind'] in REMOTE and not top.is_dir():continue   # not pulled yet: nothing to read
-            if top.stat().st_mtime_ns>cutoff or any(g.is_file() and g.stat().st_mtime_ns>cutoff for g in (top/'.git'/'HEAD',top/'.git'/'index')):return True   # a commit, checkout or add
+            if top.stat().st_mtime_ns>cutoff or any(g.is_file() and g.stat().st_mtime_ns>cutoff for g in (top/'.git'/'HEAD',top/'.git'/'index',top/'.gitignore')):return True   # a commit, checkout or add; an edited .gitignore moves no folder's time
             for _,_,_,mtime in walk(top,spec,deadline,False):
                 if mtime>cutoff:return True
         # A tree too big to walk in the time cap goes unchecked past its start, so an index older than a day is refreshed anyway.
-        return time.monotonic()>deadline and time.time()-info['epoch']>86400
+        return time.monotonic()>deadline and time.time()-oldest>86400
     except Exception as exc:
         from .logs import swallowed
         swallowed('sources.stale',exc,root);return False

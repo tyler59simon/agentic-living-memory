@@ -188,6 +188,20 @@ class Idempotency(Digests):
         active=[n for n in inventory('demo',self.root) if n.get('status','active')=='active'];self.assertEqual([n['id'] for n in active],[second['id']])
         self.assertEqual(digests.changed(active[0]['sources'],'demo',self.root),[])
 
+    def test_a_changed_file_whose_digest_still_reads_true_gets_its_hash_refreshed(self):
+        code,first=self.digest('kb/README.md');put(self.repo/'README.md',README+'\nMore detail.\n')
+        code,second=self.digest('kb/README.md');self.assertEqual((code,second['status']),(0,'created'),second)   # same title and body: not a duplicate of the stale note
+        self.assertEqual(second['superseded'],[f"demo:{first['id']}"])
+        active=[n for n in inventory('demo',self.root) if n.get('status','active')=='active'];self.assertEqual([n['id'] for n in active],[second['id']])
+        self.assertEqual(digests.changed(active[0]['sources'],'demo',self.root),[]);self.assertEqual(self.cli('review')[1]['stale_digests'],0)
+
+    def test_content_that_reverts_to_an_archived_digest_is_not_answered_with_the_archived_note(self):
+        code,first=self.digest('kb/README.md');put(self.repo/'README.md',README+'v2\n')
+        code,second=self.digest('kb/README.md',None,detail='**Rule:** the first retry waits 30 seconds (README.md:5).');self.assertEqual(second['superseded'],[f"demo:{first['id']}"])
+        put(self.repo/'README.md',README);code,third=self.digest('kb/README.md');self.assertEqual((code,third['status']),(0,'created'),third)
+        self.assertNotIn(third['id'],(first['id'],second['id']));active=[n for n in inventory('demo',self.root) if n.get('status','active')=='active']
+        self.assertEqual([n['id'] for n in active],[third['id']]);self.assertEqual(active[0]['sources'],[{'path':'kb/README.md','sha256':sha(README)}])
+
     def test_digests_of_different_files_may_have_similar_titles_but_a_plain_note_may_not_copy_one(self):
         self.digest('kb/README.md','kb/README.md: billing service overview');code,other=self.digest('kb/docs/guide.md','kb/docs/guide.md: billing service overview')
         self.assertEqual((code,other['status']),(0,'created'),other)
