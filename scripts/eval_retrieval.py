@@ -56,6 +56,13 @@ def evaluate(fixture,root,cwd=None,domain=None,keys=None,harness='claude'):
                       'chars':len(text or ''),'hit':bool(set(expect)&set(ids)) if expect else None,
                       'forbidden':sorted(set(forbid)&set(ids)),'false':bool(ids) if not expect else None})
     positive=[c for c in cases if c['expect']];negative=[c for c in cases if not c['expect']]
+    # Long task briefs: boilerplate around an assignment. Positives expect the note the assignment is about.
+    long_cases=[]
+    for case in fixture.get('long_prompts',[]):
+        expect=[resolve(r) for r in case.get('expect',[])]
+        started=time.perf_counter();text,ids,_=runtime.context(cwd,case['prompt'],root,domain)
+        long_cases.append({'prompt':case['prompt'][:80]+'…','expect':expect,'injected':ids,'ms':(time.perf_counter()-started)*1000,'hit':bool(set(expect)&set(ids)) if expect else None,'false':bool(ids) if not expect else None})
+    long_positive=[c for c in long_cases if c['expect']];long_negative=[c for c in long_cases if not c['expect']]
     from unittest.mock import patch
     def session(installed):
         # Steady state: the instruction file carries the current block (setup re-run). Fallback: it does not,
@@ -88,6 +95,12 @@ def evaluate(fixture,root,cwd=None,domain=None,keys=None,harness='claude'):
             'misses':[{'prompt':c['prompt'],'expect':c['expect'],'injected':c['injected']} for c in positive if not c['hit']],
             'false_injections':[{'prompt':c['prompt'],'injected':c['injected']} for c in negative if c['false']],
         },
+        'long_prompts':{'cases':len(long_cases),'positive':len(long_positive),'negative':len(long_negative),
+                        'recall':_ratio(sum(c['hit'] for c in long_positive),len(long_positive)),
+                        'false_injection':_ratio(sum(c['false'] for c in long_negative),len(long_negative)),
+                        'mean_ms':round(sum(c['ms'] for c in long_cases)/len(long_cases),1) if long_cases else None,
+                        'misses':[{'prompt':c['prompt'],'expect':c['expect'],'injected':c['injected']} for c in long_positive if not c['hit']],
+                        'false_injections':[{'prompt':c['prompt'],'injected':c['injected']} for c in long_negative if c['false']]},
         'session':{'chars':len(prefix)+len(text),'fallback_chars':fallback,'budget':session_start.BUDGET,
                    'index_coverage':_ratio(len(listed),len(expected)),
                    'not_listed':[r for r in expected if r not in listed]},
@@ -119,7 +132,7 @@ def run(fixture_path,root=None,semantic_mode=None):
         semantic.USE_SEMANTIC=default;semantic.rebuild_all(store)
 
 def _table(report):
-    r,s,g=report['retrieval'],report['session'],report['signals']
+    r,s,g,lp=report['retrieval'],report['session'],report['signals'],report['long_prompts']
     lines=[f"Retrieval: {r['cases']} cases ({r['positive']} positive, {r['negative']} negative)",
            f"  hit@3            {r['hit@3']}   (target >= 0.8)",
            f"  false injection  {r['false_injection']}   (target <= 0.1)",
@@ -127,10 +140,14 @@ def _table(report):
            f"  mean chars       {r['mean_injected_chars']}",
            f"  mean ms          {r['mean_ms']}   (prompt-time retrieval, in process)",
            f"  overview rate    {r['overview_rate']}",
+           f"Long prompts: {lp['cases']} cases ({lp['positive']} positive, {lp['negative']} negative)",
+           f"  recall           {lp['recall']}   (target >= 0.8)",
+           f"  false injection  {lp['false_injection']}   (target 0)",
+           f"  mean ms          {lp['mean_ms']}",
            f"Session start: {s['chars']} chars (target <= {s['budget']}); index coverage {s['index_coverage']}; {s['fallback_chars']} chars if the instruction block is stale",
            f"Signals: {g['cases']} cases; false-arm {g['false_arm']}"]
     lines+=[f"  {k:<11} precision {v['precision']} recall {v['recall']} ({v['cases']} cases)" for k,v in g['per_kind'].items()]
-    for title,rows in (('Misses',r['misses']),('False injections',r['false_injections']),('Forbidden injected',r['forbid_violations']),('Signal errors',g['wrong'])):
+    for title,rows in (('Misses',r['misses']),('Long-prompt misses',lp['misses']),('Long-prompt false injections',lp['false_injections']),('False injections',r['false_injections']),('Forbidden injected',r['forbid_violations']),('Signal errors',g['wrong'])):
         if rows:lines+=[title+':']+[f'  - {json.dumps(row,ensure_ascii=False)}' for row in rows]
     return '\n'.join(lines)
 

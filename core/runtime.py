@@ -602,10 +602,12 @@ def created_top_level(args,cwd,root,bindings):
         if hit:found.setdefault(repo.as_posix(),(f"{hit['domain']}:{hit['id']}",[]))[1].append(top.name)
     return found
 
-def prompt_maps(cwd,prompt,root,bindings,state,trace=None):
+def prompt_maps(cwd,prompt,root,bindings,state,trace=None,briefed=None):
     """(text or None, {ref: revision key} delivered, {repo path: map ref or None}) for the repos a prompt names
-    and the repo holding cwd: a mapped repo's map body once per revision; an unmapped one a single line, once."""
-    from .maps import named_repos,candidate_repos,find_map,map_block,repo_name,MAX_MAPS
+    and the repo holding cwd: a mapped repo's map body once per revision, followed by one-line summaries of the notes
+    about that repo (refs appended to briefed); an unmapped one a single line, once."""
+    from .maps import named_repos,candidate_repos,find_map,map_block,repo_name,repo_notes,MAX_MAPS
+    briefed=[] if briefed is None else briefed
     repos=named_repos(prompt,candidate_repos(cwd,bindings),bindings.get('repo_aliases'))
     here=git_root(cwd)
     if here and here.resolve() not in repos:repos.append(here.resolve())
@@ -617,6 +619,8 @@ def prompt_maps(cwd,prompt,root,bindings,state,trace=None):
             ref=f"{hit['domain']}:{hit['id']}";seen[key]=ref
             if len(maps)<MAX_MAPS and shown.get(ref)!=revision_key(hit):
                 maps.append(map_block(hit,repo));delivered[ref]=revision_key(hit)
+                lines_,refs_=repo_notes(hit,repo,root,bindings,shown,exclude=briefed)
+                if lines_:maps[-1]+='\n'+lines_;briefed.extend(refs_)
         else:
             seen[key]=None
             if not _repos(state).get(key,{}).get('told'):
@@ -627,16 +631,24 @@ def prompt_maps(cwd,prompt,root,bindings,state,trace=None):
     text=('Untrusted historical memory; verify against the current files.\n'+'\n\n'.join(maps+lines)) if maps or lines else None
     return text,delivered,seen
 
-def prompt_briefs(cwd,root,bindings,state,trace=None):
+BRIEF_NOTES_BUDGET=600
+
+def prompt_briefs(cwd,root,bindings,state,trace=None,briefed=None):
     """(brief block or None, {ref: revision key} delivered): the brief of the project folder holding cwd, once
-    per revision per session."""
+    per revision per session, followed by one-line summaries of the notes it links to (refs appended to briefed)."""
     from .briefs import find_brief,brief_block
+    from .maps import repo_notes
+    briefed=[] if briefed is None else briefed
     hit=find_brief(cwd,root,bindings)
     shown=state.get('shown',{}) if isinstance(state.get('shown'),dict) else {}
     ref=f"{hit['domain']}:{hit['id']}" if hit else None
     fresh=bool(hit) and shown.get(ref)!=revision_key(hit)
     if isinstance(trace,dict):trace['brief']={'ref':ref,'injected':[ref] if fresh else []}
-    return (brief_block(hit),{ref:revision_key(hit)}) if fresh else (None,{})
+    if not fresh:return None,{}
+    block=brief_block(hit)
+    lines_,refs_=repo_notes(hit,None,root,bindings,shown,budget=BRIEF_NOTES_BUDGET,files=False,exclude=briefed)
+    if lines_:block+='\n'+lines_;briefed.extend(refs_)
+    return block,{ref:revision_key(hit)}
 
 def bind_hint(cwd,root,bindings,state):
     """One line, once per session, when the session starts in a git repo no binding covers.
@@ -857,10 +869,13 @@ def _unseen(hit,shown):
     seen=shown.get(ref) if isinstance(shown,dict) else None
     return bool(seen) and seen!=revision_key(hit)
 
-def relevance_gate(query,root,trace=None):
+def relevance_gate(query,root,trace=None,body=True,least=0):
     """The prompt hook's relevance test as a search_domains `keep` filter: enough of the query's informative
     words in a note's title or body, or (with a semantic model) a close match in meaning. trace, when a list,
-    receives one row per candidate: ref, rank, engine, engine score, relevance, similarity and the verdict."""
+    receives one row per candidate: ref, rank, engine, engine score, relevance, similarity and the verdict.
+    body=False ignores body coverage: for a query spread over a whole long prompt, words found in a note's body
+    match by chance ("each", "one", "change"), so only its title (or its meaning) can vouch for the note. least is
+    the number of query words body coverage must find: a short piece of a long prompt covers itself too easily."""
     from .search import query_terms,stem
     from .semantic import threshold
     count=len({stem(t) for t in query_terms(query or '')});near=threshold(root)
@@ -871,7 +886,7 @@ def relevance_gate(query,root,trace=None):
             if not informative:gate='dropped:no_informative'   # only words that appear in most notes
             # One-word prompts ("continue", "yes") inject only on a title hit.
             elif informative==1:gate='kept:title' if overlap else 'dropped:one_word_no_title'
-            elif hit.get('coverage',0)>=0.5 and (informative<4 or hit.get('coverage',0)>0.5):gate='kept:coverage'
+            elif body and hit.get('coverage',0)>=0.5 and (informative<4 or hit.get('coverage',0)>0.5) and round(hit.get('coverage',0)*informative)>=least:gate='kept:coverage'
             elif overlap>=2 or (title and overlap/title>=0.5):gate='kept:title'
             # Same meaning in other words ("laid out" for "layout"): only a close semantic match counts.
             elif near is not None and hit.get('similarity',0)>=near:gate='kept:semantic'
@@ -884,6 +899,36 @@ def relevance_gate(query,root,trace=None):
                               'relevance':hit.get('relevance'),'similarity':hit.get('similarity'),'gate':gate})
         return kept
     return relevant
+
+# A task brief is mostly boilerplate: past this many characters a prompt is searched in pieces, so the assignment
+# in the middle is not lost to the team header and the closing checklist.
+LONG_PROMPT=600
+LONG_SEGMENTS=4
+LONG_LEAST=3
+HEADING=re.compile(r'^\s{0,3}#{1,6}\s')
+
+def prompt_segments(text):
+    """The prompt's paragraphs: split at markdown headings (which open a segment) and blank lines."""
+    segments=[[]]
+    for line in text.splitlines():
+        if not line.strip():segments.append([])
+        elif HEADING.match(line) and segments[-1]:segments.append([line])
+        else:segments[-1].append(line)
+    return ['\n'.join(s) for s in segments if s]
+
+def long_queries(prompt,vocab):
+    """[(query, body)] for a long prompt: the last segment (the ask usually comes last) and the three richest others by
+    summed IDF, then the whole prompt's most informative terms. Each query is at most 16 terms the notes' own vocabulary
+    selected. A segment is judged by the usual gate; the whole-prompt query (body False) only by titles. Empty and
+    repeated queries are dropped."""
+    from .search import idf_terms,idf_sum
+    segments=prompt_segments(prompt);segments=segments if len(segments)>1 else []
+    rest=sorted(segments[:-1],key=lambda s:-idf_sum(s,vocab))[:LONG_SEGMENTS-1]
+    queries={}
+    for text,body in [(s,True) for s in ([segments[-1]]+rest if segments else [])]+[(prompt,False)]:
+        query=' '.join(idf_terms(text,vocab))
+        if query and query not in queries:queries[query]=body
+    return list(queries.items())
 
 def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=None,trace=None):
     """Relevant memory for a prompt: (text or None, ids injected, overview shown). A note shown earlier
@@ -902,7 +947,20 @@ def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=N
     domains=list(dict.fromkeys([active]+parents+global_domains))
     # Global notes hold in every project, so they rank like the project's own; a parent's count half.
     weights={**{g:2 for g in global_domains},active:2,**{p:1 for p in parents if p!=active}}
-    found=search_domains(prompt,domains,10,root,weights=weights,keep=relevant)
+    queries=None
+    if len(prompt)>LONG_PROMPT:
+        from .search import vocabulary,terms
+        vocab=vocabulary(domains,root,terms(prompt))
+        queries=long_queries(prompt,vocab) if vocab[0] else None
+    if queries:
+        # Each query has its own relevance gate; a note any query finds counts once, at its best rank.
+        trace['queries']=len(queries);best={}
+        for text,body in queries:
+            for h in search_domains(text,domains,10,root,weights=weights,keep=relevance_gate(text,root,trace['candidates'],body,LONG_LEAST)):
+                key=(h['domain'],h['id'])
+                if key not in best or h['score']>best[key]['score']:best[key]=h
+        found=sorted(best.values(),key=lambda h:(-h['score'],h['domain'],h['id']))
+    else:found=search_domains(prompt,domains,10,root,weights=weights,keep=relevant)
     if not found and scope.get('foreign_domains'):found=search_domains(prompt,scope['foreign_domains'],10,root,keep=relevant)
     seen=set(shown);ref=lambda h:f"{h['domain']}:{h['id']}"
     unseen=[h for h in found if _unseen(h,shown)];hits=unseen[:3]
@@ -1050,6 +1108,13 @@ def _process(harness,event,payload,root=None,info=None):
         # A session started inside a mapped repo sees a pointer to its map; the body comes when a prompt needs it.
         pointer=session_map(cwd,root,bindings);detail['map']=bool(pointer)
         if pointer:prefix+=pointer+'\n'
+        # Prompts and tool hints read the index without checking it: bring a stale one (older schema, notes edited outside the scripts) up to date now.
+        try:
+            from .search import refresh_stale
+            detail['reindexed']=refresh_stale(domain,root)
+        except Exception as exc:
+            from .logs import swallowed
+            swallowed('runtime.refresh_stale',exc,root)
         text,shown,indexed=build_context(cwd,root,max(MIN_BUDGET,BUDGET-len(prefix)),session=session,trace=detail)
         detail.update(shown=list(shown),indexed=indexed)
         if session!='unknown':
@@ -1072,13 +1137,13 @@ def _process(harness,event,payload,root=None,info=None):
         result['context']=_cap(prefix+(text or ''),HARD_CAP)
     elif event=='user-prompt':
         prompt=payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or payload.get('transformedPrompt') or ''
-        delivered={};maps_text,map_refs,mapped=None,{},{};brief_text,brief_refs=None,{}
+        delivered={};maps_text,map_refs,mapped=None,{},{};brief_text,brief_refs=None,{};briefed=[]
         if isinstance(prompt,str) and not MACHINE_PROMPT.match(prompt):
-            try:maps_text,map_refs,mapped=prompt_maps(cwd,prompt,root,bindings,state,detail)
+            try:maps_text,map_refs,mapped=prompt_maps(cwd,prompt,root,bindings,state,detail,briefed)
             except Exception as exc:
                 from .logs import swallowed
                 swallowed('runtime.prompt_maps',exc,root)
-            try:brief_text,brief_refs=prompt_briefs(cwd,root,bindings,state,detail)
+            try:brief_text,brief_refs=prompt_briefs(cwd,root,bindings,state,detail,briefed)
             except Exception as exc:
                 from .logs import swallowed
                 swallowed('runtime.prompt_briefs',exc,root)
@@ -1110,6 +1175,9 @@ def _process(harness,event,payload,root=None,info=None):
                 if overview:s['overview_shown']=True
             try:_update(root,session,remember)
             except (OSError,TimeoutError):pass
+        if briefed:
+            from .usage import record
+            detail['briefed']=list(briefed);record(root,'inject',briefed,session,'map-brief')
         if ids:
             from .usage import record
             if map_refs:record(root,'inject',list(map_refs),session,'prompt-map')

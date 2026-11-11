@@ -54,7 +54,8 @@ def repo_name(path):
     return Path(path).name
 
 def _rows(domain,root,kind='map'):
-    """Active rows of a keyed note type (map or brief) from the domain's index (no rebuild: hooks must stay fast), else from the note files."""
+    """Active rows of a note type (map or brief, or a tuple of types) from the domain's index (no rebuild: hooks must stay fast), else from the note files."""
+    kinds=(kind,) if isinstance(kind,str) else tuple(kind)
     from .search import _unchanged,domain_dir
     try:folder=domain_dir(domain,root)
     except ValueError:return []
@@ -63,13 +64,13 @@ def _rows(domain,root,kind='map'):
     if db_path.exists():
         try:
             db=sqlite3.connect(db_path.as_uri()+'?mode=ro',uri=True)
-            try:rows=db.execute("SELECT id,title,updated,files,body,path,revision FROM notes WHERE status='active' AND type=?",(kind,)).fetchall()
+            try:rows=db.execute(f"SELECT id,title,updated,files,body,path,revision,type FROM notes WHERE status='active' AND type IN ({','.join('?'*len(kinds))})",kinds).fetchall()
             finally:db.close()
-            return [{'id':i,'domain':domain,'title':t,'type':kind,'updated':str(u or ''),'files':f,'body':b,'revision':r}
-                    for i,t,u,f,b,p,r in rows if _unchanged(p,r)]
+            return [{'id':i,'domain':domain,'title':t,'type':k,'updated':str(u or ''),'files':f,'body':b,'revision':r}
+                    for i,t,u,f,b,p,r,k in rows if _unchanged(p,r)]
         except sqlite3.Error:pass
     from .repository import inventory
-    try:return [dict(n,domain=domain) for n in inventory(domain,root) if n.get('type')==kind and n.get('status','active')=='active']
+    try:return [dict(n,domain=domain) for n in inventory(domain,root) if n.get('type') in kinds and n.get('status','active')=='active']
     except (OSError,ValueError):return []
 
 def find_map(repo,root=None,bindings=None,notes=None,kind='map'):
@@ -154,6 +155,38 @@ def pointer_line(hit,repo,width=400):
     summary=' '.join(plain(sections(str(hit.get('body',''))).get('summary','')).split())
     if len(summary)>width:summary=summary[:summary.rfind(' ',0,width) if ' ' in summary[:width] else width]+' …'
     return f"Codebase map for {repo_name(repo)}: {short_ref(hit['domain'],hit['id'])} {hit['title']} — {summary} ({freshness(hit,repo)})"
+
+REPO_NOTE_TYPES=('decision','bug','runbook','policy')
+REPO_NOTES_BUDGET=900
+LINK=re.compile(r'\[\[([^\]|#]+)')
+
+def repo_notes(hit,repo,root,bindings,shown,budget=REPO_NOTES_BUDGET,files=True,exclude=()):
+    """(lines, refs): one-line summaries of the active decision, bug, runbook and policy notes in the map's (or brief's)
+    domain about this repo, newest first within budget characters. A note belongs when its `files` fall inside the repo
+    (files=False skips that test) or when hit links to it by [[Title]] in its Resource Links. Notes already shown this
+    session (shown maps ref -> revision key) and refs in exclude are left out. '' and [] when none."""
+    from .notes import short_ref
+    from .note_format import sections
+    from .session_start import gist
+    from .runtime import _unseen
+    domain=hit['domain'];linked={t.strip().casefold() for t in LINK.findall(sections(str(hit.get('body',''))).get('links',''))}
+    def inside(note):
+        raw=note.get('files')
+        if isinstance(raw,str):
+            try:raw=json.loads(raw)
+            except ValueError:raw=[raw]
+        return any((p:=_resolve(f,domain,bindings)) is not None and p.is_relative_to(repo) for f in raw or [])
+    found=[n for n in _rows(domain,root,REPO_NOTE_TYPES)
+           if n['title'].strip().casefold() in linked or (files and inside(n))]
+    lines=[];refs=[];used=0
+    head='Notes about this repo (decisions, bugs, runbooks and policies; read one when it bears on the task):'
+    for n in sorted(found,key=lambda n:n.get('updated',''),reverse=True):
+        ref=f"{domain}:{n['id']}"
+        if ref in exclude or not _unseen(dict(n,domain=domain),shown):continue
+        summary=gist(n);line=f"- {n['type'].upper()} {short_ref(domain,n['id'])} {n['title']}"+(f' — {summary}' if summary else '')
+        if used+len(line)+1>budget-len(head)-1:break
+        lines.append(line);refs.append(ref);used+=len(line)+1
+    return ('\n'.join([head]+lines),refs) if lines else ('',[])
 
 KEYED={'map':('codebase map','REPO','the repo folder they describe','repo'),'brief':('project brief','DIR','the project folder they describe','project')}
 

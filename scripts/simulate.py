@@ -279,6 +279,11 @@ class Sim:
                     if short_ref(*ref.split(':',1)) not in context:fail(f'brief {ref} is logged as injected but is not in the delivered context')
                 briefed={r['ref'] for r in diary if r.get('e')=='inject' and r.get('k')=='prompt-brief'}
                 if briefed!=set(briefs):fail(f'usage diary injected briefs {sorted(briefed)}, log says {sorted(briefs)}')
+                listed=detail.get('briefed') or []
+                for ref in listed:
+                    if short_ref(*ref.split(':',1)) not in context:fail(f'repo note {ref} is logged as listed but is not in the delivered context')
+                repo_noted={r['ref'] for r in diary if r.get('e')=='inject' and r.get('k')=='map-brief'}
+                if repo_noted!=set(listed):fail(f'usage diary listed repo notes {sorted(repo_noted)}, log says {sorted(listed)}')
             if self.content:
                 logged=(line.get('content') or {});delivered={'context':reply.get('context') if event!='pre-compact' else None,'continue_reason':reply.get('reminder')}
                 for key,value in delivered.items():

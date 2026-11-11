@@ -13,8 +13,9 @@ EVENTS=('inject','read','update','check','supersede','confirm','duplicate','reso
 USE=('read','update','check','supersede','confirm','duplicate','resolve','reopen')   # evidence that a note mattered
 NOISY_MIN=3
 # Injection kinds that are standing context rather than an answer retrieved for a question: session-start
-# guidance (the same few notes every session), a repo's codebase map and a project's brief (delivered whole).
-STANDING=('session','prompt-map','prompt-brief')
+# guidance (the same few notes every session), a repo's codebase map and a project's brief (delivered whole), and
+# the one-line summaries of a repo's decisions, bugs and runbooks that follow them (map-brief).
+STANDING=('session','prompt-map','prompt-brief','map-brief')
 LOCK_SECONDS=1
 
 def _path(root,when):return Path(root)/'.turns'/f'usage-{when:%Y-%m-%d}.jsonl'
