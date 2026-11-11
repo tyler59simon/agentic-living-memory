@@ -250,7 +250,7 @@ def parse_text(raw, path=""):
 
 
 # Frontmatter order: the properties a person reads first, then bookkeeping.
-FRONT_KEYS = ("title", "type", "status", "tags", "context", "files")
+FRONT_KEYS = ("title", "type", "status", "tags", "context", "files", "commands")
 SYSTEM_KEYS = ("id", "domain", "created", "updated", "review_by", "confirmed", "supersedes", "superseded_by", "schema_version", "capture_key", "origin")
 MAX_FILES = 30
 
@@ -273,6 +273,20 @@ def clean_files(value):
             raise ValueError("files entries must be single paths of at most 300 characters")
         result.append(text)
     return list(dict.fromkeys(result))[:MAX_FILES]
+
+
+def clean_commands(value):
+    """The `commands` property as a list of single-line command strings, at most MAX_COMMANDS of MAX_CHARS each."""
+    from .commands import MAX_COMMANDS, MAX_CHARS
+    if value in (None, ""):
+        return []
+    items = [value] if isinstance(value, str) else value
+    if not isinstance(items, list) or any(not isinstance(item, str) for item in items):
+        raise ValueError("commands must be a list of strings")
+    result = list(dict.fromkeys(" ".join(item.split()) for item in items if item.strip()))
+    if len(result) > MAX_COMMANDS or any(len(item) > MAX_CHARS for item in result):
+        raise ValueError(f"commands holds at most {MAX_COMMANDS} commands of {MAX_CHARS} characters each")
+    return result
 
 
 def serialize(note):
@@ -417,6 +431,10 @@ def validate(note, domain, root=None, new=False, extra_tags=()):
         raise ValueError("Tags must be a string list")
     if "files" in note and (not isinstance(note["files"], list) or any(not isinstance(f, str) for f in note["files"])):
         raise ValueError("files must be a list of paths")
+    if "commands" in note:
+        from .commands import MAX_COMMANDS, MAX_CHARS
+        if not isinstance(note["commands"], list) or any(not isinstance(c, str) or not c.strip() or len(c) > MAX_CHARS for c in note["commands"]) or len(note["commands"]) > MAX_COMMANDS:
+            raise ValueError(f"commands must be a list of at most {MAX_COMMANDS} strings of {MAX_CHARS} characters each")
     if "confirmed" in note and (not isinstance(note["confirmed"], list) or any(not isinstance(d, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d) for d in note["confirmed"])):
         raise ValueError("confirmed must be a list of YYYY-MM-DD dates")
     taxonomy = read_json(Path(root or memory_root()) / "tag_taxonomy.json", {"tags": []})

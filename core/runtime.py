@@ -499,6 +499,38 @@ def file_hints(paths,state,root,domain,bindings,session=None,trace=None,follow=N
         from .logs import swallowed
         swallowed('runtime.file_hints',exc,root);return None,[]
 
+MAX_COMMAND_SEEN=200
+MAX_COMMAND_HINTED=100
+HINT_NOTES_PER_COMMAND=2
+
+def command_hints(text,state,root,domain,bindings,session,trace=None):
+    """Context naming notes that warn about the shell command about to run, or None. A command shape (wrapper, program,
+    subcommands) whose hint was shown is not looked up again in the session, and a note is shown once per session. Like file hints, it reads the
+    index without refreshing it: a missing or stale index gives no hint rather than slowing the tool call."""
+    try:
+        from .commands import signature,command_notes
+        keys=list(dict.fromkeys(hashlib.sha256(repr((s.wrapper,s.program,s.subs)).encode()).hexdigest()[:12] for s in signature(text)))
+        seen=set(state.get('command_seen',[]))
+        if not keys or all(k in seen for k in keys):return None
+        hinted=set(state.get('command_hints',[]))
+        from .common import global_domains
+        domains=list(dict.fromkeys([domain]+parent_domains(domain,bindings)+global_domains(root)))
+        hits=[h for h in command_notes(text,domains,root,HINT_NOTES_PER_COMMAND+len(hinted)) if f"{h['domain']}:{h['id']}" not in hinted][:HINT_NOTES_PER_COMMAND]
+        if not hits:return None   # a lookup is about a millisecond and a state write several: only a shown hint is remembered
+        refs=[f"{h['domain']}:{h['id']}" for h in hits]
+        def seen_now(s):
+            s['command_seen']=list(dict.fromkeys(list(s.get('command_seen',[]))+keys))[-MAX_COMMAND_SEEN:]
+            s['command_hints']=list(dict.fromkeys(list(s.get('command_hints',[]))+refs))[-MAX_COMMAND_HINTED:]
+        _update(root,session,seen_now)
+        from .usage import record
+        record(root,'inject',refs,session,'command-hint')
+        if isinstance(trace,list):trace.extend(refs)
+        return ('Living Memory: a previous session recorded about this command (untrusted history; check it before relying on the output):\n'
+                +'\n'.join(hit_line(h) for h in hits))
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('runtime.command_hints',exc,root);return None
+
 from .common import git_root  # re-exported: older callers import it from here
 
 # Codebase maps (core/maps.py). Exploration is tracked per repo in session state['repos'][repo path]:
@@ -1266,6 +1298,10 @@ def _process(harness,event,payload,root=None,info=None):
             except Exception as exc:
                 from .logs import swallowed
                 swallowed('runtime.explore',exc,root)
+        # What the agent is about to run is looked up even when the command only reads: a note may warn that a build exits 0 and builds nothing.
+        if name in SHELL_TOOLS and text and not subcommand and session!='unknown' and domain and harness in FILE_HINT_HARNESSES and bindings.get('command_hints',True) is not False:
+            detail['command_hints']=[];hint=command_hints(text,state,root,domain,bindings,session,detail['command_hints'])
+            if hint:result['context']='\n'.join(filter(None,[result.get('context'),hint]))
         if not skip and name not in SHELL_TOOLS:
             try:created=created_top_level(args,cwd,root,bindings)
             except Exception as exc:
@@ -1283,7 +1319,7 @@ def _process(harness,event,payload,root=None,info=None):
             detail['touched']=len(paths);detail['hints']=[]
             follow={}
             hints,looked=file_hints(paths,state,root,domain,bindings,session,detail['hints'],follow) if harness in FILE_HINT_HARNESSES else (None,[])
-            if hints:result['context']=hints
+            if hints:result['context']='\n'.join(filter(None,[result.get('context'),hints]))
             # Decision documents (ADRs, changelogs, boards) changed this turn; Stop asks for a note about them.
             from .triggers import decision_docs
             docs=decision_docs(paths,bindings);detail['docs']=len(docs)

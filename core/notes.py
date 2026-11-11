@@ -4,12 +4,12 @@ import argparse,json,re,uuid
 from datetime import date
 from pathlib import Path
 from .common import memory_root,safe_domain,canonical_domain
-from .repository import inventory,parse,serialize,validate,read_json,transaction,reconcile,store_lock,now,digest,clean_files
+from .repository import inventory,parse,serialize,validate,read_json,transaction,reconcile,store_lock,now,digest,clean_files,clean_commands
 from .note_types import prefix_for,normalize,effective_type,default_review_by,KEYED_TYPES
 from .note_format import format_body,without_actions,ACTION_TYPES
 
 # Fields an agent may change directly (journaled and undoable, no plan) with `update`.
-UPDATABLE=('title','body','tags','type','context','review_by','files')
+UPDATABLE=('title','body','tags','type','context','review_by','files','commands')
 
 def slug(value):return re.sub(r'[^a-z0-9]+','-',value.casefold()).strip('-')[:64] or 'note'
 def taxonomy(root):
@@ -268,7 +268,7 @@ def near_titles(title,notes,low=0.6,high=0.8):
     scored=sorted(((scorer.score(title,n['title']),n) for n in notes),key=lambda s:-s[0])
     return [n for s,n in scored if low<=s<high][:3]
 
-def build_note(title,body,tags,domain,root,note_type='knowledge',context='',key=None,review_by=None,supersedes=(),files=None,origin=None,note_id=None,extra_tags=()):
+def build_note(title,body,tags,domain,root,note_type='knowledge',context='',key=None,review_by=None,supersedes=(),files=None,origin=None,note_id=None,extra_tags=(),commands=None):
     """(path, note, file text) for a new active note, validated like every capture. Writes nothing; capture and
     ingest-plan both create notes through it."""
     stamp=now()
@@ -278,6 +278,8 @@ def build_note(title,body,tags,domain,root,note_type='knowledge',context='',key=
     if supersedes:note['supersedes']=sorted(set(supersedes))
     files=clean_files(files)
     if files:note['files']=files
+    commands=clean_commands(commands)
+    if commands:note['commands']=commands
     if origin:note['origin']=str(origin)
     validate(note,domain,root,new=True,extra_tags=extra_tags)
     path=Path(root)/'domains'/domain/'notes'/f"{note['prefix']} - {slug(title)}-{note['id'][:8]}.md"
@@ -390,7 +392,7 @@ def capture(title,body,tags,domain,root=None,**metadata):
                 raise ValueError(f"possible_duplicate conflict: similar to {ref} \"{match['title']}\" in another project. If it holds for both "
                                  f"projects, run `promote-plan {ref}` and then update it; pass allow_similar only for a genuinely distinct note")
             absorbed=(other,match)   # 'supersede': the new global note replaces the project one
-        review_by=metadata.pop('review_by',None);context=metadata.pop('context','');files=metadata.pop('files',None);origin=metadata.pop('origin',None)
+        review_by=metadata.pop('review_by',None);context=metadata.pop('context','');files=metadata.pop('files',None);origin=metadata.pop('origin',None);commands=metadata.pop('commands',None)
         if metadata:raise ValueError('Unsupported capture metadata: '+', '.join(metadata))
         if selected_type in KEYED_TYPES:
             # One map per repo, one brief per project folder: a second capture would split what the next session reads.
@@ -398,7 +400,7 @@ def capture(title,body,tags,domain,root=None,**metadata):
             conflict=capture_conflict(clean_files(files),domain,root,read_json(root/'bindings.json',{}),set(supersedes),selected_type)
             if conflict:raise ValueError(conflict)
         replaces=supersedes+([absorbed[1]['id']] if absorbed else [])
-        path,note,text=build_note(title,body,tags,domain,root,selected_type,context=context,key=key,review_by=review_by,supersedes=replaces,files=files,origin=origin)
+        path,note,text=build_note(title,body,tags,domain,root,selected_type,context=context,key=key,review_by=review_by,supersedes=replaces,files=files,origin=origin,commands=commands)
         changes={path.relative_to(root).as_posix():text};expected={}
         for old in supersedes:
             # The new note and the retirement of what it replaces commit together.
@@ -454,6 +456,10 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
             files=clean_files(values['files'])
             if files:note['files']=files
             else:note.pop('files',None)
+        if 'commands' in values:
+            commands=clean_commands(values['commands'])
+            if commands:note['commands']=commands
+            else:note.pop('commands',None)
         if 'review_by' in values:
             review=_review_date(values['review_by'])
             if review:note['review_by']=review
@@ -497,7 +503,7 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
     target=path if action=='delete' else folder/f"{note['prefix']} - {slug(note['title'])}-{note_id[:8]}.md"
     # `updated` means the content changed; it drives recency and review age. A tag-, snooze- or files-only edit
     # (triage, backfill) must not reorder recency lists or reset the review clock; confirm never bumps it either.
-    if action!='confirm' and not (action=='update' and set(values)<={'tags','review_by','files'}):note['updated']=now()
+    if action!='confirm' and not (action=='update' and set(values)<={'tags','review_by','files','commands'}):note['updated']=now()
     note['path']=str(target)
     if target.parent!=path.parent and action!='delete':
         # Moving between notes/ and archive/: the note's own relative links must still reach their files.

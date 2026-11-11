@@ -180,8 +180,14 @@ def _stored_vectors(path,identity):
     except (sqlite3.Error,TypeError,IndexError):return {}   # an index from before vectors were tracked, or a damaged one
 
 def note_commands(note):
-    """The shell commands a note records, for the `commands` column (empty until core/commands.py extracts them)."""
-    return list(note.get('commands') or [])
+    """The shell commands a note records, for the `commands` column: its `commands` property plus those found in its text (core/commands.py)."""
+    explicit=[c for c in (note.get('commands') or []) if isinstance(c,str)]
+    try:
+        from .commands import extract
+        return extract(note['title'],note['body'],explicit)
+    except Exception as exc:   # a derived hint must never stop an index rebuild
+        from .logs import swallowed
+        swallowed('search.note_commands',exc,None);return explicit
 
 def rebuild_index(domain,root=None):
     from . import semantic

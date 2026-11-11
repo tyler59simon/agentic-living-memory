@@ -63,6 +63,7 @@ def _file_args(args,domain,root,existing=()):
 def _file_flags(p):
     p.add_argument('--file',action='append',help='A file this note is about, relative to the project (repeatable)')
     p.add_argument('--files',choices=['auto','none'],help="auto: add the files changed this turn (needs --session); none: clear the list")
+    p.add_argument('--command',dest='shell_command',action='append',help='A shell command this note warns about, so running it surfaces the note (repeatable; update adds to the list)')
 
 FACET_FLAGS=('subject','concern','platform','technology')
 CAPTURE_FACETS=FACET_FLAGS+('project','system')
@@ -491,12 +492,13 @@ def main(argv=None):
                 if args.review_by:data['review_by']=args.review_by
                 files,_=_file_args(args,domain,root)
                 if files:data['files']=files
+                if args.shell_command:data['commands']=args.shell_command
             else:
                 # A payload carries its own fields, so a flag beside it would be dropped without a word: refuse it.
                 # The session is the exception: the private-text check, the origin and the receipt depend on it.
                 beside=[('--title',args.title),('--tag',args.tag),('--tags',args.tags),('--prefix',args.prefix),('--type',args.type),('--context',args.context),
                         ('--idempotency-key',args.idempotency_key),('--allow-similar',args.allow_similar),('--supersedes',args.supersedes),
-                        ('--review-by',args.review_by),('--file',args.file),('--files',args.files)]+[('--'+f,getattr(args,f)) for f in CAPTURE_FACETS]
+                        ('--review-by',args.review_by),('--file',args.file),('--files',args.files),('--command',args.shell_command)]+[('--'+f,getattr(args,f)) for f in CAPTURE_FACETS]
                 ignored=[flag for flag,given in beside if given]
                 if ignored:raise ValueError('A JSON payload carries its own fields; put these in the payload instead of passing '+', '.join(ignored))
                 if args.turn and not args.session:raise ValueError('--turn needs --session')
@@ -629,7 +631,7 @@ def main(argv=None):
         elif cmd=='update':
             from .notes import change
             d,n=_reference(args.reference,domain,root)
-            values=_payload(args) if args.payload_file or not any(getattr(args,k) is not None for k in ('title','body','body_file','tag','type','context','review_by','file','files','subject','concern','platform','technology')+SECTION_ARGS+AMEND_ARGS) else {}
+            values=_payload(args) if args.payload_file or not any(getattr(args,k) is not None for k in ('title','body','body_file','tag','type','context','review_by','file','files','shell_command','subject','concern','platform','technology')+SECTION_ARGS+AMEND_ARGS) else {}
             if args.title is not None:values['title']=args.title
             if args.body is not None:values['body']=args.body
             if args.body_file:values['body']=args.body_file.read_text(encoding='utf-8-sig')
@@ -652,6 +654,7 @@ def main(argv=None):
                     private_check(_session_state(root,args.session),values)
                 files,suggested=_file_args(args,d,root,find_note(n,d,root)[1].get('files') or [])
                 if files is not None:values['files']=files
+                if args.shell_command:values['commands']=list(find_note(n,d,root)[1].get('commands') or [])+args.shell_command
                 result=change(n,d,'update',root,revision,**values)
             if replaced:result['replaced']=replaced
             if redacted:result['redacted']=redacted

@@ -7,7 +7,9 @@
     {"key": "commits", "type": "preference", "title": "Prefer small focused commits", "body": "Keep each commit small and focused on one change."},
     {"key": "backups", "type": "decision", "title": "Daily backups keep seven snapshots", "body": "The store is zipped once a day and the newest seven snapshots are kept."},
     {"key": "obsidian", "type": "knowledge", "title": "Obsidian vault sync rules", "body": "Vault edits to title, tags and body are copied back to canonical notes at session end."},
-    {"key": "diagrams", "type": "decision", "title": "Cloud diagrams render elements by role", "body": "Elements with cloud metadata render by role in SVG, Draw.io and Mermaid output."}
+    {"key": "diagrams", "type": "decision", "title": "Cloud diagrams render elements by role", "body": "Elements with cloud metadata render by role in SVG, Draw.io and Mermaid output."},
+    {"key": "mvnw", "type": "bug", "title": "Maven wrapper from Git Bash builds nothing", "body": "Running `cmd /c mvnw.cmd` from Git Bash exits 0 and never starts the build; use ./mvnw."},
+    {"key": "force", "type": "decision", "title": "Force pushes are banned on main", "body": "Never run `git push --force` on main; use `git revert`."}
   ],
   "retrieval": [
     {"prompt": "how do I deploy the package?", "expect": ["@deploy"], "forbid": ["@webcam"]},
@@ -18,6 +20,18 @@
     {"prompt": "what is the weather forecast tomorrow", "expect": []},
     {"prompt": "recommend a good pasta recipe", "expect": []}
   ],
+  "commands": [
+    {"comment": "positive: the exact command, either spelling of the cmd switch", "command": "cmd //c mvnw.cmd -q -B verify", "expect": ["@mvnw"]},
+    {"command": "cmd /c mvnw.cmd verify", "expect": ["@mvnw"]},
+    {"comment": "positive: the fixed command is a related match", "command": "./mvnw -q verify", "expect": ["@mvnw"]},
+    {"command": "FOO=1 git push --force origin main", "expect": ["@force"]},
+    {"comment": "negative: nothing recorded about these", "command": "mvn -q verify", "expect": []},
+    {"command": "git status", "expect": []},
+    {"command": "git push origin feature", "expect": []},
+    {"command": "python -m pytest tests -k cache", "expect": []},
+    {"command": "ls -la && cat README.md", "expect": []}
+  ],
+
   "signals": [
     {"prompt": "from now on, always run the tests first", "kind": "preference"},
     {"prompt": "I prefer tabs over spaces", "kind": "preference"},
