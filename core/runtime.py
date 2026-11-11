@@ -12,7 +12,7 @@ SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 # Tools that cannot change files; anything else marks the turn as mutating.
 READ_TOOLS={'read','read_file','glob','grep','search','view_image','view','ls','list','webfetch','websearch','web_fetch','web_search','todowrite','task','agent','toolsearch','askuserquestion','exitplanmode','enterplanmode'}
 SHELL_TOOLS={'bash','powershell','shell','run_shell_command','exec_command','local_shell','execute'}
-ALLOWED_SUBCOMMANDS={'ask','sources','source-sync','ingest-scan','search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','promote-plan','projects','systems','resolve','reopen','learn'}
+ALLOWED_SUBCOMMANDS={'ask','sources','source-sync','ingest-scan','search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','promote-plan','projects','systems','changes','resolve','reopen','learn'}
 # Subagents are read-only: these are denied for them even though the main agent gets them auto-allowed.
 MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm','resolve','reopen'}
 GLOBAL_OPTIONS={'--root','--domain','--cwd','--actor'}
@@ -71,7 +71,7 @@ def protected_rule(path,cwd,root):
         p=p.resolve();root=Path(root).resolve()
         from .storage import config_path
         if p.is_relative_to(root/'domains'):return 'domains'
-        if p in {root/'bindings.json',root/'tag_taxonomy.json',root/'projects.json',root/'systems.json',root/'sources.json',root/'.relocated.json',config_path().resolve()}:return 'config'
+        if p in {root/'bindings.json',root/'tag_taxonomy.json',root/'projects.json',root/'systems.json',root/'sources.json',root/'changes.json',root/'.relocated.json',config_path().resolve()}:return 'config'
         # Vault edits are auto-applied and vault checkboxes approve plans, so agents must not write there either.
         return 'vault' if any(p.is_relative_to(v/folder) for v in vault_roots(root) for folder in ('Domains','Archive','Dashboards')) else None
     except (ValueError,OSError):return None

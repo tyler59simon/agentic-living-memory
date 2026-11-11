@@ -5,6 +5,8 @@ from test_core import StoreFixture
 from core.cli import main
 from core.note_format import render
 from core.init_domain import init_domain
+from core import backup,runtime
+from core.runtime import protected_rule
 
 CHARTER=render('PayStream turns payment events into alerts.',(),(),(),(),'','')
 BRIEF=render('Process repeated payment events once.',(),(),['Define a durable event key','Verify replay and restart'],(),'','')+'\n\n## Acceptance evidence\n- [ ] Replay produces no duplicate alert\n- [x] Suppression survives a restart'
@@ -170,6 +172,12 @@ class Changes(Fixture):
         code,res=self.cli('--domain','demo','update',ref,stdin=json.dumps({'body':new,'expected_revision':n['revision']}));self.assertEqual(code,0,res)
         self.assertIn('- [x] Replay produces no duplicate alert',self.note(ref)['body'])
         row=self.cli('changes')[1]['changes'][0];self.assertEqual(row['actions']['open']+row['actions']['done'],3)
+
+    def test_backup_and_protection(self):
+        self.create();self.assertIn('changes.json',backup.canonical_files(self.root))
+        self.assertEqual(protected_rule(str(self.root/'changes.json'),str(self.base),self.root),'config')
+        self.assertIn('changes',runtime.ALLOWED_SUBCOMMANDS);self.assertNotIn('change-plan',runtime.ALLOWED_SUBCOMMANDS)
+        self.assertFalse({'changes','change-plan'}&runtime.MUTATING_SUBCOMMANDS)
 
     def test_version_lists_the_commands(self):
         code,v=self.cli('version');self.assertEqual((code,v['api']),(0,2));self.assertIn('changes',v['commands']);self.assertIn('change-plan',v['commands'])
