@@ -1,0 +1,4 @@
+On-call notes for the billing service.
+
+When the dunning queue grows past two thousand invoices, page the payments engineer and pause the retry scheduler.
+The pager rotation changes every Monday at nine.

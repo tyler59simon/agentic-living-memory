@@ -42,7 +42,7 @@ class Sim:
     def env(self):
         homes={h.upper()+'_HOME':str(self.base/('home-'+h)) for h in HARNESSES}
         return {**homes,'LIVING_MEMORY_ROOT':str(self.root),'LIVING_MEMORY_LOG_LEVEL':'debug','LIVING_MEMORY_LOG_CONTENT':'1' if self.content else '',
-                'LIVING_MEMORY_ACTOR':'main'}
+                'LIVING_MEMORY_ACTOR':'main','LIVING_MEMORY_NO_BACKGROUND':'1'}   # the scenario runs source-sync itself: no detached process outlives its sandbox
 
     def build(self):
         from core.init_domain import init_domain
@@ -381,6 +381,11 @@ class Sim:
         if 'result' in e:
             problem=subset(e['result'],record.get('result'))
             if problem:fail('result '+problem)
+        shown=json.dumps(record.get('result'),ensure_ascii=False,separators=(',',':'))
+        for text in e.get('result_contains',[]):
+            if text not in shown:fail(f'result lacks {text!r}')
+        for text in e.get('result_excludes',[]):
+            if text in shown:fail(f'result contains {text!r}')
 
     def finish(self):
         """Every domain validates, doctor is ok and nothing awaits recovery."""

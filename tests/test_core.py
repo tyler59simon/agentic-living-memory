@@ -1,4 +1,4 @@
-import contextlib,io,json,tempfile,unittest
+import contextlib,io,json,os,tempfile,unittest
 from pathlib import Path
 from unittest.mock import patch
 from core import repository as repo
@@ -6,6 +6,9 @@ from core.notes import capture,change,find_note
 from core.search import search_domain,search_domains,rebuild_index,readonly_query
 from core.init_domain import init_domain
 from core import installer_lifecycle as lifecycle
+
+# Hooks start a detached background `source-sync` for bound git repos; no test run should leave one behind (test_sources turns it back on).
+os.environ.setdefault('LIVING_MEMORY_NO_BACKGROUND','1')
 
 class StoreFixture(unittest.TestCase):
     def setUp(self):

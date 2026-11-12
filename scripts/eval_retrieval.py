@@ -29,6 +29,13 @@ def _build(fixture,root):
     for n in fixture['notes']:
         made=capture(n['title'],n['body'],n.get('tags',['subject/project','concern/knowledge']),domain,root,type=n.get('type','knowledge'),allow_similar=True)
         keys[n['key']]=f"{domain}:{made['id']}"
+    if fixture.get('source_files'):
+        # The project holds a git repo of docs and code (a .git folder is all discovery needs): the knowledge base indexes it.
+        from core import sources
+        repo=project/'kb';(repo/'.git').mkdir(parents=True)
+        for rel,text in fixture['source_files'].items():
+            path=repo/rel;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(text,encoding='utf-8')
+        sources.sync(root,domain)
     return str(project),domain,keys
 
 def _resolver(domain,root,keys):
@@ -71,6 +78,24 @@ def evaluate(fixture,root,cwd=None,domain=None,keys=None,harness='claude'):
         started=time.perf_counter();found=[f"{h['domain']}:{h['id']}" for h in command_notes(case['command'],[domain],root,limit=2)]
         command_cases.append({'command':case['command'],'expect':expect,'found':found,'ms':(time.perf_counter()-started)*1000,'hit':bool(set(expect)&set(found)) if expect else None,'false':bool(found) if not expect else None})
     command_positive=[c for c in command_cases if c['expect']];command_negative=[c for c in command_cases if not c['expect']]
+    # Questions only the project's own docs and code answer: ask must cite the file in its top three, the prompt hook must inject an excerpt
+    # of it, and nothing the notes or the sources cannot answer (these and the retrieval and long-prompt negatives) may inject one.
+    source_cases=[]
+    if fixture.get('source_files'):
+        from core import sources
+        for case in fixture.get('sources',[]):
+            started=time.perf_counter();hits=sources.search(root,domain,case['question'],3);ask_ms=(time.perf_counter()-started)*1000
+            started=time.perf_counter();_,keys=runtime.prompt_sources(case['question'],root,domain,{},{});hook_ms=(time.perf_counter()-started)*1000
+            expect=case.get('expect');found=[h['path'] for h in hits]
+            source_cases.append({'question':case['question'],'expect':expect,'found':found,'injected':keys,'ms':ask_ms+hook_ms,
+                                 'hit':expect in found if expect else None,'right':any(f':{expect}:' in k for k in keys) if expect else None,'false':bool(keys) if not expect else None})
+        for case in fixture.get('retrieval',[]):
+            if not case.get('expect'):
+                keys=runtime.prompt_sources(case['prompt'],root,domain,{},{})[1];source_cases.append({'question':case['prompt'],'expect':None,'found':[],'injected':keys,'ms':0,'hit':None,'right':None,'false':bool(keys)})
+        for case in fixture.get('long_prompts',[]):
+            if not case.get('expect'):
+                keys=runtime.prompt_sources(case['prompt'],root,domain,{},{})[1];source_cases.append({'question':case['prompt'][:80]+'…','expect':None,'found':[],'injected':keys,'ms':0,'hit':None,'right':None,'false':bool(keys)})
+    source_positive=[c for c in source_cases if c['expect']];source_negative=[c for c in source_cases if not c['expect']]
     from unittest.mock import patch
     def session(installed):
         # Steady state: the instruction file carries the current block (setup re-run). Fallback: it does not,
@@ -114,6 +139,13 @@ def evaluate(fixture,root,cwd=None,domain=None,keys=None,harness='claude'):
                     'false_hint':_ratio(sum(c['false'] for c in command_negative),len(command_negative)),
                     'misses':[{'command':c['command'],'expect':c['expect'],'found':c['found']} for c in command_positive if not c['hit']],
                     'false_hints':[{'command':c['command'],'found':c['found']} for c in command_negative if c['false']]},
+        'sources':{'cases':len(source_cases),'positive':len(source_positive),'negative':len(source_negative),
+                   'hit@3':_ratio(sum(c['hit'] for c in source_positive),len(source_positive)),'prompt_recall':_ratio(sum(c['right'] for c in source_positive),len(source_positive)),
+                   'false_injection':_ratio(sum(c['false'] for c in source_negative),len(source_negative)),
+                   'mean_ms':round(sum(c['ms'] for c in source_positive)/len(source_positive),1) if source_positive else None,
+                   'misses':[{'question':c['question'],'expect':c['expect'],'found':c['found']} for c in source_positive if not c['hit']],
+                   'prompt_misses':[{'question':c['question'],'expect':c['expect'],'injected':c['injected']} for c in source_positive if not c['right']],
+                   'false_injections':[{'question':c['question'],'injected':c['injected']} for c in source_negative if c['false']]},
         'session':{'chars':len(prefix)+len(text),'fallback_chars':fallback,'budget':session_start.BUDGET,
                    'index_coverage':_ratio(len(listed),len(expected)),
                    'not_listed':[r for r in expected if r not in listed]},
@@ -145,7 +177,7 @@ def run(fixture_path,root=None,semantic_mode=None):
         semantic.USE_SEMANTIC=default;semantic.rebuild_all(store)
 
 def _table(report):
-    r,s,g,lp,cm=report['retrieval'],report['session'],report['signals'],report['long_prompts'],report['commands']
+    r,s,g,lp,cm,src=report['retrieval'],report['session'],report['signals'],report['long_prompts'],report['commands'],report['sources']
     lines=[f"Retrieval: {r['cases']} cases ({r['positive']} positive, {r['negative']} negative)",
            f"  hit@3            {r['hit@3']}   (target >= 0.8)",
            f"  false injection  {r['false_injection']}   (target <= 0.1)",
@@ -160,10 +192,15 @@ def _table(report):
            f"Command hints: {cm['cases']} cases ({cm['positive']} positive, {cm['negative']} negative)",
            f"  recall           {cm['recall']}   (target >= 0.8)",
            f"  false hint       {cm['false_hint']}   (target 0)",
+           *([f"Sources: {src['cases']} cases ({src['positive']} positive, {src['negative']} negative; the negatives include the retrieval and long-prompt ones)",
+              f"  ask hit@3        {src['hit@3']}   (target >= 0.8)",
+              f"  prompt recall    {src['prompt_recall']}   (target >= 0.8)",
+              f"  false injection  {src['false_injection']}   (target 0)",
+              f"  mean ms          {src['mean_ms']}   (ask plus the hook's lookup)"] if src['cases'] else []),
            f"Session start: {s['chars']} chars (target <= {s['budget']}); index coverage {s['index_coverage']}; {s['fallback_chars']} chars if the instruction block is stale",
            f"Signals: {g['cases']} cases; false-arm {g['false_arm']}"]
     lines+=[f"  {k:<11} precision {v['precision']} recall {v['recall']} ({v['cases']} cases)" for k,v in g['per_kind'].items()]
-    for title,rows in (('Misses',r['misses']),('Long-prompt misses',lp['misses']),('Long-prompt false injections',lp['false_injections']),('Command-hint misses',cm['misses']),('Command false hints',cm['false_hints']),('False injections',r['false_injections']),('Forbidden injected',r['forbid_violations']),('Signal errors',g['wrong'])):
+    for title,rows in (('Misses',r['misses']),('Long-prompt misses',lp['misses']),('Long-prompt false injections',lp['false_injections']),('Command-hint misses',cm['misses']),('Command false hints',cm['false_hints']),('Source misses',src['misses']),('Source prompt misses',src['prompt_misses']),('Source false injections',src['false_injections']),('False injections',r['false_injections']),('Forbidden injected',r['forbid_violations']),('Signal errors',g['wrong'])):
         if rows:lines+=[title+':']+[f'  - {json.dumps(row,ensure_ascii=False)}' for row in rows]
     return '\n'.join(lines)
 

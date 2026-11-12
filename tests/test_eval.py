@@ -28,6 +28,12 @@ class SyntheticFixture(unittest.TestCase):
         self.assertGreater(s['fallback_chars'], s['chars'])  # the full protocol is larger than the installed-block lines
         self.assertEqual(s['index_coverage'], 1.0)
         self.assertEqual(g['false_arm'], 0.0)
+        # The knowledge base: questions only the fixture's docs and code answer, and no excerpt for the negatives
+        # (these, the retrieval negatives and the long-prompt negatives).
+        src = report['sources']
+        self.assertEqual((src['positive'], src['negative']), (5, 12))
+        self.assertEqual((src['hit@3'], src['prompt_recall'], src['false_injection']), (1.0, 1.0, 0.0))
+        self.assertEqual((src['misses'], src['prompt_misses'], src['false_injections']), ([], [], []))
         self.assertEqual(g['wrong'], [])
         self.assertEqual(g['per_kind']['preference'], {'precision': 1.0, 'recall': 1.0, 'cases': 2})
 
