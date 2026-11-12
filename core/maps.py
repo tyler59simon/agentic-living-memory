@@ -9,7 +9,7 @@ import json,os,re,sqlite3,subprocess
 from pathlib import Path
 from .common import domain_prefixes,git_root,resolve_domain,memory_root,repo_identity,repo_label,head_oid
 
-MAP_BUDGET=2500
+MAP_BUDGET=3000  # the body, marker included; the header line is extra
 MAX_MAPS=2
 # Repo-name words that say nothing alone ("add a plugin", "the memory of it"); two of them in a row still match.
 COMMON=set('''agentic architecture plugin plugins memory living suite claude codex copilot factory app apps core lib libs
@@ -239,8 +239,12 @@ def map_block(hit,repo,budget=MAP_BUDGET,entry=None):
     """The map's body for a prompt, with a freshness line; bounded."""
     from .notes import short_ref
     from .session_start import _cap
-    head=f"Codebase map for {repo_name(repo)} — {short_ref(hit['domain'],hit['id'])} {hit['title']} ({freshness(hit,repo,entry)})"
-    body=_cap(str(hit.get('body','')).strip(),max(400,budget-len(head)-1))
+    ref=short_ref(hit['domain'],hit['id'])
+    head=f"Codebase map for {repo_name(repo)} — {ref} {hit['title']} ({freshness(hit,repo,entry)})"
+    body=str(hit.get('body','')).strip()
+    if len(body)>budget:
+        marker=f'(truncated; read the rest: read {ref})'
+        body=_cap(body,max(400,budget-len(marker)-1))+'\n'+marker
     return head+'\n'+body
 
 def pointer_line(hit,repo,width=400,entry=None):

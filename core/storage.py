@@ -138,7 +138,7 @@ def _manifest(root):
         if not path.is_file():
             continue
         rel = path.relative_to(root)
-        if rel.parts[0] in ('.turns', 'hooks', '.cache', '__pycache__', 'sources-cache') or path.name in ('.store.lock', '.relocated.json'):
+        if rel.parts[0] in ('.turns', 'hooks', 'logs', '.cache', '__pycache__', 'sources-cache') or path.name in ('.store.lock', '.relocated.json'):
             continue
         if path.name in ('search.sqlite3', 'search.sqlite3-wal', 'search.sqlite3-shm', 'sources.sqlite3') or path.name.startswith('.sources-'):
             continue
@@ -248,6 +248,13 @@ def apply_relocation(identity, expected):
                 if _manifest(destination) != plan['files']:
                     raise ValueError('Destination verification failed; shared location unchanged')
                 validate_store(destination)
+                for log in (source / 'logs').glob('*') if (source / 'logs').is_dir() else []:
+                    try:
+                        if log.is_file() and not log.is_symlink() and not (destination / 'logs' / log.name).exists():
+                            (destination / 'logs').mkdir(exist_ok=True)
+                            shutil.copyfile(log, destination / 'logs' / log.name)
+                    except OSError:
+                        pass  # Log history is best-effort; it never fails a relocation.
                 journal['state'] = 'verified'
                 _write(journal_path, journal)
             if journal['state'] == 'verified':

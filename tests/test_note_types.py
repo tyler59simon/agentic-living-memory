@@ -33,7 +33,7 @@ class NoteTypes(StoreFixture):
             self.assertTrue(path.name.startswith(selected.upper()+' - '))
             self.assertEqual(note['prefix'],selected.upper())
             self.assertEqual(note['schema_version'],3)
-            self.assertNotIn('\nprefix:',path.read_text())
+            self.assertNotIn('\nprefix:',path.read_text(encoding='utf-8'))
 
     def test_mismatched_prefix_and_duplicate_type_are_rejected(self):
         for selected,prefix in [('bug','NOTE'),('decision','BUG'),('knowledge','DECISION')]:
@@ -51,7 +51,7 @@ class NoteTypes(StoreFixture):
             with self.assertRaisesRegex(ValueError,'Invalid note type'):
                 self.note(selected,'New capture '+selected,type=selected)
         progress,first=self.legacy('Earlier milestone','PROGRESS','progress')
-        note=parse(progress);note['schema_version']=3;progress.write_text(serialize(note))
+        note=parse(progress);note['schema_version']=3;progress.write_text(serialize(note),encoding='utf-8')
         correction,second=self.legacy('Earlier correction','NOTE','correction')
         self.assertEqual(parse(progress)['type'],'progress')
         self.assertEqual(parse(correction)['type'],'correction')
@@ -123,7 +123,7 @@ class NoteTypes(StoreFixture):
         self.apply(undo(self.root,proposal['plan_id']))
         self.assertEqual(path.read_bytes(),before)
         proposal=note_type_plan(self.root)
-        path.write_text(path.read_text().replace('Legacy body','Modified body'))
+        path.write_text(path.read_text(encoding='utf-8').replace('Legacy body','Modified body'),encoding='utf-8')
         with self.assertRaises(ValueError):self.apply(proposal)
 
     def test_single_note_rename_cannot_override_prefix(self):
@@ -145,7 +145,7 @@ class NoteTypes(StoreFixture):
         note.update(id=str(uuid.uuid4()),type='bug',title='From overlay',body='An issue entered in the overlay')
         vault=self.base/'vault';incoming=vault/'Domains/demo/arbitrary-name.md'
         incoming.parent.mkdir(parents=True)
-        incoming.write_text(serialize(note))
+        incoming.write_text(serialize(note),encoding='utf-8')
         results=sync('demo',vault,self.root)
         self.assertEqual(results['plans'],[]);self.assertEqual(len(results['applied']),1)
         path,note=find_note(note['id'],'demo',self.root)

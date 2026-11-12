@@ -307,6 +307,52 @@ class MapsPerRepo(Cli):
         self.assertEqual(find_note(other['id'], 'demo', self.root)[1]['type'], 'knowledge')
 
 
+class Map1Truncation(Cli):
+    """MAP-1: a map cut to the budget says so and names the note to read."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo = self.base / 'project' / 'billing-api-service'
+        (self.repo / '.git').mkdir(parents=True)
+
+    def inject(self, lines):
+        details = [x for line in lines for x in ('--detail', line)]
+        note = self.ok('capture', '--type', 'map', '--file', str(self.repo), '--title', 'billing-api-service codebase map',
+                       '--summary', 'What billing is.', *details)
+        runtime.process('claude', 'session-start', {'cwd': str(self.base / 'project'), 'session_id': 's1'}, self.root)
+        out = runtime.process('claude', 'user-prompt', {'cwd': str(self.base / 'project'), 'session_id': 's1', 'prompt': 'fix billing-api-service'}, self.root)
+        return note['id'], out['context']
+
+    def lines(self, count):
+        return [f'**Module {i:02d}:** ' + 'x' * 60 for i in range(count)]
+
+    def test_a_long_map_gets_a_marker_with_its_short_ref_within_the_bound(self):
+        from core.maps import MAP_BUDGET, map_block
+        NL = chr(10)
+        hit = {'domain': 'demo', 'id': 'abcdef1234567890', 'title': 'T', 'body': NL.join(f'- line {i} ' + 'y' * 60 for i in range(80))}
+        block = map_block(hit, self.repo, entry={})
+        head, body = block.split(NL, 1)
+        self.assertTrue(body.endswith('(truncated; read the rest: read demo:abcdef12)'), body[-80:])
+        self.assertIn('demo:abcdef12', head)
+        self.assertLessEqual(len(body), MAP_BUDGET)
+
+    def test_a_map_between_2500_and_3000_characters_is_injected_whole(self):
+        nid, text = self.inject(self.lines(36))
+        body = self.body(nid)
+        self.assertTrue(2500 < len(body.strip()) < 3000, len(body))
+        self.assertIn('Module 35', text)
+        self.assertNotIn('truncated; read the rest', text)
+
+    def test_a_short_map_is_unchanged(self):
+        nid, text = self.inject(self.lines(2))
+        self.assertIn('Module 01', text)
+        self.assertNotIn('truncated; read the rest', text)
+
+    def test_the_injected_long_map_carries_the_marker(self):
+        nid, text = self.inject(self.lines(60))
+        self.assertIn('(truncated; read the rest: read demo:' + nid[:8] + ')', text)
+
+
 class NoisyNotes(StoreFixture):
     """LIFE-3: standing context that nobody reads is not noise."""
 
@@ -828,6 +874,110 @@ class Priv1ShingleCap(unittest.TestCase):
             private.check(state, {'title': 'red fox jumps'})
         with self.assertRaisesRegex(ValueError, 'private_content'):
             private.check(state, {'title': 'Blue Harbor'})
+
+
+class Gov4RetagSourceTypo(Cli):
+    def test_unknown_source_tag_fails(self):
+        self.note()
+        code, out, err = self.run_cli('retag-plan', stdin=json.dumps({'concern/archtecture': 'concern/decision'}))
+        self.assertNotEqual(code, 0, out)
+        self.assertEqual(err['error']['message'], 'Unknown source tags: concern/archtecture; check the spelling with taxonomy')
+
+    def test_real_source_tag_still_plans(self):
+        self.note()
+        out = self.ok('retag-plan', stdin=json.dumps({'concern/architecture': 'concern/decision'}))
+        self.assertTrue(out['plan_id'])
+
+
+class Sto1RelocationLogs(unittest.TestCase):
+    def test_log_written_between_plan_and_apply(self):
+        from test_storage import SharedStorage
+
+        class Case(SharedStorage):
+            def runTest(self):
+                plan = self.plan()
+                logs = self.root / 'logs'
+                logs.mkdir()
+                (logs / 'log-2026-01-01.jsonl').write_text('{"event":"x"}\n')
+                result = self.apply(plan)
+                self.assertEqual(result['status'], 'committed')
+                self.assertTrue((Path(plan['destination']) / 'logs' / 'log-2026-01-01.jsonl').exists())
+        case = Case()
+        res = unittest.TestResult()
+        case.run(res)
+        self.assertTrue(res.wasSuccessful(), res.errors + res.failures)
+
+
+class Sto3GlobalBundle(StoreFixture):
+    def test_global_round_trip(self):
+        note = capture('Global habit', 'Always verify.', TAGS, '_global', self.root)
+        bundle = self.base / 'g.zip'
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertEqual(cli(['--root', str(self.root), '--domain', '_global', 'export', '--out', str(bundle)]), 0, err.getvalue())
+        find_note(note['id'], '_global', self.root)[0].unlink()
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertEqual(cli(['--root', str(self.root), 'import-plan', str(bundle)]), 0, err.getvalue())
+        plan = json.loads(out.getvalue())
+        apply(self.root, plan['plan_id'], plan['digest'])
+        self.assertTrue(find_note(note['id'], '_global', self.root)[1])
+
+
+class Cli3RefResolution(Cli):
+    def cap(self, title, *extra):
+        return self.ok('capture', '--title', title, '--summary', 'Body of ' + title, '--type', 'knowledge', '--tag', 'subject/project', '--tag', 'concern/architecture', *extra)
+
+    def test_supersedes_accepts_title_and_short_ref(self):
+        a = self.cap('Alpha cache rule')
+        self.cap('Beta cache rule', '--supersedes', 'alpha CACHE rule')
+        self.assertEqual(find_note(a['id'], 'demo', self.root)[1]['status'], 'superseded')
+        c = self.cap('Gamma note')
+        self.cap('Delta note', '--supersedes', 'demo:' + c['id'][:8])
+        self.assertEqual(find_note(c['id'], 'demo', self.root)[1]['status'], 'superseded')
+
+    def test_supersedes_payload_file_title(self):
+        a = self.cap('Epsilon rule')
+        payload = self.base / 'p.json'
+        payload.write_text(json.dumps({'title': 'Zeta rule', 'body': 'Zeta body.', 'tags': TAGS, 'supersedes': ['Epsilon rule']}))
+        self.ok('capture', '--payload-file', str(payload))
+        self.assertEqual(find_note(a['id'], 'demo', self.root)[1]['status'], 'superseded')
+
+    def test_supersedes_other_domain_is_rejected(self):
+        g = capture('Global habit', 'Always verify.', TAGS, '_global', self.root)
+        code, _, err = self.run_cli('capture', '--title', 'Local habit', '--summary', 'Local.', '--type', 'knowledge', '--tag', 'subject/project', '--tag', 'concern/architecture', '--supersedes', 'Global habit')
+        self.assertNotEqual(code, 0)
+        code, _, err = self.run_cli('capture', '--title', 'Local habit', '--summary', 'Local.', '--type', 'knowledge', '--tag', 'subject/project', '--tag', 'concern/architecture', '--supersedes', '_global:' + g['id'][:8])
+        self.assertNotEqual(code, 0)
+        self.assertIn('--supersedes must name a note in demo', json.dumps(err))
+        self.assertEqual(find_note(g['id'], '_global', self.root)[1].get('status', 'active'), 'active')
+
+    def test_capture_finalize_note_forms(self):
+        a = self.note('Finalize alpha')
+        b = self.note('Finalize beta')
+        self.prompt('sf', turn='t1')
+        self.ok('capture-finalize', '--session', 'sf', '--turn', 't1', '--note', a['id'][:8])
+        self.assertEqual(receipt('sf', 't1', self.root)['notes'], ['demo:' + a['id']])
+        self.ok('capture-finalize', '--session', 'sf', '--turn', 't1', '--note', 'finalize BETA')
+        self.assertEqual(receipt('sf', 't1', self.root)['notes'], ['demo:' + a['id'], 'demo:' + b['id']])
+
+    def test_history_note_forms(self):
+        a = self.note('History subject')
+        self.ok('update', a['id'], '--body', 'Changed body.')
+        for ref in ('History subject', 'demo:' + a['id'][:8], 'demo:' + a['id']):
+            rows = self.ok('history', '--note', ref)
+            self.assertIn('update', [r['kind'] for r in rows], ref)
+        code, out, err = self.run_cli('history', '--note', 'nosuchnote')
+        self.assertNotEqual(code, 0)
+        self.assertIsNone(out)
+        self.assertTrue(err)
+
+    def test_history_of_a_deleted_note_by_full_id(self):
+        a = self.note('Deleted subject')
+        plan = self.ok('plan', 'delete', a['id'])
+        self.ok('apply', plan['plan_id'], '--expected-plan-sha256', plan['digest'])
+        for ref in (a['id'], 'demo:' + a['id']):
+            self.assertTrue(self.ok('history', '--note', ref), ref)
 
 
 if __name__ == '__main__':
