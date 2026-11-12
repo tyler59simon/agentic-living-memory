@@ -64,6 +64,7 @@ def _file_flags(p):
     p.add_argument('--file',action='append',help='A file this note is about, relative to the project (repeatable)')
     p.add_argument('--files',choices=['auto','none'],help="auto: add the files changed this turn (needs --session); none: clear the list")
     p.add_argument('--command',dest='shell_command',action='append',help='A shell command this note warns about, so running it surfaces the note (repeatable; update adds to the list)')
+    p.add_argument('--source',action='append',help='A file this note digests (relative to the project, or absolute; repeatable): its path and current hash are stored, and the note reads STALE once the file changes')
 
 FACET_FLAGS=('subject','concern','platform','technology')
 CAPTURE_FACETS=FACET_FLAGS+('project','system')
@@ -223,7 +224,7 @@ def _sectioned(args,body=''):
     return render(args.summary or '',args.detail or (),args.link or (),args.action or (),args.done or (),args.important or '',body)
 
 # source-sync writes only the derived knowledge-base index (as search --rebuild does the notes' one), so subagents and viewers may run it.
-READ_ONLY={'search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','ask','sources','source-sync'}
+READ_ONLY={'search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','ask','sources','source-sync','ingest-scan'}
 # Viewer: a human-facing app browsing the store. Read-only, and its reads are not usage evidence for the diary.
 VIEWER=READ_ONLY|{'taxonomy','review','diff','inspect-plan'}
 SERVE_API=2
@@ -322,6 +323,10 @@ def _note_hits(root,domain,query,scope,limit,rebuild,filters,config,globals_,pri
     domains=list(dict.fromkeys(sorted(load_bindings(root).get('domains',{}))+globals_)) if scope=='all' else primary
     hits=run(domains);fallback=False
     if not hits and scope=='fallback' and foreign:domains=foreign;hits=run(domains);fallback=True
+    from . import digests
+    digests.mark(hits,root,config)
+    for hit in hits:
+        if hit.get('stale'):hit['snippet']=f"{hit['stale']} — {hit.get('snippet','')}"
     for hit in hits:hit['sourceScope']='active' if hit['domain']==domain else 'global' if hit['domain'] in globals_ else 'foreign';hit.pop('path',None)
     result={'ok':True,'mode':scope,'domains':domains,'fallback':fallback,'relevant':gated,'results':hits}
     if hits and not gated:result['hint']='No note passed the relevance check; these are the closest matches, least likely to apply.'
@@ -460,6 +465,8 @@ def main(argv=None):
     p=sub('source-plan');p.add_argument('action',choices=['add','remove','implicit']);p.add_argument('--payload-file',type=Path)
     p=sub('sources')
     p=sub('source-sync');p.add_argument('name',nargs='?',help='One source; default: all of the domain');p.add_argument('--rebuild',action='store_true',help='Drop and re-read what was indexed (all sources, or just NAME)')
+    p=sub('ingest-scan');p.add_argument('--source',help='One source (a `sources` name); default: all of the domain');p.add_argument('--limit',type=int,default=50);p.add_argument('--changed',action='store_true',help='Only files with no digest yet or a stale one')
+    p=sub('ingest-skip');p.add_argument('--payload-file',type=Path)
     p=sub('ask');p.add_argument('query',nargs='+',help='A question about the project');p.add_argument('--limit',type=int,default=5,help='Notes and source excerpts shown, at most, of each')
     p=sub('batch');p.add_argument('--payload-file',type=Path)
     p=sub('retag-plan');p.add_argument('--payload-file',type=Path)
@@ -548,12 +555,16 @@ def main(argv=None):
                 files,_=_file_args(args,domain,root)
                 if files:data['files']=files
                 if args.shell_command:data['commands']=args.shell_command
+                if args.source:
+                    from .digests import describe
+                    data['sources']=[describe(root,domain,v,cwd) for v in args.source]
+                    if len(args.source)==1 and not args.idempotency_key:data['idempotency_key']=f"digest:{data['sources'][0]['path']}:{data['sources'][0]['sha256']}"   # a rerun finds its digest
             else:
                 # A payload carries its own fields, so a flag beside it would be dropped without a word: refuse it.
                 # The session is the exception: the private-text check, the origin and the receipt depend on it.
                 beside=[('--title',args.title),('--tag',args.tag),('--tags',args.tags),('--prefix',args.prefix),('--type',args.type),('--context',args.context),
                         ('--idempotency-key',args.idempotency_key),('--allow-similar',args.allow_similar),('--supersedes',args.supersedes),
-                        ('--review-by',args.review_by),('--file',args.file),('--files',args.files),('--command',args.shell_command)]+[('--'+f,getattr(args,f)) for f in CAPTURE_FACETS]
+                        ('--review-by',args.review_by),('--file',args.file),('--files',args.files),('--command',args.shell_command),('--source',args.source)]+[('--'+f,getattr(args,f)) for f in CAPTURE_FACETS]
                 ignored=[flag for flag,given in beside if given]
                 if ignored:raise ValueError('A JSON payload carries its own fields; put these in the payload instead of passing '+', '.join(ignored))
                 if args.turn and not args.session:raise ValueError('--turn needs --session')
@@ -675,7 +686,7 @@ def main(argv=None):
         elif cmd=='update':
             from .notes import change
             d,n=_reference(args.reference,domain,root)
-            values=_payload(args) if args.payload_file or not any(getattr(args,k) is not None for k in ('title','body','body_file','tag','type','context','review_by','file','files','shell_command','subject','concern','platform','technology')+SECTION_ARGS+AMEND_ARGS) else {}
+            values=_payload(args) if args.payload_file or not any(getattr(args,k) is not None for k in ('title','body','body_file','tag','type','context','review_by','file','files','shell_command','source','subject','concern','platform','technology')+SECTION_ARGS+AMEND_ARGS) else {}
             if args.title is not None:values['title']=args.title
             if args.body is not None:values['body']=args.body
             if args.body_file:values['body']=args.body_file.read_text(encoding='utf-8-sig')
@@ -699,6 +710,10 @@ def main(argv=None):
                     private_check(_session_state(root,args.session),values)
                 files,suggested=_file_args(args,d,root,find_note(n,d,root)[1].get('files') or [])
                 if files is not None:values['files']=files
+                if args.source:
+                    from .digests import describe
+                    new=[describe(root,d,v,cwd) for v in args.source]   # the file's hash now; a path already listed takes the new hash
+                    values['sources']=[s for s in find_note(n,d,root)[1].get('sources') or [] if s['path'] not in {x['path'] for x in new}]+new
                 result=change(n,d,'update',root,revision,**values)
             if replaced:result['replaced']=replaced
             if redacted:result['redacted']=redacted
@@ -719,9 +734,11 @@ def main(argv=None):
             elif domain:domains=[domain]
             else:raise ValueError('unbound_project')
             pool=[dict(n,domain=d) for d in domains for n in inventory(d,root) if all(t in (n.get('tags') or []) for t in args.tag)]
-            due=review_order([n for n in pool if review_due(n)],used_refs(root),None if args.all_domains else domain)
-            result={'ok':True,'domain':None if args.all_domains else domain,'due':len(due),'notes':[{'ref':f"{n['domain']}:{n['id']}",'title':n['title'],'type':n.get('type'),'updated':str(n.get('updated',''))[:10],'review_by':n.get('review_by'),'confirmed':last_confirmed(n),'revision':n['revision'],'domain':n['domain']} for n in due[:max(1,min(100,args.limit))]],
-                    'hint':'For each note: still true -> confirm REF; changed -> update REF; replaced -> supersede it; obsolete -> ask for an archive plan. Never-confirmed notes nobody has read lately come first.'}
+            from .digests import stale_note
+            bindings=load_bindings(root);stale={k:v for k,v in {(n['domain'],n['id']):stale_note(n,root,bindings) for n in pool if n.get('sources')}.items() if v}   # digests whose source file changed
+            due=review_order([n for n in pool if review_due(n) or (n['domain'],n['id']) in stale],used_refs(root),None if args.all_domains else domain)
+            result={'ok':True,'domain':None if args.all_domains else domain,'due':len(due),'stale_digests':len(stale),'notes':[{**({'stale':stale[(n['domain'],n['id'])]} if (n['domain'],n['id']) in stale else {}),'ref':f"{n['domain']}:{n['id']}",'title':n['title'],'type':n.get('type'),'updated':str(n.get('updated',''))[:10],'review_by':n.get('review_by'),'confirmed':last_confirmed(n),'revision':n['revision'],'domain':n['domain']} for n in due[:max(1,min(100,args.limit))]],
+                    'hint':'For each note: still true -> confirm REF; changed -> update REF; replaced -> supersede it; obsolete -> ask for an archive plan. A STALE digest: read its source, then update REF (or confirm REF if it still holds). Never-confirmed notes nobody has read lately come first.'}
         elif cmd=='open':
             from .notes import open_work,short_ref
             from .runtime import parent_domains
@@ -883,6 +900,16 @@ def main(argv=None):
         elif cmd=='sources':
             from .sources import listing
             result=listing(root,domain)
+        elif cmd=='ingest-scan':
+            from .digests import scan
+            if not domain:raise ValueError('unbound_project')
+            result=scan(root,domain,args.source,max(1,min(100000,args.limit)),args.changed,load_bindings(root))
+        elif cmd=='ingest-skip':
+            from .digests import record_skips
+            if not domain:raise ValueError('unbound_project')
+            data=_payload(args);items=data.get('skipped') if isinstance(data,dict) else data
+            if not isinstance(items,list):raise ValueError('ingest-skip takes {"skipped": [{"path", "reason"}, ...]}')
+            with store_lock(root):result={'ok':True,'domain':domain,'recorded':record_skips(root,domain,items,cwd,load_bindings(root))}
         elif cmd=='source-sync':
             from .sources import sync
             if not domain:raise ValueError('unbound_project')

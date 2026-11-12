@@ -209,19 +209,29 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
     open_header,open_lines,open_items=_open_lines(active,root,bindings,project)
     brief=_brief_line(cwd,root,bindings,currency)
 
+    flagged={}
+    def flag(n):
+        """`STALE: a.md changed since this digest — ` before the title of a digest whose source file changed (core/digests.py); '' for any other note."""
+        if not n.get('sources'):return ''
+        key=(n['domain'],n['id'])
+        if key not in flagged:
+            from .digests import stale_note
+            text=stale_note(n,root,bindings);flagged[key]=text+' — ' if text else ''
+        return flagged[key]
+
     def render(listed,opened,width,search,titles_only,with_tail=True,psummary=True,with_brief=True,gcount=0,gsnip=True,summaries=False):
         lines=[header]+([_project_line(project,root,psummary)] if project else here)+([brief] if brief and with_brief else [])+last
         for n in guidance:
-            line=f"- [{str(n.get('type','note')).upper()} {_updated(n)[:10]}] {short_ref(n['domain'],n['id'])} {_title(n['title'])}"
+            line=f"- [{str(n.get('type','note')).upper()} {_updated(n)[:10]}] {short_ref(n['domain'],n['id'])} {flag(n)}{_title(n['title'])}"
             lines.append(line if titles_only else line+' — '+snippet(n.get('body',''),[],width))
         if gcount:
             lines.append('Known gotchas (pitfalls met before; check them before repeating the mistake):')
             for n in gotchas[:gcount]:
-                line=f"- [{str(n.get('type','note')).upper()} {_updated(n)[:10]}] {short_ref(n['domain'],n['id'])} {_title(n['title'])}"
+                line=f"- [{str(n.get('type','note')).upper()} {_updated(n)[:10]}] {short_ref(n['domain'],n['id'])} {flag(n)}{_title(n['title'])}"
                 lines.append(line+' — '+snippet(n.get('body',''),[],width) if gsnip else line)
         if listed:
             lines.append('Other notes ('+('summaries' if summaries else 'titles only')+'; read one when it bears on the task):')
-            lines+=[f"- {str(n.get('type','note')).upper()} {_updated(n)[:10]} {short_ref(n['domain'],n['id'])} {_title(n['title'])}"+(f' — {gist(n)}' if summaries and gist(n) else '')+f" (~{_cost(n)}t)" for n in index[:listed]]
+            lines+=[f"- {str(n.get('type','note')).upper()} {_updated(n)[:10]} {short_ref(n['domain'],n['id'])} {flag(n)}{_title(n['title'])}"+(f' — {gist(n)}' if summaries and gist(n) else '')+f" (~{_cost(n)}t)" for n in index[:listed]]
         # Section C: unchecked Action Items, so "where were we?" has an answer before any search.
         if open_header and (opened or open_items):lines+=[open_header]+open_lines[:opened]
         if listed or guidance or opened:lines.append(FOOTER_READ+(FOOTER_SEARCH if search else ''))

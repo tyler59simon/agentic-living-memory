@@ -136,21 +136,24 @@ def file_notes(path,domains,root=None,limit=2,ensure_fresh=True):
         if not db_path.exists():continue
         try:
             db=sqlite3.connect(db_path.as_uri()+'?mode=ro',uri=True)
-            try:rows=db.execute("SELECT id,title,type,updated,files,body,path,revision FROM notes WHERE status='active'").fetchall()
+            try:
+                try:rows=db.execute("SELECT id,title,type,updated,files,body,path,revision,sources FROM notes WHERE status='active'").fetchall()
+                except sqlite3.OperationalError:rows=[r+('',) for r in db.execute("SELECT id,title,type,updated,files,body,path,revision FROM notes WHERE status='active'")]   # an index from before digests
             finally:db.close()
         except sqlite3.Error:continue
         from .learning import published
         try:manifests,servable=published(root,domain)
         except (ValueError,OSError):manifests,servable={},set()
-        for note_id,title,kind,updated,files,body,note_path,revision in rows:
+        for note_id,title,kind,updated,files,body,note_path,revision,digested in rows:
             if note_id in manifests and note_id not in servable:continue
-            try:listed=json.loads(files or '[]')
-            except ValueError:listed=[]
-            group=0 if file_matches(listed,path) else 1 if mentions_file(body,path) else None
+            try:listed=json.loads(files or '[]');digest_sources=json.loads(digested or '[]')
+            except ValueError:listed=[];digest_sources=[]
+            group=0 if file_matches(listed+[s['path'] for s in digest_sources],path) else 1 if mentions_file(body,path) else None
             if group is not None and not ensure_fresh and not _unchanged(note_path,revision):continue
             if group is not None:
                 ranked.append((group,str(updated or ''),{'id':note_id,'domain':domain,'title':title,'type':kind or 'knowledge','updated':str(updated or '')[:10],
                                'match':'files' if group==0 else 'body','snippet':snippet(body,terms(path))}))
+                if digest_sources:ranked[-1][2]['sources']=digest_sources
                 if note_id in manifests:
                     ranked[-1][2].update(procedure_id=manifests[note_id]['id'],procedure_version=manifests[note_id]['current_version'])
     ranked.sort(key=lambda r:r[1],reverse=True);ranked.sort(key=lambda r:r[0])
@@ -198,15 +201,15 @@ def rebuild_index(domain,root=None):
         fd,name=tempfile.mkstemp(prefix='.search-',suffix='.sqlite3',dir=directory);os.close(fd)
         db=sqlite3.connect(name)
         try:
-            db.execute('CREATE TABLE notes(domain TEXT,id TEXT,prefix TEXT,title TEXT,type TEXT,status TEXT,created TEXT,updated TEXT,review_by TEXT,context TEXT,tags TEXT,body TEXT,path TEXT,sha256 TEXT,revision TEXT,schema_version INTEGER,files TEXT,commands TEXT,repo TEXT,PRIMARY KEY(domain,id))')
+            db.execute('CREATE TABLE notes(domain TEXT,id TEXT,prefix TEXT,title TEXT,type TEXT,status TEXT,created TEXT,updated TEXT,review_by TEXT,context TEXT,tags TEXT,body TEXT,path TEXT,sha256 TEXT,revision TEXT,schema_version INTEGER,files TEXT,commands TEXT,repo TEXT,sources TEXT,PRIMARY KEY(domain,id))')
             db.execute('CREATE TABLE vocab(stem TEXT PRIMARY KEY,df INTEGER NOT NULL)')
             db.execute("CREATE VIRTUAL TABLE notes_fts USING fts5(title,tags,body,tokenize='porter unicode61')")
             db.execute('CREATE TABLE metadata(fingerprint TEXT,vectors TEXT)')
             if model:db.execute('CREATE TABLE vectors(rowid INTEGER PRIMARY KEY,vec BLOB NOT NULL)')
             df=Counter()
             for n in notes:
-                values=(domain,n['id'],n.get('prefix','NOTE'),n['title'],n.get('type','knowledge'),n.get('status','active'),n.get('created'),n.get('updated'),n.get('review_by'),n.get('context',''),json.dumps(n.get('tags',[])),n['body'],n['path'],n['digest'],n['revision'],n.get('schema_version',1),json.dumps(n.get('files') or []),json.dumps(note_commands(n)),n.get('repo') or '')
-                cursor=db.execute('INSERT INTO notes VALUES('+','.join('?'*19)+')',values)
+                values=(domain,n['id'],n.get('prefix','NOTE'),n['title'],n.get('type','knowledge'),n.get('status','active'),n.get('created'),n.get('updated'),n.get('review_by'),n.get('context',''),json.dumps(n.get('tags',[])),n['body'],n['path'],n['digest'],n['revision'],n.get('schema_version',1),json.dumps(n.get('files') or []),json.dumps(note_commands(n)),n.get('repo') or '',json.dumps(n.get('sources') or []))
+                cursor=db.execute('INSERT INTO notes VALUES('+','.join('?'*20)+')',values)
                 if n.get('status','active')=='active':df.update(stems(n['title']+' '+n['body']))
                 db.execute('INSERT INTO notes_fts(rowid,title,tags,body) VALUES(?,?,?,?)',(cursor.lastrowid,n['title'],' '.join(n.get('tags',[])),n['body']))
                 if not model:continue
@@ -367,6 +370,7 @@ def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False):
                            'tags':note.get('tags',[]),'status':note.get('status','active'),'snippet':snippet(note['body'],tokens),'score':score,'rank':len(output)+1,'engine':engine,
                            'revision':note['revision'],'sourceField':field,'sourceScope':'active','coverage':coverage[note['id']],
                            'titleOverlap':len(wanted&title),'titleTerms':len(title),'queryTerms':len(wanted),'relevance':round(coverage[note['id']],2)})
+            if note.get('sources'):output[-1]['sources']=note['sources']
             if note.get('learning_procedure'):
                 output[-1].update(procedure_id=note['learning_procedure'],procedure_version=note['learning_version'],evidence_status=note.get('learning_state'))
             if similarity is not None:output[-1]['similarity']=round(similarity.get(note['id'],0.0),4)

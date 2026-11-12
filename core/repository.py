@@ -250,7 +250,7 @@ def parse_text(raw, path=""):
 
 
 # Frontmatter order: the properties a person reads first, then bookkeeping.
-FRONT_KEYS = ("title", "type", "status", "tags", "context", "files", "commands")
+FRONT_KEYS = ("title", "type", "status", "tags", "context", "files", "commands", "sources")
 SYSTEM_KEYS = ("id", "domain", "created", "updated", "review_by", "confirmed", "supersedes", "superseded_by", "schema_version", "capture_key", "origin", "repo")
 MAX_FILES = 30
 
@@ -287,6 +287,30 @@ def clean_commands(value):
     if len(result) > MAX_COMMANDS or any(len(item) > MAX_CHARS for item in result):
         raise ValueError(f"commands holds at most {MAX_COMMANDS} commands of {MAX_CHARS} characters each")
     return result
+
+
+MAX_SOURCES = 20
+SHA256 = re.compile(r"[0-9a-f]{64}")
+
+
+def check_sources(value):
+    """The `sources` property must be a list of at most MAX_SOURCES {path, sha256} objects (path text of at most 300 characters, sha256 64 hex digits)."""
+    if not isinstance(value, list) or len(value) > MAX_SOURCES:
+        raise ValueError(f"sources must be a list of at most {MAX_SOURCES} {{path, sha256}} objects")
+    for item in value:
+        if (not isinstance(item, dict) or set(item) != {"path", "sha256"} or not isinstance(item["path"], str) or not item["path"].strip()
+                or len(item["path"]) > 300 or "\n" in item["path"] or not isinstance(item["sha256"], str) or not SHA256.fullmatch(item["sha256"])):
+            raise ValueError("sources entries are {path (text of at most 300 characters), sha256 (64 hex digits)}")
+
+
+def clean_sources(value):
+    """The `sources` property as a validated list, one entry per path (a later entry replaces an earlier one), forward slashes."""
+    if value in (None, ""):
+        return []
+    if isinstance(value, list):
+        value = [dict(item, path=item["path"].strip().replace("\\", "/")) if isinstance(item, dict) and isinstance(item.get("path"), str) else item for item in value]
+    check_sources(value)
+    return list({item["path"]: {"path": item["path"], "sha256": item["sha256"]} for item in value}.values())
 
 
 def serialize(note):
@@ -431,6 +455,8 @@ def validate(note, domain, root=None, new=False, extra_tags=()):
         raise ValueError("Tags must be a string list")
     if "files" in note and (not isinstance(note["files"], list) or any(not isinstance(f, str) for f in note["files"])):
         raise ValueError("files must be a list of paths")
+    if "sources" in note:
+        check_sources(note["sources"])
     if "repo" in note and not isinstance(note["repo"], str):
         raise ValueError("repo must be text (the git identity of the folder a map or brief is about)")
     if "commands" in note:

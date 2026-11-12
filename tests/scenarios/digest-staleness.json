@@ -1,0 +1,37 @@
+{
+ "name": "digest-staleness",
+ "description": "A digest note records the files it was written from (sources: path and sha256). When a listed file changes after the digest, SessionStart lines, prompt hits, file hints and ask results say STALE with the path, review lists it, and editing the file asks about the digest at Stop; a digest of an unchanged file is never flagged, and confirming the stale one (the author checked the file) clears the flag everywhere.",
+ "harnesses": ["claude", "codex"],
+ "git": [
+  {"folder": "project/billing", "commits": [
+   {"when": "old", "files": {
+    "README.md": "# Billing\n\nFailed payment captures are retried with exponential backoff.\n",
+    "src/ledger.py": "def reconcile_ledger(db):\n    return db.read('balance_snapshot')\n"}},
+   {"when": "later", "files": {"README.md": "# Billing\n\nFailed payment captures are retried with exponential backoff, capped at five tries.\n"}}
+  ]}
+ ],
+ "notes": [
+  {"key": "readme", "title": "billing/README.md: retry policy", "sources": ["billing/README.md"], "files": ["billing/README.md"],
+   "body": "Failed payment captures are retried with exponential backoff (billing/README.md:3).", "tags": ["subject/project", "concern/architecture"]},
+  {"key": "ledger", "title": "billing/src/ledger.py: nightly reconciliation", "sources": ["billing/src/ledger.py"], "files": ["billing/src/ledger.py"],
+   "body": "reconcile_ledger reads the balance snapshot every night (billing/src/ledger.py:1).", "tags": ["subject/project", "concern/architecture"]}
+ ],
+ "steps": [
+  {"hook": "session-start", "expect": {"context_contains": ["STALE: billing/README.md changed since this digest — billing/README.md: retry policy"], "context_excludes": ["STALE: billing/src/ledger.py"]}},
+  {"hook": "user-prompt", "payload": {"prompt": "how does the exponential backoff retry for failed payment captures work"},
+   "expect": {"inject": ["@readme"], "context_contains": ["{short:@readme} billing/README.md: retry policy", "STALE: billing/README.md changed since this digest — "]}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/billing/README.md"}},
+   "expect": {"hints": ["@readme"], "context_contains": ["STALE: billing/README.md changed since this digest — "]}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/billing/src/ledger.py"}},
+   "expect": {"hints": ["@ledger"], "context_excludes": ["STALE"]}},
+  {"hook": "stop", "expect": {"reminder": "follow", "reminder_contains": ["You edited billing/README.md", "{short:@readme} billing/README.md: retry policy", "CMD confirm {short:@readme} --session {session}"]}},
+  {"cli": ["review"], "expect": {"exit": 0, "result": {"stale_digests": 1}, "result_contains": ["STALE: billing/README.md changed since this digest", "{short:@readme}"], "result_excludes": ["STALE: billing/src/ledger.py"]}},
+  {"cli": ["ask", "exponential backoff retry for failed payment captures"], "expect": {"exit": 0, "result_contains": ["\"stale\":\"STALE: billing/README.md changed since this digest\""]}},
+  {"cli": ["confirm", "@readme", "--session", "{session}"], "expect": {"exit": 0, "status": "confirm"}},
+  {"cli": ["review"], "expect": {"exit": 0, "result": {"stale_digests": 0}}},
+  {"session": "s2"},
+  {"hook": "session-start", "expect": {"context_excludes": ["STALE"]}},
+  {"hook": "user-prompt", "payload": {"prompt": "how does the exponential backoff retry for failed payment captures work"}, "expect": {"inject": ["@readme"], "context_excludes": ["STALE"]}},
+  {"hook": "stop", "expect": {"reminder": null}}
+ ]
+}
