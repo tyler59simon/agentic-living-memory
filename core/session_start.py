@@ -41,16 +41,15 @@ def _summary(note):
     body=note.get('body') or ''
     return ' '.join((plain(sections(body).get('summary') or '') or plain(body)).split())
 
-SUMMARY_SECTION=re.compile(r'^##[^\n]*Executive Summary[^\n]*\n(.*?)(?=\n---|\n## |\Z)',re.S|re.M)
-
 def is_gotcha(note):
     """A bug, runbook or knowledge note that records a pitfall: tagged as a bug, constraint or correction, listing the
     commands it is about (core/commands.py fills `commands`), or worded like a warning in its title or summary.
     An interim note (an unconfirmed belief, see notes.is_interim) is not a known pitfall yet."""
     if note.get('type') not in GOTCHA_TYPES or is_interim(note):return False
     if GOTCHA_TAGS&set(note.get('tags') or []) or note.get('commands'):return True
-    body=str(note.get('body') or '');found=SUMMARY_SECTION.search(body)   # every note is checked, so no layout parsing here
-    return bool(GOTCHA_WORDS.search(str(note.get('title',''))+' '+(found[1] if found else body[:400])))
+    from .note_format import summary_text
+    body=str(note.get('body') or '');summary=summary_text(body)   # every note is checked, so no full layout parse here
+    return bool(GOTCHA_WORDS.search(str(note.get('title',''))+' '+(summary or body[:400])))
 
 def gist(note,limit=SUMMARY_MAX):
     """The first sentence of a note's summary, cut to limit characters at a word."""
@@ -143,7 +142,7 @@ def _brief_line(cwd,root,bindings,currency=None):
         swallowed('session_start.brief_line',exc,root);return None
 
 def _open_lines(active,root,bindings,project=None):
-    """(header line, lines, how many lines are notes with open Action Items) for the active, parent and global domains: those notes
+    """(header line, lines, how many lines are notes with open action items) for the active, parent and global domains: those notes
     first (the current project's first, stable; the count in the header does not change), then bugs with no recorded root cause."""
     from .runtime import parent_domains
     from .notes import open_work,unresolved_bugs
@@ -156,7 +155,7 @@ def _open_lines(active,root,bindings,project=None):
         from . import projects
         found=sorted(found,key=lambda f:projects.tag(project['slug']) not in (f[1].get('tags') or []))
     count=sum(len(items) for _,_,items in found)
-    # A bug nobody has explained is open work too, whether or not it has Action Items: those lines say so, and the rest get a line of their own.
+    # A bug nobody has explained is open work too, whether or not it has action items: those lines say so, and the rest get a line of their own.
     unexplained={(d,n['id']) for d,n in bugs};listed={(d,n['id']) for d,n,_ in found[:OPEN_NOTES]}
     bug_only=[(d,n) for d,n in bugs if (d,n['id']) not in listed][:OPEN_BUGS]
     unsaid=' (no root cause recorded yet)'
@@ -234,7 +233,7 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
         if listed:
             lines.append('Other notes ('+('summaries' if summaries else 'titles only')+'; read one when it bears on the task):')
             lines+=[f"- {str(n.get('type','note')).upper()} {_updated(n)[:10]} {short_ref(n['domain'],n['id'])} {flag(n)}{_title(n['title'])}"+(f' — {gist(n)}' if summaries and gist(n) else '')+f" (~{_cost(n)}t)" for n in index[:listed]]
-        # Section C: unchecked Action Items, so "where were we?" has an answer before any search.
+        # Section C: unchecked action items, so "where were we?" has an answer before any search.
         if open_header and (opened or open_items):lines+=[open_header]+open_lines[:opened]
         if listed or guidance or opened:lines.append(FOOTER_READ+(FOOTER_SEARCH if search else ''))
         return "\n".join(lines+(tail if with_tail else []))
@@ -290,7 +289,7 @@ def _review_line(domain,root,shown=2):
     return [f"{len(due)} note(s) due for review (confirm if still true, update if changed, supersede if replaced; `review` lists all): {listed}"]
 
 def _finished_line(notes,shown=2):
-    """Active plan, bug and risk notes whose Action Items are all ticked: finished work that keeps taking
+    """Active plan, bug and risk notes whose action items are all ticked: finished work that keeps taking
     index space until it is resolved. notes carry their domain."""
     from .note_format import action_items,ACTION_TYPES
     found=[]

@@ -245,7 +245,11 @@ def _keyed(record, payload):
 # ---------------------------------------------------------------- procedure content and its runbook
 
 LIST_FIELDS = (('use_when', 'Use when'), ('do_not_use_when', 'Do not use when'), ('steps', 'Procedure'), ('done_when', 'Done when'))
+# Runbooks published before the current note layout keep these as bold labels in Key Details.
 LABELS = {label for _, label in LIST_FIELDS} | {'Fallback'}
+# The runbook sections each field is written under (note_format.TYPE_SECTIONS['runbook']).
+SECTION_HEADINGS = (('use_when', 'When to use'), ('do_not_use_when', 'When not to use'), ('steps', 'Steps'),
+                    ('done_when', 'Check'), ('fallback', 'If it fails'))
 
 
 def _content(payload, new=False):
@@ -263,17 +267,15 @@ def _content(payload, new=False):
 
 
 def body(content):
-    """Runbook body for approved content. List fields render one item per sub-bullet so edits parse back exactly."""
+    """Runbook body for approved content: one section per field, one list item per value, so edits parse back exactly."""
     from .note_format import render
     def listed(values, numbered=False):
-        return '\n'.join(f'  {i+1}. {v}' if numbered else f'  - {v}' for i, v in enumerate(values))
+        return '\n'.join(f'{i+1}. {v}' if numbered else f'- {v}' for i, v in enumerate(values))
     exclusions = content['do_not_use_when']
-    details = ['**Use when:**\n'+listed(content['use_when']),
-               '**Do not use when:** '+NO_EXCLUSIONS if not exclusions else '**Do not use when:**\n'+listed(exclusions),
-               '**Procedure:**\n'+listed(content['steps'], numbered=True),
-               '**Done when:**\n'+listed(content['done_when']),
-               '**Fallback:** '+content['fallback']]
-    return render(content['body'], details)
+    text = {'use_when': listed(content['use_when']), 'do_not_use_when': listed(exclusions) if exclusions else NO_EXCLUSIONS,
+            'steps': listed(content['steps'], numbered=True), 'done_when': listed(content['done_when']),
+            'fallback': content['fallback']}
+    return render(content['body'], named=[(heading, text[field]) for field, heading in SECTION_HEADINGS], note_type='runbook')
 
 
 def _items(text, approved, field):
@@ -290,9 +292,19 @@ def _items(text, approved, field):
 
 def parse_body(text, approved):
     """Content from an edited runbook body; fields the edit left alone keep their approved values."""
-    from .note_format import sections
+    from .note_format import sections, named_sections
     parts = sections(text)
     content = dict(approved, body=(parts.get('summary') or text).strip())
+    named = {' '.join(heading.casefold().split()).rstrip(':'): value for heading, value in named_sections(text)}
+    wanted = {field: heading.casefold() for field, heading in SECTION_HEADINGS}
+    if any(heading in named for heading in wanted.values()):
+        if not all(heading in named for heading in wanted.values()):
+            raise ValueError('A learned runbook keeps the sections '+', '.join(h for _, h in SECTION_HEADINGS)
+                             +'; change fields with learn candidate update or Hivemind Review')
+        for field, _ in LIST_FIELDS:
+            content[field] = _items(named[wanted[field]], approved[field], field)
+        content['fallback'] = named[wanted['fallback']].strip()
+        return content
     details = parts.get('details', '')
     if not details:
         return content

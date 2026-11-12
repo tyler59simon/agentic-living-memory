@@ -161,7 +161,7 @@ def file_notes(path,domains,root=None,limit=2,ensure_fresh=True):
     ranked.sort(key=lambda r:r[1],reverse=True);ranked.sort(key=lambda r:r[0])
     return [hit for _,_,hit in ranked[:max(1,limit)]]
 def _embedding_text(note):
-    """Title plus Executive Summary: what the note is about, without the detail that dilutes a mean vector."""
+    """Title plus summary: what the note is about, without the detail that dilutes a mean vector."""
     from .note_format import sections,plain
     return note['title']+'\n'+plain(sections(note['body']).get('summary',''))
 

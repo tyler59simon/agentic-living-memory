@@ -79,7 +79,7 @@ class Delivery(StoreFixture):
         from core.notes import find_note
         a=self.note('First','Claim one');b=self.note('Second','Claim two')
         proposal=merge_plan(self.root,{'target':'demo:'+a['id'],'sources':['demo:'+b['id']],'body':'Combined reviewed claim'})
-        self.assertEqual(find_note(a['id'],'demo',self.root)[1]['body'],'## 📌 Executive Summary\nClaim one')
+        self.assertEqual(find_note(a['id'],'demo',self.root)[1]['body'],'Claim one')
         apply(self.root,proposal['plan_id'],proposal['digest'])
         self.assertEqual(find_note(b['id'],'demo',self.root)[1]['superseded_by'],a['id'])
         self.assertEqual(len(inventory('demo',self.root)),1)
@@ -119,6 +119,6 @@ class Delivery(StoreFixture):
         a=self.note();path=Path(a['path']);path.write_bytes(path.read_bytes().replace(b'\n',b'\r\n'));note=parse(path)
         self.assertEqual(note['revision'],hashlib.sha256(path.read_bytes()).hexdigest())
         change(a['id'],'demo','update',self.root,expected_revision=note['revision'],body='Reviewed Windows edit')
-        self.assertEqual(find_note(a['id'],'demo',self.root)[1]['body'],'## 📌 Executive Summary\nReviewed Windows edit')
+        self.assertEqual(find_note(a['id'],'demo',self.root)[1]['body'],'Reviewed Windows edit')
 
 if __name__=='__main__':unittest.main()

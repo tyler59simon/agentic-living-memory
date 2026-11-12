@@ -132,7 +132,7 @@ class Changes(Fixture):
 
     def test_refusals(self):
         cases=[({'project':'ghost'},'unknown project'),({'system':'ghost'},'unknown system'),({'title':None},'requires title'),({'brief':None},'requires brief'),
-               ({'brief':{'body':'## Key Details\n* only details'}},'Executive Summary'),({'brief':{'body':BRIEF,'extra':1}},'brief accepts'),({'repo':'rel/path'},'absolute'),
+               ({'brief':{'body':'## Key Details\n* only details'}},'Note needs a summary'),({'brief':{'body':BRIEF,'extra':1}},'brief accepts'),({'repo':'rel/path'},'absolute'),
                ({'stage':'ship'},'stage must be one of'),({'status':'active'},'Unknown payload'),({'title':'Fix [x]'},'cannot contain'),({'title':'x'*121},'1..120'),
                ({'system':None},'element needs a system'),({'brief':{'body':BRIEF,'title':'Fix #42'}},'brief.title cannot contain'),({'title':'Rotate '+'sk-'+'a'*24},'credential')]
         for kw,message in cases:

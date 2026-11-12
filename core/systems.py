@@ -81,7 +81,7 @@ def system_plan(root,action,payload):
             if current:raise ValueError(f'System {slug} already exists')
             if 'name' not in payload:raise ValueError('create requires name')
             passport=payload.get('passport')
-            if not isinstance(passport,dict) or not isinstance(passport.get('body'),str) or not passport['body'].strip():raise ValueError('create requires passport.body (with an Executive Summary)')
+            if not isinstance(passport,dict) or not isinstance(passport.get('body'),str) or not passport['body'].strip():raise ValueError('create requires passport.body (starting with a summary)')
             if set(passport)-{'domain','title','body'}:raise ValueError('passport accepts domain, title and body')
             entry=_clean({k:v for k,v in payload.items() if k!='passport'},{'slug':slug,'status':'active','description':'','owners':[],'capabilities':[],'repos':[],'depends_on':[],'architecture':None,'created':stamp,'updated':stamp},slugs)
             from .notes import build_note

@@ -243,8 +243,8 @@ def parse_text(raw, path=""):
         try:meta['prefix'] = prefix_for(meta.get('type'), legacy=True)
         except ValueError:return None
     from .note_format import strip_title
-    # The "# 🎯 Title" heading is derived from the title property; it is never part of the body.
-    body = strip_title(match[2])
+    # The "# Title" heading (earlier "# 🎯 Title") is derived from the title property; it is never part of the body.
+    body = strip_title(match[2], heading=True)
     meta.update(body=body, path=str(path), digest=digest(body.encode()), revision=digest(original.encode()))
     return meta
 

@@ -105,7 +105,7 @@ def change_plan(root,action,payload):
                     from .notes import find_note
                     rel=find_note(note_id,domain,root)[0];guards={'read_set':{Path(rel).resolve().relative_to(root).as_posix():digest(Path(rel).read_bytes())}}
             else:
-                if not isinstance(brief,dict) or not isinstance(brief.get('body'),str) or not brief['body'].strip():raise ValueError('create requires brief.body (with an Executive Summary), or brief as the reference of an existing plan note')
+                if not isinstance(brief,dict) or not isinstance(brief.get('body'),str) or not brief['body'].strip():raise ValueError('create requires brief.body (starting with a summary), or brief as the reference of an existing plan note')
                 if set(brief)-{'domain','title','body'}:raise ValueError('brief accepts domain, title and body')
                 if not isinstance(brief.get('title') or '',str):raise ValueError('brief.title must be a string')
                 if brief.get('title'):

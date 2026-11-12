@@ -110,7 +110,7 @@ def project_plan(root,action,payload):
             for key in ('name','repos'):
                 if key not in payload:raise ValueError(f'create requires {key}')
             charter=payload.get('charter')
-            if not isinstance(charter,dict) or not isinstance(charter.get('body'),str) or not charter['body'].strip():raise ValueError('create requires charter.body (with an Executive Summary)')
+            if not isinstance(charter,dict) or not isinstance(charter.get('body'),str) or not charter['body'].strip():raise ValueError('create requires charter.body (starting with a summary)')
             if set(charter)-{'domain','title','body'}:raise ValueError('charter accepts domain, title and body')
             entry=_clean({k:v for k,v in payload.items() if k!='charter'},{'slug':slug,'status':'active','repos':[],'aliases':[],'description':'','created':stamp,'updated':stamp})
             from .notes import build_note

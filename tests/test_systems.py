@@ -87,7 +87,7 @@ class Systems(Fixture):
     def test_refusals(self):
         self.create()
         for value,message in ((self.payload(),'already exists'),(self.payload(slug='Bad Slug'),'slug'),(self.payload(slug='x',repos=['rel/path']),'absolute'),
-                              (self.payload(slug='y',architecture='rel/arch'),'architecture'),(self.payload(slug='z',passport={'body':'## Key Details'+chr(10)+'* only details'}),'Executive Summary'),
+                              (self.payload(slug='y',architecture='rel/arch'),'architecture'),(self.payload(slug='z',passport={'body':'## Key Details'+chr(10)+'* only details'}),'Note needs a summary'),
                               (self.payload(slug='w',status='active'),'Unknown payload'),(self.payload(slug='v',owners=['x']*11),'at most 10'),({'slug':'u','repos':[]},'requires name')):
             code,result=self.plan('create',value);self.assertNotEqual(code,0,value['slug']);self.assertIn(message,json.dumps(result),value['slug'])
         code,result=self.cli('taxonomy-plan','system/x');self.assertNotEqual(code,0);self.assertIn('system-plan',json.dumps(result))

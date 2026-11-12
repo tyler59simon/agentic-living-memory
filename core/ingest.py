@@ -43,7 +43,7 @@ def _title(name,fallback):
     return (words[:1].upper()+words[1:]) if words else fallback
 
 def _details(body):
-    """Key Details bullets from a free-form body; a heading becomes a bold label."""
+    """Details bullets from a free-form body; a heading becomes a bold label."""
     lines=[]
     for line in body.split('\n'):
         stripped=line.strip()

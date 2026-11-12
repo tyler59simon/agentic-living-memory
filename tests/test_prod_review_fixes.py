@@ -152,7 +152,7 @@ class SectionUpdates(Cli):
         note = self.plan()
         self.ok('update', note, '--set-detail', '**Cause:** nulls in the legacy rows', '--set-detail', '**Deadline:** end of month')
         details = note_format.sections(self.body(note))['details'].split('\n')
-        self.assertEqual(details, ['* **Cause:** nulls in the legacy rows', '* **Owner:** data team', '* **Deadline:** end of month'])
+        self.assertEqual(details, ['- **Cause:** nulls in the legacy rows', '- **Owner:** data team', '- **Deadline:** end of month'])
 
     def test_replacing_action_items_is_refused_unless_asked_for(self):
         note = self.plan()

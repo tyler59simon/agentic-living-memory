@@ -26,21 +26,22 @@ SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 QUIET_SECONDS=30
 # Losing this many managed copies at once is a vault reset or move, not a request to delete notes.
 MASS_MISSING=(5,0.2)
-from .note_format import sections,HEADINGS,TITLE_MARK,CALLOUT,ACTION_TYPES
+from .note_format import sections,HEADINGS,TITLE_MARK,CALLOUT,ACTION_TYPES,TYPE_SECTIONS
+# The summary line of each template: what the opening sentences of that type say.
 TEMPLATE_PROMPTS={
-    'knowledge':'Established fact, explanation or corrected understanding future work can rely on.',
-    'decision':'The choice that was made, why, and the tradeoffs considered.',
-    'preference':'Whose preference, the desired default, and its scope.',
-    'context':'Background and circumstances needed to interpret this project or situation.',
-    'status':'Current state, progress or outcome as of a stated date.',
-    'bug':'Observed vs expected behavior, reproduction conditions and evidence.',
-    'plan':'Intended steps, dependencies, how success is checked; proposed or approved.',
-    'risk':'Possible problem: trigger, impact, mitigation and owner if known.',
-    'research':'Question, sources or experiments, observations vs inference, open questions.',
-    'policy':'The mandatory rule, its authority and where it applies.',
-    'map':'A repo orientation: purpose, layout, entry points, key modules, data flow, build/test/run, conventions.',
-    'runbook':'An operational procedure: when to use it, preconditions, numbered steps, how to verify, how to roll back.',
-    'brief':'The project brief: goals and scope, stakeholders, team and ownership, current phase and blockers, key decisions (each pointing to where it is recorded), active risks, glossary.'}
+    'knowledge':'The fact, in one or two plain sentences. Add sections named after what they explain.',
+    'decision':'The choice, who made it and when.',
+    'preference':'Whose preference it is, the default they want, and where it applies.',
+    'context':'The situation this note explains, in one or two sentences.',
+    'status':'Where things stand, as of a stated date.',
+    'bug':'What goes wrong, where, and since when.',
+    'plan':'The goal, and whether the plan is proposed or approved.',
+    'risk':'What could go wrong, what would set it off, and who owns it.',
+    'research':'The question, and the answer so far.',
+    'policy':'The rule, who requires it, and where it applies.',
+    'map':'What the repo is for, in one or two sentences.',
+    'runbook':'What the procedure does.',
+    'brief':'What the project is and where it stands.'}
 
 def _hash(path):
     try:return digest(path.read_bytes())
@@ -489,10 +490,12 @@ def _status_page(domain,root,notes,view_conflicts=(),failure=None):
 def _template(note_type):
     """Frontmatter and section skeleton in the note layout; sections left unfilled are dropped at capture."""
     meta={'title':'{{title}}','type':note_type,'status':'active','tags':['subject/project','concern/knowledge'],'context':''}
-    parts=[TITLE_MARK+'{{title}}','## '+HEADINGS['summary']+'\n'+TEMPLATE_PROMPTS[note_type],'---',
-           '## '+HEADINGS['details']+'\n* **Focus Point:** ','## '+HEADINGS['links']+'\n* ']
+    parts=[TITLE_MARK+'{{title}}',TEMPLATE_PROMPTS[note_type],CALLOUT+' ']
+    # The type's own sections (a learned runbook's "If it fails" is written by learning, not by hand).
+    parts+=['## '+heading for heading in TYPE_SECTIONS.get(note_type,()) if heading!='If it fails']
+    if note_type not in TYPE_SECTIONS and note_type!='knowledge':parts.append('## '+HEADINGS['details']+'\n- ')
+    parts.append('## '+HEADINGS['links']+'\n- ')
     if note_type in ACTION_TYPES:parts.append('## '+HEADINGS['actions']+'\n- [ ] ')
-    parts.append(CALLOUT+'\n> ')
     return '---\n'+'\n'.join(f'{k}: {json.dumps(v)}' for k,v in meta.items())+'\n---\n\n'+'\n\n'.join(parts)+'\n'
 
 WIKILINK=re.compile(r'\[\[([^\]|#]+)')

@@ -76,7 +76,7 @@ class Projects(StoreFixture):
         self.create()
         for value,message in ((self.payload(),'already exists'),(self.payload(slug='Bad Slug'),'slug'),(self.payload(slug='x',repos=['rel/path']),'absolute'),
                               (self.payload(slug='y',repos=[SLASH(self.base/f'r{i}') for i in range(11)]),'at most 10'),
-                              (self.payload(slug='z',charter={'body':'## Key Details'+chr(10)+'* only details'}),'Executive Summary'),(self.payload(slug='w',status='active'),'Unknown payload')):
+                              (self.payload(slug='z',charter={'body':'## Key Details'+chr(10)+'* only details'}),'Note needs a summary'),(self.payload(slug='w',status='active'),'Unknown payload')):
             code,result=self.plan('create',value);self.assertNotEqual(code,0,value['slug']);self.assertIn(message,json.dumps(result),value['slug'])
         code,result=self.cli('taxonomy-plan','project/x');self.assertNotEqual(code,0);self.assertIn('project-plan',json.dumps(result))
         code,result=self.cli('retag-plan',stdin=json.dumps({'concern/decision':'project/ghost'}));self.assertNotEqual(code,0);self.assertIn('Unregistered',json.dumps(result))

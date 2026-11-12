@@ -41,8 +41,8 @@ def synthetic_store(base,count,semantic_from=None,model_dir=None):
     if model_dir:shutil.copytree(model_dir,root/'.models'/Path(model_dir).name)   # a copy: the store being measured is never the real one
     for i in range(count):
         words=rng.sample(WORDS,6);title=f"{' '.join(words[:3]).capitalize()} note {i}"
-        body=('## \U0001f4cc Executive Summary\n'+' '.join(rng.choices(WORDS,k=30))+'.\n\n---\n\n## \U0001f4dd Key Details\n'
-              +'\n'.join(f"* **{word.capitalize()}:** "+' '.join(rng.choices(WORDS,k=25))+'.' for word in words))
+        body=(' '.join(rng.choices(WORDS,k=30))+'.\n\n## Details\n'
+              +'\n'.join(f"- **{word.capitalize()}:** "+' '.join(rng.choices(WORDS,k=25))+'.' for word in words))
         path,_,text=build_note(title,body,['subject/project','concern/knowledge'],'scale',root)
         path.parent.mkdir(parents=True,exist_ok=True);path.write_text(text,encoding='utf-8',newline='\n')
     started=time.perf_counter();reconcile('scale',root)
