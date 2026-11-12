@@ -13,10 +13,14 @@ CMD learn record --objective 'Repair a stale index' --family 'alm.index' --crite
     --result pass --method tool_check --observer 'search' --excerpt 'search returned the note' \
     --limitations 'one store checked' --outcome succeeded
 CMD learn candidate create --title 'Repair a stale disposable index' --summary 'Rebuild the index when notes are valid but search is stale.' \
-    --use-when 'Canonical notes are readable and search is stale' --step 'Rebuild the domain index' --step 'Search for the expected note' \
-    --done-when 'The expected note is returned' --fallback 'Inspect notes and doctor output; never delete canonical notes' --evidence EVIDENCE_ID
+    --use-when 'Canonical notes are readable and search is stale' \
+    --do-not-use-when 'The canonical note file is missing or unreadable: restore or repair it instead' \
+    --step 'Rebuild the domain index' --step 'Search for the expected note' \
+    --done-when 'The expected note is returned' --fallback 'If the note file is missing, restore it from a backup; never delete canonical notes' --evidence EVIDENCE_ID
 CMD learn candidate evaluate CANDIDATE_ID
 ```
+
+"Do not use when" names the cases where the steps would be wrong: a lookalike symptom with a different cause, or a state where a step does harm. Make the fallback cover them. A candidate without one is not eligible; the create reply says so, and `learn candidate update ID --expected-revision REV --do-not-use-when '...'` adds it.
 
 `learn record` creates the task, a closed attempt and its evidence in one transaction. With flags it records one check per `--criterion`; give several checks with a JSON payload (`evidence: [...]`). Its reply names the evidence IDs and the next command. The user then approves in **Hivemind → Review → Learning**, or applies `learn candidate promote-plan ID --expected-revision REV` with the existing `apply`. Agents never apply admission plans.
 
@@ -40,7 +44,7 @@ The flag forms map onto JSON payloads; `--payload-file FILE`, or stdin when no f
 
 Create operations accept `idempotency_key`; replaying the same payload returns the original record, a different payload is a conflict. An expected revision is the record's returned byte hash. Re-read after mutations.
 
-**Eligibility.** Every step cites supporting evidence, at least one successful attempt covers every acceptance criterion with non-assertion evidence, no evidence is failed, corrected or deleted, scope matches, learning is enabled for the domain, and no other note has the title. One supporting task gives a **provisional** procedure; two or more distinct tasks give **corroborated**. Neither is a causal confidence score, and the reviewer still judges whether the evidence supports the actual steps.
+**Eligibility.** Every step cites supporting evidence, at least one successful attempt covers every acceptance criterion with non-assertion evidence, no evidence is failed, corrected or deleted, scope matches, learning is enabled for the domain, no other note has the title, and "do not use when" names at least one exclusion. Versions approved before exclusions were required still resume and roll back without one. One supporting task gives a **provisional** procedure; two or more distinct tasks give **corroborated**. Neither is a causal confidence score, and the reviewer still judges whether the evidence supports the actual steps.
 
 ## Inspection and control
 
@@ -70,8 +74,16 @@ Default `export` includes readable notes, suspended learned runbooks among them,
 
 ## Evaluation
 
-`scripts/eval_learning.py --self-test` runs isolated maintenance scenarios (stale index, stale plan, interrupted operation, restore) through baseline, manual-runbook and learned-runbook conditions and checks the verifiers. It validates fixtures, not learning efficacy. In the learned condition the procedure is built from what a separate training run did and checked; the manual condition gets a hand-written recipe.
+`scripts/eval_learning.py --self-test` runs isolated maintenance scenarios (stale index, stale plan, interrupted operation, restore, and a missing-note lookalike) through baseline, manual-runbook and learned-runbook conditions, with the scripted reference repairs. It validates fixtures and verifiers, not learning efficacy.
 
-To evaluate a real agent, pass its argv as `--command-json '[...]'` (and `--timeout SECONDS`, default 600). `scripts/agents/run_agent.py -- AGENT ARGS {prompt}` adapts command-line agents such as `claude -p` and `codex exec` to the trial contract: it builds the prompt from the task and returns the agent's final JSON report with any token counts it reports. The harness compares conditions on separate held-out stores and reports checked success, time and reported token costs. It never launches a model by default, and agent-reported usage is not independently verified. Compare repeatable held-out tasks against equally curated manual runbooks, and inspect misapplications and review effort, before relying on learned procedures more broadly.
+- **Conditions.** Baseline has no runbook. Manual gets a hand-written runbook with the same fields and layout as a learned one. Learned gets the procedure the agent itself recorded and proposed in a separate training run (`--learned-from scripted` builds it from the reference repair instead). The harness admits a training candidate only when it verified the training repair and `learn candidate evaluate` finds it eligible; that stands in for reviewer approval, so read the admitted candidates in the results. No admissible candidate leaves the learned trial without a runbook, and the result says so.
+- **Held-out stores.** Training and test stores use different marker terms, titles and distractor notes. The agent's task text never names the condition.
+- **Lookalike.** `missing-note` looks like a stale index but the note was deleted; it is seeded with the stale-index runbook. A misapplication is reporting or recording use of that runbook while the note stays unrestored; following a runbook whose fallback leads to the restore is correct use.
+- **Isolation.** Each trial store is bound to its own folder, which is the agent's working directory, and the agent runs with `LIVING_MEMORY_ROOT` set to that store. The agent's own Living Memory hooks therefore run as in real use, but only against the throwaway store. Claude Code session variables are removed so the agent is not a child of the calling session. A fingerprint of the configured real store is compared around each run (`real_store_changed`); your own sessions can change it meanwhile, so it is a warning, not proof.
+- **Measures.** Checked success (verified from the store), false success claims, misapplications, collateral changes to other notes, notes the agent added, recorded `learn use report` calls against the agent's self-reported usage, time, and the tokens, cost and turns the agent reports.
+
+To evaluate a real agent, pass its argv as `--command-json '[...]'`, with `--label NAME`, `--repeats N`, `--timeout SECONDS` (default 600), `--scenarios` / `--modes` (comma lists) and `--out FILE` (one JSON line per run, written as each finishes). `scripts/agents/run_agent.py -- AGENT ARGS [{prompt}]` adapts command-line agents to the trial contract: it builds one prompt for every condition (training runs also ask for `learn record` and `learn candidate create`), sends it on stdin when the argv has no `{prompt}` (which survives Windows `.cmd` shims), and parses `claude -p --output-format json` and `codex exec --json` output. `--summarize FILE... [--markdown]` tabulates result files per agent and condition and runs nothing. `--keep` keeps trial folders for inspection.
+
+The harness never launches a model by default. Agent-reported usage and cost are not independently verified, and the stores are synthetic. Compare repeatable held-out tasks against equally curated manual runbooks, and inspect misapplications and review effort, before relying on learned procedures more broadly.
 
 Later releases cover purpose-scoped writing preferences, opt-in edit-derived preference proposals, consolidation and source-refresh review, and passive harness adapters. Records already carry a proposal `kind` (currently `procedure`) so those releases extend the same review lifecycle. None of them is enabled silently.

@@ -57,6 +57,35 @@ class Learning(LearningFixture):
         with self.assertRaisesRegex(ValueError, 'not eligible'):
             self.publish(c)
 
+    def test_admission_needs_an_exclusion(self):
+        c = self.candidate()
+        c = self.call('candidate', 'update', c['id'], expected_revision=c['revision'],
+                      content=dict(c['content'], do_not_use_when=[]))
+        self.assertIn('--do-not-use-when', c['warnings'][0])
+        report = self.call('candidate', 'evaluate', c['record']['id'])
+        self.assertFalse(report['eligible']); self.assertEqual(report['errors'], [lm.NEEDS_EXCLUSIONS])
+        with self.assertRaisesRegex(ValueError, 'No exclusions'):
+            self.publish(c['record'])
+
+    def test_versions_approved_without_exclusions_still_resume_and_roll_back(self):
+        c = self.candidate()
+        c = self.call('candidate', 'update', c['id'], expected_revision=c['revision'],
+                      content=dict(c['content'], do_not_use_when=[]))['record']
+        real = lm.evaluate
+        def legacy(root, domain, candidate):   # admission as it was before exclusions were required
+            report = real(root, domain, candidate)
+            report['errors'] = [e for e in report['errors'] if e != lm.NEEDS_EXCLUSIONS]
+            return dict(report, eligible=not report['errors'])
+        with patch.object(lm, 'evaluate', legacy):
+            p, _ = self.publish(c)
+        self.assertEqual(lm.get(self.root, 'demo', 'versions', p['id']+'.1')['content']['do_not_use_when'], [])
+        p = self.call('procedure', 'suspend', p['id'], expected_revision=p['revision'])['record']
+        p = self.call('procedure', 'resume', p['id'], expected_revision=p['revision'])['record']
+        self.assertEqual(p['state'], 'active')
+        plan = self.call('procedure', 'rollback-plan', p['id'], expected_revision=p['revision'], version=1)
+        governance.apply(self.root, plan['plan_id'], plan['digest'])
+        self.assertEqual(lm.get(self.root, 'demo', 'procedures', p['id'])['current_version'], 2)
+
     def test_stale_evidence_and_idempotent_approval(self):
         c = self.candidate()
         p = self.call('candidate', 'promote-plan', c['id'], expected_revision=c['revision'])
@@ -329,7 +358,7 @@ class Production(LearningFixture):
 
     def test_cli_flags_record_propose_and_admit(self):
         code, guide = self.cli('learn')
-        self.assertEqual(code, 0); self.assertTrue(guide['guide'])
+        self.assertEqual(code, 0); self.assertTrue(any('--do-not-use-when' in line for line in guide['guide']))
         code, rec = self.cli('learn', 'record', '--objective', 'Repair stale index', '--family', 'alm.index',
                              '--criterion', 'correct retrieval', '--result', 'pass', '--method', 'tool_check',
                              '--observer', 'search', '--excerpt', 'Expected note returned',
@@ -339,7 +368,13 @@ class Production(LearningFixture):
         code, cand = self.cli('learn', 'candidate', 'create', '--title', 'Stale index repair', '--summary', 'Rebuild the index.',
                               '--use-when', 'Index is stale', '--step', 'Rebuild index', '--done-when', 'Expected notes return',
                               '--fallback', 'Inspect canonical notes', '--evidence', short)
-        self.assertEqual(code, 0, cand)
+        self.assertEqual(code, 0, cand); self.assertIn('--do-not-use-when', cand['warnings'][0])
+        code, report = self.cli('learn', 'candidate', 'evaluate', cand['record']['id'][:8], '--actor', 'viewer')
+        self.assertFalse(report['eligible']); self.assertIn(lm.NEEDS_EXCLUSIONS, report['errors'])
+        code, cand = self.cli('learn', 'candidate', 'update', cand['record']['id'], '--expected-revision', cand['record']['revision'],
+                              '--do-not-use-when', 'The note file is missing')
+        self.assertEqual(code, 0, cand); self.assertNotIn('warnings', cand)
+        self.assertEqual(cand['record']['content']['steps'], ['Rebuild index'])
         code, report = self.cli('learn', 'candidate', 'evaluate', cand['record']['id'][:8], '--actor', 'viewer')
         self.assertTrue(report['eligible'], report); self.assertTrue(any('by default' in w for w in report['warnings']))
         code, plan = self.cli('learn', 'candidate', 'promote-plan', cand['record']['id'], '--expected-revision', cand['record']['revision'])

@@ -27,6 +27,8 @@ BASE_TAGS = ('subject/project', 'concern/workflow')
 EXCERPT_LIMIT = 8192
 ATTEMPT_LIMIT = 65536
 NO_EXCLUSIONS = 'No additional exclusions stated.'
+# Admission needs at least one stated exclusion: a runbook without one gets followed in lookalike cases it does not fit.
+NEEDS_EXCLUSIONS = 'No exclusions: name at least one situation where this procedure must not be used (do_not_use_when)'
 ID = re.compile(r'[a-f0-9-]{8,64}(?:\.[1-9][0-9]*)?\Z')
 PREFIX = re.compile(r'[a-f0-9]{8,63}\Z')
 DOMAIN = re.compile(r'[A-Za-z0-9_][A-Za-z0-9._-]*\Z')
@@ -398,6 +400,8 @@ def evaluate(root, domain, candidate):
         errors.append('Each procedure step needs supporting evidence references')
     if candidate.get('contradictions'):
         errors.append('Resolve recorded contradictions before admission')
+    if not candidate['content'].get('do_not_use_when'):
+        errors.append(NEEDS_EXCLUSIONS)
     if not _enabled(root, domain):
         errors.append('Learning is disabled for this domain')
     if len(tasks) < 2:
@@ -422,8 +426,10 @@ def _admission_plan(root, domain, c, c_revision):
     if c['state'] not in ('draft', 'deferred'):
         raise ValueError('Candidate is not awaiting review')
     report = evaluate(root, domain, c)
-    if not report['eligible']:
-        raise ValueError('Candidate not eligible: '+'; '.join(report['errors']))
+    # A rollback republishes an approved version unchanged, including versions approved before exclusions were required.
+    errors = [e for e in report['errors'] if not (e == NEEDS_EXCLUSIONS and c.get('restored_from') is not None)]
+    if errors:
+        raise ValueError('Candidate not eligible: '+'; '.join(errors))
     pid = c.get('procedure_id') or uuid.uuid4().hex
     previous = get(root, domain, 'procedures', pid) if c.get('procedure_id') else None
     if previous and previous['state'] == 'retired':
@@ -831,9 +837,19 @@ def op_evidence_delete_plan(root, domain, ident, payload):
                 guards={'read_set': read_set})
 
 
+def _exclusion_warning(record):
+    """A reply warning, so the agent that wrote the candidate adds its exclusions while it still knows them."""
+    if record['content']['do_not_use_when']:
+        return {}
+    return dict(warnings=[NEEDS_EXCLUSIONS+'. Admission refuses it until you add one: CMD learn candidate update '
+                          +record['id']+' --expected-revision '+record['revision']
+                          +" --do-not-use-when 'a lookalike symptom with another cause, or a state where a step does harm'"])
+
+
 def op_candidate_create(root, domain, ident, payload):
-    return _commit(root, domain, 'candidates', _keyed(_record(domain, _candidate(root, domain, payload)), payload),
-                   extra=dict(hint='Inspect eligibility: CMD learn candidate evaluate ID. The user approves it; agents never apply admission plans.'))
+    reply = _commit(root, domain, 'candidates', _keyed(_record(domain, _candidate(root, domain, payload)), payload),
+                    extra=dict(hint='Inspect eligibility: CMD learn candidate evaluate ID. The user approves it; agents never apply admission plans.'))
+    return dict(reply, **_exclusion_warning(reply['record']))
 
 
 def op_candidate_update(root, domain, ident, payload):
@@ -853,7 +869,8 @@ def op_candidate_update(root, domain, ident, payload):
     record = dict(_clean(old), **_candidate(root, domain, merged))
     if keep:
         record['step_evidence_defaulted'] = old.get('step_evidence_defaulted', False)
-    return _commit(root, domain, 'candidates', record, old['revision'])
+    reply = _commit(root, domain, 'candidates', record, old['revision'])
+    return dict(reply, **_exclusion_warning(reply['record']))
 
 
 def op_candidate_finalize(state):
@@ -889,7 +906,8 @@ def op_procedure_state(action):
             c = dict(content=v['content'], evidence_ids=v['evidence_ids'], step_evidence=v['step_evidence'],
                      project=v.get('project'), procedure_id=old['id'])
             report = evaluate(root, domain, c)
-            errors = [e for e in report['errors'] if e not in ('Learning is disabled for this domain',)]
+            # Resume rechecks evidence; a version approved before exclusions were required still resumes.
+            errors = [e for e in report['errors'] if e not in ('Learning is disabled for this domain', NEEDS_EXCLUSIONS)]
             if errors:
                 raise ValueError('Procedure evidence requires review: '+'; '.join(errors))
         record = dict(_clean(old), state='suspended' if action == 'suspend' else 'active')
@@ -1082,8 +1100,12 @@ GUIDE = [
     'When: after a verified fix or workflow that is likely to recur in this environment, record it, then propose a procedure for the user to review.',
     "1. CMD learn record --objective '...' --family 'area.kind' --criterion '...' --result pass --method tool_check --observer 'pytest' "
     "--excerpt 'what the check showed' --limitations 'what it did not cover' --outcome succeeded",
-    "2. CMD learn candidate create --title '...' --summary '...' --use-when '...' --step '...' [--step ...] --done-when '...' --fallback '...' --evidence ID",
-    '3. CMD learn candidate evaluate ID: eligibility and warnings. The user approves in Hivemind Review, or applies promote-plan; agents never apply it.',
+    "2. CMD learn candidate create --title '...' --summary '...' --use-when '...' --do-not-use-when '...' [--do-not-use-when ...] "
+    "--step '...' [--step ...] --done-when '...' --fallback '...' --evidence ID",
+    '   Do not use when: the cases where these steps would be wrong, such as a lookalike symptom with a different cause or a state '
+    'where a step does harm. Make the fallback cover them. A candidate without one is not eligible.',
+    '3. CMD learn candidate evaluate ID: eligibility, errors and warnings (fix with learn candidate update ID). The user approves '
+    'in Hivemind Review, or applies promote-plan; agents never apply it.',
     '4. Hits on learned procedures name their ID: CMD learn use report --procedure ID --usage used|partially_used|ignored|inapplicable, '
     'then CMD learn feedback add --use ID --outcome ...',
     'Inspect: CMD learn ENTITY list | read ID. Controls: learn procedure suspend|resume|retire-plan|rollback-plan|promote-plan ID; learn config status|set.',
