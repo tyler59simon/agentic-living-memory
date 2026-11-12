@@ -274,6 +274,12 @@ class SupersedeKeepsPointers(DocFixture):
         first=self.capture(*args);self.assertEqual(first['carried_links'],['docs/adr/ADR-001.md'])
         again=self.capture(*args);self.assertEqual((again['status'],again['id']),('existing',first['id']))
 
+    def test_a_capture_superseding_by_title_retried_with_its_idempotency_key_is_existing(self):
+        self.capture('--title','Money uses cents','--summary','Cents.')
+        args=('--title','Money uses BigDecimal','--summary','BigDecimal.','--supersedes','Money uses cents','--idempotency-key','money-2')
+        first=self.capture(*args)
+        again=self.capture(*args);self.assertEqual((again['status'],again['id']),('existing',first['id']))
+
     def test_the_standalone_supersede_rebases_relative_links_to_the_successors_folder(self):
         from core.notes import find_note
         from core.note_format import sections

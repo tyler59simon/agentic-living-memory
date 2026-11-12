@@ -424,7 +424,12 @@ def capture(title,body,tags,domain,root=None,**metadata):
         existing=inventory(domain,root,retired=True)
         resolved=[]
         for ref in supersedes:
-            other,ref_id=resolve_ref(ref,domain,root)
+            try:other,ref_id=resolve_ref(ref,domain,root)
+            except ValueError:
+                # Titles resolve to active notes only, but a retried capture already retired its predecessor.
+                retired=[n for n in existing if n.get('status','active')!='active' and n['title'].casefold()==str(ref).strip().casefold()]
+                if len(retired)!=1:raise
+                other,ref_id=domain,retired[0]['id']
             if other!=domain:raise ValueError(f'--supersedes must name a note in {domain}: {ref} is in {other}')
             resolved.append(ref_id)
         supersedes=resolved
