@@ -876,5 +876,53 @@ class Priv1ShingleCap(unittest.TestCase):
             private.check(state, {'title': 'Blue Harbor'})
 
 
+class Gov4RetagSourceTypo(Cli):
+    def test_unknown_source_tag_fails(self):
+        self.note()
+        code, out, err = self.run_cli('retag-plan', stdin=json.dumps({'concern/archtecture': 'concern/decision'}))
+        self.assertNotEqual(code, 0, out)
+        self.assertEqual(err['error']['message'], 'Unknown source tags: concern/archtecture; check the spelling with taxonomy')
+
+    def test_real_source_tag_still_plans(self):
+        self.note()
+        out = self.ok('retag-plan', stdin=json.dumps({'concern/architecture': 'concern/decision'}))
+        self.assertTrue(out['plan_id'])
+
+
+class Sto1RelocationLogs(unittest.TestCase):
+    def test_log_written_between_plan_and_apply(self):
+        from test_storage import SharedStorage
+
+        class Case(SharedStorage):
+            def runTest(self):
+                plan = self.plan()
+                logs = self.root / 'logs'
+                logs.mkdir()
+                (logs / 'log-2026-01-01.jsonl').write_text('{"event":"x"}\n')
+                result = self.apply(plan)
+                self.assertEqual(result['status'], 'committed')
+                self.assertTrue((Path(plan['destination']) / 'logs' / 'log-2026-01-01.jsonl').exists())
+        case = Case()
+        res = unittest.TestResult()
+        case.run(res)
+        self.assertTrue(res.wasSuccessful(), res.errors + res.failures)
+
+
+class Sto3GlobalBundle(StoreFixture):
+    def test_global_round_trip(self):
+        note = capture('Global habit', 'Always verify.', TAGS, '_global', self.root)
+        bundle = self.base / 'g.zip'
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertEqual(cli(['--root', str(self.root), '--domain', '_global', 'export', '--out', str(bundle)]), 0, err.getvalue())
+        find_note(note['id'], '_global', self.root)[0].unlink()
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertEqual(cli(['--root', str(self.root), 'import-plan', str(bundle)]), 0, err.getvalue())
+        plan = json.loads(out.getvalue())
+        apply(self.root, plan['plan_id'], plan['digest'])
+        self.assertTrue(find_note(note['id'], '_global', self.root)[1])
+
+
 if __name__ == '__main__':
     unittest.main()

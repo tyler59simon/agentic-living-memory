@@ -84,7 +84,8 @@ def import_plan(root,source,domain=None):
     root=Path(root).resolve();source=Path(source).expanduser()
     manifest,members=_read(source)
     target=canonical_domain(domain or str(manifest.get('domain') or ''),root)
-    if target not in read_json(root/'bindings.json',{}).get('domains',{}):raise ValueError(f"Domain '{target}' is not bound here; bind it or pass --domain")
+    from .common import global_domains
+    if target not in read_json(root/'bindings.json',{}).get('domains',{}) and target not in global_domains(root):raise ValueError(f"Domain '{target}' is not bound here; bind it or pass --domain")
     import json
     try:imported_records={name:json.loads(data.decode('utf-8')) for name,data in members.items() if name.startswith('learning/')}
     except (UnicodeError,ValueError) as exc:raise ValueError('Bundle learning record is not valid JSON') from exc

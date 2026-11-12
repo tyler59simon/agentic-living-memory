@@ -291,6 +291,10 @@ def retag_plan(root,mappings,domains=None):
             outside=[d for d in every if d not in set(domains)]
             still=sorted({t for d in outside for n in inventory(d,root,retired=True) for t in n.get('tags',[]) if t in mappings})
             if still:raise ValueError('Tags are still used in other domains: '+', '.join(still)+'; run retag-plan without a domain restriction')
+        from .notes import taxonomy;registered=taxonomy(root)
+        used={t for d in sorted(domains or every) for n in inventory(d,root,retired=True) for t in n.get('tags',[])}
+        unknown=sorted(t for t in mappings if t not in registered and t not in used)
+        if unknown:raise ValueError('Unknown source tags: '+', '.join(unknown)+'; check the spelling with taxonomy')
         for domain in sorted(domains or every):
             for note in inventory(domain,root,retired=True):
                 tags=sorted({mappings.get(t,t) for t in note.get('tags',[])})
