@@ -474,7 +474,8 @@ def validate(note, domain, root=None, new=False, extra_tags=()):
     if new:
         for required in ("subject", "concern"):
             if not any(t.startswith(required + "/") for t in tags):
-                raise ValueError(f"Capture requires a registered {required}/ tag")
+                options = sorted(t for t in known if t.startswith(required + "/"))
+                raise ValueError(f"Capture requires a registered {required}/ tag; pass --{required}" + (" with one of: " + ", ".join(options) if options else ""))
         if any(t.split("/", 1)[0] not in FACETS or "/" not in t for t in tags):
             raise ValueError("Tags must use subject/, concern/, platform/, technology/, project/, or system/ facets")
     if known and set(tags) - set(known):

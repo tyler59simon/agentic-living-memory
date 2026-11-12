@@ -655,5 +655,34 @@ class VectorReuse(StoreFixture):
         self.assertEqual(self.vectors(), 3)
 
 
+class Cfg1BomBindings(Cli):
+    """CFG-1: a UTF-8 BOM (Windows PowerShell 5.1 hand edits) must not make bindings.json invalid."""
+
+    def test_bom_prefixed_bindings_load_and_resolve_the_domain(self):
+        from core.common import load_bindings
+        path = self.root / 'bindings.json'
+        path.write_bytes(b'\xef\xbb\xbf' + path.read_bytes())
+        self.assertIn('demo', load_bindings(self.root)['domains'])
+        code, out, err = self.run_cli('search', 'anything')
+        self.assertEqual(code, 0, err)
+
+
+class Cli5DefaultConcern(Cli):
+    """CLI-5: plan/context/status/risk/research default their concern; a missing concern names the flag and options."""
+
+    def test_plan_without_concern_infers_workflow(self):
+        (self.root / 'tag_taxonomy.json').write_text(json.dumps({'tags': TAGS + ['concern/workflow']}))
+        out = self.ok('capture', '--type', 'plan', '--title', 'Ship the batch', '--summary', 'Order of the fixes.')
+        self.assertIn('concern/workflow', out['inferred_tags'])
+
+    def test_missing_concern_error_names_flag_and_registered_tags(self):
+        code, out, err = self.run_cli('capture', '--type', 'plan', '--title', 'Ship the batch', '--summary', 'Order of the fixes.')
+        self.assertEqual(code, 2)
+        message = err['error']['message']
+        self.assertIn('Capture requires a registered concern/ tag', message)
+        self.assertIn('--concern', message)
+        self.assertIn('concern/architecture', message)
+
+
 if __name__ == '__main__':
     unittest.main()
