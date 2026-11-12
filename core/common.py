@@ -129,7 +129,7 @@ def repo_identity(repo) -> str|None:
 
 def repo_label(repo) -> str:
     """The name a repo goes by in titles and lines: the last segment of its identity (the same in every clone), else its folder name."""
-    return (repo_identity(repo) or '').rsplit('/',1)[-1] or Path(repo).name
+    return re.sub(r'(?i)\.git$','',(repo_identity(repo) or '').rsplit('/',1)[-1]) or Path(repo).name   # a local remote keeps its .git in the identity
 
 def head_oid(repo) -> str|None:
     """The commit HEAD points to, read from the .git files (HEAD, loose refs, packed-refs) without running git."""

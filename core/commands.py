@@ -225,6 +225,8 @@ def command_notes(text,domains,root=None,limit=2):
             if not best or not search._unchanged(note_path,revision):continue
             hit={'id':note_id,'domain':domain,'title':title,'type':kind or 'knowledge','updated':str(updated or '')[:10],'match':best[0],'command':best[1],
                  'snippet':search.snippet(body,search.terms(best[1]),200)}
+            from .notes import is_interim
+            if is_interim({'type':kind,'title':title,'body':body}):hit['interim']=True
             if note_id in manifests:hit.update(procedure_id=manifests[note_id]['id'],procedure_version=manifests[note_id]['current_version'])
             ranked.append(hit)
     ranked.sort(key=lambda h:h['updated'],reverse=True)

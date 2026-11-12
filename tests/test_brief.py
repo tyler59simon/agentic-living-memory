@@ -159,11 +159,20 @@ class BriefReminders(BriefFixture):
         self.prompt('other session');self.edit_code();self.assertIn('has no project brief',self.stop()['continue_reason'])
 
     def test_a_directive_or_decision_without_a_brief_asks_for_one_in_the_same_reminder(self):
-        self.prompt('We decided to store money as BigDecimal.')
+        self.prompt('We decided to store money as BigDecimal.');self.edit_code()
         reason=self.stop()['continue_reason']
         self.assertIn('The user made a decision',reason);self.assertIn('Also: project has no project brief',reason)
         self.assertIn('--type brief',reason);self.assertLessEqual(len(reason),700);self.assertEqual(self.reminders(),['decision'])
         self.assertEqual(self.state()['briefed'],['unbriefed'])
+        self.assertIn('Write what you know now and mark unknowns as unknown',reason)
+
+    def test_a_read_only_session_is_not_asked_for_a_brief(self):
+        self.prompt('We decided to store money as BigDecimal.')
+        reason=self.stop()['continue_reason']
+        self.assertIn('The user made a decision',reason);self.assertNotIn('project brief',reason)   # the statement still holds the turn
+        self.assertEqual(self.state().get('briefed',[]),[])
+        self.fill_notes(3);self.prompt('now change the code');self.edit_code()   # a later turn that edits: the brief is asked for then
+        self.assertIn('has no project brief',self.stop()['continue_reason'])
 
     def test_a_decision_document_with_no_brief_joins_the_doc_reminder(self):
         self.prompt();self.edit_doc()

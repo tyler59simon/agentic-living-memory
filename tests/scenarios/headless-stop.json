@@ -1,0 +1,22 @@
+{
+ "name": "headless-stop",
+ "description": "In a non-interactive run (claude -p: CLAUDE_CODE_ENTRYPOINT=sdk-cli or CLAUDE_CODE_SESSION_ATTENDED=0, or LIVING_MEMORY_HEADLESS=1) the Stop reminder keeps the closing nothing-durable line and ends with the instruction to repeat the answer in full; an attended run never gets it. A read-only session gets no housekeeping reminder (map) however much it explored, and an edit later in the session brings it back.",
+ "folders": ["project/hivemind/.git"],
+ "steps": [
+  {"hook": "session-start"},
+  {"hook": "user-prompt", "payload": {"prompt": "remember that the staging server was retired"}},
+  {"hook": "stop", "env": {"CLAUDE_CODE_ENTRYPOINT": "sdk-cli", "CLAUDE_CODE_SESSION_ATTENDED": "0"}, "expect": {"reminder": "remember", "reminder_contains": ["Nothing durable: CMD capture-finalize --session {session}."], "reminder_ends_with": "This is a non-interactive run and only your last message is returned: after saving, end with your answer to the task repeated in full."}},
+  {"hook": "user-prompt", "payload": {"prompt": "remember that the build box is slow"}},
+  {"hook": "stop", "expect": {"reminder": "remember", "reminder_excludes": ["non-interactive"], "reminder_ends_with": "Nothing durable: CMD capture-finalize --session {session}."}},
+  {"hook": "user-prompt", "payload": {"prompt": "remember that the cache is cold on Mondays"}},
+  {"hook": "stop", "env": {"LIVING_MEMORY_HEADLESS": "1"}, "expect": {"reminder": "remember", "reminder_ends_with": "This is a non-interactive run and only your last message is returned: after saving, end with your answer to the task repeated in full."}},
+  {"hook": "user-prompt", "payload": {"prompt": "look around the hivemind app and answer what it does"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Read", "tool_input": {"file_path": "{project}/hivemind/app.py"}}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Glob", "tool_input": {"pattern": "**/*.py", "path": "{project}/hivemind"}}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Read", "tool_input": {"file_path": "{project}/hivemind/db.py"}}},
+  {"hook": "stop", "env": {"CLAUDE_CODE_SESSION_ATTENDED": "0"}, "expect": {"stop_reason": "no_change", "reminder": null}},
+  {"hook": "user-prompt", "payload": {"prompt": "now fix the typo in the hivemind app"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/hivemind/app.py"}}, "expect": {"mutation": "tracked"}},
+  {"hook": "stop", "env": {"CLAUDE_CODE_SESSION_ATTENDED": "0"}, "expect": {"reminder": "explored", "reminder_contains": ["hivemind, which has no codebase map"], "reminder_ends_with": "This is a non-interactive run and only your last message is returned: after saving, end with your answer to the task repeated in full."}}
+ ]
+}

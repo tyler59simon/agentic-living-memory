@@ -8,7 +8,7 @@ from pathlib import Path
 from .common import load_bindings,memory_root,resolve_domain,canonical_domain
 from .repository import inventory
 from .search import snippet
-from .notes import short_ref
+from .notes import short_ref,is_interim,unconfirmed
 
 # Standing guidance first: these shape every turn, while status notes are usually found by prompt search.
 PRIORITY=('policy','preference','decision')
@@ -45,8 +45,9 @@ SUMMARY_SECTION=re.compile(r'^##[^\n]*Executive Summary[^\n]*\n(.*?)(?=\n---|\n#
 
 def is_gotcha(note):
     """A bug, runbook or knowledge note that records a pitfall: tagged as a bug, constraint or correction, listing the
-    commands it is about (core/commands.py fills `commands`), or worded like a warning in its title or summary."""
-    if note.get('type') not in GOTCHA_TYPES:return False
+    commands it is about (core/commands.py fills `commands`), or worded like a warning in its title or summary.
+    An interim note (an unconfirmed belief, see notes.is_interim) is not a known pitfall yet."""
+    if note.get('type') not in GOTCHA_TYPES or is_interim(note):return False
     if GOTCHA_TAGS&set(note.get('tags') or []) or note.get('commands'):return True
     body=str(note.get('body') or '');found=SUMMARY_SECTION.search(body)   # every note is checked, so no layout parsing here
     return bool(GOTCHA_WORDS.search(str(note.get('title',''))+' '+(found[1] if found else body[:400])))
@@ -211,13 +212,14 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
 
     flagged={}
     def flag(n):
-        """`STALE: a.md changed since this digest — ` before the title of a digest whose source file changed (core/digests.py); '' for any other note."""
-        if not n.get('sources'):return ''
+        """`STALE: a.md changed since this digest — ` before the title of a digest whose source file changed (core/digests.py),
+        then `UNCONFIRMED (as of date): ` for a note still holding an unconfirmed belief; '' for any other note."""
+        if not n.get('sources'):return unconfirmed(n)
         key=(n['domain'],n['id'])
         if key not in flagged:
             from .digests import stale_note
             text=stale_note(n,root,bindings);flagged[key]=text+' — ' if text else ''
-        return flagged[key]
+        return flagged[key]+unconfirmed(n)
 
     def render(listed,opened,width,search,titles_only,with_tail=True,psummary=True,with_brief=True,gcount=0,gsnip=True,summaries=False):
         lines=[header]+([_project_line(project,root,psummary)] if project else here)+([brief] if brief and with_brief else [])+last

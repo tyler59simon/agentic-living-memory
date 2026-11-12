@@ -63,6 +63,14 @@ class Identity(unittest.TestCase):
         self.assertTrue(normalize_remote('C:/work/Ledger').startswith('file:'))
         self.assertTrue(normalize_remote('C:\\work\\Ledger').startswith('file:'))
 
+    def test_a_bare_local_origin_is_labelled_without_its_dot_git(self):
+        origin = self.base / 'Origins' / 'origin.git'
+        origin.mkdir(parents=True)
+        repo = make_repo(self.base / 'clone', str(origin))
+        self.assertEqual(repo_identity(repo), 'file:' + origin.resolve().as_posix().casefold())   # the identity keeps the path as is
+        self.assertEqual(repo_label(repo), 'origin')
+        self.assertEqual(repo_name(str(repo)), 'origin')
+
     def test_identity_comes_from_the_origin_remote_only(self):
         repo = self.base / 'ledger'
         (repo / '.git').mkdir(parents=True)
@@ -252,6 +260,7 @@ class SharedMaps(StoreFixture):
         runtime.process('claude', 'user-prompt', {**payload, 'prompt': 'look around'}, self.root)
         for name in ('a.py', 'b.py', 'c.py'):
             runtime.process('claude', 'pre-tool-use', {**payload, 'tool_name': 'Read', 'tool_input': {'file_path': str(self.arch / name)}}, self.root)
+        runtime.process('claude', 'pre-tool-use', {**payload, 'tool_name': 'Write', 'tool_input': {'file_path': str(self.arch / 'notes.txt')}}, self.root)   # housekeeping is for sessions that edit
         reply = runtime.process('claude', 'stop', payload, self.root)
         self.assertIn("--title 'ledger codebase map'", reply.get('continue_reason', ''))
 

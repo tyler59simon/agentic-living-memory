@@ -13,6 +13,7 @@ The agent works in a throwaway store; grant it only the tools that store needs. 
 the agent's own claims and are not independently verified.
 """
 import json
+import os
 import subprocess
 import sys
 
@@ -61,7 +62,7 @@ def main(argv):
     prompt = PROMPT.format(objective=task['objective'], root=task['root'], domain=task['domain'], python=sys.executable,
                            cli=task['cli'], procedure=hint, contract=task.get('report_contract', ''))
     child = subprocess.run([part.replace('{prompt}', prompt) for part in template], text=True, encoding='utf-8',
-                           capture_output=True)
+                           capture_output=True, env=dict(os.environ, LIVING_MEMORY_HEADLESS='1'))
     if child.returncode:
         print(child.stderr[-2000:], file=sys.stderr)
         return child.returncode

@@ -1,0 +1,26 @@
+{
+ "name": "receipt-covers-doc",
+ "description": "A receipt settles a decision document only when a note saved or updated in the turn covers it (links, files or sources): an unrelated capture leaves the document reminder standing, a capture that links the document, or a note update that adds the link, answers it, and \"nothing durable\" still dismisses everything.",
+ "notes": [
+  {"key": "money", "title": "Money representation", "body": "Amounts are stored as long cents."}
+ ],
+ "steps": [
+  {"hook": "session-start"},
+  {"hook": "user-prompt", "payload": {"prompt": "write down the money decision"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Write", "tool_input": {"file_path": "{project}/docs/adr/ADR-004-money.md"}}, "expect": {"detail": {"docs": 1}}},
+  {"cli": ["capture", "--session", "{session}", "--type", "decision", "--title", "Retries use jittered backoff", "--summary", "Clients retry with jitter."], "expect": {"exit": 0, "status": "created"}},
+  {"hook": "stop", "expect": {"reminder": "doc", "reminder_contains": ["You changed docs/adr/ADR-004-money.md"]}},
+  {"hook": "user-prompt", "payload": {"prompt": "and the ids decision"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Write", "tool_input": {"file_path": "{project}/docs/adr/ADR-005-ids.md"}}},
+  {"cli": ["capture", "--session", "{session}", "--type", "decision", "--title", "Ids are UUIDs", "--summary", "All ids are UUIDs.", "--link", "docs/adr/ADR-005-ids.md"], "expect": {"exit": 0, "status": "created"}},
+  {"hook": "stop", "expect": {"stop_reason": "receipt", "reminder": null}},
+  {"hook": "user-prompt", "payload": {"prompt": "and the rounding decision"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Write", "tool_input": {"file_path": "{project}/docs/adr/ADR-006-rounding.md"}}},
+  {"cli": ["update", "@money", "--session", "{session}", "--add-link", "docs/adr/ADR-006-rounding.md"], "expect": {"exit": 0}},
+  {"hook": "stop", "expect": {"stop_reason": "receipt", "reminder": null}},
+  {"hook": "user-prompt", "payload": {"prompt": "and the dates decision"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Write", "tool_input": {"file_path": "{project}/docs/adr/ADR-007-dates.md"}}},
+  {"cli": ["capture-finalize", "--session", "{session}"], "expect": {"exit": 0, "status": "nothing_durable"}},
+  {"hook": "stop", "expect": {"stop_reason": "receipt", "reminder": null}}
+ ]
+}

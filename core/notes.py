@@ -181,6 +181,35 @@ def title_similarity(a,b):
     if min(len(x),len(y))>=3:score=max(score,shared/min(len(x),len(y)))
     return score
 
+# A belief nobody has confirmed yet (bug, knowledge and decision notes), or labelled **Hypothesis:**. STRONG phrases say so wherever
+# they are; WEAK words count only in the title or summary, or one "probably" deep in a long note would mark the whole note.
+_STRONG=(r'unconfirmed|not (?:yet )?(?:confirmed|verified|approved|signed)|until (?:it is )?confirmed|pending (?:confirmation|approval|sign-?off)|'
+         r'root cause (?:unconfirmed|unknown|unclear)')
+_WEAK=r'probably|suspect(?:ed)?|likely cause|hypothes[ie]s'
+STRONG=re.compile(r'(?i)\b(?:'+_STRONG+r')\b')
+WEAK=re.compile(r'(?i)\b(?:'+_WEAK+r')\b')
+INTERIM=re.compile(r'(?i)\b(?:'+_STRONG+'|'+_WEAK+r'|not reproduced)\b')   # both: the capture-time advisory, and a resolution that is itself hedged
+SUMMARY=re.compile(r'(?im)^##[^\n]*Executive Summary[^\n]*\n(.*?)(?=\n---|\n## |\Z)',re.S)
+INTERIM_TYPES=('bug','knowledge','decision')
+HYPOTHESIS=re.compile(r'(?i)\*\*hypothesis')
+# A labelled cause, fix or outcome: when its text is not itself hedged, the note stopped being interim.
+RESOLUTION=re.compile(r'(?im)^\s*[-*+]?\s*\*\*(?:root cause|fix|resolution|outcome|confirmed):?\*\*:?[ \t]*(\S[^\n]*)')
+
+def is_interim(note):
+    """True for an active note that still states an unconfirmed belief: labelled **Hypothesis:**, or (bug, knowledge,
+    decision) worded as one (STRONG anywhere, WEAK in the title or summary) with no labelled root cause, fix or outcome that settles it."""
+    if note.get('status','active')!='active':return False
+    body=str(note.get('body') or '')
+    if HYPOTHESIS.search(body):return True
+    if note.get('type') not in INTERIM_TYPES:return False
+    title=str(note.get('title') or '');found=SUMMARY.search(body)
+    if not (STRONG.search(title+'\n'+body) or WEAK.search(title+'\n'+(found[1] if found else body[:400]))):return False
+    return not any(not INTERIM.search(m[1]) for m in RESOLUTION.finditer(body))
+
+def unconfirmed(note):
+    """The prefix an injected line gives a note that is still an unconfirmed belief, dated by its last update; '' otherwise."""
+    return f"UNCONFIRMED (as of {str(note.get('updated') or note.get('created') or '')[:10]}): " if is_interim(note) else ''
+
 # Signs a note records a moment rather than lasting knowledge. Advisory: the note is still saved.
 QUALITY_CHECKS=(
     (re.compile(r'(?i)scratchpad|[\\/]temp[\\/]|/tmp/|appdata[\\/]local[\\/]temp'),
@@ -191,10 +220,8 @@ QUALITY_CHECKS=(
      'test counts go stale; keep the outcome or the gotcha, not the count'),
     (re.compile(r'(?i)\bcommits?\s+[0-9a-f]{7,40}\b|\bplan\s+[0-9a-f]{32}\b'),
      'commit and plan identifiers are already recorded by git and the journal'),
-    (re.compile(r'(?i)\b(?:root cause (?:unconfirmed|unknown|unclear)|hypothes[ie]s|suspect(?:ed)?|likely cause|not (?:yet )?(?:confirmed|verified|reproduced)|probably)\b'),
-     'this reads as an interim hypothesis: say so in the note (e.g. **Hypothesis:** ...) and update it when the cause is known'),
+    (INTERIM,'this reads as an interim hypothesis: say so in the note (e.g. **Hypothesis:** ...) and update REF once it is confirmed'),
 )
-INTERIM_TYPES=('bug','knowledge','decision')
 
 def quality_warnings(note):
     title=note.get('title','');body=note.get('body','')
@@ -203,7 +230,7 @@ def quality_warnings(note):
         unfinished=message.startswith('describes an unfinished')
         if unfinished and note.get('type')=='plan':continue
         # A hypothesis already labelled as one (**Hypothesis:** ...) is what the check asks for.
-        if message.startswith('this reads as an interim') and (note.get('type') not in INTERIM_TYPES or re.search(r'(?i)\*\*hypothesis',body)):continue
+        if message.startswith('this reads as an interim') and (note.get('type') not in INTERIM_TYPES or HYPOTHESIS.search(body)):continue
         # Open steps belong in a bug or risk note's Action Items; elsewhere they are a passing state.
         text=title+'\n'+(without_actions(body) if unfinished and note.get('type') in ACTION_TYPES else body)
         if pattern.search(text):found.append(message)
@@ -361,6 +388,24 @@ def _redigested(existing,sources,skip):
     return [n['id'] for n in existing if n.get('status','active')=='active' and n['id'] not in skip and n.get('sources')
             and (old:={s['path']:s['sha256'] for s in n['sources']})!=new and set(old)==set(new)]
 
+def _carry_pointers(body,files,old_notes,dest):
+    """(body, files, carried links, carried files) with the replaced notes' Resource Links bullets and files added after
+    the new note's own (duplicates dropped), so a successor keeps pointing at the documents its predecessor did. Relative
+    links are rebased from each replaced note's path to `dest`, the successor's (a file in its folder)."""
+    from .note_format import sections,amend
+    from .migration import rewrite_type_links
+    key=lambda text:re.sub(r'^(?:[-*+]|\d+\.)\s+','',text.strip()).casefold()
+    have={key(l) for l in sections(body).get('links','').splitlines() if l.strip()}
+    links=[]
+    for old in old_notes:
+        for line in sections(old.get('body') or '').get('links','').splitlines():
+            line=rewrite_type_links(line.strip(),dest,{},moved_from=Path(old['path']))
+            if line and key(line) not in have:have.add(key(line));links.append(line)
+    if links:body=amend(body,links=links)
+    mine=clean_files(files);more=[f for old in old_notes for f in clean_files(old.get('files'))]
+    merged=clean_files(mine+more)
+    return body,(merged or files),[re.sub(r'^(?:[-*+]|\d+\.)\s+','',l) for l in links],[f for f in merged if f not in mine]
+
 def capture(title,body,tags,domain,root=None,**metadata):
     root=Path(root or memory_root()).resolve();domain=canonical_domain(domain,root)
     with store_lock(root):
@@ -374,7 +419,7 @@ def capture(title,body,tags,domain,root=None,**metadata):
         elif domain not in registered and domain not in {'global','_global'}:raise ValueError('Domain is not registered; run bind first')
         body=format_body(body)
         key=metadata.pop('idempotency_key',None);allow_similar=bool(metadata.pop('allow_similar',False))
-        supersedes=metadata.pop('supersedes',None) or []
+        supersedes=metadata.pop('supersedes',None) or [];drop_links=bool(metadata.pop('drop_links',False))
         if isinstance(supersedes,str):supersedes=[supersedes]
         existing=inventory(domain,root,retired=True)
         resolved=[]
@@ -390,7 +435,10 @@ def capture(title,body,tags,domain,root=None,**metadata):
         for note in existing:
             if key and note.get('capture_key')==key and not (key.startswith(DIGEST_KEY) and note.get('status','active')!='active'):
                 # A digest key names a file and its hash: the same file content is already digested, whatever the new wording.
-                if (note['body'].strip()!=body.strip() or note['title']!=title.strip()) and not key.startswith(DIGEST_KEY):raise ValueError('Idempotency key has different content')
+                # A superseding capture stores the submitted body plus the links it inherited; compare against that.
+                sent={body.strip()}
+                if supersedes and not drop_links:sent.add(_carry_pointers(body,metadata.get('files'),[n for n in existing if n['id'] in supersedes],root/'domains'/domain/'notes'/'x.md')[0].strip())
+                if (note['body'].strip() not in sent or note['title']!=title.strip()) and not key.startswith(DIGEST_KEY):raise ValueError('Idempotency key has different content')
                 if effective_type(note)!=selected_type:raise ValueError('Existing note has a different type; update that note instead')
                 return {'ok':True,'id':note['id'],'status':'existing','path':note['path']}
             if note['title'].casefold()==title.strip().casefold() and note['body'].strip()==body.strip():
@@ -429,6 +477,9 @@ def capture(title,body,tags,domain,root=None,**metadata):
             absorbed=(other,match)   # 'supersede': the new global note replaces the project one
         review_by=metadata.pop('review_by',None);context=metadata.pop('context','');files=metadata.pop('files',None);origin=metadata.pop('origin',None);commands=metadata.pop('commands',None);sources=metadata.pop('sources',None)
         if metadata:raise ValueError('Unsupported capture metadata: '+', '.join(metadata))
+        carried=carried_files=[]
+        if supersedes and not drop_links:
+            body,files,carried,carried_files=_carry_pointers(body,files,[n for n in existing if n['id'] in supersedes],root/'domains'/domain/'notes'/'x.md')
         if selected_type in KEYED_TYPES:
             # One map per repo, one brief per project folder: a second capture would split what the next session reads.
             from .maps import capture_conflict
@@ -457,13 +508,14 @@ def capture(title,body,tags,domain,root=None,**metadata):
         if near:result['similar']=[{'ref':f"{domain}:{n['id']}",'title':n['title']} for n in near]
         warnings=quality_warnings(note)
         if warnings:result['quality_warnings']=warnings
-        if supersedes:result['superseded']=[f'{domain}:{old}' for old in supersedes]
+        if supersedes:result['superseded']=[f'{domain}:{old}' for old in supersedes];result['carried_links']=carried;result['carried_files']=carried_files
         return result
 
-def _change_set(note_id,domain,action,root,expected_revision=None,successor=None,pending=None,**values):
+def _change_set(note_id,domain,action,root,expected_revision=None,successor=None,pending=None,carried=None,**values):
     """Files to write for one note action, with the revisions they must still have. `pending` holds the
     changes of earlier steps in the same transaction (rel path -> text, or None when removed); files are
-    read through it, so steps build on each other instead of overwriting one another."""
+    read through it, so steps build on each other instead of overwriting one another. A standalone supersede carries the replaced
+    note's Resource Links and files into its successor (unless values has drop_links); `carried`, when a dict, receives what moved."""
     pending=pending or {}
     path,note=find_note(note_id,domain,root)
     if note.get('learning_procedure'):
@@ -559,6 +611,12 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
     if action=='supersede' and successor is None:
         successor_path,successor_note=find_note(note['superseded_by'],domain,root)
         successor_note['supersedes']=sorted(set(successor_note.get('supersedes',[])+[note_id]))
+        if not values.get('drop_links'):
+            body,files,links,pointed=_carry_pointers(successor_note.get('body') or '',successor_note.get('files'),[note],Path(successor_note['path']))
+            successor_note['body']=body
+            if files:successor_note['files']=files
+        else:links,pointed=[],[]
+        if isinstance(carried,dict):carried.update(carried_links=links,carried_files=pointed)
         successor_note['updated']=now()
         changes[successor_path.relative_to(root).as_posix()]=serialize(successor_note)
         expected[successor_path.relative_to(root).as_posix()]=successor_note['revision']
@@ -604,11 +662,12 @@ def change(note_id,domain,action,root=None,expected_revision=None,plan_only=Fals
             if expected_revision and current['revision']!=expected_revision:raise ValueError('stale_revision')
             from .learning import stage_edit
             return stage_edit(root,domain,current,values,preview=plan_only)
-        changes,expected,target=_change_set(note_id,domain,action,root,expected_revision,**values)
+        carried={}
+        changes,expected,target=_change_set(note_id,domain,action,root,expected_revision,carried=carried,**values)
         if plan_only:
             from .governance import plan
             return plan(root,changes,action,[domain],{'id':note_id,'action':action,'files':len(changes)})
-        result=_commit(domain,changes,action,root,expected);result.update(id=note_id,path=str(target),status=action)
+        result=_commit(domain,changes,action,root,expected);result.update(id=note_id,path=str(target),status=action,**carried)
         if action=='update' and ('body' in values or 'title' in values):
             from .repository import parse
             warnings=quality_warnings(parse(target) or {})

@@ -823,6 +823,16 @@ def _covers(stemset,term):
     from .search import stem
     s=stem(term);return s in stemset or (s[:-1] if s.endswith('e') else s+'e') in stemset or (s[:-1]+'i' if s.endswith('y') else s) in stemset
 
+TEST_PATH=re.compile(r'(?i)(?:^|/)(?:tests?|__tests__|spec)/|(?:^|/)test_[^/]*$|_test\.[^/]*$|\.(?:spec|test)\.[^/]*$|Test\.java$')
+WANTS_TESTS=re.compile(r'(?i)\b(?:tests?|testing|specs?)\b')
+TEST_PENALTY=2.5   # rank positions a test file's chunk drops: it loses near-ties to code, but a clearly better match still leads
+
+def _tests_last(rows,query):
+    """rows with test files' chunks demoted by TEST_PENALTY positions (a stable re-sort), unless the query is about tests:
+    "how does X work" wants the code, not the test that exercises it."""
+    if WANTS_TESTS.search(query):return rows
+    return [r for _,r in sorted(enumerate(rows),key=lambda i_r:i_r[0]+(TEST_PENALTY if TEST_PATH.search(i_r[1][2].replace(os.sep,'/')) else 0))]
+
 def search(root,domain,query,limit=5,vocab=None,informative=False,gate=None,least=2,width=SNIPPET):
     """Source excerpts for a query, best first: chunks with every term, then chunks with some, at most two per file and
     none overlapping another. Terms no chunk carries are dropped; informative (the prompt hook) also drops words most
@@ -844,7 +854,7 @@ def search(root,domain,query,limit=5,vocab=None,informative=False,gate=None,leas
             batch=db.execute('SELECT c.id,c.source,c.path,c.kind,c.symbol,c.line_start,c.line_end,f.text,bm25(chunk_fts,6.0,3.0,1.5,1.0),fl.url,fl.title FROM chunk_fts f JOIN chunk c ON c.id=f.rowid JOIN file fl ON fl.id=c.file_id WHERE chunk_fts MATCH ? ORDER BY bm25(chunk_fts,6.0,3.0,1.5,1.0) LIMIT 60',(match,)).fetchall()
             rows+=[r for r in batch if r[0] not in listed];listed|={r[0] for r in batch}
             if len(rows)>=limit*3 or len(words)==1:break
-        rows=_fuse_vectors(db,root,query,rows)
+        rows=_tests_last(_fuse_vectors(db,root,query,rows),query)
         roots={n:r for n,r in db.execute('SELECT name,root FROM source')}
         out=[];per_file={};taken=[]
         for cid,source,path,kind,symbol,start,end,text,score,url,title in rows[:40]:

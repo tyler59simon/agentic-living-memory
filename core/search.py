@@ -124,6 +124,7 @@ def file_notes(path,domains,root=None,limit=2,ensure_fresh=True):
     """Active notes about a file: those listing it in `files` first, then those naming it in the body;
     newest first within each group. Hooks pass ensure_fresh=False: a missing index gives nothing, and a
     matched row whose canonical file changed since the index was built is skipped rather than trusted."""
+    from .notes import is_interim
     root=Path(root or memory_root()).resolve();ranked=[]
     for domain in dict.fromkeys(domains):
         try:folder=domain_dir(domain,root)
@@ -154,6 +155,7 @@ def file_notes(path,domains,root=None,limit=2,ensure_fresh=True):
                 ranked.append((group,str(updated or ''),{'id':note_id,'domain':domain,'title':title,'type':kind or 'knowledge','updated':str(updated or '')[:10],
                                'match':'files' if group==0 else 'body','snippet':snippet(body,terms(path))}))
                 if digest_sources:ranked[-1][2]['sources']=digest_sources
+                if is_interim({'type':kind,'title':title,'body':body}):ranked[-1][2]['interim']=True
                 if note_id in manifests:
                     ranked[-1][2].update(procedure_id=manifests[note_id]['id'],procedure_version=manifests[note_id]['current_version'])
     ranked.sort(key=lambda r:r[1],reverse=True);ranked.sort(key=lambda r:r[0])
@@ -322,6 +324,7 @@ def vocabulary(domains,root=None,wanted=None):
     return total,dict(df)
 
 def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False):
+    from .notes import is_interim
     root=Path(root or memory_root()).resolve();tokens=query_terms(query)
     domain=canonical_domain(domain,root)
     if not tokens:return []
@@ -371,6 +374,7 @@ def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False):
                            'revision':note['revision'],'sourceField':field,'sourceScope':'active','coverage':coverage[note['id']],
                            'titleOverlap':len(wanted&title),'titleTerms':len(title),'queryTerms':len(wanted),'relevance':round(coverage[note['id']],2)})
             if note.get('sources'):output[-1]['sources']=note['sources']
+            if is_interim(note):output[-1]['interim']=True
             if note.get('learning_procedure'):
                 output[-1].update(procedure_id=note['learning_procedure'],procedure_version=note['learning_version'],evidence_status=note.get('learning_state'))
             if similarity is not None:output[-1]['similarity']=round(similarity.get(note['id'],0.0),4)
@@ -416,9 +420,9 @@ def search_domains(query,domains,limit=3,root=None,filters=None,rebuild=False,we
         for hit in hits:hit['score']*=1+usage.STRENGTH_NUDGE*power.get(f"{hit['domain']}:{hit['id']}",0)/top
     return sorted(hits,key=lambda h:(-h['score'],h['domain'],h['id']))[:limit]
 def recent_notes(domain,limit=3,root=None):
-    notes=inventory(domain,root)
-    for note in notes:note.update(domain=domain,snippet=snippet(note['body'],[],SNIPPET))
-    return sorted(notes,key=lambda n:str(n.get('updated',n.get('created',''))),reverse=True)[:max(1,min(20,limit))]
+    notes=sorted(inventory(domain,root),key=lambda n:str(n.get('updated',n.get('created',''))),reverse=True)[:max(1,min(20,limit))]
+    for note in notes:note.update(domain=domain,snippet=snippet(note['body'],[],SNIPPET))   # only the few that are shown
+    return notes
 def readonly_query(domain,sql,root=None):
     import time
     path=domain_dir(domain,root)/'search.sqlite3';db=sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True)

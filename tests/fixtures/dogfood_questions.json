@@ -1,0 +1,24 @@
+{
+  "questions": [
+    {"q": "How does the Stop hook decide whether to remind the agent to save something?", "expect": ["core/runtime.py", "ARCHITECTURE.md"]},
+    {"q": "How are very long pasted prompts split into several search queries?", "expect": ["core/runtime.py", "core/search.py"]},
+    {"q": "Where is the session-start context built and what character budget does it have?", "expect": ["core/session_start.py", "ARCHITECTURE.md"]},
+    {"q": "How are Confluence pages pulled into the knowledge base and which credential does it use?", "expect": ["core/connectors.py"]},
+    {"q": "How does a digest note become stale when the source file it was written from changes?", "expect": ["core/digests.py"]},
+    {"q": "How do I install Living Memory for my user and roll the install back if it goes wrong?", "expect": ["install.py", "INSTALLATION.md", "core/installer_lifecycle.py"]},
+    {"q": "What is the note protocol that agents follow, and how does it get into their instruction files?", "expect": ["core/instructions.py", "PROTOCOL.md"]},
+    {"q": "How is a codebase map keyed to a repository so every clone of the same origin finds it?", "expect": ["core/maps.py", "core/common.py", "ARCHITECTURE.md"]},
+    {"q": "How are private spans in a user prompt kept out of the notes the agent saves?", "expect": ["core/private.py"]},
+    {"q": "How verbose is the operational log, how do I turn on debug, and how long are log files kept?", "expect": ["core/logs.py", "MAINTENANCE.md"]},
+    {"q": "How do I restore my memory from a snapshot if the store folder was deleted?", "expect": ["core/backup.py", "RECOVERY.md"]},
+    {"q": "How does semantic search work without any pip package, and how is the model installed?", "expect": ["core/semantic.py", "ARCHITECTURE.md"]},
+    {"q": "How does Living Memory notice that a shell command the agent is about to run matches a warning in a note?", "expect": ["core/commands.py"]},
+    {"q": "What are the ten note types and which one should I use for a milestone?", "expect": ["NOTE_TYPES.md", "core/note_types.py"]},
+    {"q": "How do I export a domain's notes and import them into another store?", "expect": ["core/bundle.py", "SCRIPT_REFERENCE.md"]},
+    {"q": "How are the Obsidian vault copies kept in sync with the canonical notes and what happens on a conflict?", "expect": ["core/sync.py", "OBSIDIAN.md"]},
+    {"q": "How does the usage diary record which notes were shown and which were actually used?", "expect": ["core/usage.py", "MAINTENANCE.md"]},
+    {"q": "How are repeated Read, Glob and Grep tool calls answered quickly without loading the whole runtime?", "expect": ["core/hookfast.py"]},
+    {"q": "How does a proposed runbook get approved and versioned in reviewed learning?", "expect": ["core/learning.py", "LEARNING.md"]},
+    {"q": "How can the agent search the session transcript for details that compaction summarized away?", "expect": ["core/recall.py", "ARCHITECTURE.md"]}
+  ]
+}

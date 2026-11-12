@@ -40,7 +40,7 @@ class Helpers(unittest.TestCase):
         self.assertEqual(simulate.subset({'a': [1]}, {'a': [1, 2]}), 'a: expected [1], got [1, 2]')
 
     def test_scenarios_are_well_formed(self):
-        kinds = {'hook', 'cli', 'fault', 'session'}
+        kinds = {'hook', 'cli', 'fault', 'session', 'git_commit'}
         for path in sorted(simulate.SCENARIOS.glob('*.json')):
             scenario = json.loads(path.read_text(encoding='utf-8'))
             with self.subTest(path.name):

@@ -6,7 +6,7 @@ arithmetic: no pip dependency and no network after the one explicit `semantic in
 `<root>/.models/<name>/`; it is a download, not canonical data, and backups skip it.
 """
 from __future__ import annotations
-import array,hashlib,json,math,mmap,os,shutil,struct,tempfile,unicodedata,urllib.request
+import array,hashlib,json,marshal,math,mmap,operator,os,shutil,struct,tempfile,unicodedata,urllib.request
 from pathlib import Path
 
 # The eval flips this to compare orderings; with no model installed it changes nothing.
@@ -34,10 +34,36 @@ def _punctuation(ch):
 def _cjk(code):
     return any(a<=code<=b for a,b in ((0x4E00,0x9FFF),(0x3400,0x4DBF),(0x20000,0x2A6DF),(0x2A700,0x2B73F),(0x2B740,0x2B81F),(0x2B820,0x2CEAF),(0xF900,0xFAFF),(0x2F800,0x2FA1F)))
 
+_SPEC_MODEL=('type','vocab','unk_token','continuing_subword_prefix','max_input_chars_per_word')
+_SPEC_NORM=('type','lowercase','strip_accents','clean_text','handle_chinese_chars')
+def _tokenizer_spec(folder):
+    """The tokenizer.json fields the reader uses. Parsing the 1.5 MB file costs every hook process about as much as the rest of a
+    prompt, so the parsed plain data is kept beside it as tokenizer.marshal, keyed by the source's size and mtime; a missing, stale or
+    unreadable cache is rebuilt, and one that cannot be written (read-only folder) is skipped. Derived: safe to delete."""
+    source=folder/'tokenizer.json';stat=source.stat();key=[stat.st_size,stat.st_mtime_ns];cache=folder/'tokenizer.marshal'
+    try:
+        stored=marshal.loads(cache.read_bytes())
+        if stored.get('source')==key and isinstance(stored.get('spec'),dict):return stored['spec']
+    except (OSError,EOFError,ValueError,TypeError,AttributeError):pass
+    spec=json.loads(source.read_text(encoding='utf-8'))
+    pick=lambda part,names:{k:part[k] for k in names if k in part} if isinstance(part,dict) else {}
+    spec={'model':pick(spec.get('model'),_SPEC_MODEL),'normalizer':pick(spec.get('normalizer'),_SPEC_NORM),'pre_tokenizer':pick(spec.get('pre_tokenizer'),('type',))}
+    try:
+        fd,tmp=tempfile.mkstemp(prefix='.tokenizer.',suffix='.tmp',dir=folder)
+        try:
+            with os.fdopen(fd,'wb') as out:out.write(marshal.dumps({'source':key,'spec':spec}))
+            os.replace(tmp,cache)
+        except BaseException:
+            try:os.unlink(tmp)
+            except OSError:pass
+            raise
+    except OSError:pass
+    return spec
+
 class Model:
     """A loaded static model: BERT normalization and pre-tokenization, greedy WordPiece, rows read on demand."""
     def __init__(self,folder):
-        folder=Path(folder);spec=json.loads((folder/'tokenizer.json').read_text(encoding='utf-8'))
+        folder=Path(folder);spec=_tokenizer_spec(folder)
         model,norm,pre=spec.get('model') or {},spec.get('normalizer') or {},spec.get('pre_tokenizer') or {}
         if model.get('type')!='WordPiece' or norm.get('type')!='BertNormalizer' or pre.get('type')!='BertPreTokenizer':
             raise ValueError('semantic_model_unsupported: only WordPiece tokenizers with BERT normalization are read')
@@ -120,7 +146,7 @@ class Model:
 def to_blob(vector):return vector.tobytes()
 def from_blob(blob):
     vector=array.array('f');vector.frombytes(blob);return vector
-def cosine(a,b):return sum(x*y for x,y in zip(a,b))
+def cosine(a,b):return sum(map(operator.mul,a,b))
 
 def models_dir(root):return Path(root)/FOLDER
 

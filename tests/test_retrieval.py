@@ -118,7 +118,7 @@ class SessionContext(StoreFixture):
         # in the command line, and a longer checkout or Python path must not decide whether this passes.
         for path in (str(self.root), sys.executable, str(runtime.SCRIPT)):
             text = text.replace(path, '')
-        self.assertLess(len(text), 4160)   # the fallback injects the whole protocol; the Save rule grew by ~280 characters, the project-brief sentence by ~225 and the ask sentence and usage line by ~120 (installed block: 3500 holds)
+        self.assertLess(len(text), 4260)   # the fallback injects the whole protocol; the Save rule grew by ~280 characters, the project-brief sentence by ~225, the ask sentence and usage line by ~120 and the several-questions sentence by ~75 (installed block: 3500 holds)
 
     def test_guidance_notes_come_first(self):
         capture('Prefer small commits', 'Keep commits small.', TAGS, 'demo', self.root, type='preference')

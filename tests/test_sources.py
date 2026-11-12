@@ -316,6 +316,42 @@ class Commands(Kb):
     def test_limit_bounds_both_sections(self):
         for i in range(4):self.note(f'Payment retry note {i}',f'Payment retry detail number {i}.')
         found=self.cli('ask','payment retry','--limit','2')[1];self.assertLessEqual(len(found['notes']),2);self.assertLessEqual(len(found['sources']),2)
+    def test_several_questions_are_each_answered_on_their_own(self):
+        self.note('Retry backoff policy','Payment captures retry with exponential backoff.')
+        quiz='1. How does the retry backoff for payment captures work?\n2. What is the refund window days?\n3. How is the overtime hours rate computed?'
+        code,result=self.cli('ask',quiz);self.assertEqual(code,0,result)
+        each=result['questions'];self.assertEqual([q['question'] for q in each],['How does the retry backoff for payment captures work?','What is the refund window days?','How is the overtime hours rate computed?'])
+        self.assertTrue(all({'question','notes','sources','relevant'}<=set(q) for q in each))
+        self.assertEqual(each[0]['notes'][0]['title'],'Retry backoff policy');self.assertEqual(each[0]['sources'][0]['path'],'README.md')
+        self.assertEqual(each[1]['sources'][0]['path'],'Billing-FAQ.html');self.assertEqual(each[2]['sources'][0]['path'],'legacy/PAYROLL.cbl')
+        self.assertTrue(all(len(q['notes'])<=3 and len(q['sources'])<=3 for q in each))
+        self.assertIn('notes',result);self.assertIn('sources',result);self.assertEqual(result['query'],quiz)   # the flat answer to the whole text stays
+        sentences=self.cli('ask','How does the retry backoff work? What is the refund window days?')[1];self.assertEqual(len(sentences['questions']),2)
+    def test_one_question_keeps_its_shape(self):
+        for argv in (('ask','how does the retry backoff work?'),('ask','retry backoff'),('search','how does the retry backoff work?'),('search','--sources','retry backoff')):
+            with self.subTest(argv=argv):self.assertNotIn('questions',self.cli(*argv)[1])
+    def test_search_answers_several_questions_too_and_the_number_is_bounded(self):
+        self.note('Retry backoff policy','Payment captures retry with exponential backoff.')
+        quiz='1. How does the retry backoff work?\n2. What is the refund window days?\n3. How is the overtime hours rate computed?'
+        found=self.cli('search',quiz)[1];self.assertEqual(len(found['questions']),3);self.assertEqual(found['questions'][0]['results'][0]['title'],'Retry backoff policy')
+        self.assertTrue(all({'question','results','relevant'}<=set(q) for q in found['questions']));self.assertIn('results',found)
+        only=self.cli('search','--sources',quiz)[1];self.assertEqual(only['questions'][1]['results'][0]['path'],'Billing-FAQ.html')
+        many=self.cli('ask','\n'.join(f'{i}. What is the refund window days {i}?' for i in range(15)))[1];self.assertEqual(len(many['questions']),10)
+    def test_test_files_rank_below_the_code_they_exercise_unless_the_question_is_about_tests(self):
+        (self.repo/'src'/'billing'/'tariff.py').write_text('def compute_wombat_tariff(order):\n    """Compute the wombat tariff for an order."""\n    return order.total * 0.2\n')
+        (self.repo/'tests').mkdir();(self.repo/'tests'/'test_tariff.py').write_text('"""wombat tariff computation tests"""\n'+''.join(f'def test_wombat_tariff_computation_{i}():\n    # wombat tariff computation case {i}\n    assert compute_wombat_tariff(order) == {i}\n' for i in range(2)))
+        self.sync()
+        paths=lambda q:[h['path'] for h in sources.search(self.root,'demo',q,5)]
+        with patch.object(sources,'TEST_PENALTY',0):self.assertEqual(paths('how does the wombat tariff computation work')[0],'tests/test_tariff.py')   # the test file out-matches the code
+        self.assertEqual(paths('how does the wombat tariff computation work')[0],'src/billing/tariff.py')
+        self.assertIn('tests/test_tariff.py',paths('how does the wombat tariff computation work'))                       # demoted, not hidden
+        self.assertEqual(paths('wombat tariff computation tests')[0],'tests/test_tariff.py')
+        self.assertEqual(paths('wombat tariff computation spec')[0],'tests/test_tariff.py')
+    def test_what_counts_as_a_test_file(self):
+        for path in ('tests/a.py','test/a.py','src/__tests__/a.js','spec/a.rb','pkg/test_a.py','pkg/a_test.go','web/a.spec.ts','web/a.test.js','src/main/AppTest.java','Tests/A.cs'):
+            with self.subTest(path=path):self.assertTrue(sources.TEST_PATH.search(path))
+        for path in ('src/a.py','docs/testing-guide.md','src/contest.py','src/attest.py','latest/a.py','README.md'):
+            with self.subTest(path=path):self.assertFalse(sources.TEST_PATH.search(path))
     def test_sources_listing_counts_and_last_sync(self):
         listed=self.cli('sources')[1];rows={r['name']:r for r in listed['sources']}
         self.assertGreater(rows['kb']['files'],5);self.assertEqual(rows['wiki']['files'],1);self.assertTrue(rows['kb']['synced']);self.assertEqual(rows['kb']['state'],'indexed')
@@ -416,6 +452,12 @@ class Prompts(Kb):
         brief='\n\n'.join(['# Team brief',boiler*4,'## Your assignment',LEDGER_QUESTION+', then summarise it.','## Checklist',boiler*4])
         self.assertGreater(len(brief),runtime.LONG_PROMPT);context=self.prompt(brief,session='long')['context']
         self.assertIn('Source excerpts',context);self.assertIn('README.md:4-7',context);self.assertIn('exponential backoff',context);self.assertNotIn('event-sourcing',context)
+    def test_a_list_prompts_items_each_reach_source_retrieval(self):
+        boiler='Team rules for this sprint. Never push and never touch other branches. Report what changed, what you verified, what is left. '
+        items=['1. do the blue green pipeline smoke tests page the pager rotation on monday?','2. does the dunning glossary cover payroll batches, schema migrations and currencies refunded within the window?','3. '+LEDGER_QUESTION+'?']
+        prompt='\n\n'.join([boiler*5,*items]);self.assertGreater(len(prompt),runtime.LONG_PROMPT);self.assertEqual(len(runtime.list_items(prompt)),3)
+        context=self.prompt(prompt,session='list')['context']
+        self.assertIn('Source excerpts',context);self.assertIn('README.md:4-7',context);self.assertIn('exponential backoff',context)
     def test_trace_holds_refs_and_numbers_only(self):
         detail={};text,keys=runtime.prompt_sources(LEDGER_QUESTION,self.root,'demo',{},detail)
         self.assertEqual(set(detail),{'index','queries','candidates','injected'});self.assertEqual(detail['injected'],keys);self.assertNotIn('exponential',json.dumps(detail))

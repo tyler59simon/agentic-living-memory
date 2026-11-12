@@ -5,7 +5,7 @@ from unittest.mock import patch
 from test_core import StoreFixture
 from core import runtime
 from core.cli import main
-from core.common import load_bindings
+from core.common import load_bindings,head_oid
 from core.maps import named_repos,find_map,repo_of,candidate_repos,changed_since,cited_paths,currency,freshness
 from core.notes import find_note,change
 from core import usage
@@ -110,13 +110,21 @@ class Maps(StoreFixture):
         self.hook('session-start');self.prompt('look around')
         for i in range(2):self.tool('Read',{'file_path':str(self.hive/f'f{i}.py')})
         self.assertEqual(self.hook('stop'),{})
-        self.prompt('keep looking');self.tool('Glob',{'pattern':'**/*.py','path':str(self.hive)})
+        self.prompt('keep looking');self.tool('Glob',{'pattern':'**/*.py','path':str(self.hive)});self.tool('Write',{'file_path':str(self.project/'notes.txt')})
         stop=self.hook('stop')
         self.assertIn('agentic-hivemind, which has no codebase map',stop['continue_reason'])
         self.assertIn("CMD capture --session s1 --type map --file '"+self.hive.as_posix()+"'",stop['continue_reason'])
         self.assertLess(len(stop['continue_reason']),600)   # Claude Code prints it in the terminal
         self.prompt('and more');[self.tool('Read',{'file_path':str(self.hive/f'h{i}.py')}) for i in range(4)]
         self.assertEqual(self.hook('stop'),{})
+
+    def test_a_read_only_session_is_not_reminded_to_map_but_a_later_edit_does(self):
+        self.hook('session-start');self.prompt('look around')
+        for i in range(4):self.tool('Read',{'file_path':str(self.hive/f'f{i}.py')})
+        self.assertTrue(self.state()['repos'][self.hive.as_posix()]['explored'])   # explore() still counts read-only calls
+        self.assertEqual(self.hook('stop'),{})
+        self.prompt('now fix it');self.tool('Write',{'file_path':str(self.project/'notes.txt')})
+        self.assertIn('agentic-hivemind, which has no codebase map',self.hook('stop')['continue_reason'])
 
     def test_repos_outside_every_binding_are_not_tracked(self):
         outside=self.base/'elsewhere';(outside/'.git').mkdir(parents=True)
@@ -130,6 +138,8 @@ class Maps(StoreFixture):
         self.tool('Agent',{'description':'Explore','prompt':'Map the hivemind repo'})
         self.assertTrue(self.state()['repos'][self.hive.as_posix()]['explored'])
         self.assertNotIn('mutating',self.state())
+        self.assertEqual(self.hook('stop'),{})   # nothing was edited: no housekeeping
+        self.prompt('and fix it');self.tool('Write',{'file_path':str(self.project/'notes.txt')})
         self.assertIn('hivemind',self.hook('stop')['continue_reason'])
 
     def test_capturing_the_map_quiets_the_reminder(self):
@@ -142,7 +152,7 @@ class Maps(StoreFixture):
         self.hook('session-start');self.prompt('plan it',permission_mode='plan')
         for i in range(3):self.tool('Read',{'file_path':str(self.hive/f'f{i}.py')},permission_mode='plan')
         self.assertEqual(self.hook('stop',permission_mode='plan'),{})
-        self.prompt('go ahead')
+        self.prompt('go ahead');self.tool('Write',{'file_path':str(self.project/'notes.txt')})
         self.assertIn('hivemind',self.hook('stop')['continue_reason'])
 
     def test_new_top_level_paths_in_a_mapped_repo_remind_although_file_changes_alone_do_not(self):
@@ -290,6 +300,44 @@ class Staleness(StoreFixture):
             self.assertIn('STALE:',self.tool('Read',{'file_path':str(self.app/'src'/'Money.java')}).get('context',''))
             self.assertIn('STALE:',self.prompt('work on the app again')['context'])
         self.assertEqual(calls,[])
+
+    def test_a_new_session_with_an_unchanged_head_reuses_the_store_level_currency_cache(self):
+        self.capture('map');map_ref=self.ref;self.capture('brief');brief_ref=self.ref;self.adr_changed()
+        calls=[]
+        real=subprocess.run
+        def counting(*a,**k):calls.append(a[0]);return real(*a,**k)
+        def start(session):
+            del calls[:]
+            with patch('core.maps.subprocess.run',side_effect=counting):
+                return self.hook('session-start',session_id=session)['context']
+        first=start('s1');self.assertIn('STALE:',first);self.assertTrue(calls)   # the first session pays for git
+        cache=self.root/'.cache'/'currency.json'
+        rows=json.loads(cache.read_text(encoding='utf-8'))['entries'];self.assertEqual({r['n'] for r in rows},{map_ref,brief_ref})
+        second=start('s2');self.assertEqual(calls,[]);self.assertIn('STALE:',second)   # a new session, same HEAD: no git at all
+        self.assertEqual(second.count('STALE:'),first.count('STALE:'))
+        # The cache is derived: a corrupt file is rebuilt, a new commit recomputes.
+        cache.write_text('{not json',encoding='utf-8');start('s3');self.assertTrue(calls);self.assertEqual(len(json.loads(cache.read_text(encoding='utf-8'))['entries']),2)
+        commit(self.app,{'src/Other.java':'z'},later(2));start('s4');self.assertTrue(calls)
+        start('s5');self.assertEqual(calls,[])
+        # Editing the note (a new `updated` and revision) recomputes as well.
+        hit=self.hit();change(hit['id'],'demo','update',self.root,body=hit['body']+'\n\n* **Extra:** more.');start('s6');self.assertTrue(calls)
+
+    def test_a_failed_git_check_is_not_cached_and_the_next_call_retries(self):
+        self.capture();self.adr_changed();hit=self.hit();cache=self.root/'.cache'/'currency.json'
+        for error in (subprocess.TimeoutExpired('git',2),FileNotFoundError('git')):
+            with self.subTest(error=type(error).__name__),patch('core.maps.subprocess.run',side_effect=error):
+                self.assertTrue(currency(hit,self.app,self.bindings)[0]['failed'])
+                runtime.note_currency(hit,self.app,self.root,self.bindings,{},'s1');self.assertFalse(cache.exists())
+        entry=runtime.note_currency(hit,self.app,self.root,self.bindings,{},'s1')   # git works now
+        self.assertNotIn('failed',entry);self.assertEqual(entry['changed'],['docs/adr/ADR-004-money.md','pom.xml']);self.assertIsNotNone(entry['count'])
+        self.assertEqual([r['n'] for r in json.loads(cache.read_text(encoding='utf-8'))['entries']],[self.ref])
+
+    def test_the_currency_cache_keeps_the_newest_200_entries(self):
+        self.capture();hit=self.hit();entry={'rev':hit['revision'],'head':head_oid(self.app),'changed':[],'count':0}
+        runtime.atomic_write(self.root/'.cache'/'currency.json',json.dumps({'v':1,'entries':[{'k':'old','n':f'demo:{i}','u':'x','e':entry} for i in range(runtime.CURRENCY_CACHE_MAX)]}))
+        runtime.note_currency(hit,self.app,self.root,self.bindings,{},'s1')
+        rows=json.loads((self.root/'.cache'/'currency.json').read_text(encoding='utf-8'))['entries']
+        self.assertEqual(len(rows),runtime.CURRENCY_CACHE_MAX);self.assertEqual(rows[0]['n'],'demo:1');self.assertEqual(rows[-1]['n'],f"demo:{hit['id']}")
 
     def test_without_git_or_with_a_timeout_nothing_is_stale_and_nothing_fails(self):
         self.capture();self.adr_changed();hit=self.hit()

@@ -1,0 +1,13 @@
+{
+ "name": "supersede-keeps-links",
+ "description": "capture --supersedes carries the replaced note's Resource Links and files into the new note (its own first, duplicates dropped) and reports them as carried_links; --drop-links turns that off.",
+ "harnesses": ["claude"],
+ "steps": [
+  {"cli": ["capture", "--type", "decision", "--title", "Money uses cents", "--summary", "Cents.", "--link", "docs/adr/ADR-001.md", "--link", "docs/adr/ADR-002.md", "--file", "src/money.py"], "expect": {"exit": 0, "status": "created"}, "as": "cents"},
+  {"cli": ["capture", "--type", "decision", "--title", "Money uses BigDecimal", "--summary", "BigDecimal.", "--link", "docs/adr/ADR-002.md", "--link", "docs/adr/ADR-003.md", "--supersedes", "@cents"],
+   "expect": {"exit": 0, "status": "created", "result": {"carried_links": ["docs/adr/ADR-001.md"], "carried_files": ["src/money.py"]}}, "as": "decimal"},
+  {"cli": ["read", "@decimal"], "expect": {"exit": 0, "result_contains": ["ADR-003.md", "ADR-001.md", "src/money.py"]}},
+  {"cli": ["capture", "--type", "decision", "--title", "Money uses Decimal128", "--summary", "Decimal128.", "--supersedes", "@decimal", "--drop-links"],
+   "expect": {"exit": 0, "status": "created", "result": {"carried_links": []}}}
+ ]
+}

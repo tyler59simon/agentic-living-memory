@@ -160,16 +160,21 @@ def _git(repo,*args,timeout=2):
     done=subprocess.run(['git','-c','core.quotepath=off','-C',str(repo),*args],capture_output=True,timeout=timeout)
     return done.stdout.decode('utf-8','replace') if done.returncode==0 else None
 
+def _changed(repo,updated,timeout=2):
+    """changed_since, but None when git failed (as opposed to nothing having changed)."""
+    if not updated:return []
+    try:
+        base=_git(repo,'rev-list','-1',f'--before={updated}','HEAD',timeout=timeout)
+        if base is None:return None
+        if not base.strip():return []
+        out=_git(repo,'diff','--name-only','--no-renames','--relative',base.strip(),'HEAD',timeout=timeout)
+        return None if out is None else [l.strip() for l in out.splitlines() if l.strip()][:MAX_CHANGED]
+    except (OSError,ValueError,subprocess.SubprocessError):return None
+
 def changed_since(repo,updated,timeout=2):
     """Paths (relative to repo, at most MAX_CHANGED) that differ between the last commit before `updated` and HEAD. A
     diff between the two, not `log --name-only`, which shows nothing for merge commits. [] when git cannot tell; never raises."""
-    if not updated:return []
-    try:
-        base=(_git(repo,'rev-list','-1',f'--before={updated}','HEAD',timeout=timeout) or '').strip()
-        if not base:return []
-        out=_git(repo,'diff','--name-only','--no-renames','--relative',base,'HEAD',timeout=timeout)
-        return [l.strip() for l in (out or '').splitlines() if l.strip()][:MAX_CHANGED]
-    except (OSError,ValueError,subprocess.SubprocessError):return []
+    return _changed(repo,updated,timeout) or []
 
 STALE_DOC_GLOBS=('**/adr/**','**/adrs/**','**/decisions/**')
 
@@ -202,14 +207,17 @@ def cited_paths(hit,changed,repo=None,bindings=None):
 def currency(hit,repo,bindings=None,cache=None):
     """(entry, computed): entry is {'rev': note revision, 'head': HEAD oid, 'changed': cited paths changed since the note was
     written, 'count': commits since} for the note, reused from `cache` (an earlier entry) while the note and HEAD are the same, so
-    no git runs. HEAD comes from the .git files; without one nothing is cached."""
+    no git runs. HEAD comes from the .git files; without one nothing is cached. 'failed': True is added when git could not tell
+    (a timeout or error): that entry is not a result to keep."""
     head=head_oid(repo);rev=str(hit.get('revision') or '')
     if cache and head and rev and cache.get('rev')==rev and cache.get('head')==head:return cache,False
     updated=hit.get('updated')
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(1) as pool:   # the commit count does not wait for the diff: process starts dominate on Windows
-        count=pool.submit(commits_since,repo,updated);changed=changed_since(repo,updated)
-        return {'rev':rev,'head':head,'changed':cited_paths(hit,changed,repo,bindings),'count':count.result()},True
+        count=pool.submit(commits_since,repo,updated);changed=_changed(repo,updated);count=count.result()
+        entry={'rev':rev,'head':head,'changed':cited_paths(hit,changed or [],repo,bindings),'count':count}
+        if changed is None or count is None:entry['failed']=True
+        return entry,True
 
 def stale_clause(hit,entry,what='map'):
     """`STALE: a, b and N more changed since 2026-11-10 — check and update this map`, '' when nothing the note cites changed."""
@@ -252,7 +260,7 @@ def repo_notes(hit,repo,root,bindings,shown,budget=REPO_NOTES_BUDGET,files=True,
     domain about this repo, newest first within budget characters. A note belongs when its `files` fall inside the repo
     (files=False skips that test) or when hit links to it by [[Title]] in its Resource Links. Notes already shown this
     session (shown maps ref -> revision key) and refs in exclude are left out. '' and [] when none."""
-    from .notes import short_ref
+    from .notes import short_ref,unconfirmed
     from .note_format import sections
     from .session_start import gist
     from .runtime import _unseen
@@ -270,7 +278,7 @@ def repo_notes(hit,repo,root,bindings,shown,budget=REPO_NOTES_BUDGET,files=True,
     for n in sorted(found,key=lambda n:n.get('updated',''),reverse=True):
         ref=f"{domain}:{n['id']}"
         if ref in exclude or not _unseen(dict(n,domain=domain),shown):continue
-        summary=gist(n);line=f"- {n['type'].upper()} {short_ref(domain,n['id'])} {n['title']}"+(f' — {summary}' if summary else '')
+        summary=gist(n);line=f"- {n['type'].upper()} {short_ref(domain,n['id'])} {unconfirmed(n)}{n['title']}"+(f' — {summary}' if summary else '')
         if used+len(line)+1>budget-len(head)-1:break
         lines.append(line);refs.append(ref);used+=len(line)+1
     return ('\n'.join([head]+lines),refs) if lines else ('',[])

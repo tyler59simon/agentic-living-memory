@@ -194,6 +194,34 @@ class ReminderSettlesTheTurn(StopFixture):
     """A fired reminder is not repeated on later turns, even without a stop_hook_active follow-up."""
     edit = {'tool_name': 'Edit', 'tool_input': {'file_path': 'src/app.py'}}
 
+    def test_a_headless_run_is_told_to_end_with_its_answer(self):
+        from unittest.mock import patch
+        sentence = 'This is a non-interactive run and only your last message is returned: after saving, end with your answer to the task repeated in full.'
+        for i, env in enumerate(({'LIVING_MEMORY_HEADLESS': '1'}, {'CLAUDE_CODE_SESSION_ATTENDED': '0'}, {'CLAUDE_CODE_ENTRYPOINT': 'sdk-cli'})):
+            with self.subTest(env=env), patch.dict('os.environ', env):
+                self.payload['prompt'] = f'remember that we use {i} tabs'   # a statement is raised once per domain
+                self.payload['session_id'] = f'headless{i}'
+                text = self.turn(self.edit)['continue_reason']
+                self.assertTrue(text.endswith(sentence), text)
+                self.assertIn('Nothing durable: CMD capture-finalize', text)
+        self.payload['session_id'] = 'attended';self.payload['prompt'] = 'remember that we use attended tabs'
+        text = self.turn(self.edit)['continue_reason']
+        self.assertNotIn('non-interactive', text)
+        self.assertTrue(text.endswith('capture-finalize --session attended.'))
+        self.assertFalse(runtime.headless())
+
+    def test_the_headless_sentence_counts_toward_the_text_cap(self):
+        from unittest.mock import patch
+        pending = [('remember', {'files': False}), ('doc', {'path': 'docs/adr/ADR-004-money.md', 'notes': []}),
+                   ('unbriefed', {'name': 'project', 'dir': '.'})]
+        plain = runtime.stop_text(pending, 's')
+        with patch.dict('os.environ', {'LIVING_MEMORY_HEADLESS': '1'}):
+            text = runtime.stop_text(pending, 's')
+        self.assertTrue(text.endswith(runtime.HEADLESS_TEXT))
+        self.assertLessEqual(len(text) - len(runtime.HEADLESS_TEXT) - 1, runtime.STOP_TEXT_CAP)   # room was reserved for the sentence
+        self.assertGreaterEqual(len(plain), len(text) - len(runtime.HEADLESS_TEXT) - 1)
+        self.assertIn('Nothing durable', text)
+
     def test_ignored_reminders_do_not_carry_over(self):
         self.payload['prompt'] = 'remember that we use tabs'
         self.assertIn('continue_reason', self.turn(self.edit))   # the agent ignores it

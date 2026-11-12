@@ -35,7 +35,7 @@ class SyntheticFixture(unittest.TestCase):
         self.assertEqual((src['hit@3'], src['prompt_recall'], src['false_injection']), (1.0, 1.0, 0.0))
         self.assertEqual((src['misses'], src['prompt_misses'], src['false_injections']), ([], [], []))
         self.assertEqual(g['wrong'], [])
-        self.assertEqual(g['per_kind']['preference'], {'precision': 1.0, 'recall': 1.0, 'cases': 2})
+        self.assertEqual(g['per_kind']['preference'], {'precision': 1.0, 'recall': 1.0, 'cases': 3})
 
     def test_misses_and_false_arms_are_counted(self):
         fixture = json.loads(SYNTHETIC.read_text(encoding='utf-8'))

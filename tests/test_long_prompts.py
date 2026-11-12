@@ -91,6 +91,119 @@ class Segments(StoreFixture):
         self.assertEqual(runtime.long_queries('alpha beta gamma', vocab), [('alpha beta gamma', False)])   # a single paragraph
 
 
+class ListSegments(StoreFixture):
+    def test_each_item_of_a_list_is_a_segment_and_the_preamble_stays_one(self):
+        text = 'Answer from memory:\nno files.\n1. How many backups?\n2) How to deploy?\nQ3: Obsidian sync?\n\nThanks.'
+        self.assertEqual(runtime.prompt_segments(text), ['Answer from memory:\nno files.', '1. How many backups?', '2) How to deploy?', 'Q3: Obsidian sync?', 'Thanks.'])
+        self.assertEqual(runtime.list_items(text), ['1. How many backups?', '2) How to deploy?', 'Q3: Obsidian sync?'])
+
+    def test_every_list_style_counts(self):
+        for text in ('- one thing\n- two things\n- three things', '* one\n* two\n* three', 'what is a?\nwhat is b?\nwhat is c?', 'q1. a\nQ2) b\nq3: c'):
+            with self.subTest(text=text):
+                self.assertEqual(len(runtime.list_items(text)), 3)
+
+    def test_fewer_than_three_items_is_no_list(self):
+        for text in ('1. one\n2. two', 'what is a?\nwhat is b?', 'just a sentence\nand another'):
+            with self.subTest(text=text):
+                self.assertEqual(runtime.list_items(text), [])
+                self.assertEqual(runtime.prompt_segments(text), [text])
+
+    def test_a_heading_ending_in_a_question_mark_is_not_an_item(self):
+        self.assertEqual(runtime.list_items('## Why?\n1. a\n2. b\n3. c'), ['1. a', '2. b', '3. c'])
+
+    def test_continuation_lines_stay_with_their_item(self):
+        self.assertEqual(runtime.list_items('1. first\n   more of first\n2. second\n3. third'), ['1. first\n   more of first', '2. second', '3. third'])
+
+    def test_item_queries_take_the_richest_eight_by_idf(self):
+        vocab = (20, {f'rare{i}': 1 for i in range(12)})
+        text = '\n'.join(f'{i}. rare{i} filler' for i in range(12))
+        queries = runtime.item_queries(text, vocab)
+        self.assertEqual(len(queries), runtime.LIST_QUERIES)
+        self.assertTrue(all(q.startswith('rare') for q in queries))
+        self.assertEqual(runtime.item_queries('1. nothing known\n2. nor here\n3. or here', vocab), [])   # items no note could match are not searched
+
+    def test_questions_for_ask(self):
+        self.assertEqual(runtime.questions('1. What is a?\n2. What is b?\n3. What is c?'), ['What is a?', 'What is b?', 'What is c?'])
+        self.assertEqual(runtime.questions('What is a? Why is b?'), ['What is a?', 'Why is b?'])
+        self.assertEqual(runtime.questions('- a\n- b\n- c'), ['a', 'b', 'c'])
+        self.assertEqual(runtime.questions('How does this work?'), [])
+        self.assertEqual(runtime.questions('how does this work'), [])
+
+
+QUIZ_TOPICS = ['cache', 'queue', 'ledger', 'invoice', 'export', 'billing', 'audit', 'report']
+
+
+class ListPrompts(StoreFixture):
+    def setUp(self):
+        super().setUp()
+        self.cwd = str(self.base / 'project')
+        for topic in QUIZ_TOPICS:
+            capture(f'{topic.capitalize()} module rules', f'The {topic} module keeps its state in src/{topic}. ' + 'Extra detail about it. ' * 12, TAGS, 'demo', self.root, allow_similar=True)
+
+    def ask(self, prompt, **kwargs):
+        trace = {}
+        text, ids, _ = runtime.context(self.cwd, prompt, self.root, 'demo', trace=trace, **kwargs)
+        return text, ids, trace
+
+    def quiz(self, topics, numbered=True):
+        return 'Answer from memory only:\n' + '\n'.join((f'{i}. ' if numbered else '') + f'Where does the {t} module keep its state?' for i, t in enumerate(topics, 1))
+
+    def titles(self, ids):
+        return {t for t, _ in search.active_notes(ids, self.root).values()}
+
+    def test_a_quiz_recalls_one_note_per_question_up_to_the_cap_of_six(self):
+        prompt = self.quiz(QUIZ_TOPICS)
+        self.assertLess(len(prompt), runtime.LONG_PROMPT)   # a short prompt is searched by item too
+        text, ids, trace = self.ask(prompt)
+        self.assertEqual((trace['path'], trace['items'], len(ids)), ('injected', 8, 6))
+        self.assertEqual(len(self.titles(ids)), 6)
+        self.assertLessEqual(trace['queries'], runtime.LIST_QUERIES + 1)
+
+    def test_the_cap_is_the_number_of_items_below_six_and_three_for_other_prompts(self):
+        _, ids, trace = self.ask(self.quiz(QUIZ_TOPICS[:3]))
+        self.assertEqual((trace['items'], len(ids)), (3, 3))
+        _, ids, trace = self.ask(self.quiz(QUIZ_TOPICS[:4]))
+        self.assertEqual(len(ids), 4)
+        _, ids, trace = self.ask('Where do the ' + ', '.join(QUIZ_TOPICS) + ' modules keep their state?')
+        self.assertNotIn('items', trace)
+        self.assertLessEqual(len(ids), 3)
+
+    def test_without_the_list_rules_the_same_quiz_gets_far_less(self):
+        prompt = self.quiz(QUIZ_TOPICS)
+        with patch.object(runtime, 'list_items', return_value=[]):
+            _, ids, _ = self.ask(prompt)
+        self.assertLessEqual(len(ids), 3)
+        _, ids, _ = self.ask(prompt)
+        self.assertEqual(len(ids), 6)
+
+    def test_snippets_are_short_and_the_total_is_budgeted_by_dropping_the_lowest_scored(self):
+        text, ids, trace = self.ask(self.quiz(QUIZ_TOPICS))
+        lines = text.splitlines()[1:]
+        self.assertTrue(all(len(l.split(' — ', 1)[1]) <= runtime.LIST_SNIPPET + 2 for l in lines))
+        self.assertLessEqual(sum(len(l) + 1 for l in lines), runtime.LIST_BUDGET)
+        with patch.object(runtime, 'LIST_BUDGET', 350):
+            text, small, trace = self.ask(self.quiz(QUIZ_TOPICS))
+        self.assertEqual(small, ids[:len(small)])       # the same notes, best first: the lowest-scored went
+        self.assertLess(len(small), len(ids))
+        self.assertGreaterEqual(len(small), 1)
+        self.assertEqual(trace['cut_by_cap'][:len(ids) - len(small)], ids[len(small):])
+        self.assertEqual(trace['injected'], small)
+
+    def test_unrelated_questions_inject_nothing(self):
+        prompt = 'Answer from memory only:\n' + '\n'.join(f'{i}. {q}' for i, q in enumerate(
+            ['What is the capital of Australia?', 'Who painted the Mona Lisa?', 'How tall is Mount Everest?', 'When did the Roman Empire fall?'], 1))
+        text, ids, trace = self.ask(prompt)
+        self.assertEqual(ids, [])
+        self.assertNotEqual(trace['path'], 'injected')
+
+    def test_notes_shown_before_are_not_repeated_in_a_list(self):
+        _, ids, _ = self.ask(self.quiz(QUIZ_TOPICS))
+        shown = {h['domain'] + ':' + h['id']: runtime.revision_key(h) for h in search.search_domain('module', 'demo', 20, self.root) if h['domain'] + ':' + h['id'] in ids}
+        _, again, trace = self.ask(self.quiz(QUIZ_TOPICS), shown=shown)
+        self.assertFalse(set(again) & set(ids))
+        self.assertEqual(set(trace['suppressed_shown']), set(ids))
+
+
 class LongBriefs(StoreFixture):
     def setUp(self):
         super().setUp()

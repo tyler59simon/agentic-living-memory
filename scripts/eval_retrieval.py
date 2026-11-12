@@ -70,6 +70,22 @@ def evaluate(fixture,root,cwd=None,domain=None,keys=None,harness='claude'):
         started=time.perf_counter();text,ids,_=runtime.context(cwd,case['prompt'],root,domain)
         long_cases.append({'prompt':case['prompt'][:80]+'…','expect':expect,'injected':ids,'ms':(time.perf_counter()-started)*1000,'hit':bool(set(expect)&set(ids)) if expect else None,'false':bool(ids) if not expect else None})
     long_positive=[c for c in long_cases if c['expect']];long_negative=[c for c in long_cases if not c['expect']]
+    # Quizzes: one question per line. A positive must inject at least `min` of its expected notes (the cap is six); a negative none.
+    quiz_cases=[]
+    for case in fixture.get('quiz_prompts',[]):
+        expect=[resolve(r) for r in case.get('expect',[])]
+        started=time.perf_counter();text,ids,_=runtime.context(cwd,case['prompt'],root,domain)
+        got=sorted(set(expect)&set(ids))
+        quiz_cases.append({'prompt':case['prompt'].splitlines()[0][:60]+'…','expect':expect,'min':case.get('min',len(expect)),'injected':ids,'recalled':len(got),'ms':(time.perf_counter()-started)*1000,
+                           'hit':len(got)>=case.get('min',len(expect)) if expect else None,'false':bool(ids) if not expect else None,'chars':len(text or '')})
+    quiz_positive=[c for c in quiz_cases if c['expect']];quiz_negative=[c for c in quiz_cases if not c['expect']]
+    # An unconfirmed note's injected line says so, with its date; a settled note's does not.
+    interim_cases=[]
+    for case in fixture.get('interim',[]):
+        expect=resolve(case['expect']);text,ids,_=runtime.context(cwd,case['prompt'],root,domain)
+        line=next((l for l in (text or '').splitlines() if short_ref(*expect.split(':',1)) in l),'')
+        marked='UNCONFIRMED (as of ' in line
+        interim_cases.append({'prompt':case['prompt'],'expect':expect,'injected':expect in ids,'marked':marked,'ok':expect in ids and marked==case['marked']})
     # Commands an agent is about to run: positives expect the note that warns about them, negatives expect no hint at all.
     from core.commands import command_notes
     command_cases=[]
@@ -134,6 +150,15 @@ def evaluate(fixture,root,cwd=None,domain=None,keys=None,harness='claude'):
                         'mean_ms':round(sum(c['ms'] for c in long_cases)/len(long_cases),1) if long_cases else None,
                         'misses':[{'prompt':c['prompt'],'expect':c['expect'],'injected':c['injected']} for c in long_positive if not c['hit']],
                         'false_injections':[{'prompt':c['prompt'],'injected':c['injected']} for c in long_negative if c['false']]},
+        'quiz':{'cases':len(quiz_cases),'positive':len(quiz_positive),'negative':len(quiz_negative),
+                'recall':_ratio(sum(c['hit'] for c in quiz_positive),len(quiz_positive)),
+                'notes_recalled':_ratio(sum(c['recalled'] for c in quiz_positive),sum(len(c['expect']) for c in quiz_positive)),
+                'false_injection':_ratio(sum(c['false'] for c in quiz_negative),len(quiz_negative)),
+                'mean_ms':round(sum(c['ms'] for c in quiz_cases)/len(quiz_cases),1) if quiz_cases else None,
+                'max_chars':max((c['chars'] for c in quiz_cases),default=None),
+                'misses':[{'prompt':c['prompt'],'expect':c['expect'],'min':c['min'],'injected':c['injected']} for c in quiz_positive if not c['hit']],
+                'false_injections':[{'prompt':c['prompt'],'injected':c['injected']} for c in quiz_negative if c['false']]},
+        'interim':{'cases':len(interim_cases),'correct':_ratio(sum(c['ok'] for c in interim_cases),len(interim_cases)),'wrong':[c for c in interim_cases if not c['ok']]},
         'commands':{'cases':len(command_cases),'positive':len(command_positive),'negative':len(command_negative),
                     'recall':_ratio(sum(c['hit'] for c in command_positive),len(command_positive)),
                     'false_hint':_ratio(sum(c['false'] for c in command_negative),len(command_negative)),
@@ -178,6 +203,7 @@ def run(fixture_path,root=None,semantic_mode=None):
 
 def _table(report):
     r,s,g,lp,cm,src=report['retrieval'],report['session'],report['signals'],report['long_prompts'],report['commands'],report['sources']
+    qz,im=report['quiz'],report['interim']
     lines=[f"Retrieval: {r['cases']} cases ({r['positive']} positive, {r['negative']} negative)",
            f"  hit@3            {r['hit@3']}   (target >= 0.8)",
            f"  false injection  {r['false_injection']}   (target <= 0.1)",
@@ -189,6 +215,12 @@ def _table(report):
            f"  recall           {lp['recall']}   (target >= 0.8)",
            f"  false injection  {lp['false_injection']}   (target 0)",
            f"  mean ms          {lp['mean_ms']}",
+           *([f"Quizzes: {qz['cases']} cases ({qz['positive']} positive, {qz['negative']} negative)",
+              f"  recall           {qz['recall']}   (target 1.0: at least `min` expected notes each)",
+              f"  notes recalled   {qz['notes_recalled']}",
+              f"  false injection  {qz['false_injection']}   (target 0)",
+              f"  mean ms          {qz['mean_ms']}   (max {qz['max_chars']} chars injected)"] if qz['cases'] else []),
+           *([f"Interim notes: {im['cases']} cases; UNCONFIRMED marker correct {im['correct']}   (target 1.0)"] if im['cases'] else []),
            f"Command hints: {cm['cases']} cases ({cm['positive']} positive, {cm['negative']} negative)",
            f"  recall           {cm['recall']}   (target >= 0.8)",
            f"  false hint       {cm['false_hint']}   (target 0)",
@@ -200,7 +232,7 @@ def _table(report):
            f"Session start: {s['chars']} chars (target <= {s['budget']}); index coverage {s['index_coverage']}; {s['fallback_chars']} chars if the instruction block is stale",
            f"Signals: {g['cases']} cases; false-arm {g['false_arm']}"]
     lines+=[f"  {k:<11} precision {v['precision']} recall {v['recall']} ({v['cases']} cases)" for k,v in g['per_kind'].items()]
-    for title,rows in (('Misses',r['misses']),('Long-prompt misses',lp['misses']),('Long-prompt false injections',lp['false_injections']),('Command-hint misses',cm['misses']),('Command false hints',cm['false_hints']),('Source misses',src['misses']),('Source prompt misses',src['prompt_misses']),('Source false injections',src['false_injections']),('False injections',r['false_injections']),('Forbidden injected',r['forbid_violations']),('Signal errors',g['wrong'])):
+    for title,rows in (('Misses',r['misses']),('Long-prompt misses',lp['misses']),('Long-prompt false injections',lp['false_injections']),('Quiz misses',qz['misses']),('Quiz false injections',qz['false_injections']),('Interim errors',im['wrong']),('Command-hint misses',cm['misses']),('Command false hints',cm['false_hints']),('Source misses',src['misses']),('Source prompt misses',src['prompt_misses']),('Source false injections',src['false_injections']),('False injections',r['false_injections']),('Forbidden injected',r['forbid_violations']),('Signal errors',g['wrong'])):
         if rows:lines+=[title+':']+[f'  - {json.dumps(row,ensure_ascii=False)}' for row in rows]
     return '\n'.join(lines)
 
