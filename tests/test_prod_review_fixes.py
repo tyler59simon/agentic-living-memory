@@ -307,6 +307,52 @@ class MapsPerRepo(Cli):
         self.assertEqual(find_note(other['id'], 'demo', self.root)[1]['type'], 'knowledge')
 
 
+class Map1Truncation(Cli):
+    """MAP-1: a map cut to the budget says so and names the note to read."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo = self.base / 'project' / 'billing-api-service'
+        (self.repo / '.git').mkdir(parents=True)
+
+    def inject(self, lines):
+        details = [x for line in lines for x in ('--detail', line)]
+        note = self.ok('capture', '--type', 'map', '--file', str(self.repo), '--title', 'billing-api-service codebase map',
+                       '--summary', 'What billing is.', *details)
+        runtime.process('claude', 'session-start', {'cwd': str(self.base / 'project'), 'session_id': 's1'}, self.root)
+        out = runtime.process('claude', 'user-prompt', {'cwd': str(self.base / 'project'), 'session_id': 's1', 'prompt': 'fix billing-api-service'}, self.root)
+        return note['id'], out['context']
+
+    def lines(self, count):
+        return [f'**Module {i:02d}:** ' + 'x' * 60 for i in range(count)]
+
+    def test_a_long_map_gets_a_marker_with_its_short_ref_within_the_bound(self):
+        from core.maps import MAP_BUDGET, map_block
+        NL = chr(10)
+        hit = {'domain': 'demo', 'id': 'abcdef1234567890', 'title': 'T', 'body': NL.join(f'- line {i} ' + 'y' * 60 for i in range(80))}
+        block = map_block(hit, self.repo, entry={})
+        head, body = block.split(NL, 1)
+        self.assertTrue(body.endswith('(truncated; read the rest: read demo:abcdef12)'), body[-80:])
+        self.assertIn('demo:abcdef12', head)
+        self.assertLessEqual(len(body), MAP_BUDGET)
+
+    def test_a_map_between_2500_and_3000_characters_is_injected_whole(self):
+        nid, text = self.inject(self.lines(36))
+        body = self.body(nid)
+        self.assertTrue(2500 < len(body.strip()) < 3000, len(body))
+        self.assertIn('Module 35', text)
+        self.assertNotIn('truncated; read the rest', text)
+
+    def test_a_short_map_is_unchanged(self):
+        nid, text = self.inject(self.lines(2))
+        self.assertIn('Module 01', text)
+        self.assertNotIn('truncated; read the rest', text)
+
+    def test_the_injected_long_map_carries_the_marker(self):
+        nid, text = self.inject(self.lines(60))
+        self.assertIn('(truncated; read the rest: read demo:' + nid[:8] + ')', text)
+
+
 class NoisyNotes(StoreFixture):
     """LIFE-3: standing context that nobody reads is not noise."""
 
