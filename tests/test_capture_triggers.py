@@ -87,6 +87,53 @@ class DocEdits(DocFixture):
         self.assertEqual(self.stop(),{})
         self.assertEqual(self.reminders(),[])
 
+    def cli(self,*argv):
+        out=io.StringIO()
+        with contextlib.redirect_stdout(out):code=main(['--root',str(self.root),'--domain','demo',*argv])
+        self.assertEqual(code,0,out.getvalue());return json.loads(out.getvalue())
+
+    def capture(self,title,*extra):
+        return self.cli('capture','--session','s1','--type','decision','--tag','subject/project','--tag','concern/decision','--title',title,'--summary',title+'.',*extra)
+
+    def test_an_unrelated_receipt_does_not_silence_the_doc_reminder(self):
+        self.prompt();self.edit_doc()
+        self.capture('Retries use jittered backoff')   # a note about something else
+        reason=self.stop()['continue_reason']
+        self.assertIn('You changed docs/adr/ADR-004-money.md',reason);self.assertEqual(self.reminders(),['doc'])
+
+    def test_a_note_that_lists_or_digests_the_doc_covers_it(self):
+        self.prompt();self.edit_doc();self.capture('Money is BigDecimal','--file','docs/adr/ADR-004-money.md')   # files
+        self.assertEqual(self.stop(),{})
+        other=self.project/'docs'/'adr'/'ADR-005-ids.md';other.write_text('# ADR-005: Identifiers\n',encoding='utf-8')
+        self.prompt('digest it');self.edit_doc(other)
+        self.cli('capture','--session','s1','--type','knowledge','--tag','subject/project','--tag','concern/architecture','--title','Ids ADR digest','--summary','Digest.','--source','docs/adr/ADR-005-ids.md')
+        self.assertEqual(self.stop(),{})                                                # sources
+
+    def test_updating_a_note_that_links_the_doc_covers_it_but_a_link_to_another_doc_does_not(self):
+        old=self.note('Money notes','Amounts.',allow_similar=True)
+        self.prompt();self.edit_doc()
+        self.cli('update','demo:'+old['id'],'--session','s1','--add-link','docs/adr/ADR-040-other.md')
+        self.assertIn('You changed docs/adr/ADR-004-money.md',self.stop()['continue_reason'])
+        other=self.project/'docs'/'adr'/'ADR-005-ids.md';other.write_text('# ADR-005: Identifiers\n',encoding='utf-8')
+        self.prompt('again');self.edit_doc(other)
+        self.cli('update','demo:'+old['id'],'--session','s1','--add-link','docs/adr/ADR-005-ids.md')
+        self.assertEqual(self.stop(),{})
+
+    def test_nothing_durable_still_dismisses_the_doc(self):
+        self.prompt();self.edit_doc();self.cli('capture-finalize','--session','s1')
+        self.assertEqual(self.stop(),{})
+
+    def test_docs_beyond_the_cap_are_asked_about_at_the_next_stop(self):
+        extra=[self.project/'docs'/'adr'/n for n in ('ADR-006-x.md','ADR-007-y.md')]
+        for p in extra:p.write_text('# '+p.stem+'\n',encoding='utf-8')
+        self.prompt()
+        for p in (self.doc,*extra):self.edit_doc(p)
+        self.assertEqual(self.stop()['continue_reason'].count('You changed'),2)
+        self.assertEqual(self.state()['docs_left'],['docs/adr/ADR-007-y.md'])
+        self.prompt('and now?')
+        self.assertIn('You changed docs/adr/ADR-007-y.md',self.stop()['continue_reason'])
+        self.prompt('and now?');self.assertEqual(self.stop(),{})
+
     def test_excluded_unmatched_and_non_writes_do_not_remind(self):
         standup=self.project/'docs'/'standup'/'mon.md';standup.write_text('x',encoding='utf-8')
         self.prompt();self.edit_doc(standup);self.assertEqual(self.stop(),{})
@@ -136,6 +183,22 @@ class ShellFallback(DocFixture):
         self.prompt('later');self.tool('Bash',{'command':'touch docs/adr/ADR-005-ids.md'})
         self.assertEqual(self.stop(),{})                                              # once per path per session
 
+    def test_a_doc_written_and_committed_through_the_shell_in_one_turn_is_found_by_head(self):
+        self.prompt()
+        before=subprocess.run(['git','-C',str(self.project),'rev-parse','HEAD'],capture_output=True,text=True).stdout.strip()
+        self.assertEqual(list(self.state()['heads'].values()),[before])
+        new=self.project/'docs'/'adr'/'ADR-009-queues.md';new.write_text('# ADR-009: Queues\n',encoding='utf-8')
+        os.utime(new,(time.time()-3600,time.time()-3600))                             # older than the turn: mtime cannot find it
+        self.tool('Bash',{'command':'git add docs && git commit -m "adr 9"'})
+        subprocess.run(['git','-C',str(self.project),'add','docs/adr/ADR-009-queues.md'],check=True);subprocess.run(['git','-C',str(self.project),'commit','-qm','adr 9'],check=True)
+        self.assertIn('You changed docs/adr/ADR-009-queues.md',self.stop()['continue_reason'])
+
+    def test_a_commit_that_touches_no_decision_document_is_quiet(self):
+        self.prompt();(self.project/'src.py').write_text('x=1\n',encoding='utf-8')
+        self.tool('Bash',{'command':'git add src.py && git commit -m code'})
+        subprocess.run(['git','-C',str(self.project),'add','src.py'],check=True);subprocess.run(['git','-C',str(self.project),'commit','-qm','code'],check=True)
+        self.assertEqual(self.stop(),{})
+
     def test_a_shell_turn_that_touches_no_decision_document_is_quiet(self):
         self.prompt();time.sleep(0.05);(self.project/'src.py').write_text('x=1\n',encoding='utf-8')
         self.tool('Bash',{'command':'echo x=1 > src.py'});self.assertEqual(self.stop(),{})
@@ -144,6 +207,35 @@ class ShellFallback(DocFixture):
         from unittest.mock import patch
         self.prompt();self.tool('Bash',{'command':'touch docs/adr/x.md'})
         with patch('core.triggers.subprocess.run',side_effect=subprocess.TimeoutExpired('git',2)):self.assertEqual(self.stop(),{})
+
+
+class SupersedeKeepsPointers(DocFixture):
+    def capture(self,*extra):
+        out=io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code=main(['--root',str(self.root),'--domain','demo','capture','--type','decision','--tag','subject/project','--tag','concern/decision',*extra])
+        self.assertEqual(code,0,out.getvalue());return json.loads(out.getvalue())
+
+    def test_the_successor_carries_links_and_files_of_the_note_it_replaces(self):
+        old=self.capture('--title','Money uses cents','--summary','Cents.','--link','docs/adr/ADR-001.md','--link','docs/adr/ADR-002.md','--file','src/money.py')
+        new=self.capture('--title','Money uses BigDecimal','--summary','BigDecimal.','--link','docs/adr/ADR-002.md','--link','docs/adr/ADR-003.md','--file','src/ledger.py','--supersedes','demo:'+old['id'])
+        self.assertEqual(new['carried_links'],['docs/adr/ADR-001.md']);self.assertEqual(new['carried_files'],['src/money.py'])
+        from core.notes import find_note
+        from core.note_format import sections
+        note=find_note(new['id'],'demo',self.root)[1]
+        self.assertEqual(sections(note['body'])['links'].split('\n'),['* docs/adr/ADR-002.md','* docs/adr/ADR-003.md','* docs/adr/ADR-001.md'])   # the new note's own first, no duplicates
+        self.assertEqual(note['files'],['src/ledger.py','src/money.py'])
+
+    def test_drop_links_keeps_only_the_new_notes_own(self):
+        old=self.capture('--title','Money uses cents','--summary','Cents.','--link','docs/adr/ADR-001.md','--file','src/money.py')
+        new=self.capture('--title','Money uses BigDecimal','--summary','BigDecimal.','--supersedes','demo:'+old['id'],'--drop-links')
+        self.assertEqual(new['carried_links'],[])
+        from core.notes import find_note
+        note=find_note(new['id'],'demo',self.root)[1]
+        self.assertNotIn('ADR-001',note['body']);self.assertFalse(note.get('files'))
+
+    def test_a_capture_without_supersedes_reports_no_carry(self):
+        self.assertNotIn('carried_links',self.capture('--title','Plain','--summary','Plain note.'))
 
 
 class Statements(DocFixture):
@@ -167,6 +259,15 @@ class Statements(DocFixture):
     def test_a_task_description_is_not_a_decision(self):
         for prompt in ['Implement the endpoint; the API must stay idempotent.','The regulators approved the plan, so the module must be reviewed.','Add a field; it must be optional.']:
             with self.subTest(prompt=prompt):self.assertIsNone(runtime.durable_signal(prompt))
+
+    def test_an_instruction_to_the_agent_is_not_a_team_decision(self):
+        for prompt in ['You must not modify any files; answer from memory.','You must never touch the tests.','You are not allowed to push.',
+                       'You are allowed to edit docs only.','You must always answer in English.']:
+            with self.subTest(prompt=prompt):self.assertNotEqual(runtime.durable_signal(prompt),'decision')
+        self.assertIsNone(runtime.durable_signal('You must not modify any files; answer from memory.'))
+        for prompt in ['From now on the team must never deploy on Fridays.','We are not allowed to push to main.','The team must always review ADRs.']:
+            with self.subTest(prompt=prompt):self.assertIn(runtime.durable_signal(prompt),{'decision','preference'})
+        self.assertEqual(runtime.durable_signal('The team must stay on Python 3.10.'),'decision')
 
     def test_the_decision_wording_the_team_uses(self):
         for prompt in ['We decided to store money as BigDecimal.','We have agreed on UUIDs for all ids.','The decision is to drop the legacy API.','Decision: UUIDs everywhere.',

@@ -3,7 +3,8 @@
 Each scenario (tests/scenarios/*.json) runs once per harness against a fresh sandbox store: a temporary folder marked
 with sandbox.json, selected through LIVING_MEMORY_ROOT, with every harness home pointed at an empty folder. The
 user's store and configuration are never read or written. Steps are hook events, sent in each harness's own wire
-format, and CLI commands. Expectations are checked against the adapter's parsed reply and against the debug log's
+format, CLI commands, and git commits a shell command made ("git_commit"). A step's "env" sets environment variables
+for that step only (e.g. CLAUDE_CODE_SESSION_ATTENDED=0 for a headless run). Expectations are checked against the adapter's parsed reply and against the debug log's
 decision detail (core/logs.py). Invariants run after every step: one log line per step that agrees with the reply,
 injected refs that match the delivered text and the usage diary, no scenario secret in logs, diary or session
 state, and no error line without an injected fault. Each scenario ends with validate and doctor.
@@ -36,13 +37,14 @@ class Sim:
     def __init__(self,scenario,harness,package,subprocess_mode,content,base):
         self.scenario=scenario;self.harness=harness;self.package=package;self.sub=subprocess_mode;self.content=content
         self.base=base;self.root=base/'store';self.project=base/'project';self.vars={};self.keys={}
-        self.session='s1';self.turns=0;self.fault=None;self.fault_skipped=False;self.results=[]
+        self.session='s1';self.turns=0;self.fault=None;self.fault_skipped=False;self.results=[];self.extra={}
 
     # ---- environment and store ----
     def env(self):
         homes={h.upper()+'_HOME':str(self.base/('home-'+h)) for h in HARNESSES}
         return {**homes,'LIVING_MEMORY_ROOT':str(self.root),'LIVING_MEMORY_LOG_LEVEL':'debug','LIVING_MEMORY_LOG_CONTENT':'1' if self.content else '',
-                'LIVING_MEMORY_ACTOR':'main','LIVING_MEMORY_NO_BACKGROUND':'1'}   # the scenario runs source-sync itself: no detached process outlives its sandbox
+                'LIVING_MEMORY_ACTOR':'main','LIVING_MEMORY_NO_BACKGROUND':'1',
+                'LIVING_MEMORY_HEADLESS':'','CLAUDE_CODE_SESSION_ATTENDED':'1','CLAUDE_CODE_ENTRYPOINT':'cli',**self.extra}   # not headless unless a step says so (step "env"); the scenario runs source-sync itself: no detached process outlives its sandbox
 
     def build(self):
         from core.init_domain import init_domain
@@ -86,6 +88,14 @@ class Sim:
                 for name,text in item.get('files',{}).items():
                     path=folder/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(text,encoding='utf-8')
                 run('add','-A');run('commit','-q','-m',item.get('message','change'))
+
+    def git_commit(self,spec):
+        """What a shell command did during the turn: {"folder", "files": {path: text}, "message"} writes the files and commits them now."""
+        env={**os.environ,'GIT_AUTHOR_NAME':'sim','GIT_AUTHOR_EMAIL':'sim@example.org','GIT_COMMITTER_NAME':'sim','GIT_COMMITTER_EMAIL':'sim@example.org'}
+        folder=self.base/spec['folder']
+        for name,text in spec.get('files',{}).items():
+            path=folder/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(text,encoding='utf-8')
+        for args in (('add','-A'),('commit','-q','-m',spec.get('message','change'))):subprocess.run(['git','-C',str(folder),*args],check=True,capture_output=True,env=env)
 
     # ---- templating ----
     def ref(self,key):
@@ -216,6 +226,7 @@ class Sim:
         fail=record['failures'].append
         if step.get('only') and self.harness not in step['only']:record.update(skipped='not for this harness');return record
         if 'session' in step and len(step)==1:self.session=step['session'];record['event']='session';return record
+        if 'git_commit' in step:record['event']='git_commit';self.git_commit(step['git_commit']);return record
         if 'fault' in step:
             record['event']=step['fault']
             if self.sub:self.fault_skipped=True;record.update(skipped='fault injection needs in-process mode');return record
@@ -225,9 +236,11 @@ class Sim:
         lines_before=len(self.log_lines());diary_before=len(self.diary());start=time.perf_counter()
         fault=self.fault;self.fault=None
         guard=patch(fault[0],side_effect=fault[1]('simulated fault')) if fault else contextlib.nullcontext()
-        with guard:
+        self.extra=self.fill(step.get('env') or {})   # environment variables for this step only, e.g. {"CLAUDE_CODE_SESSION_ATTENDED": "0"} for a headless run
+        with patch.dict(os.environ,self.extra),guard:
             if 'hook' in step:self.run_hook(step,expect,record,fail)
             else:self.run_cli(step,expect,record,fail)
+        self.extra={}
         record['ms']=round((time.perf_counter()-start)*1000,1)
         if record.get('skipped'):return record
         new=self.log_lines()[lines_before:];diary=self.diary()[diary_before:]
@@ -360,6 +373,9 @@ class Sim:
         if 'stop_reason' in e:check('stop_reason',detail.get('reason'),e['stop_reason'])
         for text in e.get('reminder_contains',[]):
             if text not in (reply.get('reminder') or ''):fail(f'reminder lacks {text!r}')
+        for text in e.get('reminder_excludes',[]):
+            if text in (reply.get('reminder') or ''):fail(f'reminder contains {text!r}')
+        if 'reminder_ends_with' in e and not (reply.get('reminder') or '').endswith(e['reminder_ends_with']):fail(f"reminder does not end with {e['reminder_ends_with']!r}")
         if 'mutation' in e:check('mutation',detail.get('mutation'),e['mutation'])
         if 'hints' in e:check('hints',self.names(detail.get('hints')),self.names(e['hints']))
         if 'command_hints' in e:check('command_hints',self.names(detail.get('command_hints')),self.names(e['command_hints']))

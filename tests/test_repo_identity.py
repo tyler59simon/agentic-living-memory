@@ -252,6 +252,7 @@ class SharedMaps(StoreFixture):
         runtime.process('claude', 'user-prompt', {**payload, 'prompt': 'look around'}, self.root)
         for name in ('a.py', 'b.py', 'c.py'):
             runtime.process('claude', 'pre-tool-use', {**payload, 'tool_name': 'Read', 'tool_input': {'file_path': str(self.arch / name)}}, self.root)
+        runtime.process('claude', 'pre-tool-use', {**payload, 'tool_name': 'Write', 'tool_input': {'file_path': str(self.arch / 'notes.txt')}}, self.root)   # housekeeping is for sessions that edit
         reply = runtime.process('claude', 'stop', payload, self.root)
         self.assertIn("--title 'ledger codebase map'", reply.get('continue_reason', ''))
 

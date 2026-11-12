@@ -115,7 +115,7 @@ def run_batch(args, number, items):
     started = time.perf_counter()
     row = {'batch': number, 'paths': [i['path'] for i in items], 'cost_usd': 0.0, 'digested': [], 'skipped': []}
     try:
-        done = subprocess.run(argv, input=stdin, capture_output=True, text=True, encoding='utf-8', timeout=args.timeout, cwd=args.cwd, env=dict(os.environ, PYTHONUTF8='1'))
+        done = subprocess.run(argv, input=stdin, capture_output=True, text=True, encoding='utf-8', timeout=args.timeout, cwd=args.cwd, env=dict(os.environ, PYTHONUTF8='1', LIVING_MEMORY_HEADLESS='1'))
         row.update(returncode=done.returncode, stderr=done.stderr[-500:])
         if done.returncode == 0:
             row['cost_usd'], row['digested'], row['skipped'] = read_report(done.stdout)

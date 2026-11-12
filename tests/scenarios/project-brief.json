@@ -4,6 +4,7 @@
  "steps": [
   {"hook": "session-start", "expect": {"context_excludes": ["Project brief"]}},
   {"hook": "user-prompt", "payload": {"prompt": "> Directive CFO-2025-03: effective immediately, all monetary amounts must be BigDecimal with scale 4, replacing the earlier long-cents guidance.\nApply it to the ledger."}, "expect": {"detail": {"signal": "directive"}}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/src/ledger.py"}}, "expect": {"mutation": "tracked"}},
   {"hook": "stop", "expect": {"reminder": "directive", "detail": {"pending": ["directive", "unbriefed"]}, "reminder_contains": ["shared a directive", "has no project brief", "CMD capture --session {session} --type brief --file '", "**Goals and scope:**", "Nothing durable: CMD capture-finalize --session {session}"]}},
   {"cli": ["capture", "--session", "{session}", "--type", "brief", "--file", ".", "--title", "project project brief", "--summary", "A ledger rebuild, phase 2 of 3.", "--detail", "**Goals and scope:** Replace the legacy ledger.", "--detail", "**Team and ownership:** Priya owns billing; Marcus took over ledger on Nov 3.", "--detail", "**Key decisions:** Money is BigDecimal (docs/adr/ADR-004-money.md)."], "expect": {"exit": 0, "status": "created"}, "as": "brief"},
   {"hook": "stop", "expect": {"stop_reason": "receipt", "reminder": null}},

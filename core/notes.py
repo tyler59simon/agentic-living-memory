@@ -361,6 +361,21 @@ def _redigested(existing,sources,skip):
     return [n['id'] for n in existing if n.get('status','active')=='active' and n['id'] not in skip and n.get('sources')
             and (old:={s['path']:s['sha256'] for s in n['sources']})!=new and set(old)==set(new)]
 
+def _carry_pointers(body,files,old_notes):
+    """(body, files, carried links, carried files) with the replaced notes' Resource Links bullets and files added after
+    the new note's own (duplicates dropped), so a successor keeps pointing at the documents its predecessor did."""
+    from .note_format import sections,amend
+    key=lambda text:re.sub(r'^(?:[-*+]|\d+\.)\s+','',text.strip()).casefold()
+    have={key(l) for l in sections(body).get('links','').splitlines() if l.strip()}
+    links=[]
+    for old in old_notes:
+        for line in sections(old.get('body') or '').get('links','').splitlines():
+            if line.strip() and key(line) not in have:have.add(key(line));links.append(line.strip())
+    if links:body=amend(body,links=links)
+    mine=clean_files(files);more=[f for old in old_notes for f in clean_files(old.get('files'))]
+    merged=clean_files(mine+more)
+    return body,(merged or files),[re.sub(r'^(?:[-*+]|\d+\.)\s+','',l) for l in links],[f for f in merged if f not in mine]
+
 def capture(title,body,tags,domain,root=None,**metadata):
     root=Path(root or memory_root()).resolve();domain=canonical_domain(domain,root)
     with store_lock(root):
@@ -374,7 +389,7 @@ def capture(title,body,tags,domain,root=None,**metadata):
         elif domain not in registered and domain not in {'global','_global'}:raise ValueError('Domain is not registered; run bind first')
         body=format_body(body)
         key=metadata.pop('idempotency_key',None);allow_similar=bool(metadata.pop('allow_similar',False))
-        supersedes=metadata.pop('supersedes',None) or []
+        supersedes=metadata.pop('supersedes',None) or [];drop_links=bool(metadata.pop('drop_links',False))
         if isinstance(supersedes,str):supersedes=[supersedes]
         existing=inventory(domain,root,retired=True)
         resolved=[]
@@ -429,6 +444,9 @@ def capture(title,body,tags,domain,root=None,**metadata):
             absorbed=(other,match)   # 'supersede': the new global note replaces the project one
         review_by=metadata.pop('review_by',None);context=metadata.pop('context','');files=metadata.pop('files',None);origin=metadata.pop('origin',None);commands=metadata.pop('commands',None);sources=metadata.pop('sources',None)
         if metadata:raise ValueError('Unsupported capture metadata: '+', '.join(metadata))
+        carried=carried_files=[]
+        if supersedes and not drop_links:
+            body,files,carried,carried_files=_carry_pointers(body,files,[n for n in existing if n['id'] in supersedes])
         if selected_type in KEYED_TYPES:
             # One map per repo, one brief per project folder: a second capture would split what the next session reads.
             from .maps import capture_conflict
@@ -457,7 +475,7 @@ def capture(title,body,tags,domain,root=None,**metadata):
         if near:result['similar']=[{'ref':f"{domain}:{n['id']}",'title':n['title']} for n in near]
         warnings=quality_warnings(note)
         if warnings:result['quality_warnings']=warnings
-        if supersedes:result['superseded']=[f'{domain}:{old}' for old in supersedes]
+        if supersedes:result['superseded']=[f'{domain}:{old}' for old in supersedes];result['carried_links']=carried;result['carried_files']=carried_files
         return result
 
 def _change_set(note_id,domain,action,root,expected_revision=None,successor=None,pending=None,**values):

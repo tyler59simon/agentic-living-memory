@@ -110,13 +110,21 @@ class Maps(StoreFixture):
         self.hook('session-start');self.prompt('look around')
         for i in range(2):self.tool('Read',{'file_path':str(self.hive/f'f{i}.py')})
         self.assertEqual(self.hook('stop'),{})
-        self.prompt('keep looking');self.tool('Glob',{'pattern':'**/*.py','path':str(self.hive)})
+        self.prompt('keep looking');self.tool('Glob',{'pattern':'**/*.py','path':str(self.hive)});self.tool('Write',{'file_path':str(self.project/'notes.txt')})
         stop=self.hook('stop')
         self.assertIn('agentic-hivemind, which has no codebase map',stop['continue_reason'])
         self.assertIn("CMD capture --session s1 --type map --file '"+self.hive.as_posix()+"'",stop['continue_reason'])
         self.assertLess(len(stop['continue_reason']),600)   # Claude Code prints it in the terminal
         self.prompt('and more');[self.tool('Read',{'file_path':str(self.hive/f'h{i}.py')}) for i in range(4)]
         self.assertEqual(self.hook('stop'),{})
+
+    def test_a_read_only_session_is_not_reminded_to_map_but_a_later_edit_does(self):
+        self.hook('session-start');self.prompt('look around')
+        for i in range(4):self.tool('Read',{'file_path':str(self.hive/f'f{i}.py')})
+        self.assertTrue(self.state()['repos'][self.hive.as_posix()]['explored'])   # explore() still counts read-only calls
+        self.assertEqual(self.hook('stop'),{})
+        self.prompt('now fix it');self.tool('Write',{'file_path':str(self.project/'notes.txt')})
+        self.assertIn('agentic-hivemind, which has no codebase map',self.hook('stop')['continue_reason'])
 
     def test_repos_outside_every_binding_are_not_tracked(self):
         outside=self.base/'elsewhere';(outside/'.git').mkdir(parents=True)
@@ -130,6 +138,8 @@ class Maps(StoreFixture):
         self.tool('Agent',{'description':'Explore','prompt':'Map the hivemind repo'})
         self.assertTrue(self.state()['repos'][self.hive.as_posix()]['explored'])
         self.assertNotIn('mutating',self.state())
+        self.assertEqual(self.hook('stop'),{})   # nothing was edited: no housekeeping
+        self.prompt('and fix it');self.tool('Write',{'file_path':str(self.project/'notes.txt')})
         self.assertIn('hivemind',self.hook('stop')['continue_reason'])
 
     def test_capturing_the_map_quiets_the_reminder(self):
@@ -142,7 +152,7 @@ class Maps(StoreFixture):
         self.hook('session-start');self.prompt('plan it',permission_mode='plan')
         for i in range(3):self.tool('Read',{'file_path':str(self.hive/f'f{i}.py')},permission_mode='plan')
         self.assertEqual(self.hook('stop',permission_mode='plan'),{})
-        self.prompt('go ahead')
+        self.prompt('go ahead');self.tool('Write',{'file_path':str(self.project/'notes.txt')})
         self.assertIn('hivemind',self.hook('stop')['continue_reason'])
 
     def test_new_top_level_paths_in_a_mapped_repo_remind_although_file_changes_alone_do_not(self):

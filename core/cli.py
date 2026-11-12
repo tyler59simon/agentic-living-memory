@@ -417,7 +417,7 @@ def main(argv=None):
     def sub(name):p=subs.add_parser(name);common(p,True);return p
     p=sub('setup');p.add_argument('--location',type=Path);p.add_argument('--non-interactive',action='store_true');p.add_argument('--source',type=Path);p.add_argument('--apply-plan');p.add_argument('--inspect-plan');p.add_argument('--expected-plan-sha256')
     p=sub('bind');p.add_argument('name');p.add_argument('prefix',nargs='+')
-    p=sub('capture');p.add_argument('items',nargs='*');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='');p.add_argument('--prefix',help='Compatibility assertion only; must equal the uppercase type');p.add_argument('--type',choices=NOTE_TYPES,help='Note type (default: knowledge)');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help='REF of a note this one replaces; it is retired in the same transaction');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk/map/runbook/brief notes get a default')
+    p=sub('capture');p.add_argument('items',nargs='*');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='');p.add_argument('--prefix',help='Compatibility assertion only; must equal the uppercase type');p.add_argument('--type',choices=NOTE_TYPES,help='Note type (default: knowledge)');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help="REF of a note this one replaces; it is retired in the same transaction, and its Resource Links and files are carried over (see --drop-links)");p.add_argument('--drop-links',action='store_true',help='With --supersedes: do not carry the links and files of the replaced note over');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk/map/runbook/brief notes get a default')
     for facet in CAPTURE_FACETS:p.add_argument('--'+facet,action='append',default=[])
     p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
     sections_args(p);_file_flags(p)
@@ -553,6 +553,7 @@ def main(argv=None):
                 if args.session:data.update(session_id=args.session,turn_id=_turn(root,args.session,args.turn))
                 if args.allow_similar:data['allow_similar']=True
                 if args.supersedes:data['supersedes']=args.supersedes
+                if args.drop_links:data['drop_links']=True
                 if args.review_by:data['review_by']=args.review_by
                 files,_=_file_args(args,domain,root)
                 if files:data['files']=files
@@ -565,7 +566,7 @@ def main(argv=None):
                 # A payload carries its own fields, so a flag beside it would be dropped without a word: refuse it.
                 # The session is the exception: the private-text check, the origin and the receipt depend on it.
                 beside=[('--title',args.title),('--tag',args.tag),('--tags',args.tags),('--prefix',args.prefix),('--type',args.type),('--context',args.context),
-                        ('--idempotency-key',args.idempotency_key),('--allow-similar',args.allow_similar),('--supersedes',args.supersedes),
+                        ('--idempotency-key',args.idempotency_key),('--allow-similar',args.allow_similar),('--supersedes',args.supersedes),('--drop-links',args.drop_links),
                         ('--review-by',args.review_by),('--file',args.file),('--files',args.files),('--command',args.shell_command),('--source',args.source)]+[('--'+f,getattr(args,f)) for f in CAPTURE_FACETS]
                 ignored=[flag for flag,given in beside if given]
                 if ignored:raise ValueError('A JSON payload carries its own fields; put these in the payload instead of passing '+', '.join(ignored))

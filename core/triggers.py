@@ -50,3 +50,14 @@ def changed_since(repo,since):
             except OSError:continue
         return found
     except (OSError,subprocess.SubprocessError,ValueError):return []
+
+MAX_COMMITTED=500
+
+def committed_since(repo,start,end):
+    """Existing files that changed between two commits (`git diff --name-only start..end`), at most MAX_COMMITTED. Never raises."""
+    try:
+        done=subprocess.run(['git','-c','core.quotepath=off','-C',str(repo),'diff','--name-only','--diff-filter=d',f'{start}..{end}'],capture_output=True,timeout=GIT_TIMEOUT)
+        if done.returncode:return []
+        names=[n.strip().strip('"') for n in done.stdout.decode('utf-8','replace').splitlines() if n.strip()][:MAX_COMMITTED]
+        return [Path(repo)/n for n in names if (Path(repo)/n).is_file()]
+    except (OSError,subprocess.SubprocessError,ValueError):return []

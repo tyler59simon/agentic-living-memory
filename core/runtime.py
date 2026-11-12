@@ -876,9 +876,10 @@ SIGNALS=(
     ('preference',re.compile(r"\b(?:i(?:'d)? prefer|i'?d rather|i (?:hate|don'?t like)|from now on|going forward|in (?:the )?future|please (?:don'?t|do not|never|always)|stop doing|don'?t ever|by default,? use"
                              r"|(?:you should|you must|we) (?:always|never)|i (?:always|never) (?:use|want|like|do))\b|^\s*(?:always|never)\s+\w",re.I)),
     # A bare "must", "approved" or "regulator" describes the task, so only a statement addressed to the team
-    # ("we must never ...") or a decision's own wording counts.
+    # ("we must never ...") or a decision's own wording counts. "You must not ..." and "you are not allowed to ..."
+    # constrain the agent's task; they are not a decision of the team.
     ('decision',re.compile(r"\b(?:let'?s (?:go with|use)|we(?:'ll| will) (?:go with|use)|we decided|i(?:'ve)? decided|go with option|we(?:'ve| have)? (?:agreed|chosen|settled on)"
-                           r"|the decision is|effective (?:immediately|today|from|as of)|(?:is|are) (?:not )?(?:allowed|permitted|prohibited)|(?:we|you|the team) must (?:never|not|always|stay|remain))\b|\bdecision:",re.I)),
+                           r"|the decision is|effective (?:immediately|today|from|as of)|(?<!\byou )(?:is|are) (?:not )?(?:allowed|permitted|prohibited)|(?:we|the team) must (?:never|not|always|stay|remain))\b|\bdecision:",re.I)),
 )
 # A memo quoted in the prompt states a directive: one strong phrase, or two weaker ones.
 DIRECTIVE_STRONG=re.compile(r"\b(?:decided|decision|directive|policy|effective (?:immediately|today|from|as of)|must never|must not|may not)\b",re.I)
@@ -1184,8 +1185,11 @@ def _process(harness,event,payload,root=None,info=None):
             shash=hashed(source) if signal and hashed else None
             from . import private
             detail.update(signal=signal,private_spans=len(private.spans(text)) if isinstance(text,str) and not MACHINE_PROMPT.match(text) else 0)
+            heads=repo_heads(cwd,state)
             def opened(s):
-                if not s.get('open_turns'):s['turn_started']=time.time()  # the turn's first prompt: shell edits are found by mtime
+                if not s.get('open_turns'):
+                    s['turn_started']=time.time()  # the turn's first prompt: shell edits are found by mtime
+                    s['heads']=heads  # ...and a shell commit by HEAD moving
                 s['turn']=turn;s['open_turns']=(list(s.get('open_turns',[]))+[turn])[-20:]
                 if signal:s['signal']=signal;s['signal_hash']=shash
                 # <private> spans: salted shingle hashes only, so a capture that copies one can be refused.
@@ -1434,7 +1438,7 @@ def _process(harness,event,payload,root=None,info=None):
             docs=decision_docs(paths,bindings);detail['docs']=len(docs)
             if not state.get('mutating') or set(paths)-set(state.get('touched',[])) or looked or (name in SHELL_TOOLS and not state.get('shell')):
                 def touch(s):
-                    s['mutating']=True
+                    s['mutating']=True;s['edited']=True   # edited outlives the turn: read-only sessions get no housekeeping reminders
                     if name in SHELL_TOOLS:s['shell']=True   # shell edits often use relative paths no hook can see; Stop asks git
                     if docs:s['docs']=list(dict.fromkeys(list(s.get('docs',[]))+docs))[:MAX_DOCS]
                     if follow:
@@ -1450,6 +1454,7 @@ def _process(harness,event,payload,root=None,info=None):
         turns=list(dict.fromkeys(list(state.get('open_turns',[]))+([turn] if turn else [])))
         def close(s):
             for key in TURN_STATE:s.pop(key,None)
+            if left or s.get('docs_left'):s['docs_left']=left
         signal=state.get('signal');detail.update(turns=len(turns),mutating=bool(state.get('mutating')),signal=signal)
         # The turn ends here whatever happens next, so its statement is settled: a header repeated in every brief raises once.
         settle_signal(root,domain,state.get('signal_hash'))
@@ -1461,6 +1466,8 @@ def _process(harness,event,payload,root=None,info=None):
             swallowed('runtime.stop_pending',exc,root);pending=[]
         detail['explore_pending']=[(Path(data[0]).name,kind) for kind,data in pending if kind in MAP_KINDS]
         detail['pending']=[kind for kind,_ in pending]
+        # Documents not asked about yet (the reminder names STOP_DOCS at a time) are asked about at the next Stop.
+        left=[d['path'] for kind,d in pending if kind=='doc']
         # File changes alone end the turn quietly: the agent already decides silently at the end of each turn,
         # and Claude Code prints every Stop continuation in the user's terminal. A preference or correction was
         # raised in its own prompt's context, so it ends quietly too. What still holds the turn is knowledge that
@@ -1484,7 +1491,9 @@ def _process(harness,event,payload,root=None,info=None):
                 if key!='touched':s.pop(key,None)
             s['reminded']={'turn':latest,'signal':signal}
             # Each document and each note is asked about once per session.
-            s['docs_reminded']=list(dict.fromkeys(list(s.get('docs_reminded',[]))+[d['path'] for k,d in used if k=='doc']))[-MAX_DOCS_REMINDED:]
+            asked=[d['path'] for k,d in used if k=='doc']
+            s['docs_reminded']=list(dict.fromkeys(list(s.get('docs_reminded',[]))+asked))[-MAX_DOCS_REMINDED:]
+            s['docs_left']=[p for p in left if p not in asked]
             s['briefed']=list(dict.fromkeys(list(s.get('briefed',[]))+[k for k,d in used if k in BRIEF_KINDS]))
             s['followed']=list(dict.fromkeys(list(s.get('followed',[]))+[d['ref'] for k,d in used if k=='follow']+[n['ref'] for k,d in used if k=='doc' for n in d['notes']]))[-MAX_HINTED:]
             s['stale_told']=list(dict.fromkeys(list(s.get('stale_told',[]))+[d[1]['ref'] for k,d in used if k=='stale']))[-MAX_HINTED:]
@@ -1559,7 +1568,7 @@ def map_sentence(key,kind,data,session):
             f"(CMD read {short}, then CMD update {short} --session {session} --set-detail '**Layout:** ...' for each bullet that changed).")
 
 # Per-turn state a Stop clears (reminded keeps `touched` for a capture that answers it).
-TURN_STATE=('open_turns','mutating','signal','signal_hash','touched','docs','shell','turn_started')
+TURN_STATE=('open_turns','mutating','signal','signal_hash','touched','docs','shell','turn_started','heads')
 MAP_KINDS=('unmapped','grown','stale')
 BRIEF_KINDS=('unbriefed','brief')
 # Kinds that name their own reminder in the usage diary; the map kinds report as 'explored' or 'grown'.
@@ -1575,12 +1584,16 @@ def stop_pending(root,bindings,state,session,turns,domain=None,cwd=None,planning
     unbriefed, brief (the project has no brief, or a decision this turn may have outdated it); unmapped, grown (a
     repo explored without a map, or grown at its top level)."""
     pending=[];signal=state.get('signal')
-    # A receipt settles the turn, so only the brief (which a captured decision may have outdated) is still asked about.
-    receipted=any(capture_status(session,t,root) for t in turns)
+    # A receipt settles a statement and the housekeeping, so only the brief (which a captured decision may have outdated)
+    # is still asked about. A decision document or a file a note covers is settled only by a note that covers it (or by
+    # "nothing durable"), so an unrelated capture does not silence it.
+    receipts=[r for r in (capture_status(session,t,root) for t in turns) if r]
+    receipted=bool(receipts);dismissed=any(r.get('outcome')=='nothing_durable' for r in receipts)
+    saved=[ref for r in receipts for ref in r.get('notes',[])]
     if signal in BLOCKING_SIGNALS and not receipted:pending.append((signal,{'files':bool(state.get('mutating'))}))
-    if state.get('mutating') and domain and not receipted:
-        for name,find in (('doc',lambda:doc_pending(root,bindings,state,domain,cwd)),('follow',lambda:follow_pending(root,state))):
-            try:found=find()
+    if (state.get('mutating') or state.get('docs_left')) and domain and not dismissed:
+        for name,find in (('doc',lambda:doc_pending(root,bindings,state,domain,cwd)),('follow',lambda:follow_pending(root,state) if state.get('mutating') else [])):
+            try:found=[(kind,data) for kind,data in find() if not (kind=='doc' and saved and covered_by(root,saved,data['path']))]
             except Exception as exc:
                 from .logs import swallowed
                 swallowed('runtime.'+name+'_pending',exc,root);continue
@@ -1592,8 +1605,28 @@ def stop_pending(root,bindings,state,session,turns,domain=None,cwd=None,planning
         except Exception as exc:
             from .logs import swallowed
             swallowed('runtime.brief_pending',exc,root)
-    if not planning and not receipted:pending+=[(kind,(key,data)) for key,kind,data in explore_pending(root,bindings,state,domain,cwd)]
+    # Housekeeping (maps, a brief) is for sessions that change something: a read-only Q&A session is not asked.
+    if not planning and not receipted and state.get('edited'):pending+=[(kind,(key,data)) for key,kind,data in explore_pending(root,bindings,state,domain,cwd)]
     return pending
+
+def _norm_path(path):return re.sub(r'^(?:\./)+','',str(path).strip().replace('\\','/')).casefold()
+
+def note_covers(note,path):
+    """Whether a note is about a document: it lists the path in files or sources, or names it in its Resource Links."""
+    from .note_format import sections
+    want=_norm_path(path)
+    listed=[_norm_path(f) for f in list(note.get('files') or [])+[s.get('path','') for s in note.get('sources') or [] if isinstance(s,dict)]]
+    if any(f==want or f.endswith('/'+want) for f in listed):return True
+    return re.search(r'(?<![\w.-])'+re.escape(want)+r'(?![\w-])',_norm_path(sections(note.get('body') or '').get('links','')))is not None
+
+def covered_by(root,refs,path):
+    """True when one of the notes (refs, DOMAIN:ID) a turn's receipts touched covers the document at path."""
+    from .notes import find_note
+    for ref in dict.fromkeys(refs):
+        try:domain,note_id=ref.split(':',1);note=find_note(note_id,domain,root)[1]
+        except (ValueError,OSError):continue
+        if note_covers(note,path):return True
+    return False
 
 def brief_pending(root,bindings,state,session,turns,domain,cwd,pending,receipted=False):
     """[('unbriefed', {name, dir})] when the project has no brief and the turn did something worth briefing (a
@@ -1615,7 +1648,7 @@ def brief_pending(root,bindings,state,session,turns,domain,cwd,pending,receipted
         decided=docs or signal in {'decision','directive'} or any(kind=='decision' for _,kind in active_notes(saved,root).values())
         if 'brief' in asked or not decided or ref in saved:return []
         return [('brief',{'short':short_ref(hit['domain'],hit['id']),'title':hit['title']})]
-    if 'unbriefed' in asked or receipted:return []
+    if 'unbriefed' in asked or receipted or not state.get('edited'):return []
     if docs or signal in BLOCKING_SIGNALS or (state.get('mutating') and active_count(domain,root,MIN_NOTES)>=MIN_NOTES):
         folder=project_dir(cwd,bindings);return [('unbriefed',{'dir':project_key(folder,bindings),'name':repo_name(folder)})]
     return []
@@ -1650,25 +1683,38 @@ def doc_notes(root,bindings,domain,path,file):
     for h in hits:found.setdefault(f"{h['domain']}:{h['id']}",{'ref':f"{h['domain']}:{h['id']}",'short':short_ref(h['domain'],h['id']),'title':_title(h['title'])})
     return list(found.values())[:STOP_NOTES]
 
+def _turn_repos(cwd,state):
+    """The repos a turn's shell edits may have changed: the one holding cwd, then those explored so far (at most 3)."""
+    here=git_root(cwd) if cwd else None
+    return list(dict.fromkeys(([here] if here else [])+[Path(k) for k in _repos(state)]))[:3]
+
+def repo_heads(cwd,state):
+    """{repo path: HEAD commit} for _turn_repos, read from the .git files (no subprocess)."""
+    from .common import head_oid
+    return {r.as_posix():h for r in _turn_repos(cwd,state) if (h:=head_oid(r))}
+
 def doc_pending(root,bindings,state,domain,cwd):
     """[('doc', {path, notes})] for decision documents changed this turn that no reminder has covered yet: the
-    paths PreToolUse recorded, and, after shell edits (whose relative paths no hook can see), the files git
-    reports changed since the turn began."""
-    from .common import domain_prefixes,display_path
-    from .triggers import decision_docs,changed_since
-    prefixes=domain_prefixes(domain,bindings);shown=list(state.get('docs',[]));files={}
-    if state.get('shell') and state.get('turn_started') and cwd:
-        here=git_root(cwd)
-        repos=list(dict.fromkeys(([here] if here else [])+[Path(k) for k in _repos(state)]))[:3]
-        for repo in repos:
-            for path in changed_since(repo,state['turn_started']):
+    paths PreToolUse recorded, those carried over from an earlier Stop (docs_left), and, after shell edits (whose
+    relative paths no hook can see), the files git reports changed since the turn began or committed since HEAD
+    was recorded at its first prompt. All of them: stop_text names STOP_DOCS at a time."""
+    from .common import domain_prefixes,display_path,head_oid
+    from .triggers import decision_docs,changed_since,committed_since
+    prefixes=domain_prefixes(domain,bindings);shown=list(state.get('docs_left',[]))+list(state.get('docs',[]));files={}
+    if state.get('shell') and cwd:
+        heads=state.get('heads') if isinstance(state.get('heads'),dict) else {}
+        for repo in _turn_repos(cwd,state):
+            found=changed_since(repo,state['turn_started']) if state.get('turn_started') else []
+            start=heads.get(repo.as_posix());head=head_oid(repo) if start else None
+            if start and head and head!=start:found+=committed_since(repo,start,head)
+            for path in found:
                 try:p=path.resolve()
                 except OSError:continue
                 if p.is_relative_to(root) or not any(p.is_relative_to(x) for x in prefixes):continue
                 name=display_path(p,prefixes)
                 if name:files[name]=p;shown.append(name)
     done=set(state.get('docs_reminded',[]))
-    docs=[d for d in decision_docs(shown,bindings) if d not in done][:STOP_DOCS]
+    docs=[d for d in decision_docs(shown,bindings) if d not in done][:MAX_DOCS]
     return [('doc',{'path':d,'notes':doc_notes(root,bindings,domain,d,files.get(d) or _doc_file(d,prefixes))}) for d in docs]
 
 def follow_pending(root,state):
@@ -1704,25 +1750,35 @@ def _stop_part(kind,data,session):
         if data.get('type')=='bug':text+=f" If this fixed it: CMD update {s} --session {session} --set-detail '**Fix:** ...' then CMD resolve {s}."
         return text
     if kind=='unbriefed':
-        return (f"{data['name']} has no project brief (goals, owners, phase, key decisions): "
+        return (f"{data['name']} has no project brief: "
                 f"CMD capture --session {session} --type brief --file '{data['dir']}' --title '{data['name']} project brief' --summary '...' "
-                "--detail '**Goals and scope:** ...' (and Team and ownership, Current phase, Key decisions).")
+                "--detail '**Goals and scope:** ...'. "
+                "Write what you know now and mark unknowns as unknown; the brief is updated as the project moves.")
     if kind=='brief':
         return (f"a decision was made or recorded this turn: if project brief {data['short']} no longer matches it, "
                 f"CMD update {data['short']} --session {session} --set-detail '**Key decisions:** ...' (or Team and ownership, Current phase, status and blockers).")
     return map_sentence(data[0],kind,data[1],session)
+
+HEADLESS_TEXT="This is a non-interactive run and only your last message is returned: after saving, end with your answer to the task repeated in full."
+
+def headless():
+    """True in a non-interactive run (`claude -p`, the SDK), where the caller receives only the final message."""
+    env=os.environ
+    return env.get('LIVING_MEMORY_HEADLESS')=='1' or env.get('CLAUDE_CODE_SESSION_ATTENDED')=='0' or env.get('CLAUDE_CODE_ENTRYPOINT','').startswith('sdk')
 
 def stop_text(pending,session,used=None):
     """The Stop continuation for what stop_pending found, about STOP_TEXT_CAP characters: the first item always,
     later ones while they fit, at most STOP_DOCS documents and STOP_NOTES notes named. Short refs and exact
     commands, closing with how to say nothing is durable. used, when a list, receives the items the text covers."""
     parts=[];docs=notes=0;closing=f" Nothing durable: CMD capture-finalize --session {session}."
+    # A non-interactive run returns only the last message, so housekeeping after the answer would replace it.
+    tail=' '+HEADLESS_TEXT if headless() else ''
     for kind,data in pending:
         if kind=='doc':
             if docs>=STOP_DOCS:continue
             data={**data,'notes':data['notes'][:max(0,STOP_NOTES-notes)]}
         if kind=='follow' and notes>=STOP_NOTES:continue
-        fits=lambda text:not parts or len('Living Memory: '+' '.join(parts+[text]))+len(closing)<=STOP_TEXT_CAP
+        fits=lambda text:not parts or len('Living Memory: '+' '.join(parts+[text]))+len(closing)+len(tail)<=STOP_TEXT_CAP
         part=_stop_part(kind,data,session)
         if kind in MAP_KINDS+BRIEF_KINDS and parts:part='Also: '+part
         # A document that does not fit with its notes is still asked about, with fewer of them.
@@ -1732,7 +1788,7 @@ def stop_text(pending,session,used=None):
         if kind=='doc':docs+=1;notes+=len(data['notes'])
         if kind=='follow':notes+=1
         if isinstance(used,list):used.append((kind,data))
-    return 'Living Memory: '+' '.join(parts)+closing
+    return 'Living Memory: '+' '.join(parts)+closing+tail
 
 def session_map(cwd,root,bindings,state=None,session=None):
     """A pointer to the map of the repo holding cwd, else None; never fails the hook."""

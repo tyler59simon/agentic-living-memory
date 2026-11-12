@@ -1,6 +1,6 @@
 {
  "name": "codebase-map",
- "description": "A prompt that names a mapped repo injects its map once per revision; reads of that repo then add nothing and repeat reads take the fast path; an unmapped repo gets one line, its exploration earns one Stop reminder, and a subagent spawn is pointed at the map.",
+ "description": "A prompt that names a mapped repo injects its map once per revision; reads of that repo then add nothing and repeat reads take the fast path; an unmapped repo gets one line, its exploration earns one Stop reminder (once the session has edited something), and a subagent spawn is pointed at the map.",
  "folders": ["project/suite-plugin/.git", "project/suite-plugin/runtime", "project/hivemind/.git"],
  "notes": [
   {"key": "suitemap", "type": "map", "files": ["suite-plugin"], "tags": ["subject/project", "concern/architecture"], "title": "suite-plugin codebase map",
@@ -19,6 +19,7 @@
   {"hook": "pre-tool-use", "payload": {"tool_name": "Read", "tool_input": {"file_path": "{project}/hivemind/app.py"}}},
   {"hook": "pre-tool-use", "payload": {"tool_name": "Glob", "tool_input": {"pattern": "**/*.py", "path": "{project}/hivemind"}}},
   {"hook": "pre-tool-use", "payload": {"tool_name": "Read", "tool_input": {"file_path": "{project}/hivemind/db.py"}}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/notes.md"}}, "expect": {"mutation": "tracked"}},
   {"hook": "stop", "expect": {"reminder": "explored"}},
   {"hook": "user-prompt", "payload": {"prompt": "more hivemind reading"}, "expect": {"context_excludes": ["no codebase map yet"]}},
   {"hook": "pre-tool-use", "payload": {"tool_name": "Read", "tool_input": {"file_path": "{project}/hivemind/ui.py"}},

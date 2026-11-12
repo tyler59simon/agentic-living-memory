@@ -17,7 +17,9 @@ class StoreFixture(unittest.TestCase):
         # Tests edit vault files and sync immediately; production waits for Obsidian to go quiet.
         quiet=patch('core.sync.QUIET_SECONDS',0);quiet.start();self.addCleanup(quiet.stop)
         # SessionStart checks the harness's real instruction file; point every harness home at an empty folder.
-        homes=patch.dict('os.environ',{h.upper()+'_HOME':str(self.base/('home-'+h)) for h in ('claude','codex','copilot','factory')})
+        # ...and a test run from inside a headless `claude -p` must not make every Stop reminder end with the headless sentence.
+        homes=patch.dict('os.environ',{**{h.upper()+'_HOME':str(self.base/('home-'+h)) for h in ('claude','codex','copilot','factory')},
+                                       'LIVING_MEMORY_HEADLESS':'','CLAUDE_CODE_SESSION_ATTENDED':'1','CLAUDE_CODE_ENTRYPOINT':'cli'})
         homes.start();self.addCleanup(homes.stop)
         init_domain('demo',[str(self.base/'project')],self.root)
         (self.root/'tag_taxonomy.json').write_text(json.dumps({'tags':['subject/project','concern/architecture','concern/decision']}))
