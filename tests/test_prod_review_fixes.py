@@ -924,5 +924,61 @@ class Sto3GlobalBundle(StoreFixture):
         self.assertTrue(find_note(note['id'], '_global', self.root)[1])
 
 
+class Cli3RefResolution(Cli):
+    def cap(self, title, *extra):
+        return self.ok('capture', '--title', title, '--summary', 'Body of ' + title, '--type', 'knowledge', '--tag', 'subject/project', '--tag', 'concern/architecture', *extra)
+
+    def test_supersedes_accepts_title_and_short_ref(self):
+        a = self.cap('Alpha cache rule')
+        self.cap('Beta cache rule', '--supersedes', 'alpha CACHE rule')
+        self.assertEqual(find_note(a['id'], 'demo', self.root)[1]['status'], 'superseded')
+        c = self.cap('Gamma note')
+        self.cap('Delta note', '--supersedes', 'demo:' + c['id'][:8])
+        self.assertEqual(find_note(c['id'], 'demo', self.root)[1]['status'], 'superseded')
+
+    def test_supersedes_payload_file_title(self):
+        a = self.cap('Epsilon rule')
+        payload = self.base / 'p.json'
+        payload.write_text(json.dumps({'title': 'Zeta rule', 'body': 'Zeta body.', 'tags': TAGS, 'supersedes': ['Epsilon rule']}))
+        self.ok('capture', '--payload-file', str(payload))
+        self.assertEqual(find_note(a['id'], 'demo', self.root)[1]['status'], 'superseded')
+
+    def test_supersedes_other_domain_is_rejected(self):
+        g = capture('Global habit', 'Always verify.', TAGS, '_global', self.root)
+        code, _, err = self.run_cli('capture', '--title', 'Local habit', '--summary', 'Local.', '--type', 'knowledge', '--tag', 'subject/project', '--tag', 'concern/architecture', '--supersedes', 'Global habit')
+        self.assertNotEqual(code, 0)
+        code, _, err = self.run_cli('capture', '--title', 'Local habit', '--summary', 'Local.', '--type', 'knowledge', '--tag', 'subject/project', '--tag', 'concern/architecture', '--supersedes', '_global:' + g['id'][:8])
+        self.assertNotEqual(code, 0)
+        self.assertIn('--supersedes must name a note in demo', json.dumps(err))
+        self.assertEqual(find_note(g['id'], '_global', self.root)[1].get('status', 'active'), 'active')
+
+    def test_capture_finalize_note_forms(self):
+        a = self.note('Finalize alpha')
+        b = self.note('Finalize beta')
+        self.prompt('sf', turn='t1')
+        self.ok('capture-finalize', '--session', 'sf', '--turn', 't1', '--note', a['id'][:8])
+        self.assertEqual(receipt('sf', 't1', self.root)['notes'], ['demo:' + a['id']])
+        self.ok('capture-finalize', '--session', 'sf', '--turn', 't1', '--note', 'finalize BETA')
+        self.assertEqual(receipt('sf', 't1', self.root)['notes'], ['demo:' + a['id'], 'demo:' + b['id']])
+
+    def test_history_note_forms(self):
+        a = self.note('History subject')
+        self.ok('update', a['id'], '--body', 'Changed body.')
+        for ref in ('History subject', 'demo:' + a['id'][:8], 'demo:' + a['id']):
+            rows = self.ok('history', '--note', ref)
+            self.assertIn('update', [r['kind'] for r in rows], ref)
+        code, out, err = self.run_cli('history', '--note', 'nosuchnote')
+        self.assertNotEqual(code, 0)
+        self.assertIsNone(out)
+        self.assertTrue(err)
+
+    def test_history_of_a_deleted_note_by_full_id(self):
+        a = self.note('Deleted subject')
+        plan = self.ok('plan', 'delete', a['id'])
+        self.ok('apply', plan['plan_id'], '--expected-plan-sha256', plan['digest'])
+        for ref in (a['id'], 'demo:' + a['id']):
+            self.assertTrue(self.ok('history', '--note', ref), ref)
+
+
 if __name__ == '__main__':
     unittest.main()

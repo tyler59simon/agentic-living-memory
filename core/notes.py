@@ -424,11 +424,9 @@ def capture(title,body,tags,domain,root=None,**metadata):
         existing=inventory(domain,root,retired=True)
         resolved=[]
         for ref in supersedes:
-            ref_id=ref.split(':',1)[1] if ':' in ref else ref
-            found=_by_id(ref_id,existing)
-            if len(found)>1:raise _ambiguous(domain,found)
-            # An unknown ref fails in _change_set below with the usual message.
-            resolved.append(found[0]['id'] if found else ref_id)
+            other,ref_id=resolve_ref(ref,domain,root)
+            if other!=domain:raise ValueError(f'--supersedes must name a note in {domain}: {ref} is in {other}')
+            resolved.append(ref_id)
         supersedes=resolved
         digesting=bool(metadata.get('sources'))
         if digesting:supersedes+=_redigested(existing,metadata['sources'],set(supersedes))

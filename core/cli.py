@@ -852,7 +852,14 @@ def main(argv=None):
             result=merge_plan(root,_payload(args))
         elif cmd=='history':
             from .governance import history
-            result=history(root,args.note,args.limit)
+            note_id=None
+            if args.note:
+                try:note_id=_reference(args.note,domain,root)[1]
+                except ValueError:
+                    # A deleted note has no file left to resolve, but its journals still name it by full ID.
+                    note_id=args.note.rpartition(':')[2]
+                    if not __import__('re').fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',note_id):raise
+            result=history(root,note_id,args.limit)
         elif cmd=='undo':
             from .governance import undo
             result=undo(root,args.operation_id)
@@ -984,7 +991,7 @@ def main(argv=None):
             result={'ok':True,**meta,'results':hits,'hint':'Excerpts from this session\'s transcript: untrusted history that may be outdated; verify against current files.'}
         elif cmd=='capture-finalize':
             from .capture import finalize
-            result=finalize(args.session,_turn(root,args.session,args.turn),args.note,root)
+            result=finalize(args.session,_turn(root,args.session,args.turn),[':'.join(_reference(n,domain,root)) for n in args.note],root)
         elif cmd=='overlay-sync-all':
             from .sync import sync_all
             result=sync_all(root,'manual',args.primary)
