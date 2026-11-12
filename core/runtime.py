@@ -692,7 +692,7 @@ def prompt_maps(cwd,prompt,root,bindings,state,trace=None,briefed=None,session=N
             ref=f"{hit['domain']}:{hit['id']}";seen[key]=ref
             if len(maps)<MAX_MAPS and shown.get(ref)!=revision_key(hit):
                 maps.append(map_block(hit,repo,entry=note_currency(hit,repo,root,bindings,state,session)));delivered[ref]=revision_key(hit)
-                lines_,refs_=repo_notes(hit,repo,root,bindings,shown,exclude=briefed)
+                lines_,refs_=repo_notes(hit,repo,root,bindings,{**_snippeted(state),**shown},exclude=briefed)
                 if lines_:maps[-1]+='\n'+lines_;briefed.extend(refs_)
         else:
             seen[key]=None
@@ -719,7 +719,7 @@ def prompt_briefs(cwd,root,bindings,state,trace=None,briefed=None,session=None):
     if isinstance(trace,dict):trace['brief']={'ref':ref,'injected':[ref] if fresh else []}
     if not fresh:return None,{}
     block=brief_block(hit,entry=note_currency(hit,brief_folder(hit,cwd,bindings),root,bindings,state,session,'fresh_brief'))
-    lines_,refs_=repo_notes(hit,None,root,bindings,shown,budget=BRIEF_NOTES_BUDGET,files=False,exclude=briefed)
+    lines_,refs_=repo_notes(hit,None,root,bindings,{**_snippeted(state),**shown},budget=BRIEF_NOTES_BUDGET,files=False,exclude=briefed)
     if lines_:block+='\n'+lines_;briefed.extend(refs_)
     return block,{ref:revision_key(hit)}
 
@@ -959,19 +959,25 @@ def signal_nudge(signal,session):
     return (f"Living Memory: the user {said} in this prompt. If it should outlast this session, update its note or "
             f"CMD capture --session {session} {hint} --title '...' --summary '...' before you finish; if not, nothing is needed.")
 
-def hit_line(hit):
+def hit_line(hit,width=HIT_SNIPPET):
     snippet=hit.get('snippet','')
-    if len(snippet)>HIT_SNIPPET:
-        cut=snippet.rfind(' ',0,HIT_SNIPPET);snippet=snippet[:cut if cut>0 else HIT_SNIPPET]+' …'
+    if len(snippet)>width:
+        cut=snippet.rfind(' ',0,width);snippet=snippet[:cut if cut>0 else width]+' …'
     from .notes import short_ref
     stale=f"{hit['stale']} — " if hit.get('stale') else ''   # a digest whose source file changed (core/digests.py)
-    line=f"- [{str(hit.get('type','note')).upper()} {hit.get('updated','')}] {short_ref(hit['domain'],hit['id'])} {hit['title']} — {stale}{snippet}"
+    mark=f"UNCONFIRMED (as of {hit.get('updated','')}): " if hit.get('interim') else ''   # notes.is_interim
+    line=f"- [{str(hit.get('type','note')).upper()} {hit.get('updated','')}] {short_ref(hit['domain'],hit['id'])} {mark}{hit['title']} — {stale}{snippet}"
     if hit.get('procedure_id'):
         from .learning import use_hint
         line+=f" ({use_hint(hit['procedure_id'],hit.get('procedure_version'))})"
     return line
 
 def revision_key(note):return str(note.get('revision') or '')[:12]
+
+def _snippeted(state):
+    """ref -> revision key of the notes SessionStart showed with a snippet: a one-line summary would only repeat them."""
+    found=state.get('shown_snippet')
+    return found if isinstance(found,dict) else {}
 
 def _unseen(hit,shown):
     """True unless this revision of the note was already delivered. shown maps ref -> revision key;
@@ -1019,22 +1025,68 @@ LONG_SEGMENTS=4
 LONG_LEAST=3
 HEADING=re.compile(r'^\s{0,3}#{1,6}\s')
 
+# A numbered, lettered, bulleted or question-per-line list (a quiz, a checklist): each item is searched on its own.
+LIST_ITEM=re.compile(r'^\s*(?:\d+[.)]|[qQ]\d+[.:)]|[-*])\s+\S')
+LIST_MARK=re.compile(r'^\s*(?:\d+[.)]|[qQ]\d+[.:)]|[-*])\s+')
+LIST_MIN=3        # items that make a prompt a list
+LIST_QUERIES=8    # items searched, richest by IDF first
+LIST_HITS=2       # notes one item may contribute
+ITEM_LEAST=2      # query words body coverage must find for an item (see relevance_gate)
+LIST_CAP=6        # notes injected for a list prompt, at most (3 otherwise)
+LIST_SNIPPET=160
+LIST_BUDGET=2400  # characters of notes a list prompt adds
+
+def _is_item(line):
+    return not HEADING.match(line) and bool(LIST_ITEM.match(line) or line.rstrip().endswith('?'))
+
+def _pieces(text):
+    """[(segment, is_item)]: split at markdown headings (which open a segment) and blank lines; in a prompt with at least
+    LIST_MIN list items each item is a segment of its own, and the lines before the list stay together."""
+    lines=text.splitlines();listy=sum(map(_is_item,lines))>=LIST_MIN
+    segments=[[]];flags=[False]
+    for line in lines:
+        item=listy and _is_item(line)
+        if not line.strip():segments.append([]);flags.append(False)
+        elif segments[-1] and (item or HEADING.match(line)):segments.append([line]);flags.append(item)
+        else:
+            if not segments[-1]:flags[-1]=item
+            segments[-1].append(line)
+    return [('\n'.join(s),f) for s,f in zip(segments,flags) if s]
+
 def prompt_segments(text):
-    """The prompt's paragraphs: split at markdown headings (which open a segment) and blank lines."""
-    segments=[[]]
-    for line in text.splitlines():
-        if not line.strip():segments.append([])
-        elif HEADING.match(line) and segments[-1]:segments.append([line])
-        else:segments[-1].append(line)
-    return ['\n'.join(s) for s in segments if s]
+    """The prompt's paragraphs, or its list items (see _pieces)."""
+    return [s for s,_ in _pieces(text)]
+
+def list_items(text):
+    """The items of a list prompt (at least LIST_MIN of them), else []."""
+    return [s for s,item in _pieces(text) if item]
+
+MAX_QUESTIONS=10
+
+def questions(text):
+    """The separate questions in text, markers removed: its list items when there are at least LIST_MIN, else its
+    ?-terminated sentences when there are at least two; [] for a single question (or none)."""
+    found=[LIST_MARK.sub('',s).strip() for s in list_items(text)]
+    if not found:found=[s.strip() for s in re.findall(r'[^?]*\?',text) if len(s.strip())>1]
+    return found if len(found)>=2 else []
+
+def item_queries(prompt,vocab):
+    """Queries for up to LIST_QUERIES list items, the richest by summed IDF first: each at most 16 terms the notes' own
+    vocabulary selected, judged by the usual gate with body coverage (ITEM_LEAST words)."""
+    from .search import idf_terms,idf_sum
+    queries=[]
+    for item in sorted(list_items(prompt),key=lambda s:-idf_sum(s,vocab))[:LIST_QUERIES]:
+        query=' '.join(idf_terms(item,vocab))
+        if query and query not in queries:queries.append(query)
+    return queries
 
 def long_queries(prompt,vocab):
     """[(query, body)] for a long prompt: the last segment (the ask usually comes last) and the three richest others by
     summed IDF, then the whole prompt's most informative terms. Each query is at most 16 terms the notes' own vocabulary
     selected. A segment is judged by the usual gate; the whole-prompt query (body False) only by titles. Empty and
-    repeated queries are dropped."""
+    repeated queries are dropped. List items are item_queries' business, not segments here."""
     from .search import idf_terms,idf_sum
-    segments=prompt_segments(prompt);segments=segments if len(segments)>1 else []
+    segments=[s for s,item in _pieces(prompt) if not item];segments=segments if len(segments)>1 else []
     rest=sorted(segments[:-1],key=lambda s:-idf_sum(s,vocab))[:LONG_SEGMENTS-1]
     queries={}
     for text,body in [(s,True) for s in ([segments[-1]]+rest if segments else [])]+[(prompt,False)]:
@@ -1059,30 +1111,42 @@ def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=N
     domains=list(dict.fromkeys([active]+parents+global_domains))
     # Global notes hold in every project, so they rank like the project's own; a parent's count half.
     weights={**{g:2 for g in global_domains},active:2,**{p:1 for p in parents if p!=active}}
-    queries=None
-    if len(prompt)>LONG_PROMPT:
+    queries=None;items=list_items(prompt)
+    if len(prompt)>LONG_PROMPT or items:
         from .search import vocabulary,terms
         vocab=vocabulary(domains,root,terms(prompt))
-        queries=long_queries(prompt,vocab) if vocab[0] else None
+        if vocab[0]:
+            # A list prompt's items first (a looser gate, a few notes each), then the long-prompt queries; one entry per query text.
+            queries={q:(True,ITEM_LEAST,LIST_HITS) for q in item_queries(prompt,vocab)} if items else {}
+            for q,body in long_queries(prompt,vocab):queries.setdefault(q,(body,LONG_LEAST,10))
+    if items:trace['items']=len(items)
     if queries:
         # Each query has its own relevance gate; a note any query finds counts once, at its best rank.
         trace['queries']=len(queries);best={}
-        for text,body in queries:
-            for h in search_domains(text,domains,10,root,weights=weights,keep=relevance_gate(text,root,trace['candidates'],body,LONG_LEAST)):
+        for text,(body,least,limit) in queries.items():
+            for h in search_domains(text,domains,limit,root,weights=weights,keep=relevance_gate(text,root,trace['candidates'],body,least)):
                 key=(h['domain'],h['id'])
                 if key not in best or h['score']>best[key]['score']:best[key]=h
-        found=sorted(best.values(),key=lambda h:(-h['score'],h['domain'],h['id']))
+        # Rank-one notes of different items tie on score; the better covered one goes first.
+        found=sorted(best.values(),key=lambda h:(-h['score'],-h.get('relevance',0) if items else 0,h['domain'],h['id']))
     else:found=search_domains(prompt,domains,10,root,weights=weights,keep=relevant)
     if not found and scope.get('foreign_domains'):found=search_domains(prompt,scope['foreign_domains'],10,root,keep=relevant)
     seen=set(shown);ref=lambda h:f"{h['domain']}:{h['id']}"
-    unseen=[h for h in found if _unseen(h,shown)];hits=unseen[:3]
-    trace.update(injected=[ref(h) for h in hits],suppressed_shown=[ref(h) for h in found if not _unseen(h,shown)],cut_by_cap=[ref(h) for h in unseen[3:]])
+    unseen=[h for h in found if _unseen(h,shown)];hits=unseen[:min(LIST_CAP,len(items)) if items else 3]
+    width=LIST_SNIPPET if items else HIT_SNIPPET
+    if items:
+        # The lowest-scored notes go first when the lines would exceed the list budget (one note always stays).
+        used=0
+        for i,h in enumerate(hits):
+            used+=len(hit_line(h,width))+1
+            if used>LIST_BUDGET and i:hits=hits[:i];break
+    trace.update(injected=[ref(h) for h in hits],suppressed_shown=[ref(h) for h in found if not _unseen(h,shown)],cut_by_cap=[ref(h) for h in unseen[len(hits):]])
     if hits:
         trace['path']='injected'
         from . import digests
         digests.mark(hits,root,bindings)
         if isinstance(delivered,dict):delivered.update({f"{h['domain']}:{h['id']}":revision_key(h) for h in hits})
-        return ('Untrusted historical memory; verify current instructions and files:\n'+'\n'.join(hit_line(h) for h in hits),
+        return ('Untrusted historical memory; verify current instructions and files:\n'+'\n'.join(hit_line(h,width) for h in hits),
                 [f"{h['domain']}:{h['id']}" for h in hits],False)
     if found or overview_done:   # relevant notes were already shown this session
         trace['path']='all_shown' if found else 'overview_done';return None,[],False
@@ -1241,12 +1305,13 @@ def _process(harness,event,payload,root=None,info=None):
                                          currency=lambda hit:note_currency(hit,brief_folder(hit,cwd,bindings),root,bindings,state,session,'fresh_brief'))
         detail.update(shown=list(shown),indexed=indexed)
         if session!='unknown':
-            # A new or compacted context has seen only what is injected now. Guidance shown in full is not
-            # re-injected by prompts; index lines are titles, so those notes stay eligible. Once the index has
-            # listed the newest titles, the prompt-time "recent titles" fallback has nothing to add.
+            # A new or compacted context has seen only what is injected now. Guidance and gotchas carry a snippet
+            # there (shown_snippet, never `shown`): a prompt that finds one relevant injects it in full, and only that
+            # full injection is deduplicated. Index lines are titles, so those notes stay eligible too. Once the index
+            # has listed the newest titles, the prompt-time "recent titles" fallback has nothing to add.
             def started(s):
-                s.pop('shown',None);s.pop('overview_shown',None)
-                if shown:s['shown']=shown
+                s.pop('shown',None);s.pop('shown_snippet',None);s.pop('overview_shown',None)
+                if shown:s['shown_snippet']=shown
                 # The new context has not seen any map hint either; exploration counts and reminders stand.
                 for rec in _repos(s).values():
                     if isinstance(rec,dict) and rec.get('map'):rec.pop('done',None)

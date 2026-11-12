@@ -340,8 +340,16 @@ def _search_scope(root,domain):
     globals_=[g for g in (canonical_domain(g,root) for g in scope.get('global_domains',['_global'])) if (root/'domains'/g).exists()]
     return config,globals_,list(dict.fromkeys([domain]+parent_domains(domain,config)+globals_)),scope.get('foreign_domains',[])
 
+def _each_question(query,limit,run):
+    """[{question, ...run(question, per-question limit)}] for a query holding several questions (runtime.questions), else None.
+    At most MAX_QUESTIONS are answered; the rest are only counted, so a quiz cannot make the command crawl."""
+    from .runtime import questions,MAX_QUESTIONS
+    found=questions(query)
+    return [dict(question=q,**run(q,min(limit,3))) for q in found[:MAX_QUESTIONS]] if found else None
+
 def _ask(root,domain,query,limit):
-    """Notes first (the search command's ranking), then source excerpts from the project knowledge base, each labelled."""
+    """Notes first (the search command's ranking), then source excerpts from the project knowledge base, each labelled.
+    A query of several questions is also answered one by one: `questions` holds each question's own notes and sources."""
     from . import sources
     if not query.strip():raise ValueError('ask needs a question')
     limit=max(1,min(20,limit));config,globals_,primary,foreign=_search_scope(root,domain)
@@ -352,6 +360,11 @@ def _ask(root,domain,query,limit):
     if notes and not found['relevant']:result['hint']='No note passed the relevance check; the notes are the closest matches, least likely to apply.'
     if not info:result['knowledge_base']['hint']='No knowledge-base index yet: run source-sync (it also starts at session start). Sources: `sources`.'
     elif not excerpts:result['knowledge_base']['hint']='No source excerpt matched; try other words, or read the files.'
+    def one(q,n):
+        found=_note_hits(root,domain,q,'fallback',n,False,{},config,globals_,primary,foreign)
+        return {'notes':[dict(h,label='note') for h in found['results']],'sources':sources.search(root,domain,q,n),'relevant':found['relevant']}
+    each=_each_question(query,limit,one)
+    if each:result['questions']=each
     return result
 
 def error_code(message):
@@ -427,7 +440,7 @@ def main(argv=None):
     for facet in FACET_FLAGS:p.add_argument('--'+facet,action='append')
     p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
     sections_args(p,update=True);_file_flags(p)
-    p=sub('supersede');p.add_argument('reference');p.add_argument('--by',required=True,help='REF of the note that replaces it');p.add_argument('--session');p.add_argument('--turn')
+    p=sub('supersede');p.add_argument('reference');p.add_argument('--by',required=True,help='REF of the note that replaces it; its Resource Links and files are carried over (see --drop-links)');p.add_argument('--drop-links',action='store_true',help='Do not carry the links and files of the replaced note over');p.add_argument('--session');p.add_argument('--turn')
     p=sub('review');p.add_argument('--limit',type=int,default=20);p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)')
     p=sub('open');p.add_argument('--limit',type=int,default=50);p.add_argument('--all-domains',action='store_true',help='Every domain folder, not parents and global only');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)')
     p=sub('check');p.add_argument('reference');p.add_argument('item',nargs='?',help='Text of the Action Item: exact, or a unique part of it');p.add_argument('--index',type=int,help='1-based position among the note\'s Action Items, as open lists it');p.add_argument('--undo',action='store_true',help='Untick instead');p.add_argument('--session');p.add_argument('--turn')
@@ -625,6 +638,8 @@ def main(argv=None):
                 if not args.query.strip():raise ValueError('search needs a query')
                 from . import sources
                 result={'ok':True,'mode':'sources','domain':domain,'results':sources.search(root,domain,args.query,max(1,min(20,args.limit))),'knowledge_base':sources.state(root,domain)}
+                each=_each_question(args.query,max(1,min(20,args.limit)),lambda q,n:{'results':sources.search(root,domain,q,n)})
+                if each:result['questions']=each
                 invocation['result']=result;print(json.dumps(result,ensure_ascii=False,separators=(',',':')));return 0
             config=load_bindings(root);scope=config.get('search_scope',{});globals_=scope.get('global_domains',['_global'])
             globals_=[canonical_domain(g,root) for g in globals_]
@@ -649,6 +664,8 @@ def main(argv=None):
                 filters['file']=wanted
             if not args.query.strip():raise ValueError('search needs a query, or --file PATH')
             result=_note_hits(root,domain,args.query,args.scope,args.limit,args.rebuild,filters,config,globals_,primary,foreign)
+            each=None if filters else _each_question(args.query,max(1,min(20,args.limit)),lambda q,n:{k:v for k,v in _note_hits(root,domain,q,args.scope,n,args.rebuild,filters,config,globals_,primary,foreign).items() if k in {'results','relevant'}})
+            if each:result['questions']=each
         elif cmd=='read':
             from .notes import find_note
             d,n=_reference(args.reference,domain,root);path,note=find_note(n,d,root)
@@ -726,7 +743,7 @@ def main(argv=None):
             from .notes import change
             d,n=_reference(args.reference,domain,root);bd,bn=_reference(args.by,domain,root)
             if bd!=d:raise ValueError('A note can only be superseded by a note in the same domain')
-            result=change(n,d,'supersede',root,superseded_by=bn)
+            result=change(n,d,'supersede',root,superseded_by=bn,drop_links=args.drop_links)
             from .usage import record
             record(root,'supersede',[f'{d}:{n}'],args.session)
             _receipt(args,d,bn,root)

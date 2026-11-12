@@ -29,13 +29,15 @@ class Quality(StoreFixture):
         said = 'this reads as an interim hypothesis'
         flagged = ['Root cause unconfirmed; the cache is the likely cause.', 'Root cause unknown so far.', 'Our hypothesis is a race in the writer.',
                    'The hypotheses so far: A or B.', 'We suspect the proxy.', 'Suspected: the parser.', 'The likely cause is the proxy.',
-                   'Not yet verified on Windows.', 'Not reproduced locally.', 'It is probably the DNS cache.']
+                   'Not yet verified on Windows.', 'Not reproduced locally.', 'It is probably the DNS cache.',
+                   'Unconfirmed: the cache is stale.', 'Do not build on this until confirmed.', 'Until it is confirmed, assume nothing.',
+                   'Pending approval from the owner.', 'Pending sign-off.', 'Not yet approved by legal.', 'Contract not signed.']
         for kind in ('bug', 'knowledge', 'decision'):
             for body in flagged:
                 with self.subTest(kind=kind, body=body):
                     self.assertTrue(any(said in w for w in quality_warnings({'type': kind, 'title': 'Slow start', 'body': body})))
         result = capture('Startup is slow', 'Root cause unconfirmed; probably the license check.', TAGS, 'demo', self.root, type='bug')
-        self.assertTrue(any('**Hypothesis:**' in w and 'update it when the cause is known' in w for w in result['quality_warnings']))
+        self.assertTrue(any('**Hypothesis:**' in w and 'update REF once it is confirmed' in w for w in result['quality_warnings']))
 
     def test_confirmed_causes_other_types_and_labelled_hypotheses_are_not_flagged(self):
         said = 'interim hypothesis'

@@ -181,6 +181,27 @@ def title_similarity(a,b):
     if min(len(x),len(y))>=3:score=max(score,shared/min(len(x),len(y)))
     return score
 
+# A belief nobody has confirmed yet (bug, knowledge and decision notes): worded as one, or labelled **Hypothesis:**.
+INTERIM=re.compile(r'(?i)\b(?:root cause (?:unconfirmed|unknown|unclear)|hypothes[ie]s|suspect(?:ed)?|likely cause|unconfirmed|until (?:it is )?confirmed|'
+                   r'pending (?:confirmation|approval|sign-?off)|not (?:yet )?(?:confirmed|verified|reproduced|approved|signed)|probably)\b')
+INTERIM_TYPES=('bug','knowledge','decision')
+HYPOTHESIS=re.compile(r'(?i)\*\*hypothesis')
+# A labelled cause, fix or outcome: when its text is not itself hedged, the note stopped being interim.
+RESOLUTION=re.compile(r'(?im)^\s*[-*+]?\s*\*\*(?:root cause|fix|resolution|outcome|confirmed):?\*\*:?[ \t]*(\S[^\n]*)')
+
+def is_interim(note):
+    """True for an active note that still states an unconfirmed belief: labelled **Hypothesis:**, or (bug, knowledge,
+    decision) worded as one (INTERIM) with no labelled root cause, fix or outcome that settles it."""
+    if note.get('status','active')!='active':return False
+    body=str(note.get('body') or '')
+    if HYPOTHESIS.search(body):return True
+    if note.get('type') not in INTERIM_TYPES or not INTERIM.search(str(note.get('title') or '')+'\n'+body):return False
+    return not any(not INTERIM.search(m[1]) for m in RESOLUTION.finditer(body))
+
+def unconfirmed(note):
+    """The prefix an injected line gives a note that is still an unconfirmed belief, dated by its last update; '' otherwise."""
+    return f"UNCONFIRMED (as of {str(note.get('updated') or note.get('created') or '')[:10]}): " if is_interim(note) else ''
+
 # Signs a note records a moment rather than lasting knowledge. Advisory: the note is still saved.
 QUALITY_CHECKS=(
     (re.compile(r'(?i)scratchpad|[\\/]temp[\\/]|/tmp/|appdata[\\/]local[\\/]temp'),
@@ -191,10 +212,8 @@ QUALITY_CHECKS=(
      'test counts go stale; keep the outcome or the gotcha, not the count'),
     (re.compile(r'(?i)\bcommits?\s+[0-9a-f]{7,40}\b|\bplan\s+[0-9a-f]{32}\b'),
      'commit and plan identifiers are already recorded by git and the journal'),
-    (re.compile(r'(?i)\b(?:root cause (?:unconfirmed|unknown|unclear)|hypothes[ie]s|suspect(?:ed)?|likely cause|not (?:yet )?(?:confirmed|verified|reproduced)|probably)\b'),
-     'this reads as an interim hypothesis: say so in the note (e.g. **Hypothesis:** ...) and update it when the cause is known'),
+    (INTERIM,'this reads as an interim hypothesis: say so in the note (e.g. **Hypothesis:** ...) and update REF once it is confirmed'),
 )
-INTERIM_TYPES=('bug','knowledge','decision')
 
 def quality_warnings(note):
     title=note.get('title','');body=note.get('body','')
@@ -203,7 +222,7 @@ def quality_warnings(note):
         unfinished=message.startswith('describes an unfinished')
         if unfinished and note.get('type')=='plan':continue
         # A hypothesis already labelled as one (**Hypothesis:** ...) is what the check asks for.
-        if message.startswith('this reads as an interim') and (note.get('type') not in INTERIM_TYPES or re.search(r'(?i)\*\*hypothesis',body)):continue
+        if message.startswith('this reads as an interim') and (note.get('type') not in INTERIM_TYPES or HYPOTHESIS.search(body)):continue
         # Open steps belong in a bug or risk note's Action Items; elsewhere they are a passing state.
         text=title+'\n'+(without_actions(body) if unfinished and note.get('type') in ACTION_TYPES else body)
         if pattern.search(text):found.append(message)
@@ -478,10 +497,11 @@ def capture(title,body,tags,domain,root=None,**metadata):
         if supersedes:result['superseded']=[f'{domain}:{old}' for old in supersedes];result['carried_links']=carried;result['carried_files']=carried_files
         return result
 
-def _change_set(note_id,domain,action,root,expected_revision=None,successor=None,pending=None,**values):
+def _change_set(note_id,domain,action,root,expected_revision=None,successor=None,pending=None,carried=None,**values):
     """Files to write for one note action, with the revisions they must still have. `pending` holds the
     changes of earlier steps in the same transaction (rel path -> text, or None when removed); files are
-    read through it, so steps build on each other instead of overwriting one another."""
+    read through it, so steps build on each other instead of overwriting one another. A standalone supersede carries the replaced
+    note's Resource Links and files into its successor (unless values has drop_links); `carried`, when a dict, receives what moved."""
     pending=pending or {}
     path,note=find_note(note_id,domain,root)
     if note.get('learning_procedure'):
@@ -577,6 +597,12 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
     if action=='supersede' and successor is None:
         successor_path,successor_note=find_note(note['superseded_by'],domain,root)
         successor_note['supersedes']=sorted(set(successor_note.get('supersedes',[])+[note_id]))
+        if not values.get('drop_links'):
+            body,files,links,pointed=_carry_pointers(successor_note.get('body') or '',successor_note.get('files'),[note])
+            successor_note['body']=body
+            if files:successor_note['files']=files
+        else:links,pointed=[],[]
+        if isinstance(carried,dict):carried.update(carried_links=links,carried_files=pointed)
         successor_note['updated']=now()
         changes[successor_path.relative_to(root).as_posix()]=serialize(successor_note)
         expected[successor_path.relative_to(root).as_posix()]=successor_note['revision']
@@ -622,11 +648,12 @@ def change(note_id,domain,action,root=None,expected_revision=None,plan_only=Fals
             if expected_revision and current['revision']!=expected_revision:raise ValueError('stale_revision')
             from .learning import stage_edit
             return stage_edit(root,domain,current,values,preview=plan_only)
-        changes,expected,target=_change_set(note_id,domain,action,root,expected_revision,**values)
+        carried={}
+        changes,expected,target=_change_set(note_id,domain,action,root,expected_revision,carried=carried,**values)
         if plan_only:
             from .governance import plan
             return plan(root,changes,action,[domain],{'id':note_id,'action':action,'files':len(changes)})
-        result=_commit(domain,changes,action,root,expected);result.update(id=note_id,path=str(target),status=action)
+        result=_commit(domain,changes,action,root,expected);result.update(id=note_id,path=str(target),status=action,**carried)
         if action=='update' and ('body' in values or 'title' in values):
             from .repository import parse
             warnings=quality_warnings(parse(target) or {})

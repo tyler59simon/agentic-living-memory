@@ -14,6 +14,7 @@
   {"cli": ["apply", "{plan}", "--expected-plan-sha256", "{digest}"], "expect": {"exit": 0}},
   {"cli": ["read", "demo:{id:@parser}", "--metadata-only"], "expect": {"exit": 0, "result": {"domain": "_global"}}},
   {"hook": "session-start", "expect": {"detail": {"shown": ["@rg"]}}},
+  {"hook": "user-prompt", "payload": {"prompt": "should I search the code with ripgrep or grep"}, "expect": {"inject": ["@rg"], "path": "injected"}},
   {"hook": "user-prompt", "payload": {"prompt": "should I search the code with ripgrep or grep"}, "expect": {"inject": [], "path": "all_shown", "detail": {"suppressed_shown": ["@rg"]}}}
  ]
 }

@@ -234,6 +234,37 @@ class SupersedeKeepsPointers(DocFixture):
         note=find_note(new['id'],'demo',self.root)[1]
         self.assertNotIn('ADR-001',note['body']);self.assertFalse(note.get('files'))
 
+    def supersede(self,old,new,*extra):
+        out=io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code=main(['--root',str(self.root),'--domain','demo','supersede','demo:'+old['id'],'--by','demo:'+new['id'],*extra])
+        self.assertEqual(code,0,out.getvalue());return json.loads(out.getvalue())
+
+    def test_the_standalone_supersede_carries_links_and_files_to_the_successor_too(self):
+        old=self.capture('--title','Money uses cents','--summary','Cents.','--link','docs/adr/ADR-001.md','--link','docs/adr/ADR-002.md','--file','src/money.py')
+        new=self.capture('--title','Money uses BigDecimal','--summary','BigDecimal.','--link','docs/adr/ADR-002.md','--link','docs/adr/ADR-003.md','--file','src/ledger.py')
+        result=self.supersede(old,new)
+        self.assertEqual(result['carried_links'],['docs/adr/ADR-001.md']);self.assertEqual(result['carried_files'],['src/money.py'])
+        from core.notes import find_note
+        from core.note_format import sections
+        note=find_note(new['id'],'demo',self.root)[1]
+        self.assertEqual(sections(note['body'])['links'].split('\n'),['* docs/adr/ADR-002.md','* docs/adr/ADR-003.md','* docs/adr/ADR-001.md'])
+        self.assertEqual(note['files'],['src/ledger.py','src/money.py']);self.assertEqual(note['supersedes'],[old['id']])
+        self.assertEqual(find_note(old['id'],'demo',self.root)[1]['status'],'superseded')
+
+    def test_supersede_drop_links_keeps_only_the_successors_own(self):
+        old=self.capture('--title','Money uses cents','--summary','Cents.','--link','docs/adr/ADR-001.md','--file','src/money.py')
+        new=self.capture('--title','Money uses BigDecimal','--summary','BigDecimal.','--link','docs/adr/ADR-003.md')
+        result=self.supersede(old,new,'--drop-links')
+        self.assertEqual((result['carried_links'],result['carried_files']),([],[]))
+        from core.notes import find_note
+        note=find_note(new['id'],'demo',self.root)[1]
+        self.assertNotIn('ADR-001',note['body']);self.assertFalse(note.get('files'));self.assertEqual(note['supersedes'],[old['id']])
+
+    def test_a_supersede_with_nothing_to_carry_reports_empty_lists(self):
+        old=self.capture('--title','Money uses cents','--summary','Cents.');new=self.capture('--title','Money uses BigDecimal','--summary','BigDecimal.')
+        result=self.supersede(old,new);self.assertEqual((result['carried_links'],result['carried_files']),([],[]))
+
     def test_a_capture_without_supersedes_reports_no_carry(self):
         self.assertNotIn('carried_links',self.capture('--title','Plain','--summary','Plain note.'))
 

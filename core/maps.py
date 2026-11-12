@@ -252,7 +252,7 @@ def repo_notes(hit,repo,root,bindings,shown,budget=REPO_NOTES_BUDGET,files=True,
     domain about this repo, newest first within budget characters. A note belongs when its `files` fall inside the repo
     (files=False skips that test) or when hit links to it by [[Title]] in its Resource Links. Notes already shown this
     session (shown maps ref -> revision key) and refs in exclude are left out. '' and [] when none."""
-    from .notes import short_ref
+    from .notes import short_ref,unconfirmed
     from .note_format import sections
     from .session_start import gist
     from .runtime import _unseen
@@ -270,7 +270,7 @@ def repo_notes(hit,repo,root,bindings,shown,budget=REPO_NOTES_BUDGET,files=True,
     for n in sorted(found,key=lambda n:n.get('updated',''),reverse=True):
         ref=f"{domain}:{n['id']}"
         if ref in exclude or not _unseen(dict(n,domain=domain),shown):continue
-        summary=gist(n);line=f"- {n['type'].upper()} {short_ref(domain,n['id'])} {n['title']}"+(f' — {summary}' if summary else '')
+        summary=gist(n);line=f"- {n['type'].upper()} {short_ref(domain,n['id'])} {unconfirmed(n)}{n['title']}"+(f' — {summary}' if summary else '')
         if used+len(line)+1>budget-len(head)-1:break
         lines.append(line);refs.append(ref);used+=len(line)+1
     return ('\n'.join([head]+lines),refs) if lines else ('',[])

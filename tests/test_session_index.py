@@ -119,10 +119,11 @@ class SessionIndex(StoreFixture):
         self.assertIn("Living Memory is active for domain 'demo'", text)
         self.assertEqual((shown, indexed), ([], False))
 
-    def test_guidance_is_not_reinjected_but_index_notes_are(self):
+    def test_guidance_is_injected_in_full_once_and_index_notes_are_too(self):
         capture('Prefer small commits', 'Keep commits small.', TAGS, 'demo', self.root, type='preference')
         capture('Webcam conclusion', 'Likely hardware.', TAGS, 'demo', self.root)
         self.start()
+        self.assertIn('Prefer small commits', self.prompt('should commits be small'))   # SessionStart gave a snippet; the prompt delivers the note in full, once
         self.assertNotIn('Prefer small commits', self.prompt('should commits be small'))
         self.assertIn('Webcam conclusion', self.prompt('webcam conclusion'))
 

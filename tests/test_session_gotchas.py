@@ -1,4 +1,5 @@
 """SessionStart gotcha tier, small-store index summaries and the budget's degrade order."""
+import json
 from unittest.mock import patch
 
 from test_core import StoreFixture
@@ -108,10 +109,17 @@ class SessionGotchas(StoreFixture):
         self.assertEqual(steps[0][1], 3)
         self.assertEqual(steps[snippets_gone][1], 1)
 
-    def test_a_gotcha_shown_with_a_snippet_is_not_injected_again_but_an_index_summary_is(self):
+    def test_a_gotcha_shown_with_a_snippet_is_injected_in_full_once_a_prompt_finds_it_relevant(self):
         self.gotchas()
         self.start()
-        self.assertNotIn('mvnw', self.prompt('cmd mvnw builds nothing from git bash'))
+        state = json.loads(runtime._pointer(self.root, 'sess').read_text(encoding='utf-8'))
+        self.assertEqual(len(state['shown_snippet']), 2)   # the two gotchas that fit with a snippet
+        self.assertNotIn('shown', state)
+        first = self.prompt('cmd mvnw builds nothing from git bash')
+        self.assertIn('mvnw', first)        # the session-start snippet was not the note's delivery
+        state = json.loads(runtime._pointer(self.root, 'sess').read_text(encoding='utf-8'))
+        self.assertEqual(len(state['shown']), 1)             # the full injection is what counts as shown
+        self.assertNotIn('mvnw', self.prompt('cmd mvnw builds nothing from git bash'))   # only the full injection is deduplicated
         self.assertIn('Release runbook', self.prompt('release runbook tag build publish'))
 
 
