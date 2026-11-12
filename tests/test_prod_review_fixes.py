@@ -730,6 +730,19 @@ class Ops1HistoryAndPlans(Cli):
         self.assertFalse(old_done.exists() or old_unapplied.exists())
         self.assertTrue(new_done.exists() and new_unapplied.exists() and old_pending.exists())
 
+    def test_prune_plans_keeps_a_plan_a_vault_approval_waits_on(self):
+        from datetime import datetime, timedelta, timezone
+        plans = self.root / '.plans'
+        plans.mkdir(exist_ok=True)
+        plan_id = 'f' * 32
+        when = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat()
+        (plans / (plan_id + '.json')).write_text(json.dumps({'id': plan_id, 'created': when}))
+        state = self.root / 'domains' / 'demo' / 'sync-state.json'
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(json.dumps({'entries': {'n1': {'pending_plan': plan_id, 'pending_action': 'Delete'}}}))
+        self.assertEqual(repository.prune_plans(self.root), 0)
+        self.assertTrue((plans / (plan_id + '.json')).exists())
+
 
 class Priv1RecallMasking(unittest.TestCase):
     SECRET = 'zebra quartz meridian lantern'

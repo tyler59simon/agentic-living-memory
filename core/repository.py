@@ -644,13 +644,21 @@ def prune_journals(root, days=14, kinds=BOOKKEEPING_KINDS):
 
 def prune_plans(root, applied_days=1, unapplied_days=30):
     """Delete plan files: applied ones (committed journal) older than `applied_days`, never-applied ones older
-    than `unapplied_days`. A plan whose journal is in any other state, or unreadable, stays. Returns the count removed."""
+    than `unapplied_days`. A plan whose journal is in any other state, or unreadable, stays, and so does one an
+    Obsidian approval still waits on (`pending_plan` in a domain's sync-state.json). Returns the count removed."""
     from datetime import timedelta
     now_utc = datetime.now(timezone.utc)
     removed = 0
     with store_lock(Path(root).resolve()):
+        waiting = set()
+        for state_path in Path(root).glob("domains/*/sync-state.json"):
+            try:
+                entries = (read_json(state_path, {}) or {}).get("entries") or {}
+                waiting |= {e["pending_plan"] for e in entries.values() if isinstance(e, dict) and e.get("pending_plan")}
+            except (ValueError, AttributeError, TypeError):
+                return removed  # cannot tell which plans a vault approval needs; prune nothing
         for plan_path in sorted(Path(root).glob(".plans/*.json")):
-            if not re.fullmatch("[a-f0-9]{32}", plan_path.stem):
+            if not re.fullmatch("[a-f0-9]{32}", plan_path.stem) or plan_path.stem in waiting:
                 continue
             try:
                 value = read_json(plan_path, None)
