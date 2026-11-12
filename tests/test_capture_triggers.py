@@ -268,6 +268,33 @@ class SupersedeKeepsPointers(DocFixture):
     def test_a_capture_without_supersedes_reports_no_carry(self):
         self.assertNotIn('carried_links',self.capture('--title','Plain','--summary','Plain note.'))
 
+    def test_a_superseding_capture_retried_with_its_idempotency_key_is_existing_not_a_conflict(self):
+        old=self.capture('--title','Money uses cents','--summary','Cents.','--link','docs/adr/ADR-001.md','--file','src/money.py')
+        args=('--title','Money uses BigDecimal','--summary','BigDecimal.','--supersedes','demo:'+old['id'],'--idempotency-key','money-1')
+        first=self.capture(*args);self.assertEqual(first['carried_links'],['docs/adr/ADR-001.md'])
+        again=self.capture(*args);self.assertEqual((again['status'],again['id']),('existing',first['id']))
+
+    def test_the_standalone_supersede_rebases_relative_links_to_the_successors_folder(self):
+        from core.notes import find_note
+        from core.note_format import sections
+        old=self.capture('--title','Money uses cents','--summary','Cents.','--link','[Prior](../archive/prior.md)','--link','[[Other note]]','--link','https://example.com/a.md')
+        new=self.capture('--title','Money uses BigDecimal','--summary','BigDecimal.')
+        self.supersede(old,new);links=sections(find_note(new['id'],'demo',self.root)[1]['body'])['links']
+        self.assertEqual(links.split('\n'),['* [Prior](../archive/prior.md)','* [[Other note]]','* https://example.com/a.md'])
+
+    def test_a_capture_superseding_an_archived_note_rebases_its_relative_links_too(self):
+        from core.notes import find_note
+        from core.note_format import sections
+        out=io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code=main(['--root',str(self.root),'--domain','demo','capture','--type','plan','--tag','subject/project','--tag','concern/decision','--title','Money plan','--summary','Cents.','--link','[Spec](spec.md)','--link','[Notes](docs/notes.md)'])
+        self.assertEqual(code,0,out.getvalue());old=json.loads(out.getvalue());out=io.StringIO()
+        with contextlib.redirect_stdout(out):self.assertEqual(main(['--root',str(self.root),'--domain','demo','resolve','demo:'+old['id']]),0)
+        self.assertEqual(find_note(old['id'],'demo',self.root)[1]['status'],'resolved');self.assertIn('../notes/spec.md',find_note(old['id'],'demo',self.root)[1]['body'])   # relative to archive/ now
+        new=self.capture('--title','Money uses BigDecimal','--summary','BigDecimal.','--supersedes','demo:'+old['id'])
+        links=sections(find_note(new['id'],'demo',self.root)[1]['body'])['links'].split('\n')
+        self.assertEqual(links,['* [Spec](spec.md)','* [Notes](docs/notes.md)'])
+
 
 class Statements(DocFixture):
     """Decision and directive statements hold the turn open, and a statement is raised once, not in every brief."""

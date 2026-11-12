@@ -452,6 +452,12 @@ class Prompts(Kb):
         brief='\n\n'.join(['# Team brief',boiler*4,'## Your assignment',LEDGER_QUESTION+', then summarise it.','## Checklist',boiler*4])
         self.assertGreater(len(brief),runtime.LONG_PROMPT);context=self.prompt(brief,session='long')['context']
         self.assertIn('Source excerpts',context);self.assertIn('README.md:4-7',context);self.assertIn('exponential backoff',context);self.assertNotIn('event-sourcing',context)
+    def test_a_list_prompts_items_each_reach_source_retrieval(self):
+        boiler='Team rules for this sprint. Never push and never touch other branches. Report what changed, what you verified, what is left. '
+        items=['1. do the blue green pipeline smoke tests page the pager rotation on monday?','2. does the dunning glossary cover payroll batches, schema migrations and currencies refunded within the window?','3. '+LEDGER_QUESTION+'?']
+        prompt='\n\n'.join([boiler*5,*items]);self.assertGreater(len(prompt),runtime.LONG_PROMPT);self.assertEqual(len(runtime.list_items(prompt)),3)
+        context=self.prompt(prompt,session='list')['context']
+        self.assertIn('Source excerpts',context);self.assertIn('README.md:4-7',context);self.assertIn('exponential backoff',context)
     def test_trace_holds_refs_and_numbers_only(self):
         detail={};text,keys=runtime.prompt_sources(LEDGER_QUESTION,self.root,'demo',{},detail)
         self.assertEqual(set(detail),{'index','queries','candidates','injected'});self.assertEqual(detail['injected'],keys);self.assertNotIn('exponential',json.dumps(detail))

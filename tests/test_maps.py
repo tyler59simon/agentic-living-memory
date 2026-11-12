@@ -322,6 +322,16 @@ class Staleness(StoreFixture):
         # Editing the note (a new `updated` and revision) recomputes as well.
         hit=self.hit();change(hit['id'],'demo','update',self.root,body=hit['body']+'\n\n* **Extra:** more.');start('s6');self.assertTrue(calls)
 
+    def test_a_failed_git_check_is_not_cached_and_the_next_call_retries(self):
+        self.capture();self.adr_changed();hit=self.hit();cache=self.root/'.cache'/'currency.json'
+        for error in (subprocess.TimeoutExpired('git',2),FileNotFoundError('git')):
+            with self.subTest(error=type(error).__name__),patch('core.maps.subprocess.run',side_effect=error):
+                self.assertTrue(currency(hit,self.app,self.bindings)[0]['failed'])
+                runtime.note_currency(hit,self.app,self.root,self.bindings,{},'s1');self.assertFalse(cache.exists())
+        entry=runtime.note_currency(hit,self.app,self.root,self.bindings,{},'s1')   # git works now
+        self.assertNotIn('failed',entry);self.assertEqual(entry['changed'],['docs/adr/ADR-004-money.md','pom.xml']);self.assertIsNotNone(entry['count'])
+        self.assertEqual([r['n'] for r in json.loads(cache.read_text(encoding='utf-8'))['entries']],[self.ref])
+
     def test_the_currency_cache_keeps_the_newest_200_entries(self):
         self.capture();hit=self.hit();entry={'rev':hit['revision'],'head':head_oid(self.app),'changed':[],'count':0}
         runtime.atomic_write(self.root/'.cache'/'currency.json',json.dumps({'v':1,'entries':[{'k':'old','n':f'demo:{i}','u':'x','e':entry} for i in range(runtime.CURRENCY_CACHE_MAX)]}))

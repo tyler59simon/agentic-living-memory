@@ -388,16 +388,19 @@ def _redigested(existing,sources,skip):
     return [n['id'] for n in existing if n.get('status','active')=='active' and n['id'] not in skip and n.get('sources')
             and (old:={s['path']:s['sha256'] for s in n['sources']})!=new and set(old)==set(new)]
 
-def _carry_pointers(body,files,old_notes):
+def _carry_pointers(body,files,old_notes,dest):
     """(body, files, carried links, carried files) with the replaced notes' Resource Links bullets and files added after
-    the new note's own (duplicates dropped), so a successor keeps pointing at the documents its predecessor did."""
+    the new note's own (duplicates dropped), so a successor keeps pointing at the documents its predecessor did. Relative
+    links are rebased from each replaced note's path to `dest`, the successor's (a file in its folder)."""
     from .note_format import sections,amend
+    from .migration import rewrite_type_links
     key=lambda text:re.sub(r'^(?:[-*+]|\d+\.)\s+','',text.strip()).casefold()
     have={key(l) for l in sections(body).get('links','').splitlines() if l.strip()}
     links=[]
     for old in old_notes:
         for line in sections(old.get('body') or '').get('links','').splitlines():
-            if line.strip() and key(line) not in have:have.add(key(line));links.append(line.strip())
+            line=rewrite_type_links(line.strip(),dest,{},moved_from=Path(old['path']))
+            if line and key(line) not in have:have.add(key(line));links.append(line)
     if links:body=amend(body,links=links)
     mine=clean_files(files);more=[f for old in old_notes for f in clean_files(old.get('files'))]
     merged=clean_files(mine+more)
@@ -432,7 +435,10 @@ def capture(title,body,tags,domain,root=None,**metadata):
         for note in existing:
             if key and note.get('capture_key')==key and not (key.startswith(DIGEST_KEY) and note.get('status','active')!='active'):
                 # A digest key names a file and its hash: the same file content is already digested, whatever the new wording.
-                if (note['body'].strip()!=body.strip() or note['title']!=title.strip()) and not key.startswith(DIGEST_KEY):raise ValueError('Idempotency key has different content')
+                # A superseding capture stores the submitted body plus the links it inherited; compare against that.
+                sent={body.strip()}
+                if supersedes and not drop_links:sent.add(_carry_pointers(body,metadata.get('files'),[n for n in existing if n['id'] in supersedes],root/'domains'/domain/'notes'/'x.md')[0].strip())
+                if (note['body'].strip() not in sent or note['title']!=title.strip()) and not key.startswith(DIGEST_KEY):raise ValueError('Idempotency key has different content')
                 if effective_type(note)!=selected_type:raise ValueError('Existing note has a different type; update that note instead')
                 return {'ok':True,'id':note['id'],'status':'existing','path':note['path']}
             if note['title'].casefold()==title.strip().casefold() and note['body'].strip()==body.strip():
@@ -473,7 +479,7 @@ def capture(title,body,tags,domain,root=None,**metadata):
         if metadata:raise ValueError('Unsupported capture metadata: '+', '.join(metadata))
         carried=carried_files=[]
         if supersedes and not drop_links:
-            body,files,carried,carried_files=_carry_pointers(body,files,[n for n in existing if n['id'] in supersedes])
+            body,files,carried,carried_files=_carry_pointers(body,files,[n for n in existing if n['id'] in supersedes],root/'domains'/domain/'notes'/'x.md')
         if selected_type in KEYED_TYPES:
             # One map per repo, one brief per project folder: a second capture would split what the next session reads.
             from .maps import capture_conflict
@@ -606,7 +612,7 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
         successor_path,successor_note=find_note(note['superseded_by'],domain,root)
         successor_note['supersedes']=sorted(set(successor_note.get('supersedes',[])+[note_id]))
         if not values.get('drop_links'):
-            body,files,links,pointed=_carry_pointers(successor_note.get('body') or '',successor_note.get('files'),[note])
+            body,files,links,pointed=_carry_pointers(successor_note.get('body') or '',successor_note.get('files'),[note],Path(successor_note['path']))
             successor_note['body']=body
             if files:successor_note['files']=files
         else:links,pointed=[],[]

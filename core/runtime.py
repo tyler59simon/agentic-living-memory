@@ -610,6 +610,7 @@ def note_currency(hit,folder,root,bindings,state,session,slot='fresh'):
             k,n,u=_currency_key(folder,hit)
             shared=next((r['e'] for r in reversed(_currency_entries(root)) if (r.get('k'),r.get('n'),r.get('u'))==(k,n,u) and r['e'].get('rev')==rev and r['e'].get('head')==head),None)
         entry,computed=currency(hit,Path(folder),bindings,cache or shared)
+        if entry.get('failed'):return entry   # git could not tell: neither the shared cache nor the session keeps it, so the next call retries
         if computed and head and entry.get('head') and rev:
             try:
                 k,n,u=_currency_key(folder,hit)
@@ -770,6 +771,7 @@ def prompt_sources(prompt,root,domain,state,trace=None):
     text=sources.split_camel(prompt);vocab=sources.vocabulary(root,domain,terms(text))
     if not vocab[0]:trace['index']=False;return None,[]
     long=len(prompt)>LONG_PROMPT;queries=long_queries(text,vocab) if long else [(text,True)]
+    if long:queries+=[(q,True) for q in item_queries(text,vocab) if q not in dict(queries)]   # list items are not segments: each is asked on its own (at most LIST_QUERIES)
     width=max(120,(SOURCE_BUDGET-110-len(hint_command(root,state,domain)))//SOURCE_EXCERPTS-70)   # snippet room, so the excerpt is cut around the matches
     best={}
     for query,_ in queries:
