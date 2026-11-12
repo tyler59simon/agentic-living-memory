@@ -44,12 +44,13 @@ elif behavior.startswith('learn'):
     cli('rebuild', 'demo')
     report['usage'] = 'none'
     if task['phase'] == 'training':
-        method = 'tool_check' if behavior == 'learn' else 'agent_assertion'
+        method = 'agent_assertion' if behavior == 'learn-weak' else 'tool_check'
+        exclusion = [] if behavior == 'learn-noexcl' else ['--do-not-use-when', 'The note file is missing: restore it instead']
         rec = cli('learn', 'record', '--objective', 'Repair a stale index', '--family', 'alm.index',
                   '--criterion', 'search returns the note', '--result', 'pass', '--method', method, '--observer', 'search',
                   '--excerpt', 'search returned the edited note', '--limitations', 'one store', '--outcome', 'succeeded')
         cand = cli('learn', 'candidate', 'create', '--title', 'Rebuild a stale index', '--summary', 'Rebuild when search lags.',
-                   '--use-when', 'Search lags behind intact canonical notes', '--step', 'CMD rebuild DOMAIN',
+                   '--use-when', 'Search lags behind intact canonical notes', *exclusion, '--step', 'CMD rebuild DOMAIN',
                    '--step', "CMD search 'TERM' and confirm the note", '--done-when', 'The note is returned',
                    '--fallback', 'Run doctor; never delete canonical notes', '--evidence', rec['evidence'][0]['id'])
         report['candidate_id'] = cand['record']['id']
@@ -132,6 +133,12 @@ class Harness(unittest.TestCase):
         training, test = weak['results']
         self.assertFalse(training['eligible'] or training['admitted'])
         self.assertTrue(training['evaluation_errors'])
+        self.assertFalse(test['procedure_available'])
+        loose = self.run_eval(self.agent('learn-noexcl'), label='loose', scenarios=('stale-index',), modes=('learned',))
+        training, test = loose['results']
+        self.assertTrue(training['checked_success'])
+        self.assertFalse(training['eligible'] or training['admitted'])
+        self.assertTrue(any('No exclusions' in e for e in training['evaluation_errors']))
         self.assertFalse(test['procedure_available'])
 
     def test_out_lines_and_summary(self):

@@ -8,7 +8,7 @@
 - **The lookalike exposed a real gap.** Every learned runbook was followed in the lookalike case and failed there (6/6 across both agents). All eight agent-written candidates left "do not use when" empty, and `learn candidate evaluate` admitted them anyway.
 - **Learned runbooks cost more.** Agents used more tokens and time with them than without any runbook.
 
-The gate is **not passed**. See the recommendation at the end.
+The gate is **not passed**. See the recommendation at the end, and the addendum: requiring exclusions at admission made agents write them (6 of 8), but cut lookalike misapplication only from 6/6 to 4/6.
 
 ## Method
 
@@ -149,3 +149,65 @@ Do not treat real-agent benefit as established, and don't start the later learni
 
 1. **Make applicability part of admission.** Have `candidate evaluate` warn or error when "do not use when" is empty. Have the training guidance ask for exclusions and a fallback for lookalike causes. Re-run the lookalike to see whether that closes the 6/6 misapplication.
 2. **Test where procedure knowledge matters.** Add held-out tasks a model can't solve from general knowledge: environment-specific quirks, multi-step local conventions. Optionally repeat with a stronger model. Only those can show a benefit over baseline.
+
+## Addendum: exclusions required at admission (2026-11-12)
+
+Recommendation 1 was implemented in the same PR:
+- `learn candidate evaluate` now reports a candidate with an empty "do not use when" as **not eligible**.
+- `candidate create` and `candidate update` replies warn about it and name the update command.
+- The `learn` guide shows `--do-not-use-when` and asks for lookalike causes and a fallback that covers them.
+- Versions approved earlier still resume and roll back.
+
+The learned condition was then re-run with the same agents, prompt, scenarios and repeats.
+- **Raw rows:** `docs/evaluations/data/claude-haiku-applicability.jsonl` and `codex-luna-applicability.jsonl`.
+- **Cost:** Claude $0.20 and 6.4M tokens, about 13 minutes. Codex 4.9M tokens, about 18 minutes.
+- **Real store:** no real-store change was flagged.
+
+### Results (learned condition only)
+
+| | Phase 2 Claude | now Claude | Phase 2 Codex | now Codex |
+|---|---|---|---|---|
+| Candidates naming an exclusion | 0/4 | 2/4 | 0/4 | 4/4 |
+| Candidates admitted | 4/4 | 2/4 | 4/4 | 4/4 |
+| Lookalike misapplied | 3/3 | 2/3 | 3/3 | 2/3 |
+| Lookalike solved (note restored) | 0/3 | 1/3 | 0/3 | 0/3 |
+| Checked success, all 15 trials | 12 | 11 | 11 | 9 |
+| Median tokens per trial | 271k | 333k | 244k | 231k |
+
+Checked success by scenario:
+
+| agent | interrupted-operation | missing-note | restore | stale-index | stale-plan |
+|---|---|---|---|---|---|
+| claude-haiku | 3/3 | 1/3 | 2/3 | 3/3 | 2/3 |
+| codex-luna | 3/3 | 0/3 | 1/3 | 3/3 | 2/3 |
+
+### What changed and what did not
+
+1. **Agents now write exclusions.** That went from 0 of 8 candidates to 6 of 8.
+   - All four Codex candidates had exclusions by the end of training. The data doesn't show whether the guide or the create-reply warning prompted them. Claude omitted exclusions on two (stale plan, restore), and admission refused those. A reviewer would have sent them back.
+   - So the two Claude trials for those scenarios ran without a runbook.
+2. **Writing an exclusion is not the same as naming the right one.**
+   - **Claude's stale-index runbook** excluded "the term is missing from the note body" and "semantic search is failing", not a deleted note file. It was followed in 2 of the 3 lookalike trials.
+   - **Codex's stale-index runbook** did name the right case ("the note itself is missing … rebuilding cannot fix it"). In one lookalike trial Codex correctly called it `inapplicable`. Even so, Codex restored the note in 0 of 3 trials: its fallback said "repair it through the authorized canonical path", not "restore it from a backup".
+   - The manual runbook that rescued Claude in Phase 2 named both the exclusion and the action to take instead. The action looks like the part that matters.
+3. **The lookalike result moved only slightly:** 4 of 6 misapplied, down from 6 of 6, and 1 of 6 solved, up from 0 of 6. With 3 repeats per cell, that is within noise.
+4. **Codex restore fell to 1/3 with its new restore runbook.** It was 3/3 learned in Phase 2.
+   - Both failures were reported honestly as failed, and nothing else was damaged.
+   - The restore plan in this scenario is clean (1 write, 0 deletes), so the runbook's "do not apply if the plan differs" check should not have stopped it. The cause was not captured: trial stores are discarded without `--keep`, and agent transcripts are not kept.
+   - That runbook also copied the training instruction ("run learn record … create a candidate") in as a step. A reviewer should catch that.
+5. **One false success and one harness error, both in Claude trials that had no runbook:**
+   - stale plan: the agent reported success, but the harness check failed (refusing the stale plan and keeping the newer fact). The row doesn't say which half failed;
+   - restore: the agent printed no JSON report.
+
+### Conclusion
+
+Requiring an exclusion is cheap and changes authoring as intended: 6 of 8 candidates now name one, and the two that don't are refused. On its own, though, it does not make learned runbooks safe in lookalike cases. Two things help more:
+- naming the *right* exclusion;
+- giving a fallback that names the alternative action.
+
+Neither can be checked mechanically; a reviewer has to judge them. The gate stays **not passed**.
+
+Next steps:
+- Keep the rule.
+- Point the review guidance (Hivemind Review, LEARNING.md) at whether each exclusion has a fallback action.
+- Measure real benefit on environment-specific tasks, the planned lm-team-sim on-call scenario, where baseline cannot reach the ceiling.

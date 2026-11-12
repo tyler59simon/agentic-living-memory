@@ -13,10 +13,14 @@ CMD learn record --objective 'Repair a stale index' --family 'alm.index' --crite
     --result pass --method tool_check --observer 'search' --excerpt 'search returned the note' \
     --limitations 'one store checked' --outcome succeeded
 CMD learn candidate create --title 'Repair a stale disposable index' --summary 'Rebuild the index when notes are valid but search is stale.' \
-    --use-when 'Canonical notes are readable and search is stale' --step 'Rebuild the domain index' --step 'Search for the expected note' \
-    --done-when 'The expected note is returned' --fallback 'Inspect notes and doctor output; never delete canonical notes' --evidence EVIDENCE_ID
+    --use-when 'Canonical notes are readable and search is stale' \
+    --do-not-use-when 'The canonical note file is missing or unreadable: restore or repair it instead' \
+    --step 'Rebuild the domain index' --step 'Search for the expected note' \
+    --done-when 'The expected note is returned' --fallback 'If the note file is missing, restore it from a backup; never delete canonical notes' --evidence EVIDENCE_ID
 CMD learn candidate evaluate CANDIDATE_ID
 ```
+
+"Do not use when" names the cases where the steps would be wrong: a lookalike symptom with a different cause, or a state where a step does harm. Make the fallback cover them. A candidate without one is not eligible; the create reply says so, and `learn candidate update ID --expected-revision REV --do-not-use-when '...'` adds it.
 
 `learn record` creates the task, a closed attempt and its evidence in one transaction. With flags it records one check per `--criterion`; give several checks with a JSON payload (`evidence: [...]`). Its reply names the evidence IDs and the next command. The user then approves in **Hivemind → Review → Learning**, or applies `learn candidate promote-plan ID --expected-revision REV` with the existing `apply`. Agents never apply admission plans.
 
@@ -40,7 +44,7 @@ The flag forms map onto JSON payloads; `--payload-file FILE`, or stdin when no f
 
 Create operations accept `idempotency_key`; replaying the same payload returns the original record, a different payload is a conflict. An expected revision is the record's returned byte hash. Re-read after mutations.
 
-**Eligibility.** Every step cites supporting evidence, at least one successful attempt covers every acceptance criterion with non-assertion evidence, no evidence is failed, corrected or deleted, scope matches, learning is enabled for the domain, and no other note has the title. One supporting task gives a **provisional** procedure; two or more distinct tasks give **corroborated**. Neither is a causal confidence score, and the reviewer still judges whether the evidence supports the actual steps.
+**Eligibility.** Every step cites supporting evidence, at least one successful attempt covers every acceptance criterion with non-assertion evidence, no evidence is failed, corrected or deleted, scope matches, learning is enabled for the domain, no other note has the title, and "do not use when" names at least one exclusion. Versions approved before exclusions were required still resume and roll back without one. One supporting task gives a **provisional** procedure; two or more distinct tasks give **corroborated**. Neither is a causal confidence score, and the reviewer still judges whether the evidence supports the actual steps.
 
 ## Inspection and control
 
