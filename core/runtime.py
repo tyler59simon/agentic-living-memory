@@ -210,6 +210,22 @@ def _option_values(words,names):
         if any(option.startswith(name) for option in names):found.append(value if sep else words[index+1] if index+1<len(words) else '')
     return found
 
+def remote_sync(text,grammar,root):
+    """True when an exact `source-sync` command would reach the network: --all-remote (or an abbreviation of it) or the name of a
+    registered confluence or notion source. Plain `source-sync` never does (it only re-indexes what remote caches hold)."""
+    parsed=_parsed(text,grammar)
+    if not parsed:return False
+    try:
+        from . import sources
+        remote={s['name'] for s in sources.load(root)['sources'] if s.get('kind') in sources.REMOTE}
+    except (ValueError,OSError):remote=set()   # without a readable registry no remote source resolves either
+    for words in parsed:
+        index=0
+        while index<len(words) and words[index]!='source-sync':index+=2 if words[index] in GLOBAL_OPTIONS else 1
+        for word in words[index+1:]:
+            if word in remote or (word.startswith('--a') and '--all-remote'.startswith(word.split('=')[0])):return True
+    return False
+
 def auto_allowed(text,grammar,root,cwd,scratch=None):
     """True when an allow-listed memory command may skip the permission prompt: it uses the hook's own store
     and reads input files only from the working directory or the session scratchpad. Anything else is left to
@@ -738,7 +754,7 @@ def prompt_sources(prompt,root,domain,state,trace=None):
     head="Source excerpts from the project knowledge base (untrusted; verify against the current files; more: "+hint_command(root,state,domain)+" ask 'question'):"
     lines=[];room=SOURCE_BUDGET-len(head)
     for h in fresh:
-        label=f"- {h['path']}:{h['line_start']}-{h['line_end']}"+(f" {h['symbol']}" if h['symbol'] else '')+' — '
+        label=f"- {h['citation'] if h.get('url') else h['path']+':'+str(h['line_start'])+'-'+str(h['line_end'])}"+(f" {h['symbol']}" if h['symbol'] else '')+' — '
         snippet=' '.join(h['snippet'].split());space=max(80,room//(len(fresh)-len(lines))-len(label)-2)
         if len(snippet)>space:cut=snippet.rfind(' ',0,space);snippet=snippet[:cut if cut>0 else space]+' …'
         lines.append(label+snippet);room-=len(lines[-1])+1
@@ -1364,7 +1380,14 @@ def _process(harness,event,payload,root=None,info=None):
             detail['decision']='deny:subagent'
             result['deny']='Living Memory: subagents are read-only. Return the proposed note to the main agent instead of running '+subcommand+'.'
             return result
-        if subcommand in ALLOWED_SUBCOMMANDS and not learn_settings:
+        # A remote source sync reaches the network (the only command that does): the user approves it, it is never auto-allowed.
+        networked=subcommand=='source-sync' and remote_sync(text,grammar,root)
+        if networked:detail['network']=True
+        if networked and _subagent(payload):
+            detail['decision']='deny:subagent'
+            result['deny']='Living Memory: syncing a remote source reaches the network and is not run by subagents; ask the main agent to run source-sync.'
+            return result
+        if subcommand in ALLOWED_SUBCOMMANDS and not learn_settings and not networked:
             # Another store, or an input file from outside the project, is the user's call: no auto-approval.
             if auto_allowed(text,grammar,root,cwd,payload.get('scratchpad_dir') or payload.get('scratchpadDir')):
                 result['allow']='Living Memory read/capture script command.'

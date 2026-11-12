@@ -177,6 +177,23 @@ class Index(Kb):
     def test_stale_notices_a_new_source_and_ignores_vendored_changes(self):
         self.sync();time.sleep(0.02);(self.repo/'node_modules'/'leftpad'/'index.js').write_text('changed');(self.repo/'generated'/'out.md').write_text('changed');self.assertFalse(sources.stale(self.root,'demo'))
         self.register();self.assertTrue(sources.stale(self.root,'demo'))
+    def test_a_sync_of_one_source_does_not_hide_the_changes_of_another(self):
+        self.register();self.sync();self.assertFalse(sources.stale(self.root,'demo'))
+        time.sleep(0.02);(self.repo/'docs'/'oncall.txt').write_text('The pager rotation is weekly.\n')
+        self.sync(name='wiki');self.assertTrue(sources.stale(self.root,'demo'))   # kb was not refreshed, whatever the domain-wide time says
+        self.sync();self.assertFalse(sources.stale(self.root,'demo'));self.assertEqual(sources.search(self.root,'demo','pager rotation weekly')[0]['path'],'docs/oncall.txt')
+    def test_a_gitignore_edited_in_place_drops_the_files_it_now_names(self):
+        self.sync();self.assertIn('src/billing/ledger.py',self.indexed());self.assertFalse(sources.stale(self.root,'demo'))
+        time.sleep(0.02);ignore=self.repo/'.gitignore';ignore.write_text(ignore.read_text()+'src/billing/ledger.py\n')   # no folder's time moves
+        self.assertTrue(sources.stale(self.root,'demo'));self.sync();self.assertNotIn('src/billing/ledger.py',self.indexed());self.assertFalse(sources.stale(self.root,'demo'))
+        time.sleep(0.02);ignore.write_text(ignore.read_text().replace('src/billing/ledger.py\n',''))
+        self.assertTrue(sources.stale(self.root,'demo'));self.sync();self.assertIn('src/billing/ledger.py',self.indexed())
+    def test_removing_the_last_source_makes_the_index_stale_and_the_sync_prunes_it(self):
+        self.register();self.sync();self.assertIn('Billing-FAQ.html',self.indexed())
+        code,plan=self.cli('source-plan','remove',stdin='{"name":"wiki"}');self.cli('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest'])
+        code,plan=self.cli('source-plan','implicit',stdin='{"enabled": false}');self.cli('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest'])
+        self.assertEqual(sources.resolve(self.root,'demo'),[]);self.assertTrue(sources.stale(self.root,'demo'))
+        self.sync();self.assertEqual(self.indexed(),set());self.assertEqual(sources.search(self.root,'demo','retry policy'),[]);self.assertFalse(sources.stale(self.root,'demo'))
     def test_include_and_exclude_globs(self):
         self.register(name='code',kind='folder',path=str(self.repo),include=['*.py'],exclude=['config/**'])
         code,plan=self.cli('source-plan','implicit',stdin='{"enabled": false}');self.cli('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest']);self.sync()
@@ -202,6 +219,18 @@ class Limits(Kb):
         self.sync()
         with contextlib.closing(self.db()) as db:paths={p for (p,) in db.execute("SELECT path FROM file WHERE source='everything'")}
         self.assertIn('project/kb/README.md',paths);self.assertFalse([p for p in paths if p.startswith('store/')])
+    def test_a_source_that_is_or_lies_in_the_store_is_refused_and_never_indexed(self):
+        self.note('Cache note','store-marker-gecko')
+        for path in (self.root,self.root/'domains'):
+            with self.subTest(path=path):
+                code,error=self.cli('source-plan','add',stdin=json.dumps({'name':'mem','kind':'folder','path':str(path)}));self.assertEqual(code,2,error);self.assertIn('memory store',str(error))
+        from core.repository import canonical_json   # registered before the check existed
+        entries=[{'name':n,'domain':'demo','kind':'folder','path':p.as_posix(),'include':[],'exclude':[]} for n,p in (('mem',self.root),('inner',self.root/'domains'))]
+        (self.root/'sources.json').write_bytes(canonical_json({'version':1,'sources':entries}).encode())
+        self.assertEqual([s['name'] for s in sources.resolve(self.root,'demo')],['kb']);self.sync()
+        with contextlib.closing(self.db()) as db:self.assertEqual({n for (n,) in db.execute('SELECT name FROM source')},{'kb'})
+        found=[{'name':'store','domain':'demo','kind':'folder','path':self.root.as_posix(),'include':[],'exclude':[],'implicit':True}]
+        with patch.object(sources,'implicit_sources',return_value=found):self.assertEqual(sources.resolve(self.root,'demo'),[]) # a repo that is the store
     def test_benchmark_case_reports_the_numbers(self):
         import importlib.util
         found=importlib.util.spec_from_file_location('benchmark',Path(__file__).resolve().parents[1]/'scripts'/'benchmark.py');bench=importlib.util.module_from_spec(found);found.loader.exec_module(bench)
@@ -230,6 +259,8 @@ class Registry(Kb):
                                 (dict(ok,name='sk-abcdefghijklmnopqrstuvwxyz0123'),'credential')):
             with self.subTest(message=message):
                 code,error=self.cli('source-plan','add',stdin=json.dumps(payload));self.assertEqual(code,2,error);self.assertIn(message,str(error))
+        code,error=self.cli('source-plan','add',stdin=json.dumps(dict(ok,name='w')));self.assertEqual(code,2,error);self.assertIn('at least 2',str(error))   # `w:Page.md` is not a named path: a letter and a colon is a drive
+        self.assertEqual(self.cli('source-plan','add',stdin=json.dumps(dict(ok,name='wk')))[0],0)
         self.register();code,error=self.cli('source-plan','add',stdin=json.dumps(ok));self.assertEqual(code,2);self.assertIn('already exists',str(error))
         code,error=self.cli('source-plan','remove',stdin='{"name":"ghost"}');self.assertEqual(code,2);self.assertIn('Unknown source',str(error))
         code,error=self.cli('source-plan','add',stdin=json.dumps(dict(ok,name='other',include=['api_key = "abcd1234efgh5678"'])));self.assertEqual(code,2);self.assertIn('credential',str(error))

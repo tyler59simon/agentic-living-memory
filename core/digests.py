@@ -12,7 +12,7 @@ from pathlib import Path
 from .common import domain_prefixes,load_bindings
 from .repository import inventory,read_json,canonical_json,now
 
-NAMED=re.compile(r'([a-z0-9][a-z0-9._-]+):(.+)\Z')   # `wiki:Retry-Policy.md`; a single letter before the colon is a drive
+NAMED=re.compile(r'([a-z0-9][a-z0-9._-]+):(.+)\Z')   # `wiki:Retry-Policy.md`; a single letter before the colon is a drive, so source-plan add refuses registry names under 2 characters
 SHOWN=3
 REF_CANDIDATES=300   # code files whose references are counted, largest first
 MIN_MODULE=400
@@ -154,8 +154,8 @@ def classify(rel,source_kind='folder'):
     low=rel.casefold();name=low.rsplit('/',1)[-1];stem,ext=os.path.splitext(name)
     if ext in library.DOC_EXT or ext in library.HTML_EXT:
         if ADR.search(low):return 0,'adr'
-        if stem=='readme' or (stem in library.BARE_DOCS) or '/' not in rel:return 1,'readme' if stem=='readme' else 'doc'
-        return 2,'wiki' if ext in library.HTML_EXT or source_kind in ('html-export','git-wiki') else 'doc'
+        if stem=='readme' or (stem in library.BARE_DOCS) or ('/' not in rel and source_kind not in library.REMOTE):return 1,'readme' if stem=='readme' else 'doc'
+        return 2,'wiki' if ext in library.HTML_EXT or source_kind in ('html-export','git-wiki')+library.REMOTE else 'doc'
     if any(fnmatch.fnmatch(name,b.casefold()) for b in BUILD_NAMES):return 3,'build'
     if stem in ENTRY:return 3,'entry'
     if TESTISH.search(low):return 5,'test'

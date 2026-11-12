@@ -385,7 +385,8 @@ def capture(title,body,tags,domain,root=None,**metadata):
             # An unknown ref fails in _change_set below with the usual message.
             resolved.append(found[0]['id'] if found else ref_id)
         supersedes=resolved
-        if metadata.get('sources'):supersedes+=_redigested(existing,metadata['sources'],set(supersedes))
+        digesting=bool(metadata.get('sources'))
+        if digesting:supersedes+=_redigested(existing,metadata['sources'],set(supersedes))
         for note in existing:
             if key and note.get('capture_key')==key and not (key.startswith(DIGEST_KEY) and note.get('status','active')!='active'):
                 # A digest key names a file and its hash: the same file content is already digested, whatever the new wording.
@@ -393,12 +394,13 @@ def capture(title,body,tags,domain,root=None,**metadata):
                 if effective_type(note)!=selected_type:raise ValueError('Existing note has a different type; update that note instead')
                 return {'ok':True,'id':note['id'],'status':'existing','path':note['path']}
             if note['title'].casefold()==title.strip().casefold() and note['body'].strip()==body.strip():
+                # A digest is about a file at a hash: a note being replaced for that file (its hash moved on) or one already retired is no duplicate, and is never answered with.
+                if digesting and (note['id'] in supersedes or note.get('status','active')!='active'):continue
                 if effective_type(note)!=selected_type:raise ValueError('Existing note has a different type; update that note instead')
                 return {'ok':True,'id':note['id'],'status':'duplicate','path':note['path']}
         # A map is one per repo and a brief one per project folder, enforced by that folder (maps.capture_conflict below).
         # Every map is titled "<repo> codebase map", so comparing titles would refuse the second repo's map as a duplicate.
         # Likewise digests (notes with `sources`): each is about its own file, so similar titles are not duplicates.
-        digesting=bool(metadata.get('sources'))
         other_map=lambda n:(selected_type in KEYED_TYPES and effective_type(n)==selected_type) or (digesting and bool(n.get('sources')))
         if not allow_similar:
             replaced=set(supersedes)
