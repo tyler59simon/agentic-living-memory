@@ -117,7 +117,7 @@ def doctor(root,cwd,explicit=None,domain=None):
     index='unbound'
     counts={};warnings=[]
     if pending:warnings.append(f"{len(pending)} operation(s) did not finish: run recover ID to complete one, or recover ID --abandon when its files changed since ({', '.join(pending[:5])})")
-    if damaged:warnings.append(f"{len(damaged)} operation journal(s) cannot be read and are ignored ({', '.join(damaged[:5])}); history and undo skip them")
+    if damaged:warnings.append(f"{len(damaged)} operation journal(s) cannot be read and are ignored ({', '.join(damaged[:5])}); history skips them and undo refuses them")
     from . import wiring as hook_wiring
     wired=hook_wiring.wiring()
     for harness,row in wired.items():

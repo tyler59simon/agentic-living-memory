@@ -642,6 +642,40 @@ def prune_journals(root, days=14, kinds=BOOKKEEPING_KINDS):
     return removed
 
 
+def prune_plans(root, applied_days=1, unapplied_days=30):
+    """Delete plan files: applied ones (committed journal) older than `applied_days`, never-applied ones older
+    than `unapplied_days`. A plan whose journal is in any other state, or unreadable, stays. Returns the count removed."""
+    from datetime import timedelta
+    now_utc = datetime.now(timezone.utc)
+    removed = 0
+    with store_lock(Path(root).resolve()):
+        for plan_path in sorted(Path(root).glob(".plans/*.json")):
+            if not re.fullmatch("[a-f0-9]{32}", plan_path.stem):
+                continue
+            try:
+                value = read_json(plan_path, None)
+                created = datetime.fromisoformat(str(value.get("created")))
+            except (ValueError, AttributeError):
+                continue
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            folder = Path(root) / ".operations" / plan_path.stem
+            if folder.exists():
+                try:
+                    journal = read_json(folder / "journal.json", None)
+                except ValueError:
+                    continue
+                if not isinstance(journal, dict) or journal.get("state") != "committed" or (folder / PENDING).exists():
+                    continue
+                cutoff = now_utc - timedelta(days=applied_days)
+            else:
+                cutoff = now_utc - timedelta(days=unapplied_days)
+            if created < cutoff:
+                plan_path.unlink(missing_ok=True)
+                removed += 1
+    return removed
+
+
 def roll_forward_pending(root):
     """Finish operations a crashed or interrupted process left half-applied.
 

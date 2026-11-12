@@ -684,5 +684,52 @@ class Cli5DefaultConcern(Cli):
         self.assertIn('concern/architecture', message)
 
 
+class Ops1HistoryAndPlans(Cli):
+    """OPS-1: history survives a corrupt journal, undo refuses one, and old plan files are pruned."""
+
+    def corrupt(self):
+        self.ok('capture', '--type', 'knowledge', '--concern', 'architecture', '--title', 'First fact', '--summary', 'One.')
+        self.ok('capture', '--type', 'knowledge', '--concern', 'architecture', '--title', 'Second fact', '--summary', 'Two.', '--allow-similar')
+        folder = self.root / '.operations' / 'badjournal1'
+        folder.mkdir(parents=True)
+        (folder / 'journal.json').write_text('{not json')
+        return 'badjournal1'
+
+    def test_history_skips_corrupt_journal_and_doctor_names_it(self):
+        bad = self.corrupt()
+        rows = self.ok('history')
+        self.assertIsInstance(rows, list)  # the Hivemind app reads history as a list
+        self.assertGreaterEqual(len(rows), 2)
+        self.assertNotIn(bad, [r['operation_id'] for r in rows])
+        code, doctor, _ = self.run_cli('doctor')
+        self.assertTrue(any(bad in w and 'history skips them' in w for w in doctor['warnings']), doctor['warnings'])
+
+    def test_undo_corrupt_journal_raises(self):
+        bad = self.corrupt()
+        with self.assertRaisesRegex(ValueError, f'corrupt_journal {bad}: this operation cannot be undone; see RECOVERY.md'):
+            undo(self.root, bad)
+        with self.assertRaisesRegex(ValueError, 'Operation unavailable'):
+            undo(self.root, 'nosuchop')
+
+    def test_prune_plans(self):
+        from datetime import datetime, timedelta, timezone
+        plans = self.root / '.plans'
+        plans.mkdir(exist_ok=True)
+        def make(name, days, state=None):
+            plan_id = name * 32
+            when = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+            (plans / (plan_id + '.json')).write_text(json.dumps({'id': plan_id, 'created': when}))
+            if state:
+                folder = self.root / '.operations' / plan_id
+                folder.mkdir(parents=True)
+                (folder / 'journal.json').write_text(json.dumps({'id': plan_id, 'state': state, 'created': when, 'kind': 'x', 'effects': []}))
+            return plans / (plan_id + '.json')
+        old_done, old_unapplied = make('a', 5, 'committed'), make('b', 40)
+        new_done, new_unapplied, old_pending = make('c', 0, 'committed'), make('d', 5), make('e', 40, 'pending')
+        self.assertEqual(repository.prune_plans(self.root), 2)
+        self.assertFalse(old_done.exists() or old_unapplied.exists())
+        self.assertTrue(new_done.exists() and new_unapplied.exists() and old_pending.exists())
+
+
 if __name__ == '__main__':
     unittest.main()
