@@ -731,5 +731,91 @@ class Ops1HistoryAndPlans(Cli):
         self.assertTrue(new_done.exists() and new_unapplied.exists() and old_pending.exists())
 
 
+class Priv1RecallMasking(unittest.TestCase):
+    SECRET = 'zebra quartz meridian lantern'
+    def test_span_closing_past_the_cut_is_masked(self):
+        from core import recall
+        text = 'start ' + '<private>' + self.SECRET + ' ' + 'filler ' * 700 + '</private> tail'
+        clean = recall._clean(text)
+        self.assertIn('[private]', clean)
+        for word in ('zebra', 'quartz', 'meridian', 'lantern'):
+            self.assertNotIn(word, clean)
+    def test_records_mask_long_span(self):
+        from core import recall
+        import tempfile
+        text = 'plan <private>' + self.SECRET + ' ' + 'filler ' * 700 + '</private> done'
+        entry = {'type': 'user', 'message': {'content': text}}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 't.jsonl'
+            path.write_text(json.dumps(entry) + '\n', encoding='utf-8')
+            rows, _ = recall.records(path)
+        self.assertNotIn('zebra', rows[0]['text'])
+        self.assertIn('[private]', rows[0]['text'])
+    def test_unclosed_span_is_masked(self):
+        from core import recall
+        clean = recall._clean('before <private>' + self.SECRET + ' never closed')
+        self.assertEqual(clean, 'before [private]')
+        self.assertNotIn('zebra', recall._safe('x <private>zebra'))
+
+
+class Priv1UnclosedTag(unittest.TestCase):
+    PLAN = 'the acquisition of northwind closes on march third pending board approval'
+    def test_unclosed_tag_is_remembered_and_refused(self):
+        from core import private
+        state = {}
+        self.assertTrue(private.remember(state, 'use <private>' + self.PLAN))
+        with self.assertRaisesRegex(ValueError, 'private_content'):
+            private.check(state, {'title': 'Note: The acquisition of Northwind closes on March third'})
+    def test_empty_unclosed_tag_is_nothing(self):
+        from core import private
+        state = {}
+        self.assertFalse(private.remember(state, 'hello <private>'))
+        self.assertFalse(private.remember(state, 'hello <private>   '))
+        self.assertEqual(state, {})
+    def test_only_the_last_span_unclosed(self):
+        from core import private
+        found = private.spans('a <private>one two</private> b <private>three four</private> c <private>five six')
+        self.assertEqual([x.strip() for x in found], ['one two', 'three four', 'five six'])
+
+
+class Priv1ShingleCap(unittest.TestCase):
+    def words(self, prefix, n):
+        return ' '.join(f'{prefix}{i}' for i in range(n))
+    def test_long_later_spans_do_not_evict_earlier_protection(self):
+        from core import private
+        state = {}
+        first = self.words('alpha', 40)
+        private.remember(state, f'<private>{first}</private>')
+        for k in range(4):
+            private.remember(state, f'<private>{self.words("later" + str(k) + "x", 200)}</private>')
+        spans = state['private']['spans']
+        total = sum(map(len, spans))
+        self.assertLessEqual(total, max(private.MAX_SHINGLES, private.MIN_PER_SPAN * len(spans)))
+        self.assertGreaterEqual(len(spans[0]), private.MIN_PER_SPAN)
+        with self.assertRaisesRegex(ValueError, 'private_content'):
+            private.check(state, {'title': first})
+    def test_dedupes_within_a_span(self):
+        from core import private
+        state = {}
+        private.remember(state, '<private>' + 'ping pong ' * 30 + '</private>')
+        spans = state['private']['spans']
+        self.assertEqual(len(spans[0]), len({tuple(x) for x in spans[0]}))
+        self.assertLessEqual(len(spans[0]), 2)
+    def test_legacy_flat_state_still_blocks_and_upgrades(self):
+        from core import private
+        salt = '00' * 16
+        words = ['red', 'fox', 'jumps']
+        state = {'private': {'salt': salt, 'shingles': [[3, private._hash(salt, words)]]}}
+        with self.assertRaisesRegex(ValueError, 'private_content'):
+            private.check(state, {'title': 'the red fox jumps high'})
+        self.assertTrue(private.remember(state, '<private>blue harbor</private>'))
+        self.assertNotIn('shingles', state['private'])
+        self.assertEqual(len(state['private']['spans']), 2)
+        with self.assertRaisesRegex(ValueError, 'private_content'):
+            private.check(state, {'title': 'red fox jumps'})
+        with self.assertRaisesRegex(ValueError, 'private_content'):
+            private.check(state, {'title': 'Blue Harbor'})
+
+
 if __name__ == '__main__':
     unittest.main()

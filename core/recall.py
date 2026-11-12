@@ -13,14 +13,14 @@ TEXT_MAX=4000     # indexed characters per record: a huge tool output is mostly 
 TOOL_INPUT_MAX=600
 # Harness-injected wrappers inside user turns; they are context, not what anyone said.
 NOISE=re.compile(r'<(system-reminder|command-name|command-message|command-args|local-command-stdout|local-command-stderr|environment_context|user_instructions|turn_aborted|task-notification)\b.*?(?:</\1>|\Z)',re.S|re.I)
-PRIVATE=re.compile(r'<private>.*?</private>',re.S|re.I)
+PRIVATE=re.compile(r'<private>.*?(?:</private>|\Z)',re.S|re.I)   # an unclosed tag runs to the end
 INPUT_KEYS=('command','cmd','file_path','path','pattern','query','url','description','prompt','code')
 USER_WEIGHT=1.25  # the user's own words say what mattered
 AUTO_HITS=2
 AUTO_COVERAGE=0.6
 
 def _clean(text):
-    return ' '.join(NOISE.sub(' ',str(text))[:TEXT_MAX*2].split())[:TEXT_MAX]
+    return ' '.join(PRIVATE.sub('[private]',NOISE.sub(' ',str(text)))[:TEXT_MAX*2].split())[:TEXT_MAX]
 
 def _safe(text):
     """Text fit to show: <private> spans masked, credentials redacted. Only returned hits pay for this."""
