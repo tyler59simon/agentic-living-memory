@@ -51,11 +51,11 @@ class Ingest(StoreFixture):
         apply(self.root, result['plan_id'], result['digest'])
         notes = {n['title']: n for n in inventory('demo', self.root)}
         terse = notes['Prefers terse replies']
-        self.assertIn('## 📌 Executive Summary\nThe user wants short answers.', terse['body'])
-        self.assertIn('* **Why:** they read on a phone.', terse['body'])
+        self.assertTrue(terse['body'].startswith('The user wants short answers.\n\n## Details'))
+        self.assertIn('- **Why:** they read on a phone.', terse['body'])
         self.assertEqual(terse['tags'], ['concern/preference', 'subject/user'])
         slow = notes['Staging box is slow']
-        self.assertIn('* **Workaround**', slow['body'])
+        self.assertIn('- **Workaround**', slow['body'])
         self.assertIn('[[deploy-notes]]', slow['body'])
         self.assertEqual(slow['tags'], ['concern/knowledge', 'subject/project'])
         self.assertTrue(terse['capture_key'].startswith('auto-memory:'))

@@ -38,18 +38,18 @@ class Currency(StoreFixture):
         b = self.note('Pointer', f'See [cache]({quote(Path(a["path"]).name)}).')
         result = self.run_cli('update', a['id'], '--title', 'Cache layer', '--body', 'The cache is disposable.', '--concern', 'decision', '--subject', 'project')
         path, note = find_note(a['id'], 'demo', self.root)
-        self.assertEqual((note['title'], note['body'], note['tags']), ('Cache layer', '## 📌 Executive Summary\nThe cache is disposable.', sorted(TAGS)))
+        self.assertEqual((note['title'], note['body'], note['tags']), ('Cache layer', 'The cache is disposable.', sorted(TAGS)))
         self.assertIn('cache-layer', path.name)
         self.assertIn(quote(path.name), find_note(b['id'], 'demo', self.root)[1]['body'])
         reverse = undo(self.root, result['operation_id'])
         apply(self.root, reverse['plan_id'], reverse['digest'])
         note = find_note(a['id'], 'demo', self.root)[1]
-        self.assertEqual((note['title'], note['body']), ('Cache', '## 📌 Executive Summary\nThe local cache is rebuildable.'))
+        self.assertEqual((note['title'], note['body']), ('Cache', 'The local cache is rebuildable.'))
 
     def test_update_from_json_stdin(self):
         a = self.note()
         self.run_cli('update', 'demo:' + a['id'], stdin=json.dumps({'body': 'Line one -> two | $three'}))
-        self.assertEqual(find_note(a['id'], 'demo', self.root)[1]['body'], '## 📌 Executive Summary\nLine one -> two | $three')
+        self.assertEqual(find_note(a['id'], 'demo', self.root)[1]['body'], 'Line one -> two | $three')
 
     def test_update_rejects_unknown_fields_and_stale_revisions(self):
         a = self.note()

@@ -17,8 +17,8 @@ Living Memory has thirteen note types. Each note has one primary type, selected 
 | **PLAN** | Intended future steps toward a goal, including dependencies and how success will be checked. | Make agreed or proposed work resumable: “Copy and verify the store, rebuild indexes, then switch the shared pointer.” State whether the plan is proposed or approved; the type alone does not grant approval. |
 | **RISK** | A possible future problem, its consequences and potential mitigation. | Preserve an uncertainty before it becomes an incident: “An older harness could keep writing to the retired store; upgrade clients before migration.” Describe the trigger, impact and mitigation, and the owner if known. |
 | **RESEARCH** | Investigations, sources, experiments, competing explanations and open questions. | Preserve evidence and uncertainty: “Compare shared configuration files and environment variables for root discovery.” Cite the sources or experiments, separate observations from inference, and state unresolved questions. |
-| **MAP** | One repo's codebase orientation: purpose, layout, entry points, key modules, data flow, build/test/run, conventions. | Spare the next session a re-exploration: “runtime/ holds the CLI; skills/ is generated from it by build.py.” One per repo, keyed by `--file REPO`; Key Details bullets labelled **Purpose**, **Layout**, **Entry points**, **Key modules**, **Data flow**, **Build/test/run** and **Conventions**, plus links to the repo's gotcha and decision notes; at most about 3,000 characters. Synthesize, don't copy code. Reviewed every 90 days. |
-| **BRIEF** | The living project brief: what the project is, who owns what, where it stands and what was decided. | Give a new session or a new owner the project in one read: “Phase 2 of 3, blocked on the CFO sign-off; Priya owns billing, Marcus took over ledger on Nov 3; money is BigDecimal (docs/adr/ADR-004).” One per project folder, keyed by `--file DIR` (the folder relative to the bound folder, `.` for the bound folder itself); Key Details bullets labelled **Goals and scope**, **Stakeholders and decision-makers**, **Team and ownership**, **Current phase, status and blockers**, **Key decisions** (one line each, pointing to the ADR, ticket, doc path or note that records it), **Active risks** and **Glossary**; about 2,500 characters. Update it in place; don't append history. Reviewed every 30 days. |
+| **MAP** | One repo's codebase orientation: purpose, layout, entry points, key modules, data flow, build/test/run, conventions. | Spare the next session a re-exploration: “runtime/ holds the CLI; skills/ is generated from it by build.py.” One per repo, keyed by `--file REPO`; Details bullets labelled **Purpose**, **Layout**, **Entry points**, **Key modules**, **Data flow**, **Build/test/run** and **Conventions**, plus links to the repo's gotcha and decision notes; at most about 3,000 characters. Synthesize, don't copy code. Reviewed every 90 days. |
+| **BRIEF** | The living project brief: what the project is, who owns what, where it stands and what was decided. | Give a new session or a new owner the project in one read: “Phase 2 of 3, blocked on the CFO sign-off; Priya owns billing, Marcus took over ledger on Nov 3; money is BigDecimal (docs/adr/ADR-004).” One per project folder, keyed by `--file DIR` (the folder relative to the bound folder, `.` for the bound folder itself); Details bullets labelled **Goals and scope**, **Stakeholders and decision-makers**, **Team and ownership**, **Current phase, status and blockers**, **Key decisions** (one line each, pointing to the ADR, ticket, doc path or note that records it), **Active risks** and **Glossary**; about 2,500 characters. Update it in place; don't append history. Reviewed every 30 days. |
 | **RUNBOOK** | An operational procedure for a system: when to use it, preconditions, steps, verification and rollback. | Let the next person (or agent) carry out a known operation safely: “Restart the billing worker: drain the queue, restart, confirm the lag metric recovers.” Tag it with the system (`--system SLUG`). Number the steps, say how to check each worked and how to back out. Reviewed every 90 days. |
 | **POLICY** | A mandatory rule or constraint, its authority and where it applies. | Preserve a requirement: “Existing-note mutations require an approved plan digest.” Record the authoritative source and scope. A retrieved policy note remains historical evidence; verify that the rule is current and applicable. |
 
@@ -40,7 +40,7 @@ Choose the note's primary purpose rather than assigning several types to one not
 
 ## Note layout
 
-Every note file, and its Obsidian copy byte for byte, has the same layout (`core/note_format.py`):
+Every note file, and its Obsidian copy byte for byte, has the same layout (`core/note_format.py`). How to write the text in it is in [WRITING.md](WRITING.md).
 
 ```markdown
 ---
@@ -58,35 +58,40 @@ capture_key: null
 sha256: "…"
 ---
 
-# 🎯 Webcam fails with 0xA00F4244
+# Webcam fails with 0xA00F4244
 
-## 📌 Executive Summary
-One or two sentences: the fact, decision or problem.
+The built-in camera fails with 0xA00F4244 in every app since the 24H2 update.
 
----
+> **Important:** Turning camera access on through Group Policy overrides the user setting at every boot.
 
-## 📝 Key Details
-* **Cause:** Bold the key word, keep sentences short.
+## Cause
+The update turned off camera access for desktop apps.
 
-## 🗂️ Resource Links
-* [[Another note]] or https://…
+## Fix
+Settings > Privacy & security > Camera: turn on "Let desktop apps access your camera".
 
-## 🟩 Action Items
+## How to check
+The Camera app shows a picture.
+
+## Links
+- [[Windows 24H2 upgrade]] or https://…
+
+## Action items
 - [ ] An open step
 - [x] A finished step
-
-> ℹ️ **Important Note:**
-> A critical caveat or warning.
 ```
 
 - The frontmatter lists `title, type, status, tags, context` first and bookkeeping after them. Optional bookkeeping appears only when set: `files` (after `context`), and after `updated`: `review_by`, `confirmed` (the dates `confirm` recorded, at most 8, newest last), `supersedes`, `superseded_by`, then `origin` after `capture_key`, then `repo` on maps and briefs: the git identity of the folder `files[0]` names (its `origin` remote normalized to `host/owner/repo`, or `file:` plus the resolved local path), set by capture and update and not editable. Clones and worktrees of one origin share one map and one brief; a map or brief matches by identity first, then by folder. A note whose folder has no origin carries no `repo`.
-- The `# 🎯` heading always comes from the `title` property. It is not stored in the body, so to rename a note, change `title`.
-- The Executive Summary is required. Every other section is optional, and empty sections are dropped.
-- **Action Items are only for `plan`, `bug` and `risk` notes.** Capturing them on another type, or changing a note to another type while they exist, is refused. Lasting facts go in Key Details.
-- A plain-text body, from an older note or a quick capture, becomes the Executive Summary the next time the note is written.
+- The `# ` heading always comes from the `title` property. It is not stored in the body, so to rename a note, change `title`.
+- The summary is the text before the first heading, and it is required. Every other section is optional, and empty sections are dropped.
+- An `> **Important:**` caveat always sits right after the summary.
+- The type's own sections come next, in the order of the table in [WRITING.md](WRITING.md#sections-by-type): Why and Alternatives considered for a decision; Cause, Fix and How to check for a bug; When to use, When not to use, Steps, Check and Roll back for a runbook; Findings, Sources and Open questions for research. A knowledge note uses sections named after what they explain. Other types use `## Details`, and maps and briefs keep its fixed bold labels.
+- `## Details`, `## Links` and `## Action items` come last, in that order.
+- **Action items are only for `plan`, `bug` and `risk` notes.** Capturing them on another type, or changing a note to another type while they exist, is refused. Lasting facts go in the body.
 - Text inside a section is kept as written, and `##` sections of your own are kept in place.
-- Build the body from flags (`--summary`, `--detail`, `--link`, `--action`, `--done`, `--important`) on `capture` or `update`. Each flag replaces only its own section; on `update`, `--add-detail`, `--add-link` and `--add-action` append to a section and `--set-detail` replaces one labelled bullet, so the rest need not be restated. You can also pass formatted Markdown with `--content-file` / `--body-file`.
+- Build the body from flags on `capture` or `update`: `--summary`, `--section HEADING TEXT`, `--detail`, `--link`, `--action`, `--done` and `--important`. Each flag replaces only its own section. On `update`, `--drop-section HEADING` removes a section, `--add-detail`, `--add-link` and `--add-action` append to one, and `--set-detail` replaces one labelled bullet, so the rest need not be restated. You can also pass formatted Markdown with `--content-file` / `--body-file`.
 - Search and session-start snippets show the text without headings or list markup.
+- Notes written before this layout used `# 🎯 Title`, `## 📌 Executive Summary`, a `---` rule, `## 📝 Key Details`, `## 🗂️ Resource Links`, `## 🟩 Action Items` and a closing `> ℹ️ **Important Note:**` callout. They still read correctly, and a note takes the current layout the next time it is written. `rewrite-plan` rewrites several notes at once through a reviewed plan (see [WRITING.md](WRITING.md#rewriting-a-note)).
 
 ## Type, lifecycle status and tags
 

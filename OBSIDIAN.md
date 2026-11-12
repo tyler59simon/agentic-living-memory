@@ -19,10 +19,10 @@ Each Sync Status page starts with the time of the last sync that changed somethi
 
 ## Editing in the vault
 
-Vault copies use the same layout as canonical notes, described in [NOTE_TYPES.md](NOTE_TYPES.md#note-layout): properties, a `# 🎯 Title` heading, then the Executive Summary, Key Details, Resource Links, Action Items and Important Note sections.
+Vault copies use the same layout as canonical notes, described in [NOTE_TYPES.md](NOTE_TYPES.md#note-layout): properties, a `# Title` heading, then the summary, an Important caveat, the type's own sections, Details, Links and Action items.
 - The heading follows the `title` property, so editing the heading has no effect.
 - Templates follow the same layout. Sections you leave unfilled are dropped when the note is captured.
-- A section edit that breaks the layout rules is listed under "Couldn't save". Examples: removing the Executive Summary, or adding Action Items to a knowledge note.
+- A section edit that breaks the layout rules is listed under "Couldn't save". Examples: removing the summary, or adding action items to a knowledge note.
 
 The vault is your own editing surface, so routine edits need no approval:
 

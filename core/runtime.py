@@ -1710,7 +1710,7 @@ def stop_pending(root,bindings,state,session,turns,domain=None,cwd=None,planning
 def _norm_path(path):return re.sub(r'^(?:\./)+','',str(path).strip().replace('\\','/')).casefold()
 
 def note_covers(note,path):
-    """Whether a note is about a document: it lists the path in files or sources, or names it in its Resource Links."""
+    """Whether a note is about a document: it lists the path in files or sources, or names it in its Links."""
     from .note_format import sections
     want=_norm_path(path)
     listed=[_norm_path(f) for f in list(note.get('files') or [])+[s.get('path','') for s in note.get('sources') or [] if isinstance(s,dict)]]

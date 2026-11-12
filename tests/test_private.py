@@ -26,7 +26,7 @@ class Private(StoreFixture):
         self.prompt(f'<private>{SECRET_PLAN}</private> plan the comms')
         code,result=self.cli('capture','--session','s1','--concern','decision','--title','Comms plan','--summary','Announce after the deal.',
                              '--detail',f'**Timing:** The Acquisition of Northwind closes on March third, pending board approval.')
-        self.assertEqual(code,5,result);self.assertIn('private_content conflict: 📝 Key Details',result['error']['message'])
+        self.assertEqual(code,5,result);self.assertIn('private_content conflict: Details',result['error']['message'])
         code,result=self.cli('capture','--session','s1','--concern','decision','--title','Comms plan','--summary','Announce after the deal closes.')
         self.assertEqual(code,0,result)
     def test_update_is_checked_too(self):

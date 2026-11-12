@@ -208,7 +208,7 @@ class Learning(LearningFixture):
         self.assertEqual(candidate['content']['steps'],['Inspect and rebuild index'])
         self.assertNotIn('Use when',candidate['content']['body'])
         self.publish(candidate)
-        self.assertEqual(find_note(n['id'],'demo',self.root)[1]['body'].count('**Use when:**'),1)
+        self.assertEqual(find_note(n['id'],'demo',self.root)[1]['body'].count('## When to use'),1)
 
     def test_file_hints_and_session_inventory_exclude_suspended(self):
         from core.search import file_notes

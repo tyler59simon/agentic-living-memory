@@ -223,7 +223,7 @@ class SupersedeKeepsPointers(DocFixture):
         from core.notes import find_note
         from core.note_format import sections
         note=find_note(new['id'],'demo',self.root)[1]
-        self.assertEqual(sections(note['body'])['links'].split('\n'),['* docs/adr/ADR-002.md','* docs/adr/ADR-003.md','* docs/adr/ADR-001.md'])   # the new note's own first, no duplicates
+        self.assertEqual(sections(note['body'])['links'].split('\n'),['- docs/adr/ADR-002.md','- docs/adr/ADR-003.md','- docs/adr/ADR-001.md'])   # the new note's own first, no duplicates
         self.assertEqual(note['files'],['src/ledger.py','src/money.py'])
 
     def test_drop_links_keeps_only_the_new_notes_own(self):
@@ -248,7 +248,7 @@ class SupersedeKeepsPointers(DocFixture):
         from core.notes import find_note
         from core.note_format import sections
         note=find_note(new['id'],'demo',self.root)[1]
-        self.assertEqual(sections(note['body'])['links'].split('\n'),['* docs/adr/ADR-002.md','* docs/adr/ADR-003.md','* docs/adr/ADR-001.md'])
+        self.assertEqual(sections(note['body'])['links'].split('\n'),['- docs/adr/ADR-002.md','- docs/adr/ADR-003.md','- docs/adr/ADR-001.md'])
         self.assertEqual(note['files'],['src/ledger.py','src/money.py']);self.assertEqual(note['supersedes'],[old['id']])
         self.assertEqual(find_note(old['id'],'demo',self.root)[1]['status'],'superseded')
 
@@ -286,7 +286,7 @@ class SupersedeKeepsPointers(DocFixture):
         old=self.capture('--title','Money uses cents','--summary','Cents.','--link','[Prior](../archive/prior.md)','--link','[[Other note]]','--link','https://example.com/a.md')
         new=self.capture('--title','Money uses BigDecimal','--summary','BigDecimal.')
         self.supersede(old,new);links=sections(find_note(new['id'],'demo',self.root)[1]['body'])['links']
-        self.assertEqual(links.split('\n'),['* [Prior](../archive/prior.md)','* [[Other note]]','* https://example.com/a.md'])
+        self.assertEqual(links.split('\n'),['- [Prior](../archive/prior.md)','- [[Other note]]','- https://example.com/a.md'])
 
     def test_a_capture_superseding_an_archived_note_rebases_its_relative_links_too(self):
         from core.notes import find_note
@@ -299,7 +299,7 @@ class SupersedeKeepsPointers(DocFixture):
         self.assertEqual(find_note(old['id'],'demo',self.root)[1]['status'],'resolved');self.assertIn('../notes/spec.md',find_note(old['id'],'demo',self.root)[1]['body'])   # relative to archive/ now
         new=self.capture('--title','Money uses BigDecimal','--summary','BigDecimal.','--supersedes','demo:'+old['id'])
         links=sections(find_note(new['id'],'demo',self.root)[1]['body'])['links'].split('\n')
-        self.assertEqual(links,['* [Spec](spec.md)','* [Notes](docs/notes.md)'])
+        self.assertEqual(links,['- [Spec](spec.md)','- [Notes](docs/notes.md)'])
 
 
 class Statements(DocFixture):

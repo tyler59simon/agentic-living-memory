@@ -88,11 +88,11 @@ class SectionUpdates(StoreFixture):
         real = cli_module._sectioned
         other = threading.Thread(target=cli, args=(['--root', str(self.root), '--domain', 'demo', 'update', n['id'],
                                                     '--detail', '**Second:** from the other writer'],))
-        def racing(args, base):
+        def racing(args, base, *rest):
             if not other.ident:
                 # Another writer arrives after this update read the note and before it writes.
                 other.start();other.join(0.5)
-            return real(args, base)
+            return real(args, base, *rest)
         with patch.object(cli_module, '_sectioned', racing), contextlib.redirect_stdout(io.StringIO()):
             cli(['--root', str(self.root), '--domain', 'demo', 'update', n['id'], '--summary', 'The cache is disposable.'])
             other.join()

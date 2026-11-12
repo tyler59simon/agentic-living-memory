@@ -262,7 +262,7 @@ LINK=re.compile(r'\[\[([^\]|#]+)')
 def repo_notes(hit,repo,root,bindings,shown,budget=REPO_NOTES_BUDGET,files=True,exclude=()):
     """(lines, refs): one-line summaries of the active decision, bug, runbook and policy notes in the map's (or brief's)
     domain about this repo, newest first within budget characters. A note belongs when its `files` fall inside the repo
-    (files=False skips that test) or when hit links to it by [[Title]] in its Resource Links. Notes already shown this
+    (files=False skips that test) or when hit links to it by [[Title]] in its Links. Notes already shown this
     session (shown maps ref -> revision key) and refs in exclude are left out. '' and [] when none."""
     from .notes import short_ref,unconfirmed
     from .note_format import sections

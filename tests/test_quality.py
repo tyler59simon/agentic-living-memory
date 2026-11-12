@@ -51,6 +51,17 @@ class Quality(StoreFixture):
         n = self.note('Startup is slow', 'The license check blocks on DNS; a timeout fixes it.', type='bug')
         self.assertNotIn('quality_warnings', n)
 
+    def test_section_forms_of_hypothesis_and_fix(self):
+        from core.notes import is_interim
+        said = 'interim hypothesis'
+        stated = 'Startup is slow.\n\n## Cause\nHypothesis: the license check, probably.'
+        self.assertFalse(any(said in w for w in quality_warnings({'type': 'bug', 'title': 'Slow start', 'body': stated})))
+        self.assertTrue(is_interim({'type': 'bug', 'title': 'Slow start', 'body': stated}))
+        settled = 'Root cause unconfirmed at first.\n\n## Fix\nA timeout on the license check.'
+        self.assertFalse(is_interim({'type': 'bug', 'title': 'Slow start', 'body': settled}))
+        hedged = 'Root cause unconfirmed.\n\n## Fix\nProbably a timeout.'
+        self.assertTrue(is_interim({'type': 'bug', 'title': 'Slow start', 'body': hedged}))
+
     def test_update_reports_warnings_too(self):
         n = self.note()
         self.assertIn('quality_warnings', change(n['id'], 'demo', 'update', self.root, body='Awaiting the rebuild.'))

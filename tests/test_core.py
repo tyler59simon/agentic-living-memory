@@ -81,7 +81,7 @@ class StoreCase(StoreFixture):
         from core.governance import apply,undo
         n=self.note();p=change(n['id'],'demo','update',self.root,plan_only=True,body='New body')
         with self.assertRaises(ValueError):apply(self.root,p['plan_id'],'bad')
-        receipt=apply(self.root,p['plan_id'],p['digest']);self.assertEqual(find_note(n['id'],'demo',self.root)[1]['body'],'## 📌 Executive Summary\nNew body')
+        receipt=apply(self.root,p['plan_id'],p['digest']);self.assertEqual(find_note(n['id'],'demo',self.root)[1]['body'],'New body')
         p=undo(self.root,receipt['operation_id']);apply(self.root,p['plan_id'],p['digest'])
         self.assertIn('rebuildable',find_note(n['id'],'demo',self.root)[1]['body'])
 

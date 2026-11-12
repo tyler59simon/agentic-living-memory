@@ -6,7 +6,7 @@ from pathlib import Path
 from .common import memory_root,safe_domain,canonical_domain
 from .repository import inventory,parse,serialize,validate,read_json,transaction,reconcile,store_lock,now,digest,clean_files,clean_commands,clean_sources
 from .note_types import prefix_for,normalize,effective_type,default_review_by,KEYED_TYPES
-from .note_format import format_body,without_actions,ACTION_TYPES
+from .note_format import format_body,without_actions,summary_text,ACTION_TYPES
 
 # Fields an agent may change directly (journaled and undoable, no plan) with `update`.
 UPDATABLE=('title','body','tags','type','context','review_by','files','commands','sources')
@@ -189,11 +189,11 @@ _WEAK=r'probably|suspect(?:ed)?|likely cause|hypothes[ie]s'
 STRONG=re.compile(r'(?i)\b(?:'+_STRONG+r')\b')
 WEAK=re.compile(r'(?i)\b(?:'+_WEAK+r')\b')
 INTERIM=re.compile(r'(?i)\b(?:'+_STRONG+'|'+_WEAK+r'|not reproduced)\b')   # both: the capture-time advisory, and a resolution that is itself hedged
-SUMMARY=re.compile(r'(?im)^##[^\n]*Executive Summary[^\n]*\n(.*?)(?=\n---|\n## |\Z)',re.S)
 INTERIM_TYPES=('bug','knowledge','decision')
-HYPOTHESIS=re.compile(r'(?i)\*\*hypothesis')
-# A labelled cause, fix or outcome: when its text is not itself hedged, the note stopped being interim.
-RESOLUTION=re.compile(r'(?im)^\s*[-*+]?\s*\*\*(?:root cause|fix|resolution|outcome|confirmed):?\*\*:?[ \t]*(\S[^\n]*)')
+# A hypothesis said to be one: a **Hypothesis:** label, a line or bullet that starts "Hypothesis:", or a Hypothesis section.
+HYPOTHESIS=re.compile(r'(?im)\*\*hypothesis|^[ \t]*(?:[-*+][ \t]+)?hypothesis:|^##[ \t]+hypothesis\b')
+# A labelled cause, fix or outcome, or a section with that heading: when its text is not itself hedged, the note stopped being interim.
+RESOLUTION=re.compile(r'(?im)^(?:\s*[-*+]?\s*\*\*(?:root cause|fix|resolution|outcome|confirmed):?\*\*:?[ \t]*|##[ \t]+(?:root cause|fix|resolution|outcome)[ \t]*\n+[ \t]*)(\S[^\n]*)')
 
 def is_interim(note):
     """True for an active note that still states an unconfirmed belief: labelled **Hypothesis:**, or (bug, knowledge,
@@ -202,8 +202,8 @@ def is_interim(note):
     body=str(note.get('body') or '')
     if HYPOTHESIS.search(body):return True
     if note.get('type') not in INTERIM_TYPES:return False
-    title=str(note.get('title') or '');found=SUMMARY.search(body)
-    if not (STRONG.search(title+'\n'+body) or WEAK.search(title+'\n'+(found[1] if found else body[:400]))):return False
+    title=str(note.get('title') or '');summary=summary_text(body)
+    if not (STRONG.search(title+'\n'+body) or WEAK.search(title+'\n'+(summary or body[:400]))):return False
     return not any(not INTERIM.search(m[1]) for m in RESOLUTION.finditer(body))
 
 def unconfirmed(note):
@@ -231,10 +231,12 @@ def quality_warnings(note):
         if unfinished and note.get('type')=='plan':continue
         # A hypothesis already labelled as one (**Hypothesis:** ...) is what the check asks for.
         if message.startswith('this reads as an interim') and (note.get('type') not in INTERIM_TYPES or HYPOTHESIS.search(body)):continue
-        # Open steps belong in a bug or risk note's Action Items; elsewhere they are a passing state.
+        # Open steps belong in a bug or risk note's action items; elsewhere they are a passing state.
         text=title+'\n'+(without_actions(body) if unfinished and note.get('type') in ACTION_TYPES else body)
         if pattern.search(text):found.append(message)
-    return found
+    # Writing habits and type shape (WRITING.md); advisory like the checks above.
+    from .style import style_warnings
+    return found+style_warnings(note)
 
 # Below this many active notes, document frequencies say little; the overlap rule above is used instead.
 IDF_MIN_NOTES=8
@@ -389,7 +391,7 @@ def _redigested(existing,sources,skip):
             and (old:={s['path']:s['sha256'] for s in n['sources']})!=new and set(old)==set(new)]
 
 def _carry_pointers(body,files,old_notes,dest):
-    """(body, files, carried links, carried files) with the replaced notes' Resource Links bullets and files added after
+    """(body, files, carried links, carried files) with the replaced notes' Links bullets and files added after
     the new note's own (duplicates dropped), so a successor keeps pointing at the documents its predecessor did. Relative
     links are rebased from each replaced note's path to `dest`, the successor's (a file in its folder)."""
     from .note_format import sections,amend
@@ -518,7 +520,7 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
     """Files to write for one note action, with the revisions they must still have. `pending` holds the
     changes of earlier steps in the same transaction (rel path -> text, or None when removed); files are
     read through it, so steps build on each other instead of overwriting one another. A standalone supersede carries the replaced
-    note's Resource Links and files into its successor (unless values has drop_links); `carried`, when a dict, receives what moved."""
+    note's links and files into its successor (unless values has drop_links); `carried`, when a dict, receives what moved."""
     pending=pending or {}
     path,note=find_note(note_id,domain,root)
     if note.get('learning_procedure'):
@@ -677,8 +679,54 @@ def change(note_id,domain,action,root=None,expected_revision=None,plan_only=Fals
             if warnings:result['quality_warnings']=warnings
         return result
 
+REWRITE_MAX=50
+# Maps and briefs keep fixed labelled bullets (`--set-detail` targets them), so a prose rewrite leaves them alone.
+REWRITE_FIXED_TYPES=('map','brief')
+
+def rewrite_plan(items,domain=None,root=None):
+    """One reviewed plan that replaces the bodies of several notes, for a rewrite of their prose. Each item is
+    {"ref", "revision", "body"}; `revision` is the one the new body was written from, so a note changed since is
+    refused. Titles never change here: [[links]] and filenames depend on them. The rewrite keeps each note's
+    `updated` and `review_by`, because its facts did not change."""
+    root=Path(root or memory_root()).resolve()
+    if not isinstance(items,list) or not items:raise ValueError('rewrite-plan needs a JSON list of {"ref", "revision", "body"}')
+    if len(items)>REWRITE_MAX:raise ValueError(f'rewrite-plan takes at most {REWRITE_MAX} notes; split the batch')
+    with store_lock(root):
+        changes={};domains=set();rewritten=[];unchanged=[];seen=set()
+        for item in items:
+            if not isinstance(item,dict):raise ValueError('Each item is an object with ref, revision and body')
+            if 'title' in item:raise ValueError('rewrite-plan never changes titles: [[links]] and filenames depend on them')
+            if set(item)-{'ref','revision','body'} or not all(isinstance(item.get(k),str) and item[k].strip() for k in ('ref','revision','body')):
+                raise ValueError('Each item needs ref, revision and body as non-empty strings, and nothing else')
+            d,note_id=resolve_ref(item['ref'],domain,root)
+            ref=f'{d}:{note_id}'
+            if note_id in seen:raise ValueError(f'{ref} appears twice')
+            seen.add(note_id)
+            path,note=find_note(note_id,d,root)
+            if note.get('status','active')!='active':raise ValueError(f'{ref} is not active')
+            if note.get('type') in REWRITE_FIXED_TYPES:
+                raise ValueError(f"{ref} is a {note['type']} note; it keeps its labelled layout, so update it with --set-detail")
+            step,_,_=_change_set(note_id,d,'update',root,item['revision'],pending=changes,body=item['body'])
+            rel=path.relative_to(root).as_posix()
+            after=parse_changed(step[rel],note)
+            after['updated']=note.get('updated')
+            if note.get('review_by'):after['review_by']=note['review_by']
+            else:after.pop('review_by',None)
+            text=serialize(after)
+            if text==path.read_bytes().decode('utf-8'):unchanged.append(ref);continue
+            changes[rel]=text;domains.add(d)
+            entry={'ref':ref,'title':note['title'],'type':note['type']}
+            warnings=quality_warnings(after)
+            if warnings:entry['quality_warnings']=warnings
+            rewritten.append(entry)
+        if not changes:return {'ok':True,'notes':[],'unchanged':unchanged,'hint':'Nothing to rewrite: every body is already as given'}
+        from .governance import plan
+        result=plan(root,changes,'rewrite',sorted(domains),{'notes':len(rewritten),'titles_unchanged':True})
+        result.update(notes=rewritten,unchanged=unchanged)
+        return result
+
 def open_work(domains,root=None,tags=()):
-    """[(domain, note, [(1-based index, text) of unchecked Action Items])] for active plan, bug and risk
+    """[(domain, note, [(1-based index, text) of unchecked action items])] for active plan, bug and risk
     notes with open items, newest first. tags: only notes carrying all of them."""
     from .note_format import action_items
     found=[]
@@ -724,9 +772,9 @@ def check_action(note_id,domain,root=None,item=None,index=None,done=True):
     root=Path(root or memory_root()).resolve()
     with store_lock(root):
         _,note=find_note(note_id,domain,root)
-        if note.get('type') not in ACTION_TYPES:raise ValueError('Only plan, bug and risk notes have Action Items')
+        if note.get('type') not in ACTION_TYPES:raise ValueError('Only plan, bug and risk notes have action items')
         items=action_items(note['body'])
-        if not items:raise ValueError('This note has no Action Items')
+        if not items:raise ValueError('This note has no action items')
         if index is not None:
             if not 1<=index<=len(items):raise ValueError(f'No Action Item {index}; the note has {len(items)}')
             chosen=index-1

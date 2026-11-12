@@ -46,7 +46,7 @@ class ObsidianLayout(StoreFixture):
         build_overlay('demo', vault, self.root)
         text = (vault / 'Templates/Decision.md').read_text(encoding='utf-8').replace('{{title}}', 'Chose top-level folders')
         text = text.replace('"concern/knowledge"', '"concern/decision"')
-        text = text.replace('The choice that was made, why, and the tradeoffs considered.', 'Top-level folders keep the vault easy to browse.')
+        text = text.replace('The choice, who made it and when.', 'Top-level folders keep the vault easy to browse.')
         incoming = vault / 'Domains/demo/Chose top-level folders.md'
         incoming.write_text(text,encoding='utf-8')
         result = sync('demo', vault, self.root)

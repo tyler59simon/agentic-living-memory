@@ -59,11 +59,11 @@ def overlap(state,fields):
 
 def note_fields(values):
     """(label, text) pairs of a capture or update: title, context and each body section by heading."""
-    from .note_format import split,format_body,HEADINGS
+    from .note_format import parts,LABELS
     fields=[(k,values[k]) for k in ('title','context') if isinstance(values.get(k),str)]
     if isinstance(values.get('body'),str):
-        for key,heading,text in split(format_body(values['body'])):
-            label=HEADINGS.get(key) or heading or ('Important Note' if key=='important' else 'body')
+        for key,heading,text in parts(values['body']):
+            label=LABELS.get(key) or heading or 'body'
             fields.append((label,text))
     return fields
 

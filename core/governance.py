@@ -93,8 +93,10 @@ def history(root,note_id=None,limit=20):
         rows.append(row)
     return sorted(rows,key=lambda r:r['created'],reverse=True)[:limit]
 
-def inspect_plan(root,identity):
+def inspect_plan(root,identity,full=False):
+    """Each change a plan would make, as a unified diff (cut at 16000 characters unless `full`)."""
     import re,difflib
+    cut=None if full else 16000
     if not re.fullmatch('[a-f0-9]{32}',identity):raise ValueError('Invalid plan identity')
     root=Path(root);value=read_json(root/'.plans'/(identity+'.json'))
     if not value:raise ValueError('Plan unavailable')
@@ -102,7 +104,7 @@ def inspect_plan(root,identity):
     for rel,after in value['changes'].items():
         path=confined(root,rel);before=path.read_text(encoding='utf-8') if path.exists() else ''
         delta=''.join(difflib.unified_diff(before.splitlines(True),(after or '').splitlines(True),fromfile=rel,tofile=rel))
-        effects.append({'path':rel,'expected_revision':value['expected'][rel],'action':'delete' if after is None else 'write','diff':delta[:16000],'truncated':len(delta)>16000})
+        effects.append({'path':rel,'expected_revision':value['expected'][rel],'action':'delete' if after is None else 'write','diff':delta[:cut],'truncated':cut is not None and len(delta)>cut})
     return {'ok':True,'plan_id':identity,'digest':value['digest'],'kind':value['kind'],'summary':value['summary'],'effects':effects}
 
 def merge_plan(root,payload):
