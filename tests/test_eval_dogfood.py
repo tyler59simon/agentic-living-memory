@@ -14,6 +14,8 @@ FILES={
 }
 
 class DogfoodScoring(unittest.TestCase):
+    def _tmp(self):
+        tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup);return tmp.name
     def test_score_is_the_rank_of_the_first_expected_path(self):
         q={'q':'x','expect':['a.py','b.md']}
         self.assertEqual(EVAL.score(q,['c.py','b.md','a.py']),2)
@@ -22,7 +24,7 @@ class DogfoodScoring(unittest.TestCase):
     def test_percentile(self):
         self.assertEqual(EVAL.percentile([5,1,3],0.5),3);self.assertIsNone(EVAL.percentile([],0.5))
     def test_load_questions_rejects_a_question_without_expectations(self):
-        path=Path(self.enterContext(tempfile.TemporaryDirectory()))/'q.json'
+        path=Path(self._tmp())/'q.json'
         path.write_text(json.dumps({'questions':[{'q':'where?','expect':[]}]}),encoding='utf-8')
         with self.assertRaisesRegex(ValueError,'expect'):EVAL.load_questions(path)
     def test_shipped_fixture_is_well_formed(self):
@@ -31,8 +33,10 @@ class DogfoodScoring(unittest.TestCase):
             for rel in q['expect']:self.assertTrue((ROOT/rel).is_file(),f'{rel} expected by {q["q"]!r} does not exist')
 
 class DogfoodRun(unittest.TestCase):
+    def _tmp(self):
+        tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup);return tmp.name
     def test_hits_and_misses_are_scored_against_a_real_sync_and_ask(self):
-        tmp=Path(self.enterContext(tempfile.TemporaryDirectory()));repo=tmp/'repo'
+        tmp=Path(self._tmp());repo=tmp/'repo'
         for rel,text in FILES.items():
             (repo/rel).parent.mkdir(parents=True,exist_ok=True);(repo/rel).write_text(text,encoding='utf-8')
         (repo/'blob.bin').write_bytes(b'\x00\x01compost watering harvest')   # a binary is neither copied nor indexed
@@ -51,7 +55,7 @@ class DogfoodRun(unittest.TestCase):
         self.assertEqual(report['mrr'],0.667)
         self.assertGreater(report['sync_ms'],0);self.assertIn('Target hit@5',EVAL.render(report));self.assertIn('FAIL',EVAL.render(report))
     def test_the_questions_file_is_left_out_of_the_copy(self):
-        tmp=Path(self.enterContext(tempfile.TemporaryDirectory()));repo=tmp/'repo';(repo/'tests').mkdir(parents=True)
+        tmp=Path(self._tmp());repo=tmp/'repo';(repo/'tests').mkdir(parents=True)
         (repo/'README.md').write_text('# Plain\n\nNothing about lemons here.\n',encoding='utf-8')
         (repo/'tests'/'q.json').write_text('{"questions": [{"q": "zebra migration routes"}]}',encoding='utf-8')
         dest=tmp/'copy';dest.mkdir()

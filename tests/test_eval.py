@@ -17,6 +17,8 @@ TAGS = ['subject/project', 'concern/decision']
 
 
 class SyntheticFixture(unittest.TestCase):
+    def _tmp(self):
+        tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup);return tmp.name
     def test_known_good_result(self):
         report = EVAL.run(SYNTHETIC)
         r, s, g = report['retrieval'], report['session'], report['signals']
@@ -46,7 +48,7 @@ class SyntheticFixture(unittest.TestCase):
             {'prompt': 'recommend a good pasta recipe', 'expect': []},
         ]
         fixture['signals'] = [{'prompt': 'I prefer tabs', 'kind': None}, {'prompt': 'please summarize', 'kind': 'decision'}]
-        path = Path(self.enterContext(tempfile.TemporaryDirectory())) / 'f.json'
+        path = Path(self._tmp()) / 'f.json'
         path.write_text(json.dumps(fixture), encoding='utf-8')
         report = EVAL.run(path)
         r, g = report['retrieval'], report['signals']
@@ -61,7 +63,7 @@ class SyntheticFixture(unittest.TestCase):
     def test_unknown_synthetic_key_fails(self):
         fixture = json.loads(SYNTHETIC.read_text(encoding='utf-8'))
         fixture['retrieval'] = [{'prompt': 'deploy', 'expect': ['@missing']}]
-        path = Path(self.enterContext(tempfile.TemporaryDirectory())) / 'f.json'
+        path = Path(self._tmp()) / 'f.json'
         path.write_text(json.dumps(fixture), encoding='utf-8')
         with self.assertRaisesRegex(ValueError, '@missing'):
             EVAL.run(path)

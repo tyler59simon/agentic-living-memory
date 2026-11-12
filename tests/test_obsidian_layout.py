@@ -23,9 +23,9 @@ class ObsidianLayout(StoreFixture):
         self.assertTrue((vault / 'Domains/demo' / Path(a['path']).name).exists())
         self.assertEqual({p.stem for p in (vault / 'Dashboards').iterdir()},
                          {'Home', 'Taxonomy', 'Stale Notes', 'Timeline', 'Domain Overview', 'Archive', 'Sync Status - demo'})
-        overview = (vault / 'Dashboards/Domain Overview.md').read_text()
+        overview = (vault / 'Dashboards/Domain Overview.md').read_text(encoding='utf-8')
         self.assertIn('[[Domains/demo/' + Path(a['path']).stem + '|', overview)
-        canvas = json.loads((vault / 'Canvas/demo.canvas').read_text())
+        canvas = json.loads((vault / 'Canvas/demo.canvas').read_text(encoding='utf-8'))
         self.assertEqual(canvas['nodes'][0]['file'], 'Domains/demo/' + Path(a['path']).name)
         self.assertTrue((vault / '.living-memory/generated.json').exists())
         self.assertTrue((vault / '.living-memory/copies.json').exists())
@@ -35,20 +35,20 @@ class ObsidianLayout(StoreFixture):
         vault = self.vault()
         build_overlay('demo', vault, self.root)
         custom = vault / 'Templates/Decision.md'
-        custom.write_text(custom.read_text() + '\nMy extra prompt\n')
+        custom.write_text(custom.read_text(encoding='utf-8') + '\nMy extra prompt\n',encoding='utf-8')
         result = build_overlay('demo', vault, self.root)
         self.assertEqual(result['plans'], [])
-        self.assertIn('My extra prompt', custom.read_text())
+        self.assertIn('My extra prompt', custom.read_text(encoding='utf-8'))
 
     def test_template_note_without_id_is_captured(self):
         self.note()
         vault = self.vault()
         build_overlay('demo', vault, self.root)
-        text = (vault / 'Templates/Decision.md').read_text().replace('{{title}}', 'Chose top-level folders')
+        text = (vault / 'Templates/Decision.md').read_text(encoding='utf-8').replace('{{title}}', 'Chose top-level folders')
         text = text.replace('"concern/knowledge"', '"concern/decision"')
         text = text.replace('The choice that was made, why, and the tradeoffs considered.', 'Top-level folders keep the vault easy to browse.')
         incoming = vault / 'Domains/demo/Chose top-level folders.md'
-        incoming.write_text(text)
+        incoming.write_text(text,encoding='utf-8')
         result = sync('demo', vault, self.root)
         self.assertEqual(result['plans'], [])
         self.assertEqual(len(result['applied']), 1)
@@ -74,16 +74,16 @@ class ObsidianLayout(StoreFixture):
         # Recreate what the previous release built.
         legacy_note = vault / 'Living Memory/domains/demo/notes' / name
         legacy_note.parent.mkdir(parents=True)
-        legacy_note.write_text(Path(a['path']).read_text())
+        legacy_note.write_text(Path(a['path']).read_text(encoding='utf-8'),encoding='utf-8')
         first = sync('demo', vault, self.root)
         self.assertEqual(first['plans'], [])
         state_path = self.root / 'domains/demo/sync-state.json'
         state = read_json(state_path)
         for entry in state['entries'].values():
             entry['overlay'] = 'Living Memory/domains/demo/notes/' + name
-        state_path.write_text(json.dumps(state))
+        state_path.write_text(json.dumps(state),encoding='utf-8')
         copies = read_json(vault / '.living-memory/copies.json')
-        (vault / 'Living Memory/.copies.json').write_text(json.dumps({'files': {'Living Memory/domains/demo/notes/' + name: copies['files']['Domains/demo/' + name]}}))
+        (vault / 'Living Memory/.copies.json').write_text(json.dumps({'files': {'Living Memory/domains/demo/notes/' + name: copies['files']['Domains/demo/' + name]}}),encoding='utf-8')
         (vault / '.living-memory/copies.json').unlink()
         (vault / 'Domains/demo' / name).unlink()
         legacy_home = vault / 'Living Memory/Home.md'
@@ -92,7 +92,7 @@ class ObsidianLayout(StoreFixture):
         edited.write_bytes(b'# user edit\n')
         from core.repository import digest
         (vault / 'Living Memory/.generated.json').write_text(json.dumps({'files': {
-            'Living Memory/Home.md': digest(b'# old\n'), 'Living Memory/Timeline.md': digest(b'# original\n')}}))
+            'Living Memory/Home.md': digest(b'# old\n'), 'Living Memory/Timeline.md': digest(b'# original\n')}}),encoding='utf-8')
 
         result = build_overlay('demo', vault, self.root)
         self.assertEqual(result['plans'], [])
@@ -108,12 +108,12 @@ class ObsidianLayout(StoreFixture):
         self.assertTrue(find_note(a['id'], 'demo', self.root))
 
     def obsidian_reformat(self, path, move=False):
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding='utf-8'))
         for e in data['edges']:
             e.update(fromSide='right', toSide='left')
         if move:
             data['nodes'][0]['x'] += 37
-        path.write_text(json.dumps(data, indent='\t'))
+        path.write_text(json.dumps(data, indent='\t'),encoding='utf-8')
 
     def test_canvas_reformatted_by_obsidian_still_regenerates(self):
         self.note()
@@ -124,7 +124,7 @@ class ObsidianLayout(StoreFixture):
         self.note('Second', 'Another architecture note')
         result = build_overlay('demo', vault, self.root)
         self.assertEqual(result['view_conflicts'], [])
-        self.assertEqual(len(json.loads(canvas.read_text())['nodes']), 2)
+        self.assertEqual(len(json.loads(canvas.read_text(encoding='utf-8'))['nodes']), 2)
 
     def test_canvas_with_user_layout_is_preserved_without_failing(self):
         self.note()
@@ -132,12 +132,12 @@ class ObsidianLayout(StoreFixture):
         build_overlay('demo', vault, self.root)
         canvas = vault / 'Canvas/demo.canvas'
         self.obsidian_reformat(canvas, move=True)
-        before = canvas.read_text()
+        before = canvas.read_text(encoding='utf-8')
         self.note('Second', 'Another architecture note')
         result = build_overlay('demo', vault, self.root)
         self.assertEqual(result['view_conflicts'], ['Canvas/demo.canvas'])
-        self.assertEqual(canvas.read_text(), before)
-        self.assertIn('Second', (vault / 'Dashboards/Domain Overview.md').read_text())
+        self.assertEqual(canvas.read_text(encoding='utf-8'), before)
+        self.assertIn('Second', (vault / 'Dashboards/Domain Overview.md').read_text(encoding='utf-8'))
 
     def test_legacy_canvas_reformatted_by_obsidian_is_removed(self):
         self.note()
@@ -147,7 +147,7 @@ class ObsidianLayout(StoreFixture):
         legacy.parent.mkdir()
         legacy.write_bytes((vault / 'Canvas/demo.canvas').read_bytes())
         from core.repository import digest
-        (vault / 'Living Memory/.generated.json').write_text(json.dumps({'files': {'Living Memory/demo.canvas': digest(legacy.read_bytes())}}))
+        (vault / 'Living Memory/.generated.json').write_text(json.dumps({'files': {'Living Memory/demo.canvas': digest(legacy.read_bytes())}}),encoding='utf-8')
         self.obsidian_reformat(legacy)
         result = build_overlay('demo', vault, self.root)
         self.assertEqual(result['legacy_conflicts'], [])
