@@ -17,11 +17,23 @@ class IsInterim(StoreFixture):
     def test_interim_wordings(self):
         said = ['Root cause unconfirmed.', 'This is unconfirmed, do not build on it.', 'Treat as true until confirmed.', 'Hold until it is confirmed by legal.',
                 'Pending approval from the owner.', 'Pending confirmation.', 'Pending sign-off.', 'Not yet approved.', 'The contract is not signed.',
-                'We suspect the proxy.', 'It is probably the DNS cache.', 'Not reproduced locally.']
+                'We suspect the proxy.', 'It is probably the DNS cache.']
         for kind in ('bug', 'knowledge', 'decision'):
             for body in said:
                 with self.subTest(kind=kind, body=body):
                     self.assertTrue(is_interim({'type': kind, 'title': 'Slow start', 'body': body}))
+
+    def test_a_weak_word_deep_in_a_long_note_does_not_make_it_interim_but_a_strong_phrase_does(self):
+        detail = '\n\n'.join(f'## Part {i}\nThe worker retries {i} times and the queue drains.' for i in range(30))
+        summary = '## \U0001f4cc Executive Summary\nHow the worker retries and drains the queue.\n\n---\n\n'
+        for kind in ('bug', 'knowledge', 'decision'):
+            with self.subTest(kind=kind):
+                hedged = summary + detail + '\n\n## Notes\nThe lag is probably the proxy; we suspect it, the likely cause being DNS.'
+                self.assertFalse(is_interim({'type': kind, 'title': 'Worker retries', 'body': hedged}))
+                self.assertTrue(is_interim({'type': kind, 'title': 'Worker retries', 'body': hedged + '\nUnconfirmed: the proxy is the cause.'}))
+                self.assertTrue(is_interim({'type': kind, 'title': 'Worker retries', 'body': summary + detail + '\n\n## Status\nNot yet verified on production.'}))
+                self.assertTrue(is_interim({'type': kind, 'title': 'Worker lag is probably the proxy', 'body': summary + detail}))
+                self.assertTrue(is_interim({'type': kind, 'title': 'Worker retries', 'body': '## \U0001f4cc Executive Summary\nWe suspect the proxy.\n\n---\n\n' + detail}))
 
     def test_a_hypothesis_label_makes_any_type_interim(self):
         for kind in ('bug', 'runbook', 'plan'):

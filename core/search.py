@@ -420,9 +420,9 @@ def search_domains(query,domains,limit=3,root=None,filters=None,rebuild=False,we
         for hit in hits:hit['score']*=1+usage.STRENGTH_NUDGE*power.get(f"{hit['domain']}:{hit['id']}",0)/top
     return sorted(hits,key=lambda h:(-h['score'],h['domain'],h['id']))[:limit]
 def recent_notes(domain,limit=3,root=None):
-    notes=inventory(domain,root)
-    for note in notes:note.update(domain=domain,snippet=snippet(note['body'],[],SNIPPET))
-    return sorted(notes,key=lambda n:str(n.get('updated',n.get('created',''))),reverse=True)[:max(1,min(20,limit))]
+    notes=sorted(inventory(domain,root),key=lambda n:str(n.get('updated',n.get('created',''))),reverse=True)[:max(1,min(20,limit))]
+    for note in notes:note.update(domain=domain,snippet=snippet(note['body'],[],SNIPPET))   # only the few that are shown
+    return notes
 def readonly_query(domain,sql,root=None):
     import time
     path=domain_dir(domain,root)/'search.sqlite3';db=sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True)

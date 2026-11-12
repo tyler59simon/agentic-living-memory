@@ -181,9 +181,15 @@ def title_similarity(a,b):
     if min(len(x),len(y))>=3:score=max(score,shared/min(len(x),len(y)))
     return score
 
-# A belief nobody has confirmed yet (bug, knowledge and decision notes): worded as one, or labelled **Hypothesis:**.
-INTERIM=re.compile(r'(?i)\b(?:root cause (?:unconfirmed|unknown|unclear)|hypothes[ie]s|suspect(?:ed)?|likely cause|unconfirmed|until (?:it is )?confirmed|'
-                   r'pending (?:confirmation|approval|sign-?off)|not (?:yet )?(?:confirmed|verified|reproduced|approved|signed)|probably)\b')
+# A belief nobody has confirmed yet (bug, knowledge and decision notes), or labelled **Hypothesis:**. STRONG phrases say so wherever
+# they are; WEAK words count only in the title or summary, or one "probably" deep in a long note would mark the whole note.
+_STRONG=(r'unconfirmed|not (?:yet )?(?:confirmed|verified|approved|signed)|until (?:it is )?confirmed|pending (?:confirmation|approval|sign-?off)|'
+         r'root cause (?:unconfirmed|unknown|unclear)')
+_WEAK=r'probably|suspect(?:ed)?|likely cause|hypothes[ie]s'
+STRONG=re.compile(r'(?i)\b(?:'+_STRONG+r')\b')
+WEAK=re.compile(r'(?i)\b(?:'+_WEAK+r')\b')
+INTERIM=re.compile(r'(?i)\b(?:'+_STRONG+'|'+_WEAK+r'|not reproduced)\b')   # both: the capture-time advisory, and a resolution that is itself hedged
+SUMMARY=re.compile(r'(?im)^##[^\n]*Executive Summary[^\n]*\n(.*?)(?=\n---|\n## |\Z)',re.S)
 INTERIM_TYPES=('bug','knowledge','decision')
 HYPOTHESIS=re.compile(r'(?i)\*\*hypothesis')
 # A labelled cause, fix or outcome: when its text is not itself hedged, the note stopped being interim.
@@ -191,11 +197,13 @@ RESOLUTION=re.compile(r'(?im)^\s*[-*+]?\s*\*\*(?:root cause|fix|resolution|outco
 
 def is_interim(note):
     """True for an active note that still states an unconfirmed belief: labelled **Hypothesis:**, or (bug, knowledge,
-    decision) worded as one (INTERIM) with no labelled root cause, fix or outcome that settles it."""
+    decision) worded as one (STRONG anywhere, WEAK in the title or summary) with no labelled root cause, fix or outcome that settles it."""
     if note.get('status','active')!='active':return False
     body=str(note.get('body') or '')
     if HYPOTHESIS.search(body):return True
-    if note.get('type') not in INTERIM_TYPES or not INTERIM.search(str(note.get('title') or '')+'\n'+body):return False
+    if note.get('type') not in INTERIM_TYPES:return False
+    title=str(note.get('title') or '');found=SUMMARY.search(body)
+    if not (STRONG.search(title+'\n'+body) or WEAK.search(title+'\n'+(found[1] if found else body[:400]))):return False
     return not any(not INTERIM.search(m[1]) for m in RESOLUTION.finditer(body))
 
 def unconfirmed(note):

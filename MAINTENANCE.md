@@ -27,6 +27,8 @@ Command lines at debug add the result's `status`, `operation_id` and `ref`, and 
 
 **Content logging (sandbox stores only).** With `LIVING_MEMORY_LOG_CONTENT=1`, hook lines add `content` (the prompt, tool input and every text the hook returned), and command lines add `argv`, the result and the error message. Each field has credentials redacted and is capped at 20,000 characters. This happens only when the store holds `sandbox.json` with `{"sandbox": true}` and is not the configured data root. Only the simulation harness writes that file. Otherwise the request is refused: one `content_logging_refused` warning per process, and no text is written.
 
-**Semantic model.** `.models/` holds the model `semantic install` downloaded. It is not canonical, and backups skip it. `semantic remove`, or deleting the folder followed by `rebuild`, returns search to lexical-only.
+**Semantic model.** `.models/` holds the model `semantic install` downloaded. It is not canonical, and backups skip it. `semantic remove`, or deleting the folder followed by `rebuild`, returns search to lexical-only. `.models/<name>/tokenizer.marshal` is a derived cache of the parsed tokenizer (rebuilt when missing or stale, safe to delete).
+
+**Currency cache.** `.cache/currency.json` keeps what git said about each shown map or brief (which cited files changed since it was written, commits since), so a new session at an unchanged HEAD runs no git. At most 200 entries, oldest dropped. Derived: safe to delete (it is rebuilt), unreadable content is ignored, and backups, bundles and relocation skip `.cache`.
 
 Stores created by earlier releases may contain an `improvement/` folder (categorical search/read events and engine state). Nothing reads it any more; it is safe to delete by hand.

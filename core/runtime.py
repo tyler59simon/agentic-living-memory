@@ -2,7 +2,7 @@
 from __future__ import annotations
 import hashlib,json,os,re,shlex,sys,time
 from pathlib import Path
-from .common import memory_root,load_bindings,resolve_domain,atomic_write,canonical_domain,file_lock
+from .common import memory_root,load_bindings,resolve_domain,atomic_write,canonical_domain,file_lock,head_oid
 from .repository import read_json,canonical_json,now
 from .capture import status as capture_status,turn_key
 from .note_types import NOTE_TYPES
@@ -578,16 +578,45 @@ def _track_repos(root,session,change):
 
 def _agent_key(payload):return str(payload.get('agent_id') or payload.get('agentId') or '')
 
+CURRENCY_CACHE_MAX=200
+def _currency_file(root):return Path(root)/'.cache'/'currency.json'
+
+def _currency_entries(root):
+    """The store-level currency cache: [{'k': repo identity or path, 'n': 'domain:id', 'u': updated, 'e': entry}], oldest first. Derived
+    and safe to delete; anything unreadable is an empty cache."""
+    try:
+        data=json.loads(_currency_file(root).read_text(encoding='utf-8'))
+        rows=data.get('entries') if isinstance(data,dict) else None
+        return [r for r in rows if isinstance(r,dict) and isinstance(r.get('e'),dict)] if isinstance(rows,list) else []
+    except (OSError,ValueError):return []
+
+def _currency_key(folder,hit):
+    from .common import repo_identity
+    return (repo_identity(folder) or Path(folder).as_posix(),f"{hit['domain']}:{hit['id']}",str(hit.get('updated') or ''))
+
 def note_currency(hit,folder,root,bindings,state,session,slot='fresh'):
     """maps.currency for a map or brief about to be shown: what its cited files did since it was written. The entry is kept in the
     session's repo state (state['repos'][folder][slot], 'fresh' for a map, 'fresh_brief' for a brief) and reused while the note and
-    HEAD are the same, so repeated pointers run no git; a stale one is what the Stop reminder asks about. {} when anything fails."""
+    HEAD are the same, so repeated pointers run no git; a stale one is what the Stop reminder asks about. Every computed entry is also
+    kept in the store's .cache/currency.json (200 entries, keyed by repo identity or path, note and its updated date, valid for the
+    HEAD and note revision it was computed at), so a new session with the same HEAD runs no git either. {} when anything fails."""
     try:
         from .maps import currency
         if folder is None:return {}
-        key=Path(folder).as_posix();cache=(_repos(state).get(key) or {}).get(slot)
-        entry,computed=currency(hit,Path(folder),bindings,cache if isinstance(cache,dict) else None)
-        if computed and entry.get('head') and session and session!='unknown':
+        key=Path(folder).as_posix();cache=(_repos(state).get(key) or {}).get(slot);cache=cache if isinstance(cache,dict) else None
+        head=head_oid(folder);rev=str(hit.get('revision') or '');shared=None
+        if cache and (cache.get('rev'),cache.get('head'))!=(rev,head):cache=None
+        if head and rev and not cache:
+            k,n,u=_currency_key(folder,hit)
+            shared=next((r['e'] for r in reversed(_currency_entries(root)) if (r.get('k'),r.get('n'),r.get('u'))==(k,n,u) and r['e'].get('rev')==rev and r['e'].get('head')==head),None)
+        entry,computed=currency(hit,Path(folder),bindings,cache or shared)
+        if computed and head and entry.get('head') and rev:
+            try:
+                k,n,u=_currency_key(folder,hit)
+                rows=[r for r in _currency_entries(root) if (r.get('k'),r.get('n'))!=(k,n)]+[{'k':k,'n':n,'u':u,'e':entry}]
+                atomic_write(_currency_file(root),json.dumps({'v':1,'entries':rows[-CURRENCY_CACHE_MAX:]},separators=(',',':')))
+            except (OSError,ValueError,TypeError,KeyError):pass
+        if (computed or shared) and entry.get('head') and session and session!='unknown':
             stored=dict(entry,ref=f"{hit['domain']}:{hit['id']}")
             def save(s):
                 repos=_repos(s);rec=dict(repos.pop(key,{}));rec[slot]=stored;repos[key]=rec

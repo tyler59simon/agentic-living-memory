@@ -42,6 +42,38 @@ class SemanticCase(StoreFixture):
         self.assertEqual(model.tokenize('zzz layout qqq'),[vocab['layout']])   # unknown words are dropped
         self.assertIsNone(model.embed('zzz qqq'))
 
+    def test_the_parsed_tokenizer_is_cached_beside_the_source_and_rebuilt_when_it_changes(self):
+        cache=self.source/'tokenizer.marshal'
+        first=semantic.Model(self.source);self.addCleanup(first.close)
+        self.assertTrue(cache.is_file())
+        real=json.loads
+        def header_only(text,*a,**k):   # the safetensors header is read as bytes; the tokenizer file as text
+            if isinstance(text,str):raise AssertionError('tokenizer.json parsed again')
+            return real(text,*a,**k)
+        with patch.object(semantic.json,'loads',header_only):second=semantic.Model(self.source);self.addCleanup(second.close)
+        self.assertEqual(second.vocab,first.vocab);self.assertEqual(second.tokenize('Rebuildable, CAFÉ!'),first.tokenize('Rebuildable, CAFÉ!'))
+        # A changed source (size and mtime) is parsed again and the cache follows it.
+        spec=json.loads((self.source/'tokenizer.json').read_text(encoding='utf-8'));spec['model']['vocab']['extra']=spec['model']['vocab']['layout']
+        (self.source/'tokenizer.json').write_text(json.dumps(spec),encoding='utf-8')
+        third=semantic.Model(self.source);self.addCleanup(third.close)
+        self.assertIn('extra',third.vocab)
+        with patch.object(semantic.json,'loads',header_only):
+            fourth=semantic.Model(self.source);self.addCleanup(fourth.close)
+        self.assertIn('extra',fourth.vocab)
+
+    def test_an_unreadable_or_unwritable_tokenizer_cache_is_ignored(self):
+        (self.source/'tokenizer.marshal').write_bytes(b'not marshal data')
+        model=semantic.Model(self.source);self.addCleanup(model.close)
+        self.assertIn('layout',model.vocab)
+        import marshal
+        self.assertEqual(marshal.loads((self.source/'tokenizer.marshal').read_bytes())['spec']['model']['vocab'],model.vocab)   # rebuilt
+        (self.source/'tokenizer.marshal').write_bytes(marshal.dumps({'source':[0,0],'spec':{}}))   # stale
+        self.assertIn('layout',semantic._tokenizer_spec(self.source)['model']['vocab'])
+        (self.source/'tokenizer.marshal').unlink()
+        with patch.object(semantic.tempfile,'mkstemp',side_effect=PermissionError('read-only')):   # a model folder that cannot be written
+            self.assertIn('layout',semantic._tokenizer_spec(self.source)['model']['vocab'])
+        self.assertFalse((self.source/'tokenizer.marshal').exists())
+
     def test_f16_rows_match_f32(self):
         wide=semantic.Model(self.source);write_model(self.base/'half','F16');half=semantic.Model(self.base/'half')
         self.addCleanup(wide.close);self.addCleanup(half.close)

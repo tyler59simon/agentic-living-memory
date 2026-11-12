@@ -63,6 +63,14 @@ class Identity(unittest.TestCase):
         self.assertTrue(normalize_remote('C:/work/Ledger').startswith('file:'))
         self.assertTrue(normalize_remote('C:\\work\\Ledger').startswith('file:'))
 
+    def test_a_bare_local_origin_is_labelled_without_its_dot_git(self):
+        origin = self.base / 'Origins' / 'origin.git'
+        origin.mkdir(parents=True)
+        repo = make_repo(self.base / 'clone', str(origin))
+        self.assertEqual(repo_identity(repo), 'file:' + origin.resolve().as_posix().casefold())   # the identity keeps the path as is
+        self.assertEqual(repo_label(repo), 'origin')
+        self.assertEqual(repo_name(str(repo)), 'origin')
+
     def test_identity_comes_from_the_origin_remote_only(self):
         repo = self.base / 'ledger'
         (repo / '.git').mkdir(parents=True)
