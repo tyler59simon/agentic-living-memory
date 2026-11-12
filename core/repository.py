@@ -474,7 +474,8 @@ def validate(note, domain, root=None, new=False, extra_tags=()):
     if new:
         for required in ("subject", "concern"):
             if not any(t.startswith(required + "/") for t in tags):
-                raise ValueError(f"Capture requires a registered {required}/ tag")
+                options = sorted(t for t in known if t.startswith(required + "/"))
+                raise ValueError(f"Capture requires a registered {required}/ tag; pass --{required}" + (" with one of: " + ", ".join(options) if options else ""))
         if any(t.split("/", 1)[0] not in FACETS or "/" not in t for t in tags):
             raise ValueError("Tags must use subject/, concern/, platform/, technology/, project/, or system/ facets")
     if known and set(tags) - set(known):
@@ -637,6 +638,48 @@ def prune_journals(root, days=14, kinds=BOOKKEEPING_KINDS):
                 created = created.replace(tzinfo=timezone.utc)
             if created < cutoff:
                 shutil.rmtree(folder, ignore_errors=True)
+                removed += 1
+    return removed
+
+
+def prune_plans(root, applied_days=1, unapplied_days=30):
+    """Delete plan files: applied ones (committed journal) older than `applied_days`, never-applied ones older
+    than `unapplied_days`. A plan whose journal is in any other state, or unreadable, stays, and so does one an
+    Obsidian approval still waits on (`pending_plan` in a domain's sync-state.json). Returns the count removed."""
+    from datetime import timedelta
+    now_utc = datetime.now(timezone.utc)
+    removed = 0
+    with store_lock(Path(root).resolve()):
+        waiting = set()
+        for state_path in Path(root).glob("domains/*/sync-state.json"):
+            try:
+                entries = (read_json(state_path, {}) or {}).get("entries") or {}
+                waiting |= {e["pending_plan"] for e in entries.values() if isinstance(e, dict) and e.get("pending_plan")}
+            except (ValueError, AttributeError, TypeError):
+                return removed  # cannot tell which plans a vault approval needs; prune nothing
+        for plan_path in sorted(Path(root).glob(".plans/*.json")):
+            if not re.fullmatch("[a-f0-9]{32}", plan_path.stem) or plan_path.stem in waiting:
+                continue
+            try:
+                value = read_json(plan_path, None)
+                created = datetime.fromisoformat(str(value.get("created")))
+            except (ValueError, AttributeError):
+                continue
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            folder = Path(root) / ".operations" / plan_path.stem
+            if folder.exists():
+                try:
+                    journal = read_json(folder / "journal.json", None)
+                except ValueError:
+                    continue
+                if not isinstance(journal, dict) or journal.get("state") != "committed" or (folder / PENDING).exists():
+                    continue
+                cutoff = now_utc - timedelta(days=applied_days)
+            else:
+                cutoff = now_utc - timedelta(days=unapplied_days)
+            if created < cutoff:
+                plan_path.unlink(missing_ok=True)
                 removed += 1
     return removed
 

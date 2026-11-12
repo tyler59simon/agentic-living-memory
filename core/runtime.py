@@ -413,7 +413,7 @@ def _prune_journals(root):
     Never fails the hook."""
     try:
         from datetime import datetime,timezone
-        from .repository import prune_journals
+        from .repository import prune_journals,prune_plans
         marker=root/'hooks'/'last-prune.json'
         try:age=(datetime.now(timezone.utc)-datetime.fromisoformat(read_json(marker,{})['at'])).total_seconds()
         except (KeyError,TypeError,ValueError):age=None
@@ -425,7 +425,9 @@ def _prune_journals(root):
         for state in (root/'domains').glob('*/sync-state.json'):
             vault=(read_json(state,{}) or {}).get('vault')
             if vault and Path(vault).is_dir():roots.add(str(vault))
-        return {r:prune_journals(Path(r)) for r in sorted(roots)}
+        out={r:prune_journals(Path(r)) for r in sorted(roots)}
+        prune_plans(root)
+        return out
     except Exception as exc:
         from .logs import swallowed
         swallowed('runtime.prune_journals',exc,root);return None

@@ -11,7 +11,7 @@ def memory_root() -> Path:
 def load_bindings(root: Path|None=None) -> dict:
     path=(root or memory_root())/"bindings.json"
     try:
-        data=json.loads(retry_sharing(lambda:path.read_text(encoding="utf-8")))
+        data=json.loads(retry_sharing(lambda:path.read_text(encoding="utf-8-sig")))
         if not isinstance(data,dict) or ('domains' in data and not isinstance(data['domains'],dict)):raise ValueError(f'Invalid bindings preserved: {path}')
         return data
     except FileNotFoundError: return {}

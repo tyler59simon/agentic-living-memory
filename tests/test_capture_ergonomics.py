@@ -40,8 +40,8 @@ class CaptureErgonomics(StoreFixture):
         code,result=self.cli('--domain','demo','capture','--type','decision','--subject','user','--concern','architecture','--title','Layered cache','--summary','A fact.')
         self.assertEqual(code,0,result);self.assertNotIn('inferred_tags',result);self.assertEqual(self.tags(result),['concern/architecture','subject/user'])
     def test_no_default_outside_the_taxonomy_still_errors(self):
-        # status has no concern default; bug's concern/bug is not in this taxonomy.
-        for kind in ('status','bug'):
+        # bug's default concern/bug is not in this taxonomy.
+        for kind in ('bug',):
             with self.subTest(kind=kind):
                 code,result=self.cli('--domain','demo','capture','--type',kind,'--title',f'Some {kind}','--summary','A fact.')
                 self.assertEqual(code,2);self.assertIn('concern/',result['error']['message'])

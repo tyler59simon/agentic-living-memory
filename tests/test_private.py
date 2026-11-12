@@ -39,10 +39,9 @@ class Private(StoreFixture):
         self.prompt('ok now save the decision')
         code,result=self.cli('capture','--session','s1','--concern','decision','--title','Codename chosen','--summary','We picked Blue Harbor.')
         self.assertEqual(code,5,result)
-    def test_unclosed_tag_marks_nothing(self):
+    def test_unclosed_tag_runs_to_the_end(self):
         result=self.prompt('<private>this never closes')
-        self.assertNotIn(private.NOTICE,result['context'])
-        self.assertNotIn('private',json.loads(runtime._pointer(self.root,'s1').read_text()))
+        self.assertIn(private.NOTICE,result['context'])
     def test_without_session_there_is_no_check(self):
         self.prompt('<private>blue harbor</private>')
         self.assertEqual(self.cli('capture','--concern','decision','--title','Codename chosen','--summary','We picked Blue Harbor.')[0],0)

@@ -655,5 +655,180 @@ class VectorReuse(StoreFixture):
         self.assertEqual(self.vectors(), 3)
 
 
+class Cfg1BomBindings(Cli):
+    """CFG-1: a UTF-8 BOM (Windows PowerShell 5.1 hand edits) must not make bindings.json invalid."""
+
+    def test_bom_prefixed_bindings_load_and_resolve_the_domain(self):
+        from core.common import load_bindings
+        path = self.root / 'bindings.json'
+        path.write_bytes(b'\xef\xbb\xbf' + path.read_bytes())
+        self.assertIn('demo', load_bindings(self.root)['domains'])
+        code, out, err = self.run_cli('search', 'anything')
+        self.assertEqual(code, 0, err)
+
+
+class Cli5DefaultConcern(Cli):
+    """CLI-5: plan/context/status/risk/research default their concern; a missing concern names the flag and options."""
+
+    def test_plan_without_concern_infers_workflow(self):
+        (self.root / 'tag_taxonomy.json').write_text(json.dumps({'tags': TAGS + ['concern/workflow']}))
+        out = self.ok('capture', '--type', 'plan', '--title', 'Ship the batch', '--summary', 'Order of the fixes.')
+        self.assertIn('concern/workflow', out['inferred_tags'])
+
+    def test_missing_concern_error_names_flag_and_registered_tags(self):
+        code, out, err = self.run_cli('capture', '--type', 'plan', '--title', 'Ship the batch', '--summary', 'Order of the fixes.')
+        self.assertEqual(code, 2)
+        message = err['error']['message']
+        self.assertIn('Capture requires a registered concern/ tag', message)
+        self.assertIn('--concern', message)
+        self.assertIn('concern/architecture', message)
+
+
+class Ops1HistoryAndPlans(Cli):
+    """OPS-1: history survives a corrupt journal, undo refuses one, and old plan files are pruned."""
+
+    def corrupt(self):
+        self.ok('capture', '--type', 'knowledge', '--concern', 'architecture', '--title', 'First fact', '--summary', 'One.')
+        self.ok('capture', '--type', 'knowledge', '--concern', 'architecture', '--title', 'Second fact', '--summary', 'Two.', '--allow-similar')
+        folder = self.root / '.operations' / 'badjournal1'
+        folder.mkdir(parents=True)
+        (folder / 'journal.json').write_text('{not json')
+        return 'badjournal1'
+
+    def test_history_skips_corrupt_journal_and_doctor_names_it(self):
+        bad = self.corrupt()
+        rows = self.ok('history')
+        self.assertIsInstance(rows, list)  # the Hivemind app reads history as a list
+        self.assertGreaterEqual(len(rows), 2)
+        self.assertNotIn(bad, [r['operation_id'] for r in rows])
+        code, doctor, _ = self.run_cli('doctor')
+        self.assertTrue(any(bad in w and 'history skips them' in w for w in doctor['warnings']), doctor['warnings'])
+
+    def test_undo_corrupt_journal_raises(self):
+        bad = self.corrupt()
+        with self.assertRaisesRegex(ValueError, f'corrupt_journal {bad}: this operation cannot be undone; see RECOVERY.md'):
+            undo(self.root, bad)
+        with self.assertRaisesRegex(ValueError, 'Operation unavailable'):
+            undo(self.root, 'nosuchop')
+
+    def test_prune_plans(self):
+        from datetime import datetime, timedelta, timezone
+        plans = self.root / '.plans'
+        plans.mkdir(exist_ok=True)
+        def make(name, days, state=None):
+            plan_id = name * 32
+            when = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+            (plans / (plan_id + '.json')).write_text(json.dumps({'id': plan_id, 'created': when}))
+            if state:
+                folder = self.root / '.operations' / plan_id
+                folder.mkdir(parents=True)
+                (folder / 'journal.json').write_text(json.dumps({'id': plan_id, 'state': state, 'created': when, 'kind': 'x', 'effects': []}))
+            return plans / (plan_id + '.json')
+        old_done, old_unapplied = make('a', 5, 'committed'), make('b', 40)
+        new_done, new_unapplied, old_pending = make('c', 0, 'committed'), make('d', 5), make('e', 40, 'pending')
+        self.assertEqual(repository.prune_plans(self.root), 2)
+        self.assertFalse(old_done.exists() or old_unapplied.exists())
+        self.assertTrue(new_done.exists() and new_unapplied.exists() and old_pending.exists())
+
+    def test_prune_plans_keeps_a_plan_a_vault_approval_waits_on(self):
+        from datetime import datetime, timedelta, timezone
+        plans = self.root / '.plans'
+        plans.mkdir(exist_ok=True)
+        plan_id = 'f' * 32
+        when = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat()
+        (plans / (plan_id + '.json')).write_text(json.dumps({'id': plan_id, 'created': when}))
+        state = self.root / 'domains' / 'demo' / 'sync-state.json'
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(json.dumps({'entries': {'n1': {'pending_plan': plan_id, 'pending_action': 'Delete'}}}))
+        self.assertEqual(repository.prune_plans(self.root), 0)
+        self.assertTrue((plans / (plan_id + '.json')).exists())
+
+
+class Priv1RecallMasking(unittest.TestCase):
+    SECRET = 'zebra quartz meridian lantern'
+    def test_span_closing_past_the_cut_is_masked(self):
+        from core import recall
+        text = 'start ' + '<private>' + self.SECRET + ' ' + 'filler ' * 700 + '</private> tail'
+        clean = recall._clean(text)
+        self.assertIn('[private]', clean)
+        for word in ('zebra', 'quartz', 'meridian', 'lantern'):
+            self.assertNotIn(word, clean)
+    def test_records_mask_long_span(self):
+        from core import recall
+        import tempfile
+        text = 'plan <private>' + self.SECRET + ' ' + 'filler ' * 700 + '</private> done'
+        entry = {'type': 'user', 'message': {'content': text}}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 't.jsonl'
+            path.write_text(json.dumps(entry) + '\n', encoding='utf-8')
+            rows, _ = recall.records(path)
+        self.assertNotIn('zebra', rows[0]['text'])
+        self.assertIn('[private]', rows[0]['text'])
+    def test_unclosed_span_is_masked(self):
+        from core import recall
+        clean = recall._clean('before <private>' + self.SECRET + ' never closed')
+        self.assertEqual(clean, 'before [private]')
+        self.assertNotIn('zebra', recall._safe('x <private>zebra'))
+
+
+class Priv1UnclosedTag(unittest.TestCase):
+    PLAN = 'the acquisition of northwind closes on march third pending board approval'
+    def test_unclosed_tag_is_remembered_and_refused(self):
+        from core import private
+        state = {}
+        self.assertTrue(private.remember(state, 'use <private>' + self.PLAN))
+        with self.assertRaisesRegex(ValueError, 'private_content'):
+            private.check(state, {'title': 'Note: The acquisition of Northwind closes on March third'})
+    def test_empty_unclosed_tag_is_nothing(self):
+        from core import private
+        state = {}
+        self.assertFalse(private.remember(state, 'hello <private>'))
+        self.assertFalse(private.remember(state, 'hello <private>   '))
+        self.assertEqual(state, {})
+    def test_only_the_last_span_unclosed(self):
+        from core import private
+        found = private.spans('a <private>one two</private> b <private>three four</private> c <private>five six')
+        self.assertEqual([x.strip() for x in found], ['one two', 'three four', 'five six'])
+
+
+class Priv1ShingleCap(unittest.TestCase):
+    def words(self, prefix, n):
+        return ' '.join(f'{prefix}{i}' for i in range(n))
+    def test_long_later_spans_do_not_evict_earlier_protection(self):
+        from core import private
+        state = {}
+        first = self.words('alpha', 40)
+        private.remember(state, f'<private>{first}</private>')
+        for k in range(4):
+            private.remember(state, f'<private>{self.words("later" + str(k) + "x", 200)}</private>')
+        spans = state['private']['spans']
+        total = sum(map(len, spans))
+        self.assertLessEqual(total, max(private.MAX_SHINGLES, private.MIN_PER_SPAN * len(spans)))
+        self.assertGreaterEqual(len(spans[0]), private.MIN_PER_SPAN)
+        with self.assertRaisesRegex(ValueError, 'private_content'):
+            private.check(state, {'title': first})
+    def test_dedupes_within_a_span(self):
+        from core import private
+        state = {}
+        private.remember(state, '<private>' + 'ping pong ' * 30 + '</private>')
+        spans = state['private']['spans']
+        self.assertEqual(len(spans[0]), len({tuple(x) for x in spans[0]}))
+        self.assertLessEqual(len(spans[0]), 2)
+    def test_legacy_flat_state_still_blocks_and_upgrades(self):
+        from core import private
+        salt = '00' * 16
+        words = ['red', 'fox', 'jumps']
+        state = {'private': {'salt': salt, 'shingles': [[3, private._hash(salt, words)]]}}
+        with self.assertRaisesRegex(ValueError, 'private_content'):
+            private.check(state, {'title': 'the red fox jumps high'})
+        self.assertTrue(private.remember(state, '<private>blue harbor</private>'))
+        self.assertNotIn('shingles', state['private'])
+        self.assertEqual(len(state['private']['spans']), 2)
+        with self.assertRaisesRegex(ValueError, 'private_content'):
+            private.check(state, {'title': 'red fox jumps'})
+        with self.assertRaisesRegex(ValueError, 'private_content'):
+            private.check(state, {'title': 'Blue Harbor'})
+
+
 if __name__ == '__main__':
     unittest.main()

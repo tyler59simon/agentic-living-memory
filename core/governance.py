@@ -81,13 +81,16 @@ def _check_guards(root,value):
 def history(root,note_id=None,limit=20):
     root=Path(root).resolve();rows=[]
     for path in (root/'.operations').glob('*/journal.json'):
-        value=read_json(path)
-        if note_id:
-            import base64
-            # Sync bookkeeping mentions every note; only real note changes belong in a note's history.
-            effects=[e for e in value['effects'] if not e['path'].endswith('sync-state.json') and '/staged/' not in e['path']]
-            if not any(note_id.encode() in base64.b64decode(e[s]) for e in effects for s in ('before','after') if e[s]):continue
-        rows.append({'operation_id':value['id'],'kind':value['kind'],'state':value['state'],'created':value['created'],'files':[e['path'] for e in value['effects']]})
+        try:
+            value=read_json(path)
+            if note_id:
+                import base64
+                # Sync bookkeeping mentions every note; only real note changes belong in a note's history.
+                effects=[e for e in value['effects'] if not e['path'].endswith('sync-state.json') and '/staged/' not in e['path']]
+                if not any(note_id.encode() in base64.b64decode(e[s]) for e in effects for s in ('before','after') if e[s]):continue
+            row={'operation_id':value['id'],'kind':value['kind'],'state':value['state'],'created':value['created'],'files':[e['path'] for e in value['effects']]}
+        except (ValueError,KeyError,TypeError):continue  # doctor reports unreadable journals by ID
+        rows.append(row)
     return sorted(rows,key=lambda r:r['created'],reverse=True)[:limit]
 
 def inspect_plan(root,identity):
@@ -144,7 +147,11 @@ def merge_plan(root,payload):
 
 def undo(root,operation_id):
     if not __import__('re').fullmatch(r'[A-Za-z0-9_-]{1,100}',operation_id):raise ValueError('Invalid operation ID')
-    root=Path(root).resolve();value=read_json(root/'.operations'/operation_id/'journal.json')
+    root=Path(root).resolve();journal=root/'.operations'/operation_id/'journal.json'
+    try:value=read_json(journal)
+    except ValueError:
+        if journal.exists():raise ValueError(f'corrupt_journal {operation_id}: this operation cannot be undone; see RECOVERY.md') from None
+        raise
     if not value:raise ValueError('Operation unavailable')
     # A plan gives the user a chance to inspect current revisions before undo.
     import base64
