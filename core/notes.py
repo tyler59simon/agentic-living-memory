@@ -464,6 +464,28 @@ def _related(note,domain,root,skip):
         from .logs import swallowed
         swallowed('notes.related',exc,root);return []
 
+USER_BRIEF_MIN_PREFS=2
+
+def _user_brief_hint(note,domain,root):
+    """For a preference, a note in a global domain or one tagged subject/user: how the user brief should hear about it. The brief's update
+    command when one exists, else (with at least USER_BRIEF_MIN_PREFS global preferences) the capture command that creates it. Advisory: never raises."""
+    from .common import global_domains
+    try:
+        globals_=global_domains(root)
+        if note.get('type')=='brief' or not (note.get('type')=='preference' or domain in globals_ or 'subject/user' in (note.get('tags') or [])):return None
+        from .briefs import find_user_brief,USER_BRIEF_LABELS
+        brief=find_user_brief(root)
+        if brief:
+            ref=short_ref(brief['domain'],brief['id'])
+            return f"user brief {ref}: update it if this changes how you work with the user (update {ref} --set-detail '**Label:** ...')"
+        prefs=sum(1 for d in globals_ for n in inventory(d,root) if n.get('type')=='preference' and n.get('status','active')=='active')
+        if prefs<USER_BRIEF_MIN_PREFS:return None
+        details=' '.join(f"--detail '**{label.strip()}:** ...'" for label in USER_BRIEF_LABELS.split(','))
+        return f"no user brief yet ({prefs} global preferences): capture --global --type brief --title 'User brief' --summary '...' {details}"
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('notes.user_brief_hint',exc,root);return None
+
 def capture(title,body,tags,domain,root=None,**metadata):
     root=Path(root or memory_root()).resolve();domain=canonical_domain(domain,root)
     with store_lock(root):
@@ -574,6 +596,8 @@ def capture(title,body,tags,domain,root=None,**metadata):
         warnings=quality_warnings(note)
         if warnings:result['quality_warnings']=warnings
         if supersedes:result['superseded']=[f'{domain}:{old}' for old in supersedes];result['carried_links']=carried;result['carried_files']=carried_files
+        user=_user_brief_hint(note,domain,root)
+        if user:result['user_brief']=user
         return result
 
 def _change_set(note_id,domain,action,root,expected_revision=None,successor=None,pending=None,carried=None,rehash=True,**values):
@@ -742,6 +766,10 @@ def change(note_id,domain,action,root=None,expected_revision=None,plan_only=Fals
             from .repository import parse
             warnings=quality_warnings(parse(target) or {})
             if warnings:result['quality_warnings']=warnings
+        if action=='update':
+            from .repository import parse
+            user=_user_brief_hint(parse(target) or {},domain,root)
+            if user:result['user_brief']=user
         return result
 
 REWRITE_MAX=50

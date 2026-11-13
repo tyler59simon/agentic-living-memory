@@ -7,7 +7,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 from .common import domain_prefixes,resolve_domain,memory_root,git_root,repo_identity
-from .maps import _rows,map_domains,repo_of,repo_name,_identity_of,stale_clause
+from .maps import _rows,_json,map_domains,repo_of,repo_name,_identity_of,stale_clause
 
 BRIEF_BUDGET=2500
 LABELS='Goals and scope, Stakeholders and decision-makers, Team and ownership, Current phase, status and blockers, Key decisions, Active risks, Glossary'
@@ -80,3 +80,32 @@ def pointer_line(hit,entry=None):
     """One line for SessionStart: the brief exists, where, and how fresh."""
     from .notes import short_ref
     return f"Project brief: {short_ref(hit['domain'],hit['id'])} {hit['title']} ({_updated(hit,entry)})"
+
+USER_BRIEF_BUDGET=600
+USER_BRIEF_LABELS='Working style, Preferences, Tools and machine, Current focus'
+
+def find_user_brief(root=None):
+    """The one user brief: the active `brief` with no `files` in a global domain, else None (core/maps.py user_brief_conflict keeps it one)."""
+    from .common import global_domains
+    root=Path(root or memory_root()).resolve()
+    for domain in global_domains(root):
+        for note in _rows(domain,root,'brief'):
+            files=note.get('files')
+            if not (_json(files) if isinstance(files,str) else files):return dict(note,domain=domain)
+    return None
+
+def user_brief_block(hit,budget=USER_BRIEF_BUDGET,summary_only=False):
+    """The user brief for SessionStart: its body capped to budget characters, or just its summary with summary_only."""
+    from .notes import short_ref
+    from .note_format import strip_title,summary_text
+    head=f"User brief {short_ref(hit['domain'],hit['id'])} {hit['title']} (updated {updated_day(hit)}); update it when how the user works changes:"
+    body=strip_title(str(hit.get('body','')).strip()).strip()
+    if summary_only:body=summary_text(body) or body
+    room=max(0,budget-len(head)-1)
+    if len(body)>room:body=body[:max(0,room-1)].rsplit(' ',1)[0].rstrip()+'…'   # a long bullet is cut at a word, not dropped whole
+    return head+'\n'+body
+
+def user_brief_pointer(hit):
+    """One line for SessionStart when the block does not fit."""
+    from .notes import short_ref
+    return f"User brief: {short_ref(hit['domain'],hit['id'])} {hit['title']} (updated {updated_day(hit)}); read it with CMD read"

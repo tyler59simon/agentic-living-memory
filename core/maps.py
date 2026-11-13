@@ -7,7 +7,7 @@ child domain (a repo bound on its own under the session's folder) is still found
 from __future__ import annotations
 import json,os,re,sqlite3,subprocess
 from pathlib import Path
-from .common import domain_prefixes,git_root,resolve_domain,memory_root,repo_identity,repo_label,head_oid
+from .common import domain_prefixes,git_root,resolve_domain,memory_root,repo_identity,repo_label,head_oid,global_domains
 
 MAP_BUDGET=3000  # the body, marker included; the header line is extra
 MAX_MAPS=2
@@ -300,11 +300,24 @@ def repo_notes(hit,repo,root,bindings,shown,budget=REPO_NOTES_BUDGET,files=True,
 
 KEYED={'map':('codebase map','REPO','the repo folder they describe','repo'),'brief':('project brief','DIR','the project folder they describe','project')}
 
+def user_brief_conflict(root,replaced=()):
+    """For a new brief with no files in a global domain, the user brief: an error message when the store already has an active one, else None."""
+    from .notes import short_ref
+    from .repository import inventory
+    for other in global_domains(root):
+        try:hit=next((n for n in inventory(other,root) if n.get('type')=='brief' and not n.get('files') and n.get('status','active')=='active' and n['id'] not in replaced),None)
+        except (OSError,ValueError):continue
+        if hit:
+            ref=short_ref(other,hit['id'])
+            return f"brief_exists conflict: {ref} \"{hit['title']}\" is the user brief; run `update {ref}` (or capture with `--supersedes {ref}`)"
+    return None
+
 def capture_conflict(files,domain,root,bindings,replaced=(),kind='map'):
     """For a new map or brief: an error message when its folder already has an active note of that type, else None."""
     from .notes import short_ref
     from .repository import inventory
     label,arg,what,noun=KEYED[kind]
+    if kind=='brief' and not files and domain in global_domains(root):return user_brief_conflict(root,replaced)
     repo=_resolve(files[0],domain,bindings) if files else None
     if repo is None:return f'{kind} notes need --file {arg} ({what})'
     if not repo.is_dir():return f'{kind} notes describe a {noun} folder; {repo.as_posix()} is not a folder'

@@ -8,7 +8,7 @@ from core.common import load_bindings
 from core.maps import find_map
 from core.notes import find_note,capture
 from core.note_types import review_due
-from core.briefs import find_brief,project_dir,project_key
+from core.briefs import find_brief,find_user_brief,project_dir,project_key,USER_BRIEF_BUDGET
 
 class BriefFixture(StoreFixture):
     def setUp(self):
@@ -228,5 +228,84 @@ class BriefReminders(BriefFixture):
         self.prompt();self.tool('Edit',{'file_path':str(self.project/'app'/'main.py')},permission_mode='plan')
         self.assertEqual(self.stop(permission_mode='plan'),{})
         self.assertNotIn('briefed',self.state())
+
+class UserBrief(BriefFixture):
+    """The user brief: a `brief` with no files in a global domain, one per store, shown at SessionStart and named in preference hints."""
+    def setUp(self):
+        super().setUp()
+        (self.root/'tag_taxonomy.json').write_text(json.dumps({'tags':['subject/project','subject/user','concern/architecture','concern/decision','concern/knowledge','concern/preference']}))
+    def capture_user(self,title='User brief',*extra):
+        return self.cli('--domain','demo','capture','--global','--type','brief','--title',title,'--summary','A terse developer on Windows who reviews diffs closely.',
+                        '--detail','**Working style:** Short answers first.','--detail','**Tools and machine:** Windows 11, PowerShell, Python 3.15.',*extra)
+    def preference(self,title,*extra):
+        return self.cli('--domain','demo','capture','--global','--type','preference','--title',title,'--summary',f'{title}, always.',*extra)
+
+    def test_capture_without_files_is_accepted_in_global_and_one_per_store(self):
+        code,made=self.capture_user();self.assertEqual(code,0,made)
+        note=find_note(made['id'],'_global',self.root)[1]
+        self.assertEqual((note['type'],note.get('files')),('brief',None));self.assertIn('subject/user',note['tags'])
+        self.assertEqual(find_user_brief(self.root)['id'],made['id'])
+        code,again=self.capture_user('Other user brief','--allow-similar')
+        self.assertNotEqual(code,0);self.assertIn('brief_exists conflict',json.dumps(again));self.assertIn('is the user brief',json.dumps(again))
+        code,replaced=self.capture_user('Newer user brief','--supersedes','_global:'+made['id'])
+        self.assertEqual(code,0,replaced);self.assertEqual(find_user_brief(self.root)['id'],replaced['id'])
+        other=self.cli('--domain','demo','capture','--global','--type','knowledge','--title','Machine notes','--summary','Notes.')[1]
+        code,error=self.cli('--domain','demo','update','_global:'+other['id'],'--type','brief')
+        self.assertNotEqual(code,0);self.assertIn('brief_exists conflict',json.dumps(error))      # retyping a note into a second user brief is refused too
+
+    def test_a_project_brief_without_files_is_still_refused_and_the_user_brief_is_not_a_project_brief(self):
+        code,error=self.cli('--domain','demo','capture','--type','brief','--title','Loose brief','--summary','No folder named.')
+        self.assertNotEqual(code,0);self.assertIn('brief notes need --file DIR',json.dumps(error))
+        self.capture_user();self.assertIsNone(find_brief(self.cwd,self.root,load_bindings(self.root)))
+        self.hook('session-start');self.assertNotIn('Project brief',self.prompt()['context'])
+        self.assertEqual(self.capture_brief()[0],0)                                                   # a project brief and the user brief coexist
+        self.assertEqual(find_brief(self.cwd,self.root,load_bindings(self.root))['title'],'project project brief')
+        self.assertEqual(find_user_brief(self.root)['title'],'User brief')
+
+    def test_session_start_shows_it_within_its_budget_and_marks_it_shown(self):
+        self.fill_notes(4)
+        code,made=self.cli('--domain','demo','capture','--global','--type','brief','--title','User brief','--summary','A terse developer.',
+                           '--detail','**Working style:** '+'Short answers first. '*60,'--detail','**Current focus:** The user brief.')
+        trace={};text,shown,_=session_start.build_context(self.cwd,self.root,trace=trace)
+        block=text[text.index('User brief _global:'):].split('\n- [')[0].split('\nOther notes')[0]
+        self.assertLessEqual(len(block),USER_BRIEF_BUDGET);self.assertIn('Short answers first.',block)
+        self.assertEqual(trace['degrade']['user_brief'],2);self.assertIn('_global:'+made['id'],shown)
+        self.assertEqual(text.count(made['id'][:8]),1)                                                # one block, not also an index line
+        self.assertLessEqual(len(text),session_start.BUDGET)
+
+    def test_it_degrades_to_its_summary_then_a_pointer_before_guidance_snippets_go(self):
+        self.fill_notes(4)
+        self.cli('--domain','demo','capture','--type','decision','--title','Money is BigDecimal','--summary','Store money as BigDecimal.')
+        code,made=self.capture_user();seen={}
+        for budget in range(session_start.BUDGET,150,-10):
+            trace={};text,shown,_=session_start.build_context(self.cwd,self.root,budget,trace=trace)
+            seen.setdefault(trace['degrade']['user_brief'],(trace['degrade']['titles_only'],text,shown))
+        self.assertEqual(set(seen),{2,1,0})
+        self.assertIn('Short answers first.',seen[2][1])
+        self.assertNotIn('Short answers first.',seen[1][1]);self.assertIn('A terse developer on Windows',seen[1][1])
+        self.assertNotIn('A terse developer on Windows',seen[0][1]);self.assertIn('User brief: _global:'+made['id'][:8],seen[0][1])
+        for level in (1,0):self.assertFalse(seen[level][0])                                           # guidance snippets were still whole when the brief shrank
+        self.assertIn('_global:'+made['id'],seen[2][2]);self.assertNotIn('_global:'+made['id'],seen[1][2])   # only the whole block counts as shown
+
+    def test_the_hint_names_the_brief_or_offers_to_create_it(self):
+        code,first=self.preference('Prefer tabs');self.assertEqual(code,0)
+        self.assertNotIn('user_brief',first)                                                          # one preference is not enough to ask for a brief
+        code,second=self.preference('Short answers first')
+        self.assertIn('no user brief yet (2 global preferences)',second['user_brief'])
+        self.assertIn("capture --global --type brief --title 'User brief'",second['user_brief'])
+        for label in ('Working style','Preferences','Tools and machine','Current focus'):self.assertIn(f'**{label}:**',second['user_brief'])
+        plain=self.cli('--domain','demo','capture','--type','knowledge','--title','Plain fact','--summary','Nothing about the user.')[1]
+        self.assertNotIn('user_brief',plain)
+        code,made=self.capture_user();self.assertNotIn('user_brief',made)                             # the brief itself is not hinted
+        ref='_global:'+made['id'][:8]
+        code,third=self.preference('Run tests first')
+        self.assertIn(f'user brief {ref}: update it if this changes how you work with the user',third['user_brief'])
+        self.assertIn(f"update {ref} --set-detail '**Label:** ...'",third['user_brief'])
+        code,changed=self.cli('--domain','demo','update','_global:'+third['id'],'--body','Run the whole test suite first.')
+        self.assertIn(ref,changed['user_brief'])
+        code,edited=self.cli('--domain','demo','update',ref,'--set-detail','**Current focus:** Writing the user brief.')
+        self.assertEqual(code,0);self.assertNotIn('user_brief',edited)
+        tagged=self.cli('--domain','demo','capture','--type','context','--tag','subject/user','--title','Works from a laptop','--summary','The user works from a laptop.')[1]
+        self.assertIn(ref,tagged.get('user_brief',''))                                                # a project note tagged subject/user counts too
 
 if __name__=='__main__':unittest.main()

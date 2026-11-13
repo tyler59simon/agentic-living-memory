@@ -141,6 +141,15 @@ def _brief_line(cwd,root,bindings,currency=None):
         from .logs import swallowed
         swallowed('session_start.brief_line',exc,root);return None
 
+def _user_brief(root):
+    """The user brief (briefs.find_user_brief), else None; never raises."""
+    try:
+        from .briefs import find_user_brief
+        return find_user_brief(root)
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('session_start.user_brief',exc,root);return None
+
 def _open_lines(active,root,bindings,project=None):
     """(header line, lines, how many lines are notes with open action items) for the active, parent and global domains: those notes
     first (the current project's first, stable; the count in the header does not change), then bugs with no recorded root cause."""
@@ -201,6 +210,9 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
         notes=sorted(notes,key=lambda n:-power.get(f"{n['domain']}:{n['id']}",0))
     if not notes:
         return _cap("\n".join([f"Living Memory is active for domain '{active}'. Search prior decisions before repeating work."]+last+tail),budget),[],False
+    from .briefs import user_brief_block,user_brief_pointer
+    user=_user_brief(root)
+    if user:notes=[n for n in notes if (n['domain'],n['id'])!=(user['domain'],user['id'])]   # shown as its own block, not as an index line
     guidance=[n for n in notes if n.get('type') in PRIORITY][:GUIDANCE]
     gotchas=[n for n in notes if n.get('type') not in PRIORITY and is_gotcha(n)][:GOTCHAS]
     chosen={id(n) for n in guidance+gotchas};index=[n for n in notes if id(n) not in chosen][:INDEX]
@@ -220,8 +232,8 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
             text=stale_note(n,root,bindings);flagged[key]=text+' — ' if text else ''
         return flagged[key]+unconfirmed(n)
 
-    def render(listed,opened,width,search,titles_only,with_tail=True,psummary=True,with_brief=True,gcount=0,gsnip=True,summaries=False):
-        lines=[header]+([_project_line(project,root,psummary)] if project else here)+([brief] if brief and with_brief else [])+last
+    def render(listed,opened,width,search,titles_only,with_tail=True,psummary=True,with_brief=True,gcount=0,gsnip=True,summaries=False,ubrief=2):
+        lines=[header]+([_project_line(project,root,psummary)] if project else here)+([user_brief_block(user,summary_only=ubrief==1) if ubrief else user_brief_pointer(user)] if user else [])+([brief] if brief and with_brief else [])+last
         for n in guidance:
             line=f"- [{str(n.get('type','note')).upper()} {_updated(n)[:10]}] {short_ref(n['domain'],n['id'])} {flag(n)}{_title(n['title'])}"
             lines.append(line if titles_only else line+' — '+snippet(n.get('body',''),[],width))
@@ -240,10 +252,10 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
 
     # Degrade cheapest-first until it fits: the unexplained-bug lines, the index summaries, the gotcha snippets, index lines from the bottom, gotcha
     # lines, open-work lines down to the count, the project line's charter summary (name, tag and ref stay), the brief
-    # pointer, shorter snippets, the search hint, guidance snippets, then the review and problem lines.
+    # pointer, the user brief (to its summary, then a pointer), shorter snippets, the search hint, guidance snippets, then the review and problem lines.
     listed,opened,width,search,titles_only,with_tail,psummary,with_brief=len(index),len(open_lines),SESSION_SNIPPET,True,False,True,True,True
-    gcount,gsnip,summaries=len(gotchas),True,small
-    text=render(listed,opened,width,search,titles_only,gcount=gcount,summaries=summaries)
+    gcount,gsnip,summaries=len(gotchas),True,small;ubrief=2   # the user brief: 2 whole block, 1 summary, 0 pointer
+    text=render(listed,opened,width,search,titles_only,gcount=gcount,summaries=summaries,ubrief=ubrief)
     while len(text)>budget:
         if opened>open_items:opened-=1   # a bug with no recorded root cause is the cheapest thing to lose; its note is still indexed
         elif summaries:summaries=False
@@ -253,20 +265,22 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
         elif opened:opened-=1
         elif psummary and project:psummary=False
         elif with_brief and brief:with_brief=False
+        elif ubrief and user:ubrief-=1
         elif width>SHORT_SNIPPET:width=SHORT_SNIPPET
         elif search:search=False
         elif not titles_only:titles_only=True
         elif with_tail and tail:with_tail=False
         else:break
-        text=render(listed,opened,width,search,titles_only,with_tail,psummary,with_brief,gcount,gsnip,summaries)
+        text=render(listed,opened,width,search,titles_only,with_tail,psummary,with_brief,gcount,gsnip,summaries,ubrief)
     # Title-only guidance did not show its content, so prompts may still inject it. Shown guidance maps
     # ref -> revision key: a later correction of the note is new content and may be injected again. Gotchas
     # shown with a snippet count as shown; index lines, even with a summary, do not.
     shown={} if titles_only else {f"{n['domain']}:{n['id']}":str(n.get('revision') or '')[:12] for n in guidance}
     if gsnip:shown.update({f"{n['domain']}:{n['id']}":str(n.get('revision') or '')[:12] for n in gotchas[:gcount]})
+    if user and ubrief==2:shown[f"{user['domain']}:{user['id']}"]=str(user.get('revision') or '')[:12]
     if isinstance(trace,dict):
         trace['degrade']={'listed':listed,'of':len(index),'opened':opened,'open_of':len(open_lines),'width':width,'search':search,
-                          'titles_only':titles_only,'gotchas':gcount,'gotcha_of':len(gotchas),'gotcha_snippets':gsnip,'summaries':summaries,'tail':with_tail,'project_summary':psummary,'brief':bool(brief and with_brief),'capped':len(text)>budget}
+                          'titles_only':titles_only,'gotchas':gcount,'gotcha_of':len(gotchas),'gotcha_snippets':gsnip,'summaries':summaries,'tail':with_tail,'project_summary':psummary,'brief':bool(brief and with_brief),'user_brief':ubrief if user else None,'capped':len(text)>budget}
     return _cap(text,budget),shown,bool(listed)
 
 def _cap(text,budget):

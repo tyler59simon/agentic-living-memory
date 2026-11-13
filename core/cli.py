@@ -75,10 +75,15 @@ def _facet_tags(args,facets=FACET_FLAGS):
 # Defaults when a capture names no subject/ or concern/ tag; used only if the tag is in the taxonomy.
 SUBJECT_BY_TYPE={'preference':'subject/user'}
 CONCERN_BY_TYPE={'decision':'concern/decision','preference':'concern/preference','bug':'concern/bug','knowledge':'concern/knowledge','policy':'concern/workflow','map':'concern/architecture','runbook':'concern/workflow','brief':'concern/knowledge','plan':'concern/workflow','context':'concern/knowledge','status':'concern/knowledge','risk':'concern/constraint','research':'concern/knowledge'}
-def _infer_tags(item,root):
+def _global_names(root):
+    from .common import global_domains
+    return global_domains(root)
+
+def _infer_tags(item,root,user=False):
+    """Adds the default subject and concern tags the taxonomy knows; user marks the user brief (a global brief with no files), which is about the user."""
     from .notes import taxonomy
     known=taxonomy(root);tags=list(item.get('tags') or []);kind=item.get('type') or 'knowledge';added=[]
-    for facet,tag in (('subject',SUBJECT_BY_TYPE.get(kind,'subject/project')),('concern',CONCERN_BY_TYPE.get(kind))):
+    for facet,tag in (('subject','subject/user' if user else SUBJECT_BY_TYPE.get(kind,'subject/project')),('concern',CONCERN_BY_TYPE.get(kind))):
         if tag and tag in known and not any(t.startswith(facet+'/') for t in tags):tags.append(tag);added.append(tag)
     item['tags']=tags
     return added
@@ -632,7 +637,7 @@ def main(argv=None):
                         selected=global_domain(root)
                     if session and not turn:turn=_turn(root,session,None)
                     if not selected:raise ValueError('Project is unbound; pass --domain or bind it')
-                    inferred=_infer_tags(item,root);redacted=_redact(item) if args.redact else []
+                    inferred=_infer_tags(item,root,item.get('type')=='brief' and not item.get('files') and selected in _global_names(root));redacted=_redact(item) if args.redact else []
                     # Project attribution: capture only. cwd counts only for a session (serve passes the app's own cwd to every request).
                     from . import projects
                     ptags,candidates=projects.infer(item,selected,root,_session_state(root,session).get('touched',[]) if session else (),cwd if session else None)

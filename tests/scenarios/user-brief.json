@@ -1,0 +1,22 @@
+{
+ "name": "user-brief",
+ "description": "The one user brief: a global brief with no files. A preference capture with none yet (and two global preferences) is offered the create command; the brief is captured without --file, a second one and a project brief without --file are refused; the brief opens the next session; a later preference capture or update points at it.",
+ "harnesses": ["claude"],
+ "notes": [
+  {"key": "tabs", "domain": "_global", "type": "preference", "title": "Prefer tabs over spaces", "body": "Indent with tabs in every language that allows it.", "tags": ["subject/user", "concern/preference"]}
+ ],
+ "steps": [
+  {"cli": ["capture", "--global", "--title", "Short answers first", "--summary", "Lead with the answer, then the detail.", "--type", "preference"], "as": "short",
+   "expect": {"exit": 0, "status": "created", "result_contains": ["no user brief yet (2 global preferences)", "capture --global --type brief"]}},
+  {"cli": ["capture", "--global", "--type", "brief", "--title", "User brief", "--summary", "A terse, Windows-based developer who reviews diffs closely.", "--detail", "**Working style:** Short answers, asks before large refactors.", "--detail", "**Tools and machine:** Windows 11, PowerShell and Git Bash, Python 3.15."], "as": "ubrief",
+   "expect": {"exit": 0, "status": "created", "result": {"domain": "_global"}, "result_excludes": ["no user brief yet"]}},
+  {"cli": ["capture", "--global", "--type", "brief", "--title", "Second user brief", "--summary", "Another one.", "--detail", "**Working style:** x"], "expect": {"exit": 5}},
+  {"cli": ["capture", "--type", "brief", "--title", "Loose project brief", "--summary", "No folder.", "--detail", "**Goals and scope:** x"], "expect": {"exit": 2}},
+  {"session": "s2"},
+  {"hook": "session-start", "expect": {"context_contains": ["User brief {short:@ubrief} User brief", "Short answers, asks before large refactors.", "Windows 11, PowerShell"], "detail": {"shown": ["@short", "@tabs", "@ubrief"]}}},
+  {"cli": ["capture", "--global", "--title", "Run tests before committing", "--summary", "Run the suite before every commit.", "--type", "preference"],
+   "expect": {"exit": 0, "status": "created", "result_contains": ["user brief {short:@ubrief}: update it if this changes how you work with the user"]}},
+  {"cli": ["update", "@short", "--body", "Lead with the answer, then the reasons."], "expect": {"exit": 0, "result_contains": ["user brief {short:@ubrief}: update it"]}},
+  {"cli": ["update", "@ubrief", "--set-detail", "**Current focus:** Living Memory user brief."], "expect": {"exit": 0, "result_excludes": ["user brief "]}}
+ ]
+}
