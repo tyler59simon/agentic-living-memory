@@ -141,6 +141,18 @@ def record_skips(root,domain,items,cwd=None,bindings=None):
         if folder.is_dir():atomic_write(folder/SKIPS,canonical_json(kept))
     return count
 
+def clear_skips(root,domain,paths,cwd=None,bindings=None):
+    """Remove the skip markers of these paths (as ingest-scan prints them; one that cannot be resolved is tried as written), so they read new again. The count removed."""
+    from .common import atomic_write
+    bindings=bindings if bindings is not None else load_bindings(root);found=skips(root,domain);count=0
+    for path in paths:
+        try:key=describe(root,domain,path,cwd,bindings)['path']
+        except (ValueError,KeyError,TypeError):key=path
+        if isinstance(key,str) and found.pop(key,None) is not None:count+=1
+    folder=Path(root)/'domains'/domain
+    if count and folder.is_dir():atomic_write(folder/SKIPS,canonical_json(found))
+    return count
+
 # ---- ingest-scan: a ranked worklist ----------------------------------------------------------------------------------
 ADR=re.compile(r'(?:^|/)(?:adrs?|decisions?|decision-records?)/|(?:^|/)adr[-_ ]?\d',re.I)
 ENTRY=frozenset('main app cli server index __main__ manage wsgi asgi program startup application bootstrap'.split())

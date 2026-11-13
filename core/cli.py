@@ -990,11 +990,11 @@ def main(argv=None):
             if not domain:raise ValueError('unbound_project')
             result=scan(root,domain,args.source,max(1,min(100000,args.limit)),args.changed,load_bindings(root))
         elif cmd=='ingest-skip':
-            from .digests import record_skips
+            from .digests import record_skips,clear_skips
             if not domain:raise ValueError('unbound_project')
-            data=_payload(args);items=data.get('skipped') if isinstance(data,dict) else data
-            if not isinstance(items,list):raise ValueError('ingest-skip takes {"skipped": [{"path", "reason"}, ...]}')
-            with store_lock(root):result={'ok':True,'domain':domain,'recorded':record_skips(root,domain,items,cwd,load_bindings(root))}
+            data=_payload(args);items=data.get('skipped') if isinstance(data,dict) else data;clear=data.get('clear') if isinstance(data,dict) else None
+            if (items is None and clear is None) or not isinstance(items or [],list) or not isinstance(clear or [],list):raise ValueError('ingest-skip takes {"skipped": [{"path", "reason"}, ...], "clear": ["path", ...]}')
+            with store_lock(root):result={'ok':True,'domain':domain,'recorded':record_skips(root,domain,items or [],cwd,load_bindings(root)),'cleared':clear_skips(root,domain,clear or [],cwd,load_bindings(root))}
         elif cmd=='source-sync':
             from .sources import sync
             if not domain:raise ValueError('unbound_project')
