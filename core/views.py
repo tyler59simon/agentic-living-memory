@@ -101,7 +101,7 @@ def view_model(note,root=None):
     items=[]
     for number,(done,raw) in enumerate(action_items(body),1):
         groups,ident,text=parse_item(raw)
-        items.append({'index':number,'done':bool(done),'text':text,'tags':[t for g in groups for t in g],'groups':groups,'id':ident,'detail':None})
+        items.append({'index':number,'done':bool(done),'text':text,'tags':[t for g in groups for t in g],'id':ident,'detail':None})
     for item in items:
         if not item['id']:continue
         label=item['id'].casefold()
@@ -275,10 +275,13 @@ function save(){
   try{history.replaceState(null,'',location.href.split('#')[0]+(p.toString()?'#'+p.toString():''))}catch(e){}
 }
 
-// Chips: a tag belongs to the facet of the earliest [bracket group] position it appears in. An item passes when, for every
-// facet with chips selected, it has at least one of that facet's selected tags (OR within a facet, AND across facets).
+// Chips: every tag belongs to one of three facets, by what it is: priority (P1, P2, ...), status (approved, next, failed, ...) or
+// anything else (an area such as ALM). An item passes when, for every facet with chips selected, it has at least one of that
+// facet's selected tags: OR within a facet, AND across facets. (Bracket position is not used: it shifts when a group is left out.)
+var STATUS={approved:1,active:1,succeeded:1,next:1,proposed:1,busy:1,running:1,waiting:1,paused:1,deprecated:1,failed:1,blocked:1,done:1};
+function kind(t){return /^P\\d$/i.test(t)?0:(STATUS.hasOwnProperty(t.toLowerCase())?1:2)}
 var facet=new Map();
-items.forEach(function(it){(it.groups||[]).forEach(function(g,pos){g.forEach(function(t){if(!facet.has(t)||pos<facet.get(t))facet.set(t,pos)})})});
+items.forEach(function(it){it.tags.forEach(function(t){facet.set(t,kind(t))})});
 function passes(it){
   if(st.tab==='open'&&it.done)return false;
   if(st.tab==='done'&&!it.done)return false;
