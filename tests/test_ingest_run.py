@@ -172,6 +172,11 @@ class Agent(IngestRun):
         reply=json.dumps({'total_cost_usd':0.1,'result':'{}','permission_denials':[{'tool_name':'Read','tool_input':{'file_path':'a.py'}},{'tool_name':'Bash'}]})
         cost,digested,skipped,failed,count,denied=self.script().read_report(reply)
         self.assertEqual(count,2);self.assertEqual(denied,[{'tool':'Read','input':'{"file_path": "a.py"}'},{'tool':'Bash','input':'null'}])
+    def test_a_credential_in_a_denied_call_is_redacted_before_it_is_logged(self):
+        token='ghp_'+'a1B2'*9
+        reply=json.dumps({'total_cost_usd':0.1,'result':'{}','permission_denials':[{'tool_name':'Bash','tool_input':{'command':'export GITHUB_TOKEN='+token}}]})
+        denied=self.script().read_report(reply)[5]
+        self.assertNotIn(token,json.dumps(denied));self.assertIn("<redacted type='GitHub token'/>",denied[0]['input'])
 
 class Skips(IngestRun):
     UTIL='kb/src/util.py'

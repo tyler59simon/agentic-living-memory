@@ -2039,7 +2039,8 @@ def stop_text(pending,session,used=None):
         if kind in MAP_KINDS+BRIEF_KINDS and parts:part='Also: '+part
         # A document that does not fit with its notes is still asked about, with fewer of them.
         while not fits(part) and kind=='doc' and data['notes']:data={**data,'notes':data['notes'][:-1]};part=_stop_part(kind,data,session)
-        while not fits(part) and kind=='digests' and len(data)>1:data=data[:-1];part=_stop_part(kind,data,session)
+        # The batch is trimmed to the real budget even as the first part (fits() always admits the first), keeping one digest.
+        while kind=='digests' and len(data)>1 and len('Living Memory: '+' '.join(parts+[part]))+len(closing)+len(tail)>STOP_TEXT_CAP:data=data[:-1];part=_stop_part(kind,data,session)
         if not fits(part):continue
         parts.append(part)
         if kind=='doc':docs+=1;notes+=len(data['notes'])

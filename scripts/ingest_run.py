@@ -114,10 +114,13 @@ def read_report(stdout):
     denials = outer.get('permission_denials')
     denials = denials if isinstance(denials, list) else []
     denied = []
-    for d in denials:   # which calls were blocked: the tool and the start of its command (or input)
+    if str(REPO) not in sys.path:
+        sys.path.insert(0, str(REPO))
+    from core.repository import redact   # the capture redactor: a credential in a denied call never reaches the run log
+    for d in denials:   # which calls were blocked: the tool and the start of its command (or input), credentials redacted first
         tool_input = d.get('tool_input') if isinstance(d, dict) else None
         text = tool_input.get('command') if isinstance(tool_input, dict) and tool_input.get('command') else json.dumps(tool_input)
-        denied.append({'tool': d.get('tool_name') if isinstance(d, dict) else None, 'input': str(text)[:200]})
+        denied.append({'tool': d.get('tool_name') if isinstance(d, dict) else None, 'input': redact(str(text))[0][:200]})
     return float(cost), digested, skipped, failed, len(denials), denied
 
 

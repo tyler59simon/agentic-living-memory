@@ -200,6 +200,13 @@ class BatchedFollowThrough(Digests):
         self.assertLessEqual(len(reason),runtime.STOP_TEXT_CAP)
         self.assertEqual(len(self.state()['followed']),3)
 
+    def test_a_leading_digest_batch_is_trimmed_to_the_text_budget(self):
+        session='0b5e2d6c-7a1f-4c3e-9d2b-8f6a1e4c7b90'
+        pending=[('follow',{'ref':f'demo:{i}'*4,'short':f'demo:{i:08d}','title':'t','type':'knowledge','path':f'very/long/package/path/segment/number/{i}/module_with_a_long_name.py','digest':True}) for i in range(5)]
+        used=[];text=runtime.stop_text(pending,session,used)
+        self.assertLessEqual(len(text),runtime.STOP_TEXT_CAP);self.assertIn('whose digests may be outdated',text)
+        self.assertTrue(0<len(used)<5);self.assertEqual(len(used),text.count('module_with_a_long_name.py'))
+
     def note_of_short(self,short):return find_note(short.split(':',1)[1],'demo',self.root)[1]
 
     def test_confirming_a_digest_from_the_reminder_clears_its_stale_flag(self):
