@@ -590,6 +590,11 @@ def main(argv=None):
             from .notes import capture
             structured=any(getattr(args,k) for k in SECTION_ARGS)
             if args.items or args.content_file or structured:
+                # With --title, a positional value is a mistake (most often a second value after one --detail flag); read as the
+                # positional domain/title/body form it would silently replace the title or body, or name a wrong domain.
+                if args.title and args.items:
+                    raise ValueError(f"capture --title takes no positional values, got {len(args.items)} ({str(args.items[0])[:60]!r}...): "
+                                     "pass each bullet with its own flag (--detail 'A' --detail 'B')")
                 if len(args.items)==3:domain,title,body=args.items
                 elif len(args.items)==2:title,body=args.items
                 elif args.content_file and args.title:title=args.title;body=args.content_file.read_text(encoding='utf-8')

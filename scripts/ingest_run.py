@@ -41,6 +41,7 @@ Read each of these {count} files (the location after "read:"), then write ONE di
 - TYPE: {types}. Subject and concern tags are inferred.
 - 300-1,200 characters of load-bearing facts in all: what the file is, its key rules, decisions, constraints and gotchas, and how it connects to the rest. Cite lines as path:line. Do not copy code or long passages; never put a secret in a note.
 - Give --source the path exactly as listed; add --file '<path>' unless the file is marked (no --file).
+- Give each bullet its own flag (--detail '...' --detail '...'); a second value after one --detail is refused. Leave the dollar sign out of note text (write COPILOT_HOME, not $env:COPILOT_HOME): a command containing $ needs approval and is blocked.
 - Skip a trivial file (empty, boilerplate, generated, a few lines): capture nothing, give a one-line reason. "skipped" is only for trivial files.
 - If a capture of a file fails (the command is refused or errors, or a permission prompt blocks it), do not retry it in another way and never report it as skipped: list it under "failed" with the reason.
 - A file marked "stale" has an old digest: capture the new one anyway and it replaces the old one. If a capture is refused as a possible duplicate, read the note it names and update it instead.
