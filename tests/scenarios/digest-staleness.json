@@ -1,6 +1,6 @@
 {
  "name": "digest-staleness",
- "description": "A digest note records the files it was written from (sources: path and sha256). When a listed file changes after the digest, SessionStart lines, prompt hits, file hints and ask results say STALE with the path, review lists it, and editing the file asks about the digest at Stop; a digest of an unchanged file is never flagged, and confirming the stale one (the author checked the file) clears the flag everywhere.",
+ "description": "A digest note records the files it was written from (sources: path and sha256). When a listed file changes after the digest, SessionStart lines, prompt hits, file hints and ask results say STALE with the path, review lists it, and editing the files asks about their digests at Stop (several in one sentence); a digest of an unchanged file is never flagged, and confirming the stale one (the author checked the file) clears the flag everywhere.",
  "harnesses": ["claude", "codex"],
  "git": [
   {"folder": "project/billing", "commits": [
@@ -24,7 +24,7 @@
    "expect": {"hints": ["@readme"], "context_contains": ["STALE: billing/README.md changed since this digest — "]}},
   {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/billing/src/ledger.py"}},
    "expect": {"hints": ["@ledger"], "context_excludes": ["STALE"]}},
-  {"hook": "stop", "expect": {"reminder": "follow", "reminder_contains": ["You edited billing/README.md", "{short:@readme} billing/README.md: retry policy", "CMD confirm {short:@readme} --session {session}"]}},
+  {"hook": "stop", "expect": {"reminder": "follow", "reminder_contains": ["You edited files whose digests may be outdated: ", "{short:@readme} (billing/README.md)", "{short:@ledger} (billing/src/ledger.py)", "CMD confirm REF --session {session}"]}},
   {"cli": ["review"], "expect": {"exit": 0, "result": {"stale_digests": 1}, "result_contains": ["STALE: billing/README.md changed since this digest", "{short:@readme}"], "result_excludes": ["STALE: billing/src/ledger.py"]}},
   {"cli": ["ask", "exponential backoff retry for failed payment captures"], "expect": {"exit": 0, "result_contains": ["\"stale\":\"STALE: billing/README.md changed since this digest\""]}},
   {"cli": ["confirm", "@readme", "--session", "{session}"], "expect": {"exit": 0, "status": "confirm"}},

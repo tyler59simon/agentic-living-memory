@@ -493,19 +493,21 @@ FOLLOW_BODY_TYPES={'bug','decision'}
 MAX_DOCS=10
 MAX_DOCS_REMINDED=50
 
-def file_hints(paths,state,root,domain,bindings,session=None,trace=None,follow=None):
+def file_hints(paths,state,root,domain,bindings,session=None,trace=None,follow=None,digested=None):
     """(context naming notes about files about to be changed, paths looked up). Each file is looked up
     once per session; a missing or stale index gives no hint rather than slowing the tool call. follow, when a
     dict, receives path -> refs of the notes a later update should be asked of: those listing the file, and
-    bug or decision notes naming it in the body."""
+    bug or decision notes naming it in the body. digested, when a list, receives the refs that are digests of an edited file."""
     try:
-        from .search import file_notes
+        from .search import file_notes,file_matches
         from . import digests
         seen=set(state.get('file_hints',[]));wanted=[p for p in paths if p not in seen][:HINT_FILES_PER_CALL]
         domains=[domain]+parent_domains(domain,bindings);blocks=[];refs=[]
         for path in wanted:
             hits=file_notes(path,domains,root,HINT_NOTES_PER_FILE,ensure_fresh=False)
             if hits:
+                if isinstance(digested,list):   # read before mark() drops `sources`
+                    digested+=[f"{h['domain']}:{h['id']}" for h in hits if h.get('sources') and file_matches([s['path'] for s in h['sources']],path)]
                 digests.mark(hits,root,bindings)
                 blocks.append(f'Living Memory notes about {path}:\n'+'\n'.join(hit_line(h) for h in hits))
                 refs+=[f"{h['domain']}:{h['id']}" for h in hits]
@@ -1668,8 +1670,8 @@ def _process(harness,event,payload,root=None,info=None):
         if not skip:
             paths=touched_paths(args,payload,cwd,root,domain,bindings,shell=name in SHELL_TOOLS)
             detail['touched']=len(paths);detail['hints']=[]
-            follow={}
-            hints,looked=file_hints(paths,state,root,domain,bindings,session,detail['hints'],follow) if harness in FILE_HINT_HARNESSES else (None,[])
+            follow={};digested=[]
+            hints,looked=file_hints(paths,state,root,domain,bindings,session,detail['hints'],follow,digested) if harness in FILE_HINT_HARNESSES else (None,[])
             if hints:result['context']='\n'.join(filter(None,[result.get('context'),hints]))
             # Decision documents (ADRs, changelogs, boards) changed this turn; Stop asks for a note about them.
             from .triggers import decision_docs
@@ -1682,6 +1684,7 @@ def _process(harness,event,payload,root=None,info=None):
                     if follow:
                         hinted={p:r for p,r in (s.get('hinted') or {}).items() if p not in follow};hinted.update(follow)
                         s['hinted']=dict(list(hinted.items())[-MAX_HINTED:])
+                        if digested:s['hinted_digests']=list(dict.fromkeys(list(s.get('hinted_digests',[]))+digested))[-MAX_HINTED:]
                     s['touched']=list(dict.fromkeys(list(s.get('touched',[]))+paths))[:MAX_TOUCHED]
                     s['touched_session']=list(dict.fromkeys(list(s.get('touched_session',[]))+paths))[-MAX_TOUCHED_SESSION:]
                     if looked:s['file_hints']=list(dict.fromkeys(list(s.get('file_hints',[]))+looked))[-MAX_FILE_HINTS:]
@@ -1814,6 +1817,7 @@ STOP_KINDS=frozenset(BLOCKING_SIGNALS|{'doc','follow','stale'}|set(BRIEF_KINDS))
 STOP_TEXT_CAP=700
 STOP_DOCS=2
 STOP_NOTES=2
+STOP_DIGESTS=5   # digests of edited files one Stop reminder names, in a single sentence
 BOILERPLATE_HEADINGS={'context','decision','decisions','consequences','status','background','summary','overview','alternatives','options','notes','rationale','changelog','unreleased'}
 
 def stop_pending(root,bindings,state,session,turns,domain=None,cwd=None,planning=False):
@@ -1957,18 +1961,20 @@ def doc_pending(root,bindings,state,domain,cwd):
     return [('doc',{'path':d,'notes':doc_notes(root,bindings,domain,d,files.get(d) or _doc_file(d,prefixes))}) for d in docs]
 
 def follow_pending(root,state):
-    """[('follow', {ref, short, title, type, path})]: notes a hint named for a file that was edited this turn and
-    have not been updated, confirmed or asked about in this session."""
+    """[('follow', {ref, short, title, type, path, digest})]: notes a hint named for a file that was edited this turn and
+    have not been updated, confirmed or asked about in this session; digest marks a digest of that file."""
     from .search import active_notes
     from .notes import short_ref
     from .session_start import _title
     hinted=state.get('hinted') if isinstance(state.get('hinted'),dict) else {}
-    skip=set(state.get('saved',[]))|set(state.get('followed',[]));wanted={}
+    skip=set(state.get('saved',[]))|set(state.get('followed',[]));wanted={};digested=set(state.get('hinted_digests') or [])
     for path in state.get('touched',[]):
         for ref in hinted.get(path,[]):
             if ref not in skip:wanted.setdefault(ref,path)
-    active=active_notes(list(wanted)[:STOP_NOTES+1],root)
-    return [('follow',{'ref':ref,'short':short_ref(*ref.split(':',1)),'title':_title(active[ref][0]),'type':active[ref][1],'path':wanted[ref]}) for ref in wanted if ref in active]
+    # Digests are batched into one sentence, so they are loaded apart from the notes that each get their own.
+    refs=[r for r in wanted if r in digested][:STOP_DIGESTS]+[r for r in wanted if r not in digested][:STOP_NOTES+1]
+    active=active_notes(refs,root)
+    return [('follow',{'ref':ref,'short':short_ref(*ref.split(':',1)),'title':_title(active[ref][0]),'type':active[ref][1],'path':wanted[ref],'digest':ref in digested}) for ref in wanted if ref in active]
 
 def _stop_part(kind,data,session):
     if kind in BLOCKING_SIGNALS:
@@ -1982,6 +1988,9 @@ def _stop_part(kind,data,session):
         if named:text+=(', or update the note it changes: '+'; '.join(f"{n['short']} {n['title']}" for n in named)
                         +f" (CMD update {named[0]['short']} --session {session} --set-detail '**Label:** ...')")
         return text+'.'
+    if kind=='digests':   # several digests of edited files in one sentence instead of one per note
+        return (f"You edited files whose digests may be outdated: {', '.join(d['short']+' ('+d['path']+')' for d in data)}. "
+                f"For each: still true, CMD confirm REF --session {session}; changed, CMD update REF --session {session} --set-detail '**Label:** ...'.")
     if kind=='follow':
         s=data['short']
         text=(f"You edited {data['path']}, which note {s} {data['title']} covers. Still true: CMD confirm {s} --session {session}; "
@@ -2007,11 +2016,19 @@ def headless():
 
 def stop_text(pending,session,used=None):
     """The Stop continuation for what stop_pending found, about STOP_TEXT_CAP characters: the first item always,
-    later ones while they fit, at most STOP_DOCS documents and STOP_NOTES notes named. Short refs and exact
-    commands, closing with how to say nothing is durable. used, when a list, receives the items the text covers."""
+    later ones while they fit, at most STOP_DOCS documents and STOP_NOTES notes named, and the digests of edited
+    files (STOP_DIGESTS at most) together in one sentence when there are several. Short refs and exact commands,
+    closing with how to say nothing is durable. used, when a list, receives the items the text covers."""
     parts=[];docs=notes=0;closing=f" Nothing durable: CMD capture-finalize --session {session}."
     # A non-interactive run returns only the last message, so housekeeping after the answer would replace it.
     tail=' '+HEADLESS_TEXT if headless() else ''
+    digested=[d for kind,d in pending if kind=='follow' and d.get('digest')]
+    if len(digested)>1:   # one sentence, where the first of them stood
+        grouped=[]
+        for kind,data in pending:
+            if not (kind=='follow' and data.get('digest')):grouped.append((kind,data))
+            elif not any(k=='digests' for k,_ in grouped):grouped.append(('digests',digested[:STOP_DIGESTS]))
+        pending=grouped
     for kind,data in pending:
         if kind=='doc':
             if docs>=STOP_DOCS:continue
@@ -2022,11 +2039,12 @@ def stop_text(pending,session,used=None):
         if kind in MAP_KINDS+BRIEF_KINDS and parts:part='Also: '+part
         # A document that does not fit with its notes is still asked about, with fewer of them.
         while not fits(part) and kind=='doc' and data['notes']:data={**data,'notes':data['notes'][:-1]};part=_stop_part(kind,data,session)
+        while not fits(part) and kind=='digests' and len(data)>1:data=data[:-1];part=_stop_part(kind,data,session)
         if not fits(part):continue
         parts.append(part)
         if kind=='doc':docs+=1;notes+=len(data['notes'])
         if kind=='follow':notes+=1
-        if isinstance(used,list):used.append((kind,data))
+        if isinstance(used,list):used.extend([('follow',d) for d in data] if kind=='digests' else [(kind,data)])
     return 'Living Memory: '+' '.join(parts)+closing+tail
 
 def session_map(cwd,root,bindings,state=None,session=None):

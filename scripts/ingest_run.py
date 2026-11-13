@@ -2,11 +2,11 @@
 
 Living Memory never calls a model; this script does the calling, one batch of files per agent run, and the agent writes
 its digests through the normal LM CLI (`capture ... --source PATH`, so each digest records the file's hash and reads STALE
-when the file changes). Only new and stale files are sent (--all adds current and skipped ones); a file the agent skips as trivial is
+when the file changes). Only new and stale files are sent (--all adds current and skipped ones), and test files are left out (--kinds adds them); a file the agent skips as trivial is
 remembered (ingest-skip, a sidecar in the domain folder) until its content changes. Reruns are idempotent: a digest's capture key is digest:<path>:<sha256>, so a file whose content
 was already digested is left alone, and a changed file's new digest replaces the old one.
 
-    py -3.15 scripts/ingest_run.py --domain demo --batch 8 --max-batches 5 --budget-usd 3 [--all] [--dry-run]
+    py -3.15 scripts/ingest_run.py --domain demo --batch 8 --max-batches 5 --budget-usd 3 [--all] [--kinds KIND,...|all] [--dry-run]
     ... --command-json '["claude","-p","{prompt}","--model","{model}","--output-format","json","--allowedTools","Read","Bash"]'
 
 The agent argv template takes {prompt} and {model}; without {prompt} the prompt goes to the agent's stdin. No shell is used.
@@ -32,9 +32,10 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 CLI = REPO / 'living_memory.py'
 DEFAULT_COMMAND = ['claude', '-p', '{prompt}', '--model', '{model}', '--output-format', 'json', '--permission-mode', 'acceptEdits']
+KINDS = ('adr', 'readme', 'doc', 'wiki', 'entry', 'build', 'module', 'other', 'test')   # ingest-scan's kinds, see core/digests.py classify
 TYPES = 'decision for decision records (ADRs), runbook for operational docs (deploy, on-call, setup), knowledge for everything else'
 
-PROMPT = """You are writing digest notes for a project knowledge base kept in Living Memory (LM). Use only the LM CLI for notes: {cmd} SUBCOMMAND ...
+PROMPT = """You are writing digest notes for a project knowledge base kept in Living Memory (LM). Use only the LM CLI for notes, run with the Bash tool: {cmd} SUBCOMMAND ...
 Read each of these {count} files (the location after "read:"), then write ONE digest note per file:
 {cmd} capture --type TYPE --title '<path>: <what it is>' --summary '<1-2 sentences>' --detail '**Label:** load-bearing fact (path:line)' ... --source '<path>' --file '<path>'
 - TYPE: {types}. Subject and concern tags are inferred.
@@ -101,7 +102,7 @@ def last_json(text, keys=()):
 
 
 def read_report(stdout):
-    """(cost, digested paths, skipped rows, failed rows, permission denials) from an agent's stdout: Claude's `--output-format json` wraps the agent's last message in
+    """(cost, digested paths, skipped rows, failed rows, permission denials, denied calls) from an agent's stdout: Claude's `--output-format json` wraps the agent's last message in
     {"result": "...", "total_cost_usd": ...}; a plain agent prints the report itself."""
     outer = last_json(stdout) or {}
     inner = last_json(str(outer.get('result') or ''), ('digested', 'skipped', 'failed')) if isinstance(outer.get('result'), str) else None
@@ -111,19 +112,25 @@ def read_report(stdout):
     skipped = [s for s in report.get('skipped') or [] if isinstance(s, dict) and isinstance(s.get('path'), str)]
     failed = [s for s in report.get('failed') or [] if isinstance(s, dict) and isinstance(s.get('path'), str)]
     denials = outer.get('permission_denials')
-    return float(cost), digested, skipped, failed, len(denials) if isinstance(denials, list) else 0
+    denials = denials if isinstance(denials, list) else []
+    denied = []
+    for d in denials:   # which calls were blocked: the tool and the start of its command (or input)
+        tool_input = d.get('tool_input') if isinstance(d, dict) else None
+        text = tool_input.get('command') if isinstance(tool_input, dict) and tool_input.get('command') else json.dumps(tool_input)
+        denied.append({'tool': d.get('tool_name') if isinstance(d, dict) else None, 'input': str(text)[:200]})
+    return float(cost), digested, skipped, failed, len(denials), denied
 
 
 def run_batch(args, number, items):
     prompt = prompt_for(args, items)
     argv, stdin = agent_argv(args, prompt)
     started = time.perf_counter()
-    row = {'batch': number, 'paths': [i['path'] for i in items], 'cost_usd': 0.0, 'digested': [], 'skipped': [], 'failed': [], 'permission_denials': 0}
+    row = {'batch': number, 'paths': [i['path'] for i in items], 'cost_usd': 0.0, 'digested': [], 'skipped': [], 'failed': [], 'permission_denials': 0, 'denied': []}
     try:
         done = subprocess.run(argv, input=stdin, capture_output=True, text=True, encoding='utf-8', timeout=args.timeout, cwd=args.cwd, env=dict(os.environ, PYTHONUTF8='1', LIVING_MEMORY_HEADLESS='1'))
         row.update(returncode=done.returncode, stderr=done.stderr[-500:])
         if done.returncode == 0:
-            row['cost_usd'], row['digested'], row['skipped'], row['failed'], row['permission_denials'] = read_report(done.stdout)
+            row['cost_usd'], row['digested'], row['skipped'], row['failed'], row['permission_denials'], row['denied'] = read_report(done.stdout)
             if row['permission_denials']:   # a blocked capture may have been reported as a skip: remember none of this batch's skips
                 row['failed'], row['skipped'] = row['failed'] + row['skipped'], []
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -143,6 +150,7 @@ def main(argv=None):
     parser.add_argument('--budget-usd', type=float, help='Stop starting batches once the reported costs add up to this')
     parser.add_argument('--parallel', type=int, default=1, help='Agents at once (default 1: memory is limited)')
     parser.add_argument('--all', action='store_true', help='Also send files that are current or were skipped (default: only new and stale ones)')
+    parser.add_argument('--kinds', help=f"Comma-separated ingest-scan kinds to send ({', '.join(KINDS)}), or all (default: every kind except test)")
     parser.add_argument('--changed-only', action='store_true', help=argparse.SUPPRESS)   # the default now; accepted for compatibility
     parser.add_argument('--model', default='sonnet')
     parser.add_argument('--command-json', help='Agent argv as a JSON array, with {prompt} and {model} placeholders')
@@ -158,15 +166,23 @@ def main(argv=None):
             parser.error('--command-json must be a nonempty argv array')
     if args.batch < 1 or args.parallel < 1 or (args.max_batches is not None and args.max_batches < 1):
         parser.error('--batch, --parallel and --max-batches must be at least 1')
+    kinds = set(KINDS) - {'test'} if args.kinds is None else {k.strip().lower() for k in args.kinds.split(',') if k.strip()}
+    if 'all' in kinds:
+        kinds = set(KINDS)
+    if not kinds or kinds - set(KINDS):
+        parser.error(f"--kinds takes {', '.join(KINDS)} or all, not {args.kinds!r}")
     if args.root is None:
         sys.path.insert(0, str(REPO))
         from core.storage import resolve_root
         args.root = resolve_root(None)[0]
     args.root, args.cwd = Path(args.root).resolve(), str(Path(args.cwd).resolve())
     if args.allowed_tools is None:
-        args.allowed_tools = ['Read', 'Glob', 'Grep', f'Bash({sys.executable} {args.cli}:*)']
+        # A rule matches the command as typed, up to its first `*` (https://code.claude.com/docs/en/permissions), so it quotes the way command_line() does.
+        # Checked live on 2026-11-13 with hooks off: this Bash rule allows the command; PowerShell rules for a quoted path (with or without `&`,
+        # `*` or `:*`) did not, so the prompt asks for the Bash tool and a PowerShell call is left to the Living Memory hook's auto-allow.
+        args.allowed_tools = ['Read', 'Glob', 'Grep', f'Bash("{sys.executable}" "{args.cli}" *)']
     scan = lm(args, 'ingest-scan', '--limit', '1000000', *(['--source', args.source] if args.source else []), *([] if args.all else ['--changed']))
-    items = [i for i in scan['items'] if args.all or i['status'] in ('new', 'stale')]
+    items = [i for i in scan['items'] if i['kind'] in kinds and (args.all or i['status'] in ('new', 'stale'))]
     batches = [items[i:i + args.batch] for i in range(0, len(items), args.batch)][:args.max_batches]
     if args.dry_run:
         print(json.dumps({'ok': True, 'dry_run': True, 'domain': scan['domain'], 'files': sum(map(len, batches)), 'counts': scan['counts'],

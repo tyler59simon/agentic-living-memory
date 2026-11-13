@@ -174,6 +174,68 @@ class Staleness(Digests):
         self.assertIn('Guide digest',text)
         self.assertIn('Guide digest',self.hook('stop')['continue_reason'])
 
+class BatchedFollowThrough(Digests):
+    """Digests of the files edited in one turn are asked about in one Stop sentence."""
+    FILES=['kb/src/ledger.py','kb/src/main.py','kb/src/util.py','kb/src/mod1.py','kb/src/mod2.py','kb/src/mod3.py']   # code, so no document reminder takes them
+    def setUp(self):
+        super().setUp()
+        for name in ('mod1','mod2','mod3','plain'):put(self.repo/'src'/(name+'.py'),f'def {name}():\n    return 1\n')
+    def made(self,count):
+        shorts={}
+        for path in self.FILES[:count]:
+            code,made=self.digest(path);self.assertEqual(code,0,made);shorts[path]='demo:'+made['id'][:8]
+        return shorts
+    def edit(self,path):
+        return self.hook('pre-tool-use',tool_name='Edit',tool_input={'file_path':path})
+    def state(self):return json.loads(runtime._pointer(self.root,'s1').read_text(encoding='utf-8'))
+
+    def test_three_edited_digests_give_one_sentence_naming_all_three(self):
+        shorts=self.made(3);self.hook('user-prompt')
+        for path in shorts:self.edit(path)
+        self.assertEqual(len(self.state()['hinted_digests']),3)
+        reason=self.hook('stop')['continue_reason']
+        self.assertEqual(reason.count('You edited'),1);self.assertIn('whose digests may be outdated',reason)
+        for path,short in shorts.items():self.assertIn(f'{short} ({path})',reason)
+        self.assertIn('CMD confirm REF --session s1',reason);self.assertIn('CMD update REF --session s1 --set-detail',reason)
+        self.assertLessEqual(len(reason),runtime.STOP_TEXT_CAP)
+        self.assertEqual(len(self.state()['followed']),3)
+
+    def note_of_short(self,short):return find_note(short.split(':',1)[1],'demo',self.root)[1]
+
+    def test_confirming_a_digest_from_the_reminder_clears_its_stale_flag(self):
+        shorts=self.made(2);self.hook('user-prompt')
+        for path in shorts:put(self.project/path,(self.project/path).read_text(encoding='utf-8')+'# edited\n');self.edit(path)
+        self.assertEqual(self.cli('review')[1]['stale_digests'],2)
+        self.assertIn('digests may be outdated',self.hook('stop')['continue_reason'])
+        for short in shorts.values():self.assertEqual(self.cli('confirm',short,'--session','s1')[0],0)
+        self.assertEqual(self.cli('review')[1]['stale_digests'],0)
+        note=self.note_of_short(shorts[self.FILES[0]]);self.assertEqual(digests.stale_note(dict(note,domain='demo'),self.root),'')
+
+    def test_six_edited_digests_name_five(self):
+        shorts=self.made(6);self.hook('user-prompt')
+        for path in shorts:self.edit(path)
+        reason=self.hook('stop')['continue_reason']
+        named=[s for s in shorts.values() if s+' (' in reason]
+        self.assertEqual(named,list(shorts.values())[:runtime.STOP_DIGESTS]);self.assertLessEqual(len(reason),runtime.STOP_TEXT_CAP)
+        self.assertEqual(len(self.state()['followed']),runtime.STOP_DIGESTS)
+
+    def test_a_plain_note_listing_the_file_keeps_its_own_sentence(self):
+        shorts=self.made(3);plain=self.note('Util gotcha','tiny returns one.',files=['kb/src/plain.py'])
+        self.hook('user-prompt')
+        for path in [*shorts,'kb/src/plain.py']:self.edit(path)
+        reason=self.hook('stop')['continue_reason']
+        self.assertIn('whose digests may be outdated',reason)
+        self.assertIn(f"You edited kb/src/plain.py, which note demo:{plain['id'][:8]} Util gotcha covers",reason)
+        self.assertEqual(reason.count('You edited'),2);self.assertLessEqual(len(reason),runtime.STOP_TEXT_CAP)
+
+    def test_a_digest_changed_only_by_a_shell_command_is_not_asked_about(self):
+        shorts=self.made(1);self.hook('user-prompt')
+        put(self.repo/'src'/'ledger.py',LEDGER+'# changed by a script\n')
+        self.hook('pre-tool-use',tool_name='Bash',tool_input={'command':'make format'})
+        self.assertNotIn('hinted_digests',self.state())
+        self.assertNotIn(list(shorts.values())[0],self.hook('stop').get('continue_reason',''))
+        self.assertEqual(self.cli('review')[1]['stale_digests'],1)   # stays STALE for a later ingest_run.py
+
 class Idempotency(Digests):
     def test_the_same_file_content_is_digested_once_whatever_the_wording(self):
         code,first=self.digest('kb/README.md');self.assertEqual(first['status'],'created')

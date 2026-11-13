@@ -1,7 +1,7 @@
 """scripts/ingest_run.py driven with a FAKE agent (a small Python script that reads the prompt, calls the real LM CLI against a temp store to
 capture a digest per listed file, and prints a JSON report with a cost): batching, new/stale only by default (--all, the --changed-only alias), skip markers, --budget-usd, --dry-run, idempotent
 reruns, and a changed file's new digest replacing the old one. No real claude or codex process is ever started."""
-import json,re,subprocess,sys,unittest,unittest.mock
+import importlib.util,io,json,re,subprocess,sys,unittest,unittest.mock
 from pathlib import Path
 from test_digests import Digests,put
 from core import sources
@@ -33,7 +33,7 @@ for line in prompt.splitlines():
     if done.returncode:print(done.stdout,done.stderr,file=sys.stderr);sys.exit(4)
     digested.append(path)
 report={'digested':digested,'skipped':skipped,**({'failed':failed} if '--no-failed-key' not in options else {})}
-denials=[{'tool_name':'PowerShell','tool_input':{}}] if '--denials' in options else []
+denials=[{'tool_name':'PowerShell','tool_input':{'command':'Remove-Item '+'x'*300}}] if '--denials' in options else []
 if '--wrap' in options:print(json.dumps({'type':'result','is_error':False,'total_cost_usd':cost,'permission_denials':denials,'result':'Done.\\n'+json.dumps(report)}))
 else:print(json.dumps({**report,'cost_usd':cost}))
 '''
@@ -54,7 +54,7 @@ class IngestRun(Digests):
         self.assertEqual(done.returncode,expect,done.stdout+done.stderr)
         return json.loads(done.stdout) if done.stdout.strip().startswith('{') else None
     def active(self):return [n for n in inventory('demo',self.root) if n.get('status','active')=='active']
-    def total(self):return self.cli('ingest-scan','--limit','100')[1]['total']
+    def total(self):return len([i for i in self.cli('ingest-scan','--limit','100')[1]['items'] if i['kind']!='test'])   # a default run leaves tests out
 
 class Batches(IngestRun):
     def test_dry_run_prints_the_batches_and_prompts_and_runs_no_agent(self):
@@ -93,6 +93,23 @@ class Batches(IngestRun):
     def test_a_failing_agent_is_reported_and_the_run_exits_nonzero(self):
         out=self.run_script('--batch','4','--max-batches','1',agent=('--fail',),expect=1)
         self.assertFalse(out['ok']);self.assertEqual((out['batches_failed'],out['files_digested']),(1,0));self.assertEqual(self.active(),[])
+
+class Kinds(IngestRun):
+    TEST='kb/tests/test_ledger.py'
+    def sent(self,*extra):
+        self.run_script('--batch','100',*extra);return [path for p in self.prompts() for path in self.listed(p)]
+    def test_the_default_run_does_not_send_test_files(self):
+        out=self.run_script('--dry-run');self.assertNotIn(self.TEST,out['batches'][0]['paths']);self.assertEqual(out['files'],self.total())
+        sent=self.sent();self.assertNotIn(self.TEST,sent);self.assertEqual(len(sent),self.total());self.assertIn('kb/src/ledger.py',sent)
+    def test_kinds_module_sends_only_modules(self):
+        items={i['path']:i['kind'] for i in self.cli('ingest-scan','--limit','100')[1]['items']}
+        self.assertEqual(self.run_script('--kinds','module,readme','--dry-run')['files'],len([k for k in items.values() if k in ('module','readme')]))
+        sent=self.sent('--kinds','module');self.assertTrue(sent);self.assertEqual(set(sent),{p for p,k in items.items() if k=='module'})
+    def test_kinds_all_includes_the_test_file(self):
+        self.assertIn(self.TEST,self.sent('--kinds','all'))
+    def test_an_unknown_kind_is_refused(self):
+        done=subprocess.run([sys.executable,str(SCRIPT),'--root',str(self.root),'--cwd',str(self.project),'--kinds','modules','--dry-run'],capture_output=True,text=True,encoding='utf-8')
+        self.assertEqual(done.returncode,2);self.assertIn('--kinds takes',done.stderr)
 
 class Reruns(IngestRun):
     def test_a_rerun_writes_nothing_new(self):
@@ -134,6 +151,27 @@ class Failures(IngestRun):
     def test_a_trivial_skip_is_still_recorded_and_an_agent_without_a_failed_key_works(self):
         out=self.run_script('--batch','100',agent=('--wrap','--skip-util','--no-failed-key'));self.assertEqual((out['files_failed'],out['files_skipped']),(0,1))
         self.assertEqual(list(self.skip_sidecar()),[self.UTIL]);self.assertEqual(self.status(),'skipped')
+
+class Agent(IngestRun):
+    """The default agent command: its allowlist matches how the prompt tells the agent to type the CLI, and a denied call is named in the log."""
+    def script(self):
+        spec=importlib.util.spec_from_file_location('ingest_run_under_test',SCRIPT);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
+    def test_the_default_allowlist_matches_the_typed_command(self):
+        module=self.script();seen=[]
+        def fake(args,number,items):
+            seen.append(args.allowed_tools);return {'batch':number,'paths':[],'cost_usd':0.0,'digested':[],'skipped':[],'failed':[],'permission_denials':0,'denied':[],'returncode':0}
+        with unittest.mock.patch.object(module,'run_batch',fake),unittest.mock.patch('sys.stdout',io.StringIO()),unittest.mock.patch('sys.stderr',io.StringIO()):
+            module.main(['--root',str(self.root),'--domain','demo','--cwd',str(self.project),'--log',str(self.log),'--max-batches','1'])
+        py,cli=sys.executable,str(CLI)
+        self.assertEqual(seen,[['Read','Glob','Grep',f'Bash("{py}" "{cli}" *)']])
+    def test_a_denied_call_is_named_in_the_log_row_with_its_command_cut_to_200_characters(self):
+        self.run_script('--batch','100',agent=('--wrap','--denials'))
+        row=json.loads(self.log.read_text(encoding='utf-8').splitlines()[0])
+        self.assertEqual(row['permission_denials'],1);self.assertEqual(row['denied'],[{'tool':'PowerShell','input':'Remove-Item '+'x'*188}])
+    def test_a_denial_without_a_command_records_its_input_as_json(self):
+        reply=json.dumps({'total_cost_usd':0.1,'result':'{}','permission_denials':[{'tool_name':'Read','tool_input':{'file_path':'a.py'}},{'tool_name':'Bash'}]})
+        cost,digested,skipped,failed,count,denied=self.script().read_report(reply)
+        self.assertEqual(count,2);self.assertEqual(denied,[{'tool':'Read','input':'{"file_path": "a.py"}'},{'tool':'Bash','input':'null'}])
 
 class Skips(IngestRun):
     UTIL='kb/src/util.py'
