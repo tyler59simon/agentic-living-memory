@@ -15,7 +15,7 @@ from pathlib import Path
 from .common import memory_root,atomic_write,load_bindings
 from .repository import inventory,parse,parse_text,validate,serialize,store_lock,read_json,canonical_json,transaction,digest,confined,now,reconcile,clean_files,clean_commands
 from .governance import plan
-from .note_types import normalize,NOTE_TYPES,review_due,STALE_DAYS
+from .note_types import normalize,NOTE_TYPES,STALE_DAYS
 from .notes import slug
 
 NOTES='Domains';ARCHIVE='Archive';DASH='Dashboards';CANVAS='Canvas';TEMPLATES='Templates';META='.living-memory'
@@ -520,12 +520,14 @@ def build_overlay(domain,vault,root=None,trigger=None):
     def link(n):
         target=note_rel(domain,Path(n['path']).name,n.get('status')=='active')[:-3]
         return f"[[{target}|{n['title']}]]"
-    stale=[n for n in active if review_due(n)]
+    from .worklist import worklist
+    by_ref={f"{domain}:{n['id']}":n for n in active}
+    stale=worklist(root,[domain],cheap=True,limit=len(active) or 1,notes=[dict(n,domain=domain) for n in active])['items']
     pages={'Home':'# Living Memory\n\n'+f'Domain: {domain}\n\nActive: {len(active)}; retired: {len(notes)-len(active)}; due for review: {len(stale)}\n\n'
                   +'\n'.join(f'- [[{DASH}/{p}|{p}]]' for p in ('Domain Overview','Timeline','Stale Notes','Taxonomy','Archive'))+f'\n- [[{DASH}/Sync Status - {domain}|Sync Status]]\n- [[{CANVAS}/{domain}.canvas|Canvas]]',
            'Taxonomy':'# Taxonomy\n\n'+'\n'.join(f"- {t}" for t in sorted({t for n in notes for t in n.get('tags',[])})),
-           'Stale Notes':'# Stale Notes\n\n'+(f'Notes whose review date has passed, or that have not changed in a long time ({STALE_DAYS} days; 30-90 for status, plan, bug and risk notes).\n\n'
-                         +'\n'.join(f"- {link(n)} — {('review by '+str(n['review_by'])[:10]) if n.get('review_by') else 'updated '+str(n.get('updated',''))[:10]}" for n in stale) if stale else '_Nothing is due for review._'),
+           'Stale Notes':'# Stale Notes\n\n'+(f'Notes that need a look, by kind: a changed file (stale), a review date that has passed or no change in a long time ({STALE_DAYS} days; 30-90 for status, plan, bug and risk notes), an unconfirmed belief (interim), a content check (warned), retrieved but never used (noisy). Run `review` for duplicates.\n\n'
+                         +'\n'.join(f"- {link(by_ref[r['ref']])} — {', '.join(r['kinds'])}: {r['reason']}" for r in stale) if stale else '_Nothing needs review._'),
            'Timeline':'# Timeline\n\n'+'\n'.join(f"- {n.get('updated','')[:10]} {link(n)}" for n in sorted(notes,key=lambda n:n.get('updated',''),reverse=True)),
            'Domain Overview':'# Domain Overview\n\n'+f'Domain: {domain}\n\n'+'\n'.join('- '+link(n) for n in active),
            'Archive':'# Archive\n\n'+'\n'.join('- '+link(n) for n in notes if n.get('status')!='active')}

@@ -6,7 +6,7 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from test_core import StoreFixture
-from core import runtime
+from core import runtime, session_start
 from core.cli import main as cli
 from core.init_domain import init_domain
 from core.notes import capture, similar_title, title_similarity, find_note
@@ -118,7 +118,17 @@ class SessionContext(StoreFixture):
         # in the command line, and a longer checkout or Python path must not decide whether this passes.
         for path in (str(self.root), sys.executable, str(runtime.SCRIPT)):
             text = text.replace(path, '')
-        self.assertLess(len(text), 5090)   # the fallback injects the whole protocol; the Save rule grew by ~280 characters, the project-brief sentence by ~225, the ask sentence and usage line by ~120, the several-questions sentence by ~75, the writing rule and per-type sections by ~590, and the found-yourself sentence by ~220
+        self.assertLess(len(text), 5290)   # the fallback injects the whole protocol; the user-brief, review and log sentences grew it by ~250 characters, the Save rule by ~280 characters, the project-brief sentence by ~225, the ask sentence and usage line by ~120, the several-questions sentence by ~75, the writing rule and per-type sections by ~590, and the found-yourself sentence by ~220
+
+    def test_a_user_brief_keeps_the_fallback_context_inside_the_cap(self):
+        for i in range(6):
+            capture(f'Decision {i} about caching', 'x' * 600, TAGS, 'demo', self.root, type='decision', allow_similar=True)
+        capture('User brief', 'A terse developer on Windows.\n\n## Details\n- **Working style:** ' + 'Short answers first, ask before large refactors. ' * 30 + '\n- **Current focus:** The user brief.',
+                ['subject/project', 'concern/decision'], '_global', self.root, type='brief')
+        text = self.start()
+        self.assertIn('User brief: _global:', text)   # the fallback protocol leaves the minimum body, so the brief is down to its pointer line
+        body = text.split('Living Memory session=sess\n', 1)[1]
+        self.assertLessEqual(len(body), session_start.MIN_BUDGET)   # the brief takes its share of the body, never more than the budget
 
     def test_guidance_notes_come_first(self):
         capture('Prefer small commits', 'Keep commits small.', TAGS, 'demo', self.root, type='preference')

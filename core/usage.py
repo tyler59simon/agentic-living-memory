@@ -94,26 +94,39 @@ def used_refs(root,days=30):
     """Refs the diary saw read or used in the window."""
     return {row['ref'] for row in events(root,days) if row['e'] in USE and isinstance(row.get('ref'),str)}
 
+def _tally(rows,domains):
+    """({ref: counts per event}, sessions with injections) for the notes of these domains."""
+    counts={};sessions=set()
+    for row in rows:
+        event=row['e'];ref=row.get('ref')
+        if event in {'reminder','signal-capture','surface'} or not isinstance(ref,str) or ref.split(':',1)[0] not in domains:continue   # surfaced is neither shown nor used
+        entry=counts.setdefault(ref,dict.fromkeys(('inject','standing')+USE,0))
+        # Standing context is delivered whatever the prompt, so going unread says nothing about the note.
+        entry['standing' if event=='inject' and row.get('k') in STANDING else event]+=1
+        if event=='inject' and row.get('s'):sessions.add(row['s'])
+    return counts,sessions
+
+def _noisy(counts):
+    return sorted(((r,c) for r,c in counts.items() if c['inject']>=NOISY_MIN and not sum(c[k] for k in USE)),key=lambda x:(-x[1]['inject'],x[0]))
+
+def noisy(rows,domains):
+    """[(ref, counts)] of the notes in `domains` that were retrieved at least NOISY_MIN times and never read, updated or confirmed, most shown first."""
+    return _noisy(_tally(rows,domains)[0])
+
 def stats(root,domains,days=30,limit=10):
     """Per-note counts for notes in `domains`, the noisy (shown, never used) and the most used notes,
     reminders by kind and captures made on turns that carried a durable signal, per ISO week."""
     from .repository import inventory
     from .notes import short_ref
-    rows=events(root,days);counts={};reminders={};weekly={};sessions=set()
+    rows=events(root,days);reminders={};weekly={}
     for row in rows:
         event=row['e']
-        if event=='reminder':reminders[row.get('k') or 'unknown']=reminders.get(row.get('k') or 'unknown',0)+1;continue
-        if event=='signal-capture':
+        if event=='reminder':reminders[row.get('k') or 'unknown']=reminders.get(row.get('k') or 'unknown',0)+1
+        elif event=='signal-capture':
             try:year,week,_=datetime.fromisoformat(row['t']).isocalendar();key=f'{year}-W{week:02d}'
             except (KeyError,ValueError,TypeError):continue
-            weekly[key]=weekly.get(key,0)+1;continue
-        ref=row.get('ref')
-        if event=='surface' or not isinstance(ref,str) or ref.split(':',1)[0] not in domains:continue   # surfaced is neither shown nor used
-        entry=counts.setdefault(ref,dict.fromkeys(('inject','standing')+USE,0))
-        # Standing context is delivered whatever the prompt, so going unread says nothing about the note.
-        entry['standing' if event=='inject' and row.get('k') in STANDING else event]+=1
-        if event=='inject' and row.get('s'):sessions.add(row['s'])
-    notes={}
+            weekly[key]=weekly.get(key,0)+1
+    counts,sessions=_tally(rows,domains);notes={}
     for domain in domains:
         try:notes.update({f'{domain}:{n["id"]}':n for n in inventory(domain,root,retired=True)})
         except (OSError,ValueError):continue
@@ -122,11 +135,10 @@ def stats(root,domains,days=30,limit=10):
         return {'ref':ref,'short_ref':short_ref(domain,note_id),'title':note['title'] if note else None,
                 'status':note.get('status','active') if note else 'missing','counts':{k:v for k,v in c.items() if v}}
     used=lambda c:sum(c[k] for k in USE)
-    noisy=sorted(((r,c) for r,c in counts.items() if c['inject']>=NOISY_MIN and not used(c)),key=lambda x:(-x[1]['inject'],x[0]))
     top=sorted(((r,c) for r,c in counts.items() if used(c)),key=lambda x:(-used(x[1]),-x[1]['inject'],x[0]))
     return {'ok':True,'days':days,'domains':list(domains),'events':len(rows),'sessions_with_injections':len(sessions),
             'notes':len(counts),
-            'noisy':[item(r,c) for r,c in noisy[:limit]],
+            'noisy':[item(r,c) for r,c in _noisy(counts)[:limit]],
             'used':[item(r,c) for r,c in top[:limit]],
             'reminders':reminders,'signal_captures':dict(sorted(weekly.items())),
             'hint':'noisy = retrieved for a prompt or a file at least %d times and never read, updated, confirmed or re-captured: consider a sharper title or an archive plan. '

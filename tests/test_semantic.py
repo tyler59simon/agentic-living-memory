@@ -106,7 +106,7 @@ class SemanticCase(StoreFixture):
 
     def test_without_a_model_the_fingerprint_is_the_schema_version_and_the_notes(self):
         self.note();notes=inventory('demo',self.root,retired=True)
-        earlier=hashlib.sha256(json.dumps([3,[(n.get('id'),n['revision']) for n in notes]],sort_keys=True).encode()).hexdigest()
+        earlier=hashlib.sha256(json.dumps([4,[(n.get('id'),n['revision']) for n in notes]],sort_keys=True).encode()).hexdigest()
         self.assertEqual(_fingerprint(notes),earlier);self.assertNotEqual(_fingerprint(notes,'tiny'),earlier)
 
     def test_a_model_another_process_holds_open_is_left_inert(self):

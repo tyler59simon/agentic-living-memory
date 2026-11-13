@@ -53,6 +53,13 @@ def changed_since(repo,since):
 
 MAX_COMMITTED=500
 
+def commit_count(repo,start,end):
+    """Commits in `start..end` (`git rev-list --count`), None when git cannot tell. Never raises."""
+    try:
+        done=subprocess.run(['git','-C',str(repo),'rev-list','--count',f'{start}..{end}'],capture_output=True,text=True,timeout=GIT_TIMEOUT)
+        return int(done.stdout.strip()) if done.returncode==0 else None
+    except (OSError,ValueError,subprocess.SubprocessError):return None
+
 def committed_since(repo,start,end):
     """Existing files that changed between two commits (`git diff --name-only start..end`), at most MAX_COMMITTED. Never raises."""
     try:

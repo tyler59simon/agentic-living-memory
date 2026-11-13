@@ -7,9 +7,9 @@ digest says so (STALE: ...), `review` lists it, and `update` or `confirm` writes
 checked it). `ingest-scan` ranks the source library's files into a worklist with the status of their digests, which
 an agent (interactively, or scripts/ingest_run.py in batches) works through. LM itself never calls a model."""
 from __future__ import annotations
-import fnmatch,hashlib,os,re
+import fnmatch,hashlib,json,os,re,time
 from pathlib import Path
-from .common import domain_prefixes,load_bindings
+from .common import atomic_write,domain_prefixes,load_bindings
 from .repository import inventory,read_json,canonical_json,now
 
 NAMED=re.compile(r'([a-z0-9][a-z0-9._-]+):(.+)\Z')   # `wiki:Retry-Policy.md`; a single letter before the colon is a drive, so source-plan add refuses registry names under 2 characters
@@ -25,6 +25,45 @@ def file_sha256(path):
             for block in iter(lambda:f.read(1<<20),b''):h.update(block)
     except OSError:return None
     return h.hexdigest()
+
+HASH_CACHE_MAX=2000
+HASH_SETTLE_NS=2_000_000_000   # a file modified this recently is hashed again each time: an editor can rewrite it within one mtime tick
+_HASHES={}   # store root -> {absolute path: [size, mtime_ns, sha]}; loaded once per process, written back by flush_hashes
+_DIRTY=set()
+
+def _hash_file(root):return Path(root)/'.cache'/'file-hashes.json'
+
+def _hash_cache(root):
+    key=str(root)
+    if key not in _HASHES:
+        try:found=json.loads(_hash_file(root).read_text(encoding='utf-8'))
+        except (OSError,ValueError):found={}
+        _HASHES[key]=found if isinstance(found,dict) else {}
+    return _HASHES[key]
+
+def cached_sha256(path,root):
+    """file_sha256 reusing the hash of an unchanged file (same size and mtime_ns, kept in the store's derived .cache/file-hashes.json, 2,000 entries).
+    A file modified within the last 2 seconds is never cached. Call flush_hashes(root) to persist new entries."""
+    try:st=os.stat(path)
+    except OSError:return None
+    key=str(path);cache=_hash_cache(root);hit=cache.get(key)
+    if isinstance(hit,list) and len(hit)==3 and hit[0]==st.st_size and hit[1]==st.st_mtime_ns:return hit[2]
+    sha=file_sha256(path)
+    if sha is not None and time.time_ns()-st.st_mtime_ns>HASH_SETTLE_NS:
+        cache.pop(key,None);cache[key]=[st.st_size,st.st_mtime_ns,sha]
+        while len(cache)>HASH_CACHE_MAX:cache.pop(next(iter(cache)))
+        _DIRTY.add(str(root))
+    return sha
+
+def flush_hashes(root):
+    """Write the hash cache when this process added entries; a derived file, so a failure only costs a re-hash."""
+    if str(root) not in _DIRTY:return
+    _DIRTY.discard(str(root))
+    try:
+        if Path(root).is_dir():atomic_write(_hash_file(root),json.dumps(_hash_cache(root),separators=(',',':')))
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('digests.flush_hashes',exc,root)
 
 def _specs(root,domain,bindings):
     from . import sources
@@ -46,10 +85,12 @@ def stored_path(path,prefixes,specs):
 
 def locate(root,domain,path,bindings=None,specs=None):
     """The absolute file a stored source path names (None when it is missing), and whether this domain could say: False for a path
-    relative to a bound folder in a domain that has none (a global note), which nothing can check."""
+    relative to a bound folder in a domain that has none (a global note), which nothing can check, and for a missing absolute path
+    (a file outside the bound folders may live on another machine)."""
     bindings=bindings if bindings is not None else load_bindings(root)
     named=NAMED.match(path)
     if '..' in path.replace('\\','/').split('/'):return None,True
+    if Path(path).is_absolute():return (Path(path),True) if Path(path).is_file() else (None,False)
     if named:
         spec=(specs if specs is not None else _specs(root,domain,bindings)).get(named[1])
         base=Path(spec['path']) if spec else None;rel=named[2]
@@ -88,34 +129,36 @@ def rehash(sources,domain,root,bindings=None):
     return out
 
 def changed(sources,domain,root,bindings=None):
-    """The paths among a note's sources whose file differs from the hash recorded, or is gone."""
+    """The paths among a note's sources or file_hashes whose file differs from the hash recorded, or is gone."""
     bindings=bindings if bindings is not None else load_bindings(root);specs=None;found=[]
     for s in sources or []:
         if NAMED.match(s['path']) and specs is None:specs=_specs(root,domain,bindings)
         path,known=locate(root,domain,s['path'],bindings,specs)
-        if known and (path is None or file_sha256(path)!=s['sha256']):found.append(s['path'])
+        if known and (path is None or cached_sha256(path,root)!=s['sha256']):found.append(s['path'])
+    flush_hashes(root)
     return found
 
-def stale_text(paths):
-    """`STALE: a.md and 2 more changed since this digest`, '' when nothing changed."""
+def stale_text(paths,what='digest'):
+    """`STALE: a.md and 2 more changed since this digest` (what='note': `since this note`), '' when nothing changed."""
     if not paths:return ''
     names=', '.join(paths[:SHOWN])+(f' and {len(paths)-SHOWN} more' if len(paths)>SHOWN else '')
-    return f'STALE: {names} changed since this digest'
+    return f'STALE: {names} changed since this {what}'
 
 def stale_note(note,root,bindings=None):
-    """stale_text for a note dict with `sources` and `domain` ('' when it has none or they are unchanged); never raises."""
-    if not note.get('sources'):return ''
-    try:return stale_text(changed(note['sources'],note['domain'],root,bindings))
+    """stale_text for a note dict with `sources` (a digest) or `file_hashes` and `domain` ('' when it has neither or they are unchanged); never raises."""
+    listed=(note.get('sources') or [])+(note.get('file_hashes') or [])
+    if not listed:return ''
+    try:return stale_text(changed(listed,note['domain'],root,bindings),'digest' if note.get('sources') else 'note')
     except Exception as exc:
         from .logs import swallowed
         swallowed('digests.stale_note',exc,root);return ''
 
 def mark(hits,root,bindings=None):
-    """Give each hit that is a digest with a changed source a `stale` text, and drop the `sources` list from all of them."""
+    """Give each hit that is a digest with a changed source, or a note with a changed hashed file, a `stale` text, and drop `sources` and `file_hashes` from all of them."""
     for hit in hits:
-        sources=hit.pop('sources',None)
-        if sources:
-            text=stale_note(dict(hit,sources=sources),root,bindings)
+        sources=hit.pop('sources',None);hashed=hit.pop('file_hashes',None)
+        if sources or hashed:
+            text=stale_note(dict(hit,sources=sources,file_hashes=hashed),root,bindings)
             if text:hit['stale']=text
 
 # ---- skip markers: files an agent judged not worth a digest ---------------------------------------------------------

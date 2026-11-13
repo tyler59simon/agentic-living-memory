@@ -1,0 +1,47 @@
+{
+ "name": "file-currency",
+ "description": "A runbook that lists a file records the file's hash (file_hashes). When the file changes outside the agent (a git pull, an editor, a shell command), the note reads STALE: at SessionStart, in prompt hits, in a file hint before an edit, in the repo notes of a codebase map, in a command hint and in read; an unrelated note is never flagged, and confirming the note (the author checked it) clears the flag everywhere.",
+ "harnesses": ["claude", "codex"],
+ "git": [
+  {"folder": "project/billing", "commits": [
+   {"when": "old", "files": {
+    "src/retry.py": "RETRIES = 3\n",
+    "src/ledger.py": "def reconcile_ledger(db):\n    return db.read('balance_snapshot')\n",
+    "src/other.py": "x = 1\n"}}
+  ]}
+ ],
+ "notes": [
+  {"key": "retry", "type": "runbook", "title": "Retry limit for payment captures", "files": ["billing/src/retry.py"], "commands": ["make retry-test"],
+   "body": "Failed payment captures are retried up to RETRIES times (billing/src/retry.py:1). Run `make retry-test` after changing the limit.", "tags": ["subject/project", "concern/architecture"]},
+  {"key": "ledger", "type": "runbook", "title": "Nightly ledger reconciliation", "files": ["billing/src/ledger.py"],
+   "body": "reconcile_ledger reads the balance snapshot every night (billing/src/ledger.py:1).", "tags": ["subject/project", "concern/architecture"]},
+  {"key": "appmap", "type": "map", "files": ["billing"], "tags": ["subject/project", "concern/architecture"], "title": "billing codebase map",
+   "body": "A payments service.\n\n* **Layout:** src/other.py holds the helpers."}
+ ],
+ "steps": [
+  {"hook": "session-start", "expect": {"context_excludes": ["STALE"]}},
+  {"git_commit": {"folder": "project/billing", "files": {"src/retry.py": "RETRIES = 5\n"}, "message": "raise the retry limit"}},
+  {"session": "s2"},
+  {"hook": "session-start", "expect": {"context_contains": ["STALE: billing/src/retry.py changed since this note — Retry limit for payment captures"], "context_excludes": ["STALE: billing/src/ledger.py"]}},
+  {"session": "s2m"},
+  {"hook": "user-prompt", "payload": {"prompt": "work on the billing service"},
+   "expect": {"context_contains": ["Notes about this repo", "{short:@retry} STALE: billing/src/retry.py changed since this note — "], "context_excludes": ["STALE: billing/src/ledger.py"]}},
+  {"session": "s2"},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/billing/src/retry.py"}},
+   "expect": {"hints": ["@retry"], "context_contains": ["STALE: billing/src/retry.py changed since this note — "]}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Bash", "tool_input": {"command": "make retry-test"}},
+   "expect": {"command_hints": ["@retry"], "context_contains": ["STALE: billing/src/retry.py changed since this note — "]}},
+  {"cli": ["read", "@retry"], "expect": {"exit": 0, "result_contains": ["\"stale\":\"STALE: billing/src/retry.py changed since this note\""]}},
+  {"cli": ["read", "@ledger"], "expect": {"exit": 0, "result_excludes": ["STALE"]}},
+  {"cli": ["search", "payment captures retried"], "expect": {"exit": 0, "result_contains": ["STALE: billing/src/retry.py changed since this note"]}},
+  {"session": "s2b"},
+  {"hook": "user-prompt", "payload": {"prompt": "how many times are failed payment captures retried"},
+   "expect": {"inject": ["@retry"], "context_contains": ["STALE: billing/src/retry.py changed since this note — "]}},
+  {"cli": ["confirm", "@retry", "--session", "{session}"], "expect": {"exit": 0, "status": "confirm"}},
+  {"cli": ["read", "@retry"], "expect": {"exit": 0, "result_excludes": ["STALE"]}},
+  {"session": "s3"},
+  {"hook": "session-start", "expect": {"context_excludes": ["STALE"]}},
+  {"hook": "user-prompt", "payload": {"prompt": "how many times are failed payment captures retried"}, "expect": {"inject": ["@retry"], "context_excludes": ["STALE"]}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/billing/src/retry.py"}}, "expect": {"hints": ["@retry"], "context_excludes": ["STALE"]}}
+ ]
+}

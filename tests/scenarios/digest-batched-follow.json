@@ -1,0 +1,40 @@
+{
+ "name": "digest-batched-follow",
+ "description": "The notes about the code files edited in one turn (digests, and a plain note that lists a file) are asked about in one Stop sentence naming every one of them with its file, not one sentence each; confirming one is accepted from the reminder; a shell command that changes no file brings no follow-through.",
+ "harnesses": ["claude", "codex"],
+ "git": [
+  {"folder": "project/billing", "commits": [
+   {"when": "old", "files": {
+    "src/ledger.py": "def reconcile_ledger(db):\n    return db.read('balance_snapshot')\n",
+    "src/retry.py": "def retry(call):\n    return call()\n",
+    "src/export.py": "def export(rows):\n    return rows\n",
+    "src/plain.py": "def plain():\n    return 1\n"}}
+  ]}
+ ],
+ "notes": [
+  {"key": "ledger", "title": "billing/src/ledger.py: nightly reconciliation", "sources": ["billing/src/ledger.py"], "files": ["billing/src/ledger.py"],
+   "body": "reconcile_ledger reads the balance snapshot every night (billing/src/ledger.py:1).", "tags": ["subject/project", "concern/architecture"]},
+  {"key": "retry", "title": "billing/src/retry.py: call wrapper", "sources": ["billing/src/retry.py"], "files": ["billing/src/retry.py"],
+   "body": "retry runs the call once (billing/src/retry.py:1).", "tags": ["subject/project", "concern/architecture"]},
+  {"key": "export", "title": "billing/src/export.py: row export", "sources": ["billing/src/export.py"], "files": ["billing/src/export.py"],
+   "body": "export returns the rows unchanged (billing/src/export.py:1).", "tags": ["subject/project", "concern/architecture"]},
+  {"key": "plain", "title": "Plain module gotcha", "body": "plain keeps no state.", "files": ["billing/src/plain.py"]}
+ ],
+ "steps": [
+  {"hook": "session-start"},
+  {"hook": "user-prompt", "payload": {"prompt": "change the ledger, retry, export and plain modules"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/billing/src/ledger.py"}}, "expect": {"hints": ["@ledger"]}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/billing/src/retry.py"}}, "expect": {"hints": ["@retry"]}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/billing/src/export.py"}}, "expect": {"hints": ["@export"]}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/billing/src/plain.py"}}, "expect": {"hints": ["@plain"]}},
+  {"hook": "stop", "expect": {"reminder": "follow", "reminder_contains": [
+    "You edited files that notes cover: ",
+    "{short:@ledger} (billing/src/ledger.py)", "{short:@retry} (billing/src/retry.py)", "{short:@export} (billing/src/export.py)", "{short:@plain} (billing/src/plain.py)",
+    "CMD confirm REF --session {session}", "CMD update REF --session {session} --set-detail", "has no project brief"],
+   "reminder_excludes": ["which note"]}},
+  {"cli": ["confirm", "@ledger", "--session", "{session}"], "expect": {"exit": 0, "status": "confirm"}},
+  {"hook": "user-prompt", "payload": {"prompt": "run the formatter"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Bash", "tool_input": {"command": "make format"}}},
+  {"hook": "stop", "expect": {"detail": {"pending": []}, "reminder_excludes": ["digests may be outdated", "You edited", "no project brief"]}}
+ ]
+}

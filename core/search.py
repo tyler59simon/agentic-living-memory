@@ -67,7 +67,7 @@ def query_terms(text,vocab=None):
 
 def domain_dir(domain,root=None):return Path(root or memory_root())/'domains'/canonical_domain(domain,Path(root or memory_root()))
 # Bump when the index schema changes, so an index built by older code counts as stale and is rebuilt.
-INDEX_VERSION=3
+INDEX_VERSION=4
 # What stored vectors were made from: the model and how a note becomes embedding text. Separate from INDEX_VERSION,
 # so a schema change rebuilds the index without re-embedding every note.
 EMBED_VERSION=2
@@ -125,8 +125,16 @@ def file_notes(path,domains,root=None,limit=2,ensure_fresh=True):
     """Active notes about a file: those listing it in `files` first, then those naming it in the body;
     newest first within each group. Hooks pass ensure_fresh=False: a missing index gives nothing, and a
     matched row whose canonical file changed since the index was built is skipped rather than trusted."""
+    return _file_hits([path],domains,root,limit,ensure_fresh)[path]
+
+def files_notes(paths,domains,root=None,per_file=2):
+    """{path: file_notes(path)} for many files in one scan of each domain's index rows (a hook, so never rebuilt): Stop looks up
+    every file a shell command or a long edit list touched, which one file_notes call per path would read the index for each time."""
+    return _file_hits(list(dict.fromkeys(paths)),domains,root,per_file,False)
+
+def _file_hits(paths,domains,root,limit,ensure_fresh):
     from .notes import is_interim
-    root=Path(root or memory_root()).resolve();ranked=[]
+    root=Path(root or memory_root()).resolve();ranked={p:[] for p in paths}
     for domain in dict.fromkeys(domains):
         try:folder=domain_dir(domain,root)
         except ValueError:continue
@@ -139,28 +147,41 @@ def file_notes(path,domains,root=None,limit=2,ensure_fresh=True):
         try:
             db=sqlite3.connect(db_path.as_uri()+'?mode=ro',uri=True)
             try:
-                try:rows=db.execute("SELECT id,title,type,updated,files,body,path,revision,sources FROM notes WHERE status='active'").fetchall()
-                except sqlite3.OperationalError:rows=[r+('',) for r in db.execute("SELECT id,title,type,updated,files,body,path,revision FROM notes WHERE status='active'")]   # an index from before digests
+                try:rows=db.execute("SELECT id,title,type,updated,files,body,path,revision,sources,file_hashes FROM notes WHERE status='active'").fetchall()
+                except sqlite3.OperationalError:
+                    try:rows=[r+('',) for r in db.execute("SELECT id,title,type,updated,files,body,path,revision,sources FROM notes WHERE status='active'")]   # an index from before file hashes
+                    except sqlite3.OperationalError:rows=[r+('','') for r in db.execute("SELECT id,title,type,updated,files,body,path,revision FROM notes WHERE status='active'")]   # an index from before digests
             finally:db.close()
         except sqlite3.Error:continue
         from .learning import published
         try:manifests,servable=published(root,domain)
         except (ValueError,OSError):manifests,servable={},set()
-        for note_id,title,kind,updated,files,body,note_path,revision,digested in rows:
+        for note_id,title,kind,updated,files,body,note_path,revision,digested,hashed in rows:
             if note_id in manifests and note_id not in servable:continue
-            try:listed=json.loads(files or '[]');digest_sources=json.loads(digested or '[]')
-            except ValueError:listed=[];digest_sources=[]
-            group=0 if file_matches(listed+[s['path'] for s in digest_sources],path) else 1 if mentions_file(body,path) else None
-            if group is not None and not ensure_fresh and not _unchanged(note_path,revision):continue
-            if group is not None:
-                ranked.append((group,str(updated or ''),{'id':note_id,'domain':domain,'title':title,'type':kind or 'knowledge','updated':str(updated or '')[:10],
-                               'match':'files' if group==0 else 'body','snippet':snippet(body,terms(path))}))
-                if digest_sources:ranked[-1][2]['sources']=digest_sources
-                if is_interim({'type':kind,'title':title,'body':body}):ranked[-1][2]['interim']=True
-                if note_id in manifests:
-                    ranked[-1][2].update(procedure_id=manifests[note_id]['id'],procedure_version=manifests[note_id]['current_version'])
-    ranked.sort(key=lambda r:r[1],reverse=True);ranked.sort(key=lambda r:r[0])
-    return [hit for _,_,hit in ranked[:max(1,limit)]]
+            try:listed=json.loads(files or '[]');digest_sources=json.loads(digested or '[]');file_hashes=json.loads(hashed or '[]')
+            except ValueError:listed=[];digest_sources=[];file_hashes=[]
+            entries=listed+[s['path'] for s in digest_sources+file_hashes];plain=None;intact=None
+            for path in paths:
+                if file_matches(entries,path):group=0
+                else:
+                    plain=body.replace('\\','/').casefold() if plain is None else plain
+                    group=1 if normalize_file(path).casefold() in plain and mentions_file(body,path) else None
+                if group is None:continue
+                if not ensure_fresh:
+                    intact=_unchanged(note_path,revision) if intact is None else intact
+                    if not intact:break
+                hit={'id':note_id,'domain':domain,'title':title,'type':kind or 'knowledge','updated':str(updated or '')[:10],
+                     'match':'files' if group==0 else 'body','snippet':snippet(body,terms(path))}
+                if digest_sources:hit['sources']=digest_sources
+                if file_hashes:hit['file_hashes']=file_hashes
+                if is_interim({'type':kind,'title':title,'body':body}):hit['interim']=True
+                if note_id in manifests:hit.update(procedure_id=manifests[note_id]['id'],procedure_version=manifests[note_id]['current_version'])
+                ranked[path].append((group,str(updated or ''),hit))
+    out={}
+    for path,found in ranked.items():
+        found.sort(key=lambda r:r[1],reverse=True);found.sort(key=lambda r:r[0])
+        out[path]=[hit for _,_,hit in found[:max(1,limit)]]
+    return out
 def _embedding_text(note):
     """Title plus summary: what the note is about, without the detail that dilutes a mean vector."""
     from .note_format import sections,plain
@@ -206,15 +227,15 @@ def rebuild_index(domain,root=None):
         fd,name=tempfile.mkstemp(prefix='.search-',suffix='.sqlite3',dir=directory);os.close(fd)
         db=sqlite3.connect(name)
         try:
-            db.execute('CREATE TABLE notes(domain TEXT,id TEXT,prefix TEXT,title TEXT,type TEXT,status TEXT,created TEXT,updated TEXT,review_by TEXT,context TEXT,tags TEXT,body TEXT,path TEXT,sha256 TEXT,revision TEXT,schema_version INTEGER,files TEXT,commands TEXT,repo TEXT,sources TEXT,PRIMARY KEY(domain,id))')
+            db.execute('CREATE TABLE notes(domain TEXT,id TEXT,prefix TEXT,title TEXT,type TEXT,status TEXT,created TEXT,updated TEXT,review_by TEXT,context TEXT,tags TEXT,body TEXT,path TEXT,sha256 TEXT,revision TEXT,schema_version INTEGER,files TEXT,commands TEXT,repo TEXT,sources TEXT,file_hashes TEXT,checked TEXT,PRIMARY KEY(domain,id))')
             db.execute('CREATE TABLE vocab(stem TEXT PRIMARY KEY,df INTEGER NOT NULL)')
             db.execute("CREATE VIRTUAL TABLE notes_fts USING fts5(title,tags,body,tokenize='porter unicode61')")
             db.execute('CREATE TABLE metadata(fingerprint TEXT,vectors TEXT)')
             if model:db.execute('CREATE TABLE vectors(rowid INTEGER PRIMARY KEY,vec BLOB NOT NULL)')
             df=Counter()
             for n in notes:
-                values=(domain,n['id'],n.get('prefix','NOTE'),n['title'],n.get('type','knowledge'),n.get('status','active'),n.get('created'),n.get('updated'),n.get('review_by'),n.get('context',''),json.dumps(n.get('tags',[])),n['body'],n['path'],n['digest'],n['revision'],n.get('schema_version',1),json.dumps(n.get('files') or []),json.dumps(note_commands(n)),n.get('repo') or '',json.dumps(n.get('sources') or []))
-                cursor=db.execute('INSERT INTO notes VALUES('+','.join('?'*20)+')',values)
+                values=(domain,n['id'],n.get('prefix','NOTE'),n['title'],n.get('type','knowledge'),n.get('status','active'),n.get('created'),n.get('updated'),n.get('review_by'),n.get('context',''),json.dumps(n.get('tags',[])),n['body'],n['path'],n['digest'],n['revision'],n.get('schema_version',1),json.dumps(n.get('files') or []),json.dumps(note_commands(n)),n.get('repo') or '',json.dumps(n.get('sources') or []),json.dumps(n.get('file_hashes') or []),n.get('checked') or '')
+                cursor=db.execute('INSERT INTO notes VALUES('+','.join('?'*22)+')',values)
                 if n.get('status','active')=='active':df.update(stems(n['title']+' '+n['body']))
                 db.execute('INSERT INTO notes_fts(rowid,title,tags,body) VALUES(?,?,?,?)',(cursor.lastrowid,n['title'],' '.join(n.get('tags',[])),n['body']))
                 if not model:continue
@@ -388,6 +409,7 @@ def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False):
                            'revision':note['revision'],'sourceField':field,'sourceScope':'active','coverage':coverage[note['id']],
                            'titleOverlap':len(wanted&title),'titleTerms':len(title),'queryTerms':len(wanted),'relevance':round(coverage[note['id']],2)})
             if note.get('sources'):output[-1]['sources']=note['sources']
+            if note.get('file_hashes'):output[-1]['file_hashes']=note['file_hashes']
             if is_interim(note):output[-1]['interim']=True
             if note.get('learning_procedure'):
                 output[-1].update(procedure_id=note['learning_procedure'],procedure_version=note['learning_version'],evidence_status=note.get('learning_state'))
@@ -494,6 +516,35 @@ def search_domains(query,domains,limit=3,root=None,filters=None,rebuild=False,we
         power=usage.strength_map(Path(root or memory_root()),{h['domain'] for h in hits});top=max(power.values(),default=0) or 1
         for hit in hits:hit['score']*=1+usage.STRENGTH_NUDGE*power.get(f"{hit['domain']}:{hit['id']}",0)/top
     return sorted(hits,key=lambda h:(-h['score'],h['domain'],h['id']))[:limit]
+def relevance_gate(query,root,trace=None,body=True,least=0):
+    """The prompt hook's relevance test as a search_domains `keep` filter: enough of the query's informative
+    words in a note's title or body, or (with a semantic model) a close match in meaning. trace, when a list,
+    receives one row per candidate: ref, rank, engine, engine score, relevance, similarity and the verdict.
+    body=False ignores body coverage: for a query spread over a whole long prompt, words found in a note's body
+    match by chance ("each", "one", "change"), so only its title (or its meaning) can vouch for the note. least is
+    the number of query words body coverage must find: a short piece of a long prompt covers itself too easily."""
+    from .semantic import threshold
+    count=len({stem(t) for t in query_terms(query or '')});near=threshold(root)
+    def relevant(hits):
+        kept=[]
+        for hit in hits:
+            overlap=hit.get('titleOverlap',0);title=hit.get('titleTerms',0);informative=hit.get('queryTerms',count)
+            if not informative:gate='dropped:no_informative'   # only words that appear in most notes
+            # One-word prompts ("continue", "yes") inject only on a title hit.
+            elif informative==1:gate='kept:title' if overlap else 'dropped:one_word_no_title'
+            elif body and hit.get('coverage',0)>=0.5 and (informative<4 or hit.get('coverage',0)>0.5) and round(hit.get('coverage',0)*informative)>=least:gate='kept:coverage'
+            elif overlap>=2 or (title and overlap/title>=0.5):gate='kept:title'
+            # Same meaning in other words ("laid out" for "layout"): only a close semantic match counts.
+            elif near is not None and hit.get('similarity',0)>=near:gate='kept:semantic'
+            else:gate='dropped:weak'
+            if gate.startswith('kept'):kept.append(hit)
+            if isinstance(trace,list):
+                # keep runs before search_domains replaces score with the fused rank score
+                trace.append({'ref':f"{hit['domain']}:{hit['id']}",'rank':hit.get('rank'),'engine':hit.get('engine'),
+                              'engine_score':round(hit['score'],4) if isinstance(hit.get('score'),(int,float)) else None,
+                              'relevance':hit.get('relevance'),'similarity':hit.get('similarity'),'gate':gate})
+        return kept
+    return relevant
 def note_hits(refs,root=None,query=None):
     """Search-shaped hits for these 'domain:id' refs, active notes only, in the order given, with their units scored
     against query when a model is installed. Read-only: from the derived indexes, never a rebuild. For a follow-up
@@ -511,7 +562,9 @@ def note_hits(refs,root=None,query=None):
             db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)
             try:
                 fingerprint=db.execute('SELECT fingerprint FROM metadata').fetchone()[0]
-                rows=db.execute(f"SELECT id,title,type,updated,body,revision,tags FROM notes WHERE status='active' AND id IN ({','.join('?'*len(ids))})",ids).fetchall()
+                marks=','.join('?'*len(ids))
+                try:rows=db.execute(f"SELECT id,title,type,updated,body,revision,tags,sources,file_hashes FROM notes WHERE status='active' AND id IN ({marks})",ids).fetchall()
+                except sqlite3.OperationalError:rows=[r+('','') for r in db.execute(f"SELECT id,title,type,updated,body,revision,tags FROM notes WHERE status='active' AND id IN ({marks})",ids)]   # an index from before digests or file hashes
             finally:db.close()
         except (ValueError,sqlite3.Error,TypeError):continue
         # The same publication rule as search: a learned runbook that is suspended, retired or no longer supported is not served.
@@ -523,9 +576,13 @@ def note_hits(refs,root=None,query=None):
         try:units=index.units(wanted,[r[0] for r in rows]) if index is not None else {}
         finally:
             if index is not None:index.close()
-        for note_id,title,kind,updated,body,revision,tags in rows:
+        for note_id,title,kind,updated,body,revision,tags,digested,hashed in rows:
             hit={'id':note_id,'domain':domain,'title':title,'type':kind or 'knowledge','updated':str(updated or '')[:10],'status':'active',
                  'revision':revision,'snippet':snippet(body,[]),'engine':'topic','units':units.get(note_id,[])}
+            try:digest_sources=json.loads(digested or '[]');file_hashes=json.loads(hashed or '[]')
+            except ValueError:digest_sources=[];file_hashes=[]
+            if digest_sources:hit['sources']=digest_sources
+            if file_hashes:hit['file_hashes']=file_hashes
             if note_id in manifests:hit.update(procedure_id=manifests[note_id]['id'],procedure_version=manifests[note_id]['current_version'])
             if is_interim({'type':kind,'title':title,'body':body}):hit['interim']=True
             found[f'{domain}:{note_id}']=hit

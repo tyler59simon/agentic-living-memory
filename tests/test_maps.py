@@ -400,6 +400,38 @@ class Staleness(StoreFixture):
         self.assertIn(f'project brief {self.short} is stale (docs/adr/ADR-004-money.md, pom.xml changed since it was written)',reason)
         self.assertIn("--set-detail '**Key decisions:** ...'",reason)
 
+    def confirm_at(self,hours):
+        """Confirm the note as if it were `hours` from now (git's clock for the test commits is ahead of the real one)."""
+        with patch('core.notes.now',return_value=(datetime.now(timezone.utc)+timedelta(hours=hours)).isoformat(timespec='microseconds')):
+            code,done=self.cli('confirm',self.ref);self.assertEqual(code,0,done)
+
+    def test_confirming_a_stale_map_clears_stale_until_a_later_commit(self):
+        self.capture();self.adr_changed()   # committed an hour ahead
+        self.assertIn('STALE:',self.hook('session-start')['context'])
+        updated=self.hit()['updated'];self.confirm_at(2)
+        from core.search import rebuild_index
+        rebuild_index('demo',self.root);hit=self.hit()   # read back from the index, which carries `checked`
+        self.assertEqual(hit['updated'],updated);self.assertGreater(hit['checked'],updated)   # confirm does not bump `updated`
+        self.assertNotIn('STALE',self.hook('session-start',session_id='s2')['context'])
+        self.assertNotIn('STALE',freshness(hit,self.app));self.assertEqual(currency(hit,self.app)[0]['changed'],[])
+        self.assertIn(f"changed since {updated[:10]}",freshness(dict(hit,checked=''),self.app))   # without `checked` it would still be stale
+        commit(self.app,{'pom.xml':'<v>3</v>'},later(3),'build again')   # the same day, after the confirmation
+        text=self.hook('session-start',session_id='s3')['context'];self.assertIn('STALE: pom.xml changed since',text)
+
+    def test_confirming_a_stale_brief_clears_stale_and_a_stop_stays_quiet(self):
+        self.capture('brief');self.adr_changed();self.hook('session-start');self.prompt();self.confirm_at(2)
+        self.assertNotIn('STALE',self.prompt('brief again',session_id='s2').get('context',''))
+        self.edit_app();self.assertNotIn('is stale',self.hook('stop').get('continue_reason',''))
+
+    def test_uncommitted_changes_do_not_make_a_confirmed_map_stale_again(self):
+        self.capture();self.adr_changed();self.confirm_at(2)
+        (self.app/'pom.xml').write_text('<v>9</v>',encoding='utf-8')
+        self.assertEqual(currency(self.hit(),self.app)[0]['changed'],[])
+
+    def test_the_shared_currency_cache_is_keyed_by_the_later_of_updated_and_checked(self):
+        self.capture();self.adr_changed();self.hook('session-start');key=runtime._currency_key(self.app,self.hit())
+        self.confirm_at(2);self.assertNotEqual(runtime._currency_key(self.app,self.hit()),key);self.assertGreater(runtime._currency_key(self.app,self.hit())[2],key[2])
+
     def test_a_note_shared_from_another_clone_is_checked_against_the_active_checkout(self):
         remote='https://github.com/acme/app.git'
         clone=self.project/'clone';git(self.project,'clone','-q',str(self.app),str(clone));clone=clone.resolve()

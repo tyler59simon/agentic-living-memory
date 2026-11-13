@@ -75,10 +75,15 @@ def _facet_tags(args,facets=FACET_FLAGS):
 # Defaults when a capture names no subject/ or concern/ tag; used only if the tag is in the taxonomy.
 SUBJECT_BY_TYPE={'preference':'subject/user'}
 CONCERN_BY_TYPE={'decision':'concern/decision','preference':'concern/preference','bug':'concern/bug','knowledge':'concern/knowledge','policy':'concern/workflow','map':'concern/architecture','runbook':'concern/workflow','brief':'concern/knowledge','plan':'concern/workflow','context':'concern/knowledge','status':'concern/knowledge','risk':'concern/constraint','research':'concern/knowledge'}
-def _infer_tags(item,root):
+def _global_names(root):
+    from .common import global_domains
+    return global_domains(root)
+
+def _infer_tags(item,root,user=False):
+    """Adds the default subject and concern tags the taxonomy knows; user marks the user brief (a global brief with no files), which is about the user."""
     from .notes import taxonomy
     known=taxonomy(root);tags=list(item.get('tags') or []);kind=item.get('type') or 'knowledge';added=[]
-    for facet,tag in (('subject',SUBJECT_BY_TYPE.get(kind,'subject/project')),('concern',CONCERN_BY_TYPE.get(kind))):
+    for facet,tag in (('subject','subject/user' if user else SUBJECT_BY_TYPE.get(kind,'subject/project')),('concern',CONCERN_BY_TYPE.get(kind))):
         if tag and tag in known and not any(t.startswith(facet+'/') for t in tags):tags.append(tag);added.append(tag)
     item['tags']=tags
     return added
@@ -232,7 +237,7 @@ def _sectioned(args,body='',note_type=None):
 
 # source-sync writes only the derived knowledge-base index (as search --rebuild does the notes' one), so subagents and viewers may run it
 # (not for a remote source, which it would pull from the network: sources.sync refuses that for them).
-READ_ONLY={'search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','ask','sources','source-sync','ingest-scan','changes'}
+READ_ONLY={'search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','ask','sources','source-sync','ingest-scan','changes','log'}
 # Viewer: a human-facing app browsing the store. Read-only, and its reads are not usage evidence for the diary.
 VIEWER=READ_ONLY|{'taxonomy','review','diff','inspect-plan'}
 SERVE_API=2
@@ -468,7 +473,7 @@ def main(argv=None):
     p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
     sections_args(p,update=True);_file_flags(p)
     p=sub('supersede');p.add_argument('reference');p.add_argument('--by',required=True,help='REF of the note that replaces it; its links and files are carried over (see --drop-links)');p.add_argument('--drop-links',action='store_true',help='Do not carry the links and files of the replaced note over');p.add_argument('--session');p.add_argument('--turn')
-    p=sub('review');p.add_argument('--limit',type=int,default=20);p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)')
+    p=sub('review');p.add_argument('--kind',action='append',choices=['stale','due','interim','duplicate','warned','noisy'],help='Only this kind of row (repeatable): stale, due, interim, duplicate, warned, noisy');p.add_argument('--limit',type=int,default=20);p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)')
     p=sub('open');p.add_argument('--limit',type=int,default=50);p.add_argument('--all-domains',action='store_true',help='Every domain folder, not parents and global only');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)')
     p=sub('check');p.add_argument('reference');p.add_argument('item',nargs='?',help='Text of the action item: exact, or a unique part of it');p.add_argument('--index',type=int,help="1-based position among the note's action items, as open lists it");p.add_argument('--undo',action='store_true',help='Untick instead');p.add_argument('--session');p.add_argument('--turn')
     p=sub('timeline');p.add_argument('reference',nargs='?',help='Anchor note; default: the newest note');p.add_argument('--date',help='YYYY-MM-DD: anchor at the first note on or after this date');p.add_argument('--before',type=int,default=5);p.add_argument('--after',type=int,default=5);p.add_argument('--type',choices=NOTE_TYPES,action='append');p.add_argument('--by',choices=['updated','created'],default='updated');p.add_argument('--all',action='store_true',help='Include superseded, archived and resolved notes')
@@ -487,6 +492,7 @@ def main(argv=None):
     p=sub('rewrite-plan');p.add_argument('--payload-file',type=Path,help='JSON list of {"ref", "revision", "body"}; default: stdin')
     p=sub('merge-plan');p.add_argument('--payload-file',type=Path)
     p=sub('history');p.add_argument('--note');p.add_argument('--limit',type=int,default=20)
+    p=sub('log');p.add_argument('--project',help='Project slug');p.add_argument('--since',help='ISO date or time');p.add_argument('--until',help='ISO date or time, inclusive');p.add_argument('--note',help='One note (REF or ID, deleted notes too) or change (CHG-014)');p.add_argument('--type',help='Note type, change or session');p.add_argument('--event',help='created, updated, confirmed, superseded, resolved, archived, reopened, deleted, promoted, moved, undone, stage, closed or session');p.add_argument('--limit',type=int,default=50)
     p=sub('undo');p.add_argument('operation_id')
     p=sub('recover');p.add_argument('operation_id');p.add_argument('--direction',choices=['forward','backward'],default='forward');p.add_argument('--abandon',action='store_true',help='Stop treating the operation as pending; no note file is changed')
     p=sub('diff');p.add_argument('operation_id')
@@ -631,7 +637,7 @@ def main(argv=None):
                         selected=global_domain(root)
                     if session and not turn:turn=_turn(root,session,None)
                     if not selected:raise ValueError('Project is unbound; pass --domain or bind it')
-                    inferred=_infer_tags(item,root);redacted=_redact(item) if args.redact else []
+                    inferred=_infer_tags(item,root,item.get('type')=='brief' and not item.get('files') and selected in _global_names(root));redacted=_redact(item) if args.redact else []
                     # Project attribution: capture only. cwd counts only for a session (serve passes the app's own cwd to every request).
                     from . import projects
                     ptags,candidates=projects.infer(item,selected,root,_session_state(root,session).get('touched',[]) if session else (),cwd if session else None)
@@ -701,6 +707,9 @@ def main(argv=None):
             from .notes import find_note
             d,n=_reference(args.reference,domain,root);path,note=find_note(n,d,root)
             result={k:v for k,v in note.items() if k not in {'body','path','digest'}}
+            from .digests import stale_note
+            stale=stale_note(note,root)   # a digest's source file, or a hashed file the note lists, changed since it was written
+            if stale:result['stale']=stale
             if args.section:
                 # One section, as the prompt hook's evidence lines name it: "Why", or a path like "Notes > Deeper detail".
                 # The text comes from the note as served (an approved learned runbook's approved body, not an unreviewed edit of
@@ -796,17 +805,15 @@ def main(argv=None):
             record(root,'supersede',[f'{d}:{n}'],args.session)
             _receipt(args,d,bn,root)
         elif cmd=='review':
-            from .note_types import review_due,review_order,last_confirmed
-            from .usage import used_refs
+            from .worklist import worklist,KINDS
             if args.all_domains:domains=[d['name'] for d in list_domains(root)['domains'] if (root/'domains'/d['name']/'notes').is_dir()]
             elif domain:domains=[domain]
             else:raise ValueError('unbound_project')
-            pool=[dict(n,domain=d) for d in domains for n in inventory(d,root) if all(t in (n.get('tags') or []) for t in args.tag)]
-            from .digests import stale_note
-            bindings=load_bindings(root);stale={k:v for k,v in {(n['domain'],n['id']):stale_note(n,root,bindings) for n in pool if n.get('sources')}.items() if v}   # digests whose source file changed
-            due=review_order([n for n in pool if review_due(n) or (n['domain'],n['id']) in stale],used_refs(root),None if args.all_domains else domain)
-            result={'ok':True,'domain':None if args.all_domains else domain,'due':len(due),'stale_digests':len(stale),'notes':[{**({'stale':stale[(n['domain'],n['id'])]} if (n['domain'],n['id']) in stale else {}),'ref':f"{n['domain']}:{n['id']}",'title':n['title'],'type':n.get('type'),'updated':str(n.get('updated',''))[:10],'review_by':n.get('review_by'),'confirmed':last_confirmed(n),'revision':n['revision'],'domain':n['domain']} for n in due[:max(1,min(100,args.limit))]],
-                    'hint':'For each note: still true -> confirm REF; changed -> update REF; replaced -> supersede it; obsolete -> ask for an archive plan. A STALE digest: read its source, then update REF (or confirm REF if it still holds). Never-confirmed notes nobody has read lately come first.'}
+            # Read-only for every actor: the worklist writes no usage rows, so a viewer's browsing is no evidence either.
+            found=worklist(root,domains,args.kind or None,max(1,min(100,args.limit)),args.tag)
+            result={'ok':True,'domain':None if args.all_domains else domain,'due':found['total'],'stale_digests':found['counts'].get('stale',0),'kinds':list(KINDS),'counts':found['counts'],'notes':found['items'],
+                    'hint':'Each note lists why (kinds, reason) and an action. Still true -> confirm REF; changed -> update REF; replaced -> supersede REF --by NEW; finished -> resolve REF. A STALE note: read its files, then update REF (or confirm REF if it still holds). '
+                           'For a duplicate (pair) or an obsolete note, propose plans for archive or merge; the user applies them. Stale notes come first, never-confirmed notes nobody has read lately lead the due ones.'}
         elif cmd=='open':
             from .notes import open_work,short_ref
             from .runtime import parent_domains
@@ -907,6 +914,18 @@ def main(argv=None):
                     note_id=args.note.rpartition(':')[2]
                     if not __import__('re').fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',note_id):raise
             result=history(root,note_id,args.limit)
+        elif cmd=='log':
+            import re
+            from .activity import log
+            note=args.note
+            if note and re.fullmatch(r'CHG-0*[1-9]\d*',note,re.I):note='CHG-%03d'%int(note[4:])
+            elif note:
+                try:note=_reference(note,domain,root)[1]
+                except ValueError:
+                    # A deleted note has no file left to resolve, but its journals still name it by full ID.
+                    note=note.rpartition(':')[2]
+                    if not re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',note):raise
+            result=log(root,canonical_domain(args.domain,root) if args.domain else None,args.project,args.since,args.until,note,args.type,args.event,args.limit)
         elif cmd=='undo':
             from .governance import undo
             result=undo(root,args.operation_id)

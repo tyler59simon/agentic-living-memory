@@ -1,0 +1,191 @@
+{
+ "name": "shell-follow",
+ "description": "A shell command or git changed a file a note lists, by a relative path no hook can see: Stop asks about that note the same as for an edit tool. A pull that brings in dozens of files (more than 3 commits or 30 files) is not the agent's work and stays quiet.",
+ "harnesses": [
+  "claude",
+  "codex"
+ ],
+ "git": [
+  {
+   "folder": "project/billing",
+   "commits": [
+    {
+     "when": "old",
+     "files": {
+      "src/retry.py": "RETRIES = 3\n",
+      "src/ledger.py": "def reconcile_ledger(db):\n    return db.read(\"snapshot\")\n"
+     }
+    }
+   ]
+  }
+ ],
+ "notes": [
+  {
+   "key": "retry",
+   "title": "Retry limit for payment captures",
+   "body": "Failed payment captures are retried up to RETRIES times (billing/src/retry.py:1).",
+   "files": [
+    "billing/src/retry.py"
+   ],
+   "tags": [
+    "subject/project",
+    "concern/architecture"
+   ]
+  },
+  {
+   "key": "ledger",
+   "title": "Nightly ledger reconciliation",
+   "body": "reconcile_ledger reads the balance snapshot every night (billing/src/ledger.py:1).",
+   "files": [
+    "billing/src/ledger.py"
+   ],
+   "tags": [
+    "subject/project",
+    "concern/architecture"
+   ]
+  }
+ ],
+ "steps": [
+  {
+   "hook": "session-start"
+  },
+  {
+   "hook": "user-prompt",
+   "payload": {
+    "cwd": "{project}/billing",
+    "prompt": "raise the retry limit and run the formatter"
+   }
+  },
+  {
+   "hook": "pre-tool-use",
+   "payload": {
+    "cwd": "{project}/billing",
+    "tool_name": "Bash",
+    "tool_input": {
+     "command": "make format"
+    }
+   },
+   "expect": {
+    "mutation": "tracked"
+   }
+  },
+  {
+   "git_commit": {
+    "folder": "project/billing",
+    "files": {
+     "src/retry.py": "RETRIES = 5\n"
+    },
+    "message": "make format"
+   }
+  },
+  {
+   "hook": "stop",
+   "payload": {
+    "cwd": "{project}/billing"
+   },
+   "expect": {
+    "reminder": "follow",
+    "reminder_contains": [
+     "You edited billing/src/retry.py, which note {short:@retry} Retry limit for payment captures covers",
+     "CMD confirm {short:@retry} --session {session}"
+    ],
+    "reminder_excludes": [
+     "{short:@ledger}"
+    ]
+   }
+  },
+  {
+   "cli": [
+    "confirm",
+    "@retry",
+    "--session",
+    "{session}"
+   ],
+   "expect": {
+    "exit": 0,
+    "status": "confirm"
+   }
+  },
+  {
+   "hook": "user-prompt",
+   "payload": {
+    "cwd": "{project}/billing",
+    "prompt": "pull the latest changes"
+   }
+  },
+  {
+   "hook": "pre-tool-use",
+   "payload": {
+    "cwd": "{project}/billing",
+    "tool_name": "Bash",
+    "tool_input": {
+     "command": "git pull --ff-only"
+    }
+   },
+   "expect": {
+    "mutation": "tracked"
+   }
+  },
+  {
+   "git_commit": {
+    "folder": "project/billing",
+    "files": {
+     "vendor/lib00.txt": "lib 0\n",
+     "vendor/lib01.txt": "lib 1\n",
+     "vendor/lib02.txt": "lib 2\n",
+     "vendor/lib03.txt": "lib 3\n",
+     "vendor/lib04.txt": "lib 4\n",
+     "vendor/lib05.txt": "lib 5\n",
+     "vendor/lib06.txt": "lib 6\n",
+     "vendor/lib07.txt": "lib 7\n",
+     "vendor/lib08.txt": "lib 8\n",
+     "vendor/lib09.txt": "lib 9\n",
+     "vendor/lib10.txt": "lib 10\n",
+     "vendor/lib11.txt": "lib 11\n",
+     "vendor/lib12.txt": "lib 12\n",
+     "vendor/lib13.txt": "lib 13\n",
+     "vendor/lib14.txt": "lib 14\n",
+     "vendor/lib15.txt": "lib 15\n",
+     "vendor/lib16.txt": "lib 16\n",
+     "vendor/lib17.txt": "lib 17\n",
+     "vendor/lib18.txt": "lib 18\n",
+     "vendor/lib19.txt": "lib 19\n",
+     "vendor/lib20.txt": "lib 20\n",
+     "vendor/lib21.txt": "lib 21\n",
+     "vendor/lib22.txt": "lib 22\n",
+     "vendor/lib23.txt": "lib 23\n",
+     "vendor/lib24.txt": "lib 24\n",
+     "vendor/lib25.txt": "lib 25\n",
+     "vendor/lib26.txt": "lib 26\n",
+     "vendor/lib27.txt": "lib 27\n",
+     "vendor/lib28.txt": "lib 28\n",
+     "vendor/lib29.txt": "lib 29\n",
+     "vendor/lib30.txt": "lib 30\n",
+     "vendor/lib31.txt": "lib 31\n",
+     "vendor/lib32.txt": "lib 32\n",
+     "vendor/lib33.txt": "lib 33\n",
+     "vendor/lib34.txt": "lib 34\n",
+     "vendor/lib35.txt": "lib 35\n",
+     "vendor/lib36.txt": "lib 36\n",
+     "vendor/lib37.txt": "lib 37\n",
+     "vendor/lib38.txt": "lib 38\n",
+     "vendor/lib39.txt": "lib 39\n",
+     "src/ledger.py": "def reconcile_ledger(db):\n    return db.read(\"snapshot_v2\")\n"
+    },
+    "message": "upstream: vendor refresh"
+   }
+  },
+  {
+   "hook": "stop",
+   "payload": {
+    "cwd": "{project}/billing"
+   },
+   "expect": {
+    "reminder_excludes": [
+     "You edited",
+     "{short:@ledger}"
+    ]
+   }
+  }
+ ]
+}
