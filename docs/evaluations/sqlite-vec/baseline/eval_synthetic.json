@@ -1,0 +1,102 @@
+{
+  "retrieval": {
+    "cases": 7,
+    "positive": 5,
+    "negative": 2,
+    "hit@3": 1.0,
+    "false_injection": 0.0,
+    "forbid_violations": [],
+    "mean_injected_chars": 265,
+    "mean_ms": 11.4,
+    "overview_rate": 0.286,
+    "misses": [],
+    "false_injections": []
+  },
+  "long_prompts": {
+    "cases": 8,
+    "positive": 4,
+    "negative": 4,
+    "recall": 1.0,
+    "false_injection": 0.0,
+    "mean_ms": 23.5,
+    "misses": [],
+    "false_injections": []
+  },
+  "quiz": {
+    "cases": 3,
+    "positive": 2,
+    "negative": 1,
+    "recall": 1.0,
+    "notes_recalled": 0.833,
+    "false_injection": 0.0,
+    "mean_ms": 60.7,
+    "max_chars": 983,
+    "misses": [],
+    "false_injections": []
+  },
+  "interim": {
+    "cases": 2,
+    "correct": 1.0,
+    "wrong": []
+  },
+  "commands": {
+    "cases": 9,
+    "positive": 4,
+    "negative": 5,
+    "recall": 1.0,
+    "false_hint": 0.0,
+    "misses": [],
+    "false_hints": []
+  },
+  "sources": {
+    "cases": 17,
+    "positive": 5,
+    "negative": 12,
+    "hit@3": 1.0,
+    "prompt_recall": 1.0,
+    "false_injection": 0.0,
+    "mean_ms": 5.7,
+    "misses": [],
+    "prompt_misses": [],
+    "false_injections": []
+  },
+  "session": {
+    "chars": 2860,
+    "fallback_chars": 5046,
+    "budget": 3500,
+    "index_coverage": 1.0,
+    "not_listed": []
+  },
+  "signals": {
+    "cases": 19,
+    "per_kind": {
+      "remember": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "cases": 1
+      },
+      "correction": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "cases": 1
+      },
+      "preference": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "cases": 3
+      },
+      "decision": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "cases": 2
+      },
+      "directive": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "cases": 1
+      }
+    },
+    "false_arm": 0.0,
+    "wrong": []
+  }
+}

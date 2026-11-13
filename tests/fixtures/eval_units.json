@@ -1,0 +1,431 @@
+{
+ "comment": "Synthetic fixture for section-level retrieval and token-aware delivery (scripts/eval_retrieval.py --config). Every note and prompt is invented. units: one prompt each, scored by rank (recall@k, MRR over search_domains), by injection, and by whether the injected text already holds the answer phrase; a miss that injected the note is charged one follow-up read. sessions: prompts in one session through the real prompt hook.",
+ "domain": "evalunits",
+ "notes": [
+  {
+   "key": "auth",
+   "type": "decision",
+   "title": "Token refresh design",
+   "body": "Token refresh happens in one place: the auth gateway renews every session.\n\n## Why\nEach mobile and web client used to retry expired sessions on its own, so a single outage produced a storm of duplicate renewal calls.\n\n## Alternatives considered\n- Per-client refresh with jittered retries: rejected, it kept the duplicated logic in every app.\n- A shared client SDK: rejected because the iOS release cycle is too slow to ship fixes."
+  },
+  {
+   "key": "outbox",
+   "type": "decision",
+   "title": "Event publishing design",
+   "body": "Domain events are written to an outbox table and published by a poller.\n\n## Why\nWriting the event in the same database transaction as the change means nothing is lost if the process crashes before publishing.\n\n## Alternatives considered\n- Kafka: rejected; operating a broker cluster costs more than our event volume justifies.\n- Direct HTTP webhooks from request handlers: rejected, a failed call drops the event."
+  },
+  {
+   "key": "keys",
+   "type": "runbook",
+   "title": "Signing key rotation",
+   "body": "Rotate the JWT signing keys every quarter.\n\n## When to use\nAt the start of each quarter, or the same day a key may have leaked.\n\n## Steps\n1. Run `keyctl rotate --all --confirm` on the vault host.\n2. Restart the gateway with `svc restart gateway`.\n3. Check that `keyctl status` lists the new key id.\n\n## Roll back\nRun `keyctl rollback --to previous` and restart the gateway again; tokens signed with the new key stop validating."
+  },
+  {
+   "key": "payroll",
+   "type": "bug",
+   "title": "Payroll export crash",
+   "body": "The nightly payroll export crashed on large months.\n\n## Cause\nThe CSV writer raised `MemoryError: cannot allocate 2147483648 bytes` because it buffered the whole month in memory.\n\n## Fix\nStream rows in pages with `export --page-size 5000`; memory now stays flat.\n\n## How to check\nThe export log ends with `pages written` and no traceback."
+  },
+  {
+   "key": "warehouse",
+   "type": "knowledge",
+   "title": "Warehouse sync service",
+   "body": "The warehouse sync service copies stock levels from every warehouse into the central inventory database.\n\n## Components\nA fetcher per warehouse, a normalizer and a writer that upserts rows into inventory.stock.\n\n## Scheduling\nThe import job runs every 15 minutes from the cron host; a run that overlaps the previous one is skipped.\n\n## Clock handling\nTimestamps from the Osaka warehouse arrive in JST and are converted to UTC before comparison; the converter lives in `tz_bridge.normalize()`.\n\n## Retries\nA failed fetch is retried three times with a two minute pause, then the warehouse is marked stale on the dashboard.\n\n## Monitoring\nThe sync dashboard shows lag per warehouse; an alert fires when any lag passes one hour."
+  },
+  {
+   "key": "backup",
+   "type": "knowledge",
+   "title": "Database backup schedule",
+   "body": "Postgres is backed up nightly at 02:00 UTC to cold storage.\n\n## Details\n- Restores are tested monthly by restoring into the staging cluster.\n- Backups are kept for 35 days."
+  },
+  {
+   "key": "retention_old",
+   "type": "decision",
+   "title": "Log retention period",
+   "body": "Application logs are kept for 14 days.\n\n## Why\nDisk on the old log host was limited."
+  },
+  {
+   "key": "retention_new",
+   "type": "decision",
+   "title": "Log retention period, revised",
+   "supersedes": "@retention_old",
+   "body": "Application logs are now kept for 90 days in the log archive.\n\n## Why\nAudits need three months of history; archive storage is cheap."
+  },
+  {
+   "key": "flags",
+   "type": "knowledge",
+   "title": "Feature flag naming",
+   "body": "Feature flags are named team.area.feature, all lower case, for example billing.invoices.bulk_export."
+  },
+  {
+   "key": "plants",
+   "type": "knowledge",
+   "title": "Office plant watering",
+   "body": "The office plants are watered on Mondays and Thursdays by whoever opens the office."
+  },
+  {
+   "key": "lunch",
+   "type": "knowledge",
+   "title": "Team lunch rotation",
+   "body": "Team lunch rotates between three restaurants; the organizer books a table for Friday."
+  },
+  {
+   "key": "coffee",
+   "type": "knowledge",
+   "title": "Coffee machine descaling",
+   "body": "The coffee machine is descaled every second week with the tablets in the kitchen drawer."
+  }
+ ],
+ "units": [
+  {
+   "kind": "exact",
+   "prompt": "MemoryError: cannot allocate 2147483648 bytes",
+   "expect": [
+    "@payroll"
+   ],
+   "answer": "page-size 5000"
+  },
+  {
+   "kind": "exact",
+   "prompt": "keyctl rotate --all --confirm",
+   "expect": [
+    "@keys"
+   ],
+   "answer": "keyctl rotate"
+  },
+  {
+   "kind": "exact",
+   "prompt": "tz_bridge.normalize",
+   "expect": [
+    "@warehouse"
+   ],
+   "answer": "JST"
+  },
+  {
+   "kind": "buried",
+   "prompt": "which timezone do the Osaka warehouse timestamps arrive in",
+   "expect": [
+    "@warehouse"
+   ],
+   "answer": "JST"
+  },
+  {
+   "kind": "buried",
+   "prompt": "how often does the warehouse import job run",
+   "expect": [
+    "@warehouse"
+   ],
+   "answer": "every 15 minutes"
+  },
+  {
+   "kind": "buried",
+   "prompt": "what happens when a warehouse fetch fails",
+   "expect": [
+    "@warehouse"
+   ],
+   "answer": "retried three times"
+  },
+  {
+   "kind": "buried",
+   "prompt": "do we ever test restoring the database backups",
+   "expect": [
+    "@backup"
+   ],
+   "answer": "tested monthly"
+  },
+  {
+   "kind": "paraphrase",
+   "prompt": "are Japanese depot clock readings adjusted before comparing",
+   "expect": [
+    "@warehouse"
+   ],
+   "answer": "converted to UTC"
+  },
+  {
+   "kind": "paraphrase",
+   "prompt": "when are the Postgres snapshots taken",
+   "expect": [
+    "@backup"
+   ],
+   "answer": "02:00 UTC"
+  },
+  {
+   "kind": "paraphrase",
+   "prompt": "where does session renewal happen",
+   "expect": [
+    "@auth"
+   ],
+   "answer": "auth gateway"
+  },
+  {
+   "kind": "overview",
+   "prompt": "how does token refresh work",
+   "expect": [
+    "@auth"
+   ],
+   "answer": "auth gateway"
+  },
+  {
+   "kind": "rationale",
+   "prompt": "why did we centralize token refresh",
+   "expect": [
+    "@auth"
+   ],
+   "answer": "storm of duplicate renewal calls"
+  },
+  {
+   "kind": "rationale",
+   "prompt": "why do domain events go through an outbox table",
+   "expect": [
+    "@outbox"
+   ],
+   "answer": "nothing is lost"
+  },
+  {
+   "kind": "alternative",
+   "prompt": "what options did we turn down for token refresh",
+   "expect": [
+    "@auth"
+   ],
+   "answer": "shared client SDK",
+   "polarity": {
+    "phrase": "shared client SDK",
+    "marker": "reject"
+   }
+  },
+  {
+   "kind": "polarity",
+   "prompt": "should we publish domain events with kafka",
+   "expect": [
+    "@outbox"
+   ],
+   "answer": "rejected",
+   "polarity": {
+    "phrase": "Kafka",
+    "marker": "reject"
+   }
+  },
+  {
+   "kind": "procedure",
+   "prompt": "how do I roll back a bad signing key rotation",
+   "expect": [
+    "@keys"
+   ],
+   "answer": "keyctl rollback"
+  },
+  {
+   "kind": "fix",
+   "prompt": "how was the payroll export crash fixed",
+   "expect": [
+    "@payroll"
+   ],
+   "answer": "page-size 5000"
+  },
+  {
+   "kind": "superseded",
+   "prompt": "how long do we keep application logs",
+   "expect": [
+    "@retention_new"
+   ],
+   "forbid": [
+    "@retention_old"
+   ],
+   "answer": "90 days"
+  },
+  {
+   "kind": "multi",
+   "prompt": "why do events go through the outbox table, and how do I rotate the JWT signing keys",
+   "expect": [
+    "@outbox",
+    "@keys"
+   ],
+   "answer": "nothing is lost"
+  },
+  {
+   "kind": "buried-paraphrase",
+   "prompt": "how long until stale stock alerts page someone",
+   "expect": [
+    "@warehouse"
+   ],
+   "answer": "one hour"
+  },
+  {
+   "kind": "buried-paraphrase",
+   "prompt": "what happens to overlapping cron runs of the inventory copy",
+   "expect": [
+    "@warehouse"
+   ],
+   "answer": "skipped"
+  },
+  {
+   "kind": "buried-paraphrase",
+   "prompt": "do signatures made with the new secret still verify after undoing a rotation",
+   "expect": [
+    "@keys"
+   ],
+   "answer": "stop validating"
+  },
+  {
+   "kind": "buried-paraphrase",
+   "prompt": "what memory problem did the salary file job hit",
+   "expect": [
+    "@payroll"
+   ],
+   "answer": "MemoryError"
+  },
+  {
+   "kind": "buried-paraphrase",
+   "prompt": "how many days are database copies retained",
+   "expect": [
+    "@backup"
+   ],
+   "answer": "35 days"
+  },
+  {
+   "kind": "buried-paraphrase",
+   "prompt": "which component writes rows into the stock table",
+   "expect": [
+    "@warehouse"
+   ],
+   "answer": "writer that upserts"
+  },
+  {
+   "kind": "buried-paraphrase",
+   "prompt": "what made the iOS release cadence matter for the refresh decision",
+   "expect": [
+    "@auth"
+   ],
+   "answer": "too slow"
+  },
+  {
+   "kind": "buried-paraphrase",
+   "prompt": "is the event lost if the service dies mid-publish",
+   "expect": [
+    "@outbox"
+   ],
+   "answer": "nothing is lost"
+  },
+  {
+   "kind": "negative",
+   "prompt": "what is the weather in Lisbon tomorrow",
+   "expect": []
+  },
+  {
+   "kind": "negative",
+   "prompt": "write a haiku about autumn leaves",
+   "expect": []
+  },
+  {
+   "kind": "negative",
+   "prompt": "how do I center a div with css grid",
+   "expect": []
+  },
+  {
+   "kind": "negative",
+   "prompt": "explain the time complexity of quicksort",
+   "expect": []
+  },
+  {
+   "kind": "negative",
+   "prompt": "summarize the plot of a famous novel",
+   "expect": []
+  }
+ ],
+ "sessions": [
+  {
+   "name": "pointer then detail",
+   "steps": [
+    {
+     "prompt": "tell me about the event publishing design",
+     "expect": [
+      "@outbox"
+     ]
+    },
+    {
+     "prompt": "why?",
+     "answer": "nothing is lost"
+    },
+    {
+     "prompt": "what were the alternatives?",
+     "answer": "Kafka"
+    },
+    {
+     "prompt": "thanks",
+     "expect_none": true
+    },
+    {
+     "prompt": "event publishing design outbox",
+     "expect_none": true
+    }
+   ]
+  },
+  {
+   "name": "topic shift",
+   "steps": [
+    {
+     "prompt": "how do I rotate the signing keys",
+     "expect": [
+      "@keys"
+     ]
+    },
+    {
+     "prompt": "and how do I roll back a bad key rotation",
+     "answer": "keyctl rollback"
+    },
+    {
+     "prompt": "when are the database backups taken",
+     "expect": [
+      "@backup"
+     ],
+     "answer": "02:00 UTC"
+    }
+   ]
+  },
+  {
+   "name": "revised note",
+   "steps": [
+    {
+     "prompt": "when are the database backups taken",
+     "expect": [
+      "@backup"
+     ],
+     "answer": "02:00 UTC"
+    },
+    {
+     "edit": "@backup",
+     "replace": [
+      "02:00 UTC",
+      "03:30 UTC"
+     ]
+    },
+    {
+     "prompt": "when are the database backups taken",
+     "expect": [
+      "@backup"
+     ],
+     "answer": "03:30 UTC"
+    }
+   ]
+  },
+  {
+   "name": "same topic, new question",
+   "steps": [
+    {
+     "prompt": "how does the warehouse sync service work",
+     "expect": [
+      "@warehouse"
+     ]
+    },
+    {
+     "prompt": "how often does the warehouse import job run",
+     "answer": "every 15 minutes"
+    },
+    {
+     "prompt": "what happens when a warehouse fetch fails",
+     "answer": "retried three times"
+    }
+   ]
+  }
+ ],
+ "distractors": 60
+}

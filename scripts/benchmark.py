@@ -229,14 +229,83 @@ def latency(model_dir=None):
     if model_dir:met.append(prompts['semantic_prompt']['p50_ms']<=LATENCY_TARGETS['semantic_prompt_p50_ms'])
     value['met']=all(met);print(json.dumps(value));return value
 
+def vectors_case(count,dim=512,queries=20,top=20,seed=7):
+    """SYNTHETIC: `count` random unit vectors (not a real corpus). The unit index's two backends over the same blobs:
+    the Python dot-product scan and sqlite-vec's exact vec0 KNN. Build time, file size, query p50/p95, extension load
+    time and top-`top` agreement. Says so and skips the native half when sqlite-vec does not load."""
+    import array,math,os,random,sqlite3
+    from core import vectors
+    rng=random.Random(seed)
+    def unit():
+        v=[rng.gauss(0,1) for _ in range(dim)];n=math.sqrt(sum(x*x for x in v));return array.array('f',(x/n for x in v))
+    with tempfile.TemporaryDirectory(prefix='living-memory-vectors-') as directory:
+        path=Path(directory)/'v.sqlite3';db=sqlite3.connect(path)
+        started=time.perf_counter()
+        db.execute('CREATE TABLE blob(rowid INTEGER PRIMARY KEY,vec BLOB NOT NULL)')
+        db.executemany('INSERT INTO blob VALUES(?,?)',((i,vectors._blob(unit())) for i in range(1,count+1)));db.commit()
+        python_build=time.perf_counter()-started;python_size=path.stat().st_size
+        loads=[]
+        for _ in range(5):
+            probe=sqlite3.connect(':memory:');started=time.perf_counter();ok,info=vectors.load(probe);loads.append((time.perf_counter()-started)*1000);probe.close()
+        value={'schema':1,'synthetic':True,'vectors':count,'dim':dim,'queries':queries,'top':top,'python':{'build_s':round(python_build,2),'size_bytes':python_size},
+               'native':{'loadable':ok,**({'version':info} if ok else {'reason':info})}}
+        asked=[unit() for _ in range(queries)]
+        def python_top(q):
+            return [r for _,r in heapq.nsmallest(top,((-vectors._dot(q,vectors._vector(b)),r) for r,b in db.execute('SELECT rowid,vec FROM blob')))]
+        import heapq
+        times=[];python_hits=[]
+        for q in asked:
+            started=time.perf_counter();python_hits.append(python_top(q));times.append((time.perf_counter()-started)*1000)
+        value['python'].update(p50_ms=round(statistics.median(times),2),p95_ms=round(sorted(times)[max(0,int(len(times)*.95)-1)],2))
+        if ok:
+            vectors.load(db)
+            started=time.perf_counter()
+            db.execute(f'CREATE VIRTUAL TABLE knn USING vec0(embedding float[{dim}] distance_metric=cosine)')
+            db.execute('INSERT INTO knn(rowid,embedding) SELECT rowid,vec FROM blob');db.commit()
+            native_build=time.perf_counter()-started
+            times=[];same=0
+            for q,expected in zip(asked,python_hits):
+                started=time.perf_counter()
+                got=[r for r,_ in sorted(db.execute('SELECT rowid,distance FROM knn WHERE embedding MATCH ? AND k=? ORDER BY distance',(vectors._blob(q),top)),key=lambda r:(r[1],r[0]))]
+                times.append((time.perf_counter()-started)*1000);same+=got==expected
+            value['native'].update(build_s=round(native_build,2),size_bytes_with_vec0=path.stat().st_size,p50_ms=round(statistics.median(times),2),
+                                   p95_ms=round(sorted(times)[max(0,int(len(times)*.95)-1)],2),load_ms=[round(x,2) for x in loads],identical_top=f'{same}/{queries}')
+        db.close()
+    print(json.dumps(value));return value
+
+def hook_case(store,cwd,prompt,runs=10):
+    """The real prompt hook as a fresh process (as harnesses run it) against a store, native sqlite-vec on and off.
+    The store's session state is written (use a copy). First run reported apart (cold file cache), then p50/p95."""
+    import os,subprocess
+    script=Path(__file__).resolve().parents[1]/'hooks'/'claude_hooks.py';value={'schema':1,'store':'(given copy)','prompt_chars':len(prompt),'runs':runs}
+    for label,flag in (('native','1'),('python','0')):
+        times=[];chars=[]
+        for i in range(runs):
+            payload=json.dumps({'cwd':str(cwd),'session_id':f'bench-{label}-{i}','turn_id':'t','prompt':prompt,'hook_event_name':'UserPromptSubmit'})
+            env={**os.environ,'LIVING_MEMORY_ROOT':str(store),'LIVING_MEMORY_NATIVE':flag,'PYTHONUTF8':'1'}
+            started=time.perf_counter();out=subprocess.run([sys.executable,str(script),'user-prompt'],input=payload,capture_output=True,text=True,env=env,timeout=60)
+            times.append((time.perf_counter()-started)*1000)
+            try:chars.append(len(json.loads(out.stdout or '{}').get('hookSpecificOutput',{}).get('additionalContext','')))
+            except ValueError:chars.append(None)
+        rest=sorted(times[1:])
+        value[label]={'first_ms':round(times[0],1),'p50_ms':round(statistics.median(rest),1),'p95_ms':round(rest[max(0,int(len(rest)*.95)-1)],1),'context_chars':chars[-1]}
+    print(json.dumps(value));return value
+
 if __name__=='__main__':
     import argparse
     parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--vectors',type=int,help='SYNTHETIC: compare the Python scan and sqlite-vec KNN over this many random 512-dimension vectors')
+    parser.add_argument('--queries',type=int,default=20,help='With --vectors: queries to time')
+    parser.add_argument('--hook-store',type=Path,help='Time the real prompt hook process against this store (a copy: session state is written), native on and off')
+    parser.add_argument('--hook-cwd',type=Path,help='With --hook-store: a folder bound to a domain in that store')
+    parser.add_argument('--hook-prompt',default='why did we choose static embeddings over onnx for semantic search',help='With --hook-store: the prompt')
     parser.add_argument('--scale',type=int,help='Time a prompt hook and a capture on a synthetic store of this many notes')
     parser.add_argument('--semantic-from',type=Path,help='With --scale: a store whose installed semantic model is copied into the synthetic one')
     parser.add_argument('--model-dir',type=Path,help='A potion model folder (e.g. <store>/.models/potion-retrieval-32M); copied into a temporary store for the semantic prompt case, skipped when absent')
     parser.add_argument('--sources',type=int,help='Time the knowledge base (sync, ask, the hook paths) on this many generated files')
     args=parser.parse_args()
+    if args.vectors:vectors_case(args.vectors,queries=args.queries);raise SystemExit(0)
+    if args.hook_store:hook_case(args.hook_store,args.hook_cwd or Path.cwd(),args.hook_prompt);raise SystemExit(0)
     if args.sources:raise SystemExit(0 if sources_scale(args.sources)['met'] else 1)
     if args.scale:raise SystemExit(0 if scale(args.scale,args.semantic_from)['met'] else 1)
     main()

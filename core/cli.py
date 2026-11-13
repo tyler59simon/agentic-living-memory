@@ -170,7 +170,7 @@ def doctor(root,cwd,explicit=None,domain=None):
     location = diagnostics(explicit)
     semantic=semantic_status(root)
     if semantic.get('error'):warnings.append(f"semantic model {semantic['model']} cannot be read ({semantic['error']}); search is lexical-only until it is reinstalled or removed")
-    return {'semantic':{k:semantic[k] for k in ('enabled','model') if k in semantic},'ok':fts and not pending and not unreadable and (not domain or domain_exists) and not hook_wiring.broken(wired),'problems':unreadable,'interpreter':sys.executable,'python':sys.version.split()[0],'fts5':fts,'root':str(root),'location':location,'domain':domain,'binding':'bound' if domain else 'unbound','domain_data':'present' if domain_exists else 'missing' if domain else 'unbound','index':index,'pending_recovery':pending,'hooks':{'trust':'unknown','last_delivery':last,'wiring':wired},'logs':logged,'capture':'main_agent_via_scripts','protection':'cooperating_agent_governance','notes':counts,'warnings':warnings}
+    return {'semantic':{k:semantic[k] for k in ('enabled','model','backend') if k in semantic},'ok':fts and not pending and not unreadable and (not domain or domain_exists) and not hook_wiring.broken(wired),'problems':unreadable,'interpreter':sys.executable,'python':sys.version.split()[0],'fts5':fts,'root':str(root),'location':location,'domain':domain,'binding':'bound' if domain else 'unbound','domain_data':'present' if domain_exists else 'missing' if domain else 'unbound','index':index,'pending_recovery':pending,'hooks':{'trust':'unknown','last_delivery':last,'wiring':wired},'logs':logged,'capture':'main_agent_via_scripts','protection':'cooperating_agent_governance','notes':counts,'warnings':warnings}
 
 SECTION_ARGS=('summary','detail','link','action','done','important','section')
 # update only: add to a list section, or replace one labelled bullet, without restating the rest of it.
@@ -313,11 +313,14 @@ def note_links(root,domains,status):
             'edges':[{'from':a,'to':b,'kind':k} for (a,b),k in sorted(edges.items())],
             'unresolved':[{'from':a,'target':t} for a,t in sorted(unresolved)]}
 
-def _note_hits(root,domain,query,scope,limit,rebuild,filters,config,globals_,primary,foreign):
-    """The search command's answer: relevance-gated notes across the active, parent and global domains (foreign ones as a fallback)."""
+def _note_hits(root,domain,query,scope,limit,rebuild,filters,config,globals_,primary,foreign,explain=False):
+    """The search command's answer: relevance-gated notes across the active, parent and global domains (foreign ones as a fallback).
+    explain adds why: the semantic backend per domain and why it fell back, each candidate's gate verdict and scores, and
+    for each result the section and level the prompt hook would deliver (refs, headings and numbers; no note text)."""
     from .search import search_domains
     from .runtime import relevance_gate,parent_domains
-    gate=relevance_gate(query,root);gated=True
+    candidates=[] if explain else None
+    gate=relevance_gate(query,root,candidates);gated=True
     # As for prompts: global notes rank like the project's own, a parent's count half.
     weights={**{g:2 for g in globals_},domain:2,**{p:1 for p in parent_domains(domain,config) if p!=domain}}
     def run(domains):
@@ -336,7 +339,24 @@ def _note_hits(root,domain,query,scope,limit,rebuild,filters,config,globals_,pri
     for hit in hits:
         if hit.get('stale'):hit['snippet']=f"{hit['stale']} — {hit.get('snippet','')}"
     for hit in hits:hit['sourceScope']='active' if hit['domain']==domain else 'global' if hit['domain'] in globals_ else 'foreign';hit.pop('path',None)
+    decisions={}
+    if explain:
+        from . import injection
+        from .search import stem,query_terms
+        from .semantic import threshold
+        wanted={stem(t) for t in query_terms(query)};near=threshold(root)
+        for hit in hits:
+            unit=injection.choose(hit,wanted,near,prompt=query);decisions[f"{hit['domain']}:{hit['id']}"]={'level':injection.level_of(unit,query),'section':unit['heading'] if unit else None}
+    for hit in hits:
+        # The sections that matched best, by heading and line span; `read REF --section HEADING` shows one.
+        units=hit.pop('units',None)
+        if units:hit['evidence']=[{k:u[k] for k in ('heading','role','lines','similarity')} for u in units if u['role']!='overview'][:2]
     result={'ok':True,'mode':scope,'domains':domains,'fallback':fallback,'relevant':gated,'results':hits}
+    if explain:
+        from .search import LAST_SEMANTIC,_vector_identity
+        from . import vectors
+        result['explain']={'model':_vector_identity(root),'native':vectors.probe(),'native_enabled':vectors.enabled(root),
+                           'semantic':{d:LAST_SEMANTIC.get(d) for d in domains if d in LAST_SEMANTIC},'candidates':candidates,'prompt_hook':decisions}
     if hits and not gated:result['hint']='No note passed the relevance check; these are the closest matches, least likely to apply.'
     return result
 
@@ -441,8 +461,8 @@ def main(argv=None):
     for facet in CAPTURE_FACETS:p.add_argument('--'+facet,action='append',default=[])
     p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
     sections_args(p);_file_flags(p)
-    p=sub('search');p.add_argument('query',nargs='?',default='');p.add_argument('--file',help='Notes about this file or folder: listed in their files property, or named in the body');p.add_argument('--scope',choices=['active','fallback','all'],default='fallback');p.add_argument('--limit',type=int,default=5);p.add_argument('--filter',action='append',default=[]);p.add_argument('--rebuild',action='store_true');p.add_argument('--sources',action='store_true',help='Source excerpts from the project knowledge base only')
-    p=sub('read');p.add_argument('reference');p.add_argument('--max-chars',type=int,default=16000);p.add_argument('--metadata-only',action='store_true')
+    p=sub('search');p.add_argument('query',nargs='?',default='');p.add_argument('--file',help='Notes about this file or folder: listed in their files property, or named in the body');p.add_argument('--scope',choices=['active','fallback','all'],default='fallback');p.add_argument('--limit',type=int,default=5);p.add_argument('--filter',action='append',default=[]);p.add_argument('--rebuild',action='store_true');p.add_argument('--sources',action='store_true',help='Source excerpts from the project knowledge base only');p.add_argument('--explain',action='store_true',help='Add why each note was found: backend, scores, gate and the section the prompt hook would deliver')
+    p=sub('read');p.add_argument('reference');p.add_argument('--max-chars',type=int,default=16000);p.add_argument('--metadata-only',action='store_true');p.add_argument('--section',help='Only this section, by heading (as search evidence and prompt lines name it)')
     p=sub('update');p.add_argument('reference');p.add_argument('--title');p.add_argument('--body');p.add_argument('--body-file',type=Path);p.add_argument('--tag',action='append');p.add_argument('--type',choices=NOTE_TYPES);p.add_argument('--context');p.add_argument('--review-by');p.add_argument('--expected-revision');p.add_argument('--payload-file',type=Path);p.add_argument('--session');p.add_argument('--turn')
     for facet in FACET_FLAGS:p.add_argument('--'+facet,action='append')
     p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
@@ -476,7 +496,7 @@ def main(argv=None):
     p=sub('migration-plan')
     p=sub('note-type-plan')
     p=sub('rebuild');p.add_argument('name',nargs='?')
-    p=sub('semantic');p.add_argument('action',choices=['status','install','remove']);p.add_argument('--model',help='Model to install (default: the recommended one)');p.add_argument('--from',dest='source',type=Path,help='Folder already holding the model files, for an offline install; hashes are still verified')
+    p=sub('semantic');p.add_argument('action',choices=['status','install','remove','rebuild','native']);p.add_argument('value',nargs='?',choices=['on','off'],help='native: on or off');p.add_argument('--model',help='Model to install (default: the recommended one)');p.add_argument('--from',dest='source',type=Path,help='Folder already holding the model files, for an offline install; hashes are still verified')
     p=sub('validate');p.add_argument('name',nargs='?')
     p=sub('query');p.add_argument('sql')
     p=sub('taxonomy-plan');p.add_argument('tags',nargs='+')
@@ -674,14 +694,31 @@ def main(argv=None):
                     invocation['result']=result;print(json.dumps(result,ensure_ascii=False,separators=(',',':')));return 0
                 filters['file']=wanted
             if not args.query.strip():raise ValueError('search needs a query, or --file PATH')
-            result=_note_hits(root,domain,args.query,args.scope,args.limit,args.rebuild,filters,config,globals_,primary,foreign)
+            result=_note_hits(root,domain,args.query,args.scope,args.limit,args.rebuild,filters,config,globals_,primary,foreign,args.explain)
             each=None if filters else _each_question(args.query,max(1,min(20,args.limit)),lambda q,n:{k:v for k,v in _note_hits(root,domain,q,args.scope,n,args.rebuild,filters,config,globals_,primary,foreign).items() if k in {'results','relevant'}})
             if each:result['questions']=each
         elif cmd=='read':
             from .notes import find_note
             d,n=_reference(args.reference,domain,root);path,note=find_note(n,d,root)
             result={k:v for k,v in note.items() if k not in {'body','path','digest'}}
-            if not args.metadata_only:result.update(body=note['body'][:max(0,min(64000,args.max_chars))],truncated=len(note['body'])>args.max_chars)
+            if args.section:
+                # One section, as the prompt hook's evidence lines name it: "Why", or a path like "Notes > Deeper detail".
+                # The text comes from the note as served (an approved learned runbook's approved body, not an unreviewed edit of
+                # its file); file line numbers are given only when the file still holds exactly that body.
+                from .units import extract,_norm,_sections,role_of
+                from .repository import parse_text
+                wanted=_norm(args.section);body=note['body']
+                found=[(p,h,rows) for p,h,rows in _sections(body)[1:] if h and (_norm(' > '.join(p))==wanted or _norm(h)==wanted)]
+                if not found:raise ValueError(f"no section {args.section!r} in this note; sections: {', '.join(' > '.join(p) for p,h,_ in _sections(body)[1:] if h) or 'none'}")
+                path_,heading,rows=found[0];text='\n'.join(t for _,t in rows).strip()
+                try:same=(parse_text(Path(path).read_text(encoding='utf-8-sig'),path) or {}).get('body')==body
+                except (OSError,UnicodeDecodeError):same=False
+                spans={}
+                for u in extract(dict(note,path=path)) if same else []:spans.setdefault(u['heading'],u['lines'])
+                span=spans.get(' > '.join(path_));last=max(n for n,t in rows if t.strip())
+                result.update(section={'heading':' > '.join(path_),'role':role_of(heading),'lines':[span[0],span[0]+last-rows[0][0]] if span else None},
+                              body=text[:max(0,min(64000,args.max_chars))],truncated=len(text)>args.max_chars)
+            elif not args.metadata_only:result.update(body=note['body'][:max(0,min(64000,args.max_chars))],truncated=len(note['body'])>args.max_chars)
             if note.get('learning_procedure') and note.get('learning_state')=='active':
                 from .learning import use_hint
                 result['hint']=use_hint(note['learning_procedure'],note.get('learning_version'))
@@ -911,8 +948,14 @@ def main(argv=None):
             result=reconcile(d,root) if cmd=='rebuild' else {'issues':validate_domain(d,root)}
         elif cmd=='semantic':
             from . import semantic
+            if args.value and args.action!='native':raise ValueError('on/off applies to semantic native only')
             if args.action=='install':result=semantic.install(root,args.model or semantic.DEFAULT_MODEL,args.source)
             elif args.model or args.source:raise ValueError('--model and --from apply to install only')
+            elif args.action=='native':
+                from . import vectors
+                if args.value:vectors.set_enabled(root,args.value=='on')
+                result=semantic.status(root)
+            elif args.action=='rebuild':rebuilt=semantic.rebuild_all(root,units=True);result={**semantic.status(root),'rebuilt':rebuilt}
             else:result=semantic.remove(root) if args.action=='remove' else semantic.status(root)
         elif cmd=='query':
             from .search import readonly_query

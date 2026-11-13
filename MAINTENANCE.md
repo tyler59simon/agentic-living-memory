@@ -29,6 +29,8 @@ Command lines at debug add the result's `status`, `operation_id` and `ref`, and 
 
 **Semantic model.** `.models/` holds the model `semantic install` downloaded. It is not canonical, and backups skip it. `semantic remove`, or deleting the folder followed by `rebuild`, returns search to lexical-only. `.models/<name>/tokenizer.marshal` is a derived cache of the parsed tokenizer (rebuilt when missing or stale, safe to delete).
 
+**Unit index.** `domains/D/vectors.sqlite3` holds each note's sections, their embeddings and, with the optional `sqlite-vec` package, a native `vec0` table. It is derived like `search.sqlite3`: not canonical, not backed up, not relocated. Every write updates it; `semantic rebuild` discards and rebuilds it for every domain; deleting it only costs section-level matches until the next write or `semantic rebuild`. `semantic status` shows each domain's units, vectors and whether the native table is fresh. To stop using the extension, run `semantic native off` (or uninstall the package); search continues in Python with the same results. To roll back to note-level semantic search entirely, check out an earlier release; its code ignores this file, which can then be deleted.
+
 **Currency cache.** `.cache/currency.json` keeps what git said about each shown map or brief (which cited files changed since it was written, commits since), so a new session at an unchanged HEAD runs no git. At most 200 entries, oldest dropped. Derived: safe to delete (it is rebuilt), unreadable content is ignored, and backups, bundles and relocation skip `.cache`.
 
 Stores created by earlier releases may contain an `improvement/` folder (categorical search/read events and engine state). Nothing reads it any more; it is safe to delete by hand.

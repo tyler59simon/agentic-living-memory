@@ -15,13 +15,15 @@ ROWS={'[PAD]':[0]*5,'[UNK]':[0]*5,'[CLS]':[0]*5,'[SEP]':[0]*5,'[MASK]':[0]*5,
       'what':[0,0,0,.1,0],'is':[0,0,0,.1,0],'the':[0,0,0,.1,0],'?':[0,0,0,.1,0],',':[0,0,0,.1,0],'!':[0,0,0,.1,0],
       'cache':[0,0,0,0,1],'rebuild':[0,0,0,0,1],'##able':[0,0,0,0,.5],'cafe':[0,1,0,0,0]}
 
-def write_model(folder,dtype='F32'):
-    folder.mkdir(parents=True,exist_ok=True);vocab={token:i for i,token in enumerate(ROWS)}
+def write_model(folder,dtype='F32',rows=None):
+    """A tiny model in the potion file layout; rows (token -> vector) default to ROWS."""
+    rows=rows or ROWS;dim=len(next(iter(rows.values())))
+    folder.mkdir(parents=True,exist_ok=True);vocab={token:i for i,token in enumerate(rows)}
     (folder/'tokenizer.json').write_text(json.dumps({'model':{'type':'WordPiece','unk_token':'[UNK]','continuing_subword_prefix':'##','max_input_chars_per_word':100,'vocab':vocab},
         'normalizer':{'type':'BertNormalizer','clean_text':True,'handle_chinese_chars':True,'strip_accents':None,'lowercase':True},
         'pre_tokenizer':{'type':'BertPreTokenizer'}}),encoding='utf-8')
-    code,width={'F32':('f',4),'F16':('e',2)}[dtype];data=b''.join(struct.pack('<5'+code,*row) for row in ROWS.values())
-    header=json.dumps({'embeddings':{'dtype':dtype,'shape':[len(ROWS),5],'data_offsets':[0,len(data)]}}).encode()
+    code,width={'F32':('f',4),'F16':('e',2)}[dtype];data=b''.join(struct.pack(f'<{dim}'+code,*row) for row in rows.values())
+    header=json.dumps({'embeddings':{'dtype':dtype,'shape':[len(rows),dim],'data_offsets':[0,len(data)]}}).encode()
     (folder/'model.safetensors').write_bytes(struct.pack('<Q',len(header))+header+data)
     (folder/'config.json').write_text('{"normalize": true}',encoding='utf-8')
     return {name:hashlib.sha256((folder/name).read_bytes()).hexdigest() for name in ('config.json','tokenizer.json','model.safetensors')}
@@ -161,5 +163,5 @@ class SemanticCase(StoreFixture):
         self.assertEqual(run('semantic','status')[1]['enabled'],False)
         code,result=run('semantic','install','--model','tiny','--from',str(self.source))
         self.assertEqual((code,result['enabled'],result['model']),(0,True,'tiny'))
-        self.assertEqual(run('doctor')[1]['semantic'],{'enabled':True,'model':'tiny'})
+        doctor=run('doctor')[1]['semantic'];self.assertEqual({k:doctor[k] for k in ('enabled','model')},{'enabled':True,'model':'tiny'});self.assertIn(doctor['backend'],('native','python'))
         self.assertEqual(run('semantic','remove')[1]['enabled'],False)

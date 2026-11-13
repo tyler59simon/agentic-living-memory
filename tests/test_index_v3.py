@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from test_core import StoreFixture
 from test_semantic import write_model
-from core import runtime, semantic, search
+from core import runtime, semantic, search, vectors
 from core.notes import capture, change
 from core.repository import inventory
 
@@ -138,6 +138,10 @@ class VectorsSurviveABump(StoreFixture):
         models.start()
         self.addCleanup(models.stop)
         self.addCleanup(semantic._unload)
+        # These count the note-level embeddings in search.sqlite3; the unit index has its own reuse tests (test_vectors.py).
+        units = patch.object(vectors, 'update', lambda *a, **k: {})
+        units.start()
+        self.addCleanup(units.stop)
 
     def vectors(self):
         return dict(table(self.root, 'SELECT n.id, v.vec FROM vectors v JOIN notes n ON n.rowid = v.rowid'))

@@ -1,0 +1,1 @@
+{"schema": 1, "store": "(given copy)", "prompt_chars": 65, "runs": 10, "native": {"first_ms": 390.0, "p50_ms": 399.3, "p95_ms": 479.1, "context_chars": 3417}, "python": {"first_ms": 411.2, "p50_ms": 417.5, "p95_ms": 455.9, "context_chars": 3417}}

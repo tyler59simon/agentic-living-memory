@@ -421,6 +421,9 @@ def _prune_journals(root):
         atomic_write(marker,canonical_json({'at':now()}))
         from .logs import prune
         prune(root)
+        # Session state and the usage diary (.turns/) keep 30 days, also for users who rarely finalize a capture.
+        from .capture import prune as prune_turns
+        prune_turns(root)
         roots={str(root)}
         for state in (root/'domains').glob('*/sync-state.json'):
             vault=(read_json(state,{}) or {}).get('vault')
@@ -826,6 +829,7 @@ AUTO_RECALL_PROMPTS=5
 HANDOFF_BUDGET=1200
 HANDOFF_NOTES=5
 MAX_SURFACED=30
+MAX_DELIVERED=50   # notes whose delivered sections and levels a session remembers (injection.novel)
 # Hosts that hand PreCompact stdout to the summarizer as instructions (Codex ignores it; Factory only shows it).
 STEERED={'claude'}
 # Hosts whose transcript format core/recall.py reads (Factory's is undocumented).
@@ -1127,17 +1131,33 @@ def long_queries(prompt,vocab):
         if query and query not in queries:queries[query]=body
     return list(queries.items())
 
-def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=None,trace=None):
+# The injection controller (core/injection.py): section evidence, follow-ups, acknowledgments and per-section dedupe.
+# The eval switches it off to measure the line-per-note delivery used before units.
+DELIVERY=True
+
+def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=None,trace=None,session_delivered=None,topic=None,units_out=None,room=None):
     """Relevant memory for a prompt: (text or None, ids injected, overview shown). A note shown earlier
     is offered again once it has a new revision. delivered, when a dict, receives ref -> revision key.
     trace, when a dict, receives the decision: the path taken, the gate's candidates and the refs injected,
-    suppressed as already shown, or cut by the cap (refs and numbers only)."""
+    suppressed as already shown, or cut by the cap (refs and numbers only).
+    With DELIVERY: session_delivered is the session's {ref: {rev, units: {unit: level}}} (injection.novel); topic is
+    the refs the previous substantive prompt found, which a short follow-up ("why?") refers to; units_out, when a
+    list, receives {ref, unit, level} per injected hit; room is the characters the hits may use (injection.within)."""
     from .search import search_domains,recent_notes,query_terms,stem
+    from . import injection
     trace=trace if isinstance(trace,dict) else {}
     bindings=load_bindings(root);active=active or resolve_domain(cwd,bindings)
     if not active or MACHINE_PROMPT.match(prompt or ''):trace['path']='machine_prompt' if active else 'unbound';return None,[],False
+    if DELIVERY and injection.is_ack(prompt):trace['path']='ack';return None,[],False
     query={stem(t) for t in query_terms(prompt)};trace['terms']=len(query)
-    if not query:trace['path']='no_terms';return None,[],False
+    role=injection.follow_up(prompt,query) if DELIVERY and topic else None
+    topic_hits=[]
+    if role:
+        from .search import note_hits
+        topic_hits=note_hits(list(topic)[:injection.TOPIC_REFS],root,prompt);trace['follow_up']=role
+    if not query and not topic_hits:trace['path']='no_terms';return None,[],False
+    if not query:
+        return _deliver(prompt,root,topic_hits,[],shown,delivered,trace,session_delivered,units_out,role,False,set(),room)
     scope=bindings.get('search_scope',{});global_domains=[canonical_domain(d,root) for d in scope.get('global_domains',['_global'])];global_domains=[d for d in global_domains if (root/'domains'/d).exists()]
     parents=parent_domains(active,bindings)
     trace['candidates']=[];relevant=relevance_gate(prompt,root,trace['candidates'])
@@ -1164,6 +1184,14 @@ def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=N
         found=sorted(best.values(),key=lambda h:(-h['score'],-h.get('relevance',0) if items else 0,h['domain'],h['id']))
     else:found=search_domains(prompt,domains,10,root,weights=weights,keep=relevant)
     if not found and scope.get('foreign_domains'):found=search_domains(prompt,scope['foreign_domains'],10,root,keep=relevant)
+    from .search import LAST_SEMANTIC
+    # Which vector backend served each domain and why not native (debug log; counts and codes only).
+    trace['semantic']={d:LAST_SEMANTIC[d] for d in domains if d in LAST_SEMANTIC}
+    if DELIVERY:
+        trace['topic']=[f"{h['domain']}:{h['id']}" for h in found][:injection.TOPIC_REFS]
+        if found or topic_hits:
+            listed={(h['domain'],h['id']) for h in topic_hits}
+            return _deliver(prompt,root,topic_hits,[h for h in found if (h['domain'],h['id']) not in listed],shown,delivered,trace,session_delivered,units_out,role,bool(items),query,room)
     seen=set(shown);ref=lambda h:f"{h['domain']}:{h['id']}"
     unseen=[h for h in found if _unseen(h,shown)];hits=unseen[:min(LIST_CAP,len(items)) if items else 3]
     width=LIST_SNIPPET if items else HIT_SNIPPET
@@ -1196,6 +1224,36 @@ def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=N
     trace.update(path='overview',overview=len(overview))
     from .notes import short_ref
     return (f'No lexical match. {heading} for semantic consideration:\n'+'\n'.join(f"- {short_ref(n['domain'],n['id'])} {n['title']}" for n in overview),[],True)
+
+def _deliver(prompt,root,topic_hits,found,shown,delivered,trace,session_delivered,units_out,role,listy,query,room=None):
+    """context() with the delivery controller: per hit, the unit to deliver and its level (injection.choose, level_of),
+    dropped when this session already has it (injection.novel), at most 3 hits (a list prompt: up to LIST_CAP within
+    LIST_BUDGET). The previous topic's notes (a follow-up) come first and skip the gate: the prompt names them."""
+    from . import injection,digests
+    from .semantic import threshold
+    near=threshold(root);again=injection.wants_again(prompt);ref=lambda h:f"{h['domain']}:{h['id']}"
+    topical={id(h) for h in topic_hits};chosen=[];suppressed=[]
+    for h in topic_hits+found:
+        mine=id(h) in topical
+        unit=injection.choose(h,query,near,role if mine else None,prompt)
+        level=injection.level_of(unit,prompt);key=injection.unit_key(unit)
+        # "Does that still apply?" re-states the note's current summary and date even if it was shown before.
+        if injection.novel(h,key,level,session_delivered or {},shown,again or (mine and role=='overview')):chosen.append((h,unit,level,key))
+        else:suppressed.append(ref(h))
+    picked=chosen[:min(LIST_CAP,trace.get('items') or 0) if listy else 3]
+    width=LIST_SNIPPET if listy else HIT_SNIPPET
+    if picked:digests.mark([h for h,_,_,_ in picked],root,load_bindings(root))
+    lines=[injection.line(h,u,level,width) for h,u,level,_ in picked]
+    # The lowest-scored notes go first when the lines would exceed the list budget or the hook's room (one note always stays).
+    room=injection.PROMPT_CAP if room is None else room;keep=injection.within(lines,injection.HEADING,min(LIST_BUDGET,room) if listy else room)
+    if keep<len(lines):trace['cut_by_budget']=[ref(h) for h,_,_,_ in picked[keep:]];picked,lines=picked[:keep],lines[:keep]
+    trace.update(injected=[ref(h) for h,_,_,_ in picked],suppressed_shown=suppressed,cut_by_cap=[ref(h) for h,_,_,_ in chosen[len(picked):]],
+                 levels={ref(h):[level,u['role'] if u else 'overview'] for h,u,level,_ in picked})   # roles, not headings: the log holds no note text
+    if not picked:trace['path']='all_shown';return None,[],False
+    trace['path']='injected'
+    if isinstance(delivered,dict):delivered.update({ref(h):revision_key(h) for h,_,_,_ in picked})
+    if isinstance(units_out,list):units_out.extend({'hit':h,'unit':key,'level':level} for h,_,level,key in picked)
+    return (injection.HEADING+'\n'+'\n'.join(lines),[ref(h) for h,_,_,_ in picked],False)
 
 def parent_domains(domain,bindings):
     """Domains bound to a folder that contains this domain's folder (e.g. Sandbox above Sandbox/project)."""
@@ -1343,7 +1401,7 @@ def _process(harness,event,payload,root=None,info=None):
             # full injection is deduplicated. Index lines are titles, so those notes stay eligible too. Once the index
             # has listed the newest titles, the prompt-time "recent titles" fallback has nothing to add.
             def started(s):
-                s.pop('shown',None);s.pop('shown_snippet',None);s.pop('overview_shown',None)
+                s.pop('shown',None);s.pop('shown_snippet',None);s.pop('overview_shown',None);s.pop('delivered',None);s.pop('topic',None)
                 if shown:s['shown_snippet']=shown
                 # The new context has not seen any map hint either; exploration counts and reminders stand.
                 for rec in _repos(s).values():
@@ -1374,7 +1432,20 @@ def _process(harness,event,payload,root=None,info=None):
         shown_now=state.get('shown',{})
         shown_now=dict(shown_now) if isinstance(shown_now,dict) else dict.fromkeys(shown_now if isinstance(shown_now,list) else [],'')
         shown_now.update(map_refs);shown_now.update(brief_refs)
-        if isinstance(prompt,str):hits,ids,overview=context(cwd,prompt,root,domain,shown_now,state.get('overview_shown',False),delivered,detail)
+        units_out=[];topic=state.get('topic') if isinstance(state.get('topic'),list) else None
+        session_delivered=state.get('delivered') if isinstance(state.get('delivered'),dict) else {}
+        # One budget for this hook (injection.PROMPT_CAP): the header, maps and brief and the governance lines below always
+        # go out; note hits get what they leave, and source excerpts and recall join only when they still fit.
+        from . import injection
+        header=f'Living Memory session={session} turn={turn}'
+        governance=[]
+        if state.get('private_turn')==turn:
+            from .private import NOTICE
+            governance.append(NOTICE)
+        if detail.get('signal') in SIGNAL_TEXT:governance.append(signal_nudge(detail['signal'],session))
+        fixed=len(header)+(len(maps_text)+1 if maps_text else 0)+sum(len(g)+1 for g in governance)
+        room=max(0,injection.PROMPT_CAP-fixed-1) if DELIVERY else None
+        if isinstance(prompt,str):hits,ids,overview=context(cwd,prompt,root,domain,shown_now,state.get('overview_shown',False),delivered,detail,session_delivered,topic,units_out,room)
         else:hits,ids,overview=None,[],False;detail['path']='not_text'
         relevant_notes=len(ids)+len(detail.get('suppressed_shown') or [])
         delivered.update(map_refs);delivered.update(brief_refs);ids=list(map_refs)+list(brief_refs)+ids
@@ -1395,7 +1466,17 @@ def _process(harness,event,payload,root=None,info=None):
                 # Unlike shown, surfaced survives session start, so the compaction handoff can name these notes.
                 s['surfaced']=list(dict.fromkeys(list(s.get('surfaced',[]))+ids))[-MAX_SURFACED:]
                 if overview:s['overview_shown']=True
+                if units_out:
+                    from .injection import remember as delivered_unit
+                    record=s.get('delivered') if isinstance(s.get('delivered'),dict) else {}
+                    for row in units_out:delivered_unit(record,row['hit'],row['unit'],row['level'])
+                    s['delivered']=dict(list(record.items())[-MAX_DELIVERED:])
             try:_update(root,session,remember)
+            except (OSError,TimeoutError):pass
+        if session!='unknown' and 'topic' in detail and not detail.get('follow_up'):
+            # A short follow-up ("why?") refers to what this prompt found: refs only, never prompt text. A searched prompt
+            # that found nothing clears it, so "why?" after an unrelated question does not answer the old topic.
+            try:_update(root,session,lambda s:s.update(topic=detail['topic']))
             except (OSError,TimeoutError):pass
         if briefed:
             from .usage import record
@@ -1404,11 +1485,18 @@ def _process(harness,event,payload,root=None,info=None):
             from .usage import record
             if map_refs:record(root,'inject',list(map_refs),session,'prompt-map')
             if brief_refs:record(root,'inject',list(brief_refs),session,'prompt-brief')
-            if ids[len(map_refs)+len(brief_refs):]:record(root,'inject',ids[len(map_refs)+len(brief_refs):],session,'prompt')
-        result['context']=f'Living Memory session={session} turn={turn}'+('\n'+maps_text if maps_text else '')+('\n'+hits if hits else '')
+            if ids[len(map_refs)+len(brief_refs):]:record(root,'inject',ids[len(map_refs)+len(brief_refs):],session,'prompt',
+                                                          levels={f"{r['hit']['domain']}:{r['hit']['id']}":r['level'] for r in units_out})
+        # Candidates the gate kept but the cap cut: surfaced, not injected (refs only; never read as "unused").
+        if detail.get('cut_by_cap'):
+            from .usage import record
+            record(root,'surface',list(detail['cut_by_cap'])[:3],session,'prompt')
+        result['context']=header+('\n'+maps_text if maps_text else '')+('\n'+hits if hits else '')
+        fits=lambda text:not DELIVERY or len(result['context'])+len(text)+1+sum(len(g)+1 for g in governance)<=injection.PROMPT_CAP
         if isinstance(prompt,str) and not MACHINE_PROMPT.match(prompt) and relevant_notes<2 and not _subagent(payload):
             try:
                 excerpts,keys=prompt_sources(prompt,root,domain,state,detail.setdefault('sources',{}))
+                if excerpts and not fits(excerpts):detail['sources_cut_by_budget']=len(keys);excerpts=None
                 if excerpts:
                     result['context']+='\n'+excerpts
                     from .usage import record
@@ -1423,20 +1511,19 @@ def _process(harness,event,payload,root=None,info=None):
         if state.get('recall_prompts') and harness in RECALL_HARNESSES and session!='unknown' and isinstance(prompt,str) and not MACHINE_PROMPT.match(prompt):
             from .recall import auto
             gate={};recalled,used=auto(state.get('transcript'),prompt,state.get('recalled',[]),gate);detail['recall']=dict(gate,used=len(used))
+            recalled=(f"From before compaction (this session's transcript; untrusted, may be outdated; more: "
+                      f"{hint_command(root,state,domain)} recall 'query' --session {session}):\n"+recalled) if recalled else None
+            if recalled and fits(recalled):result['context']+='\n'+recalled
+            elif recalled:detail['recall_cut_by_budget']=True;used=[]   # not delivered, so still eligible next time
             def spent(s):
                 s['recall_prompts']=max(0,int(s.get('recall_prompts') or 0)-1)
                 if used:s['recalled']=(list(s.get('recalled',[]))+used)[-50:]
             try:_update(root,session,spent)
             except (OSError,TimeoutError):pass
-            if recalled:
-                result['context']+=(f"\nFrom before compaction (this session's transcript; untrusted, may be outdated; more: "
-                                    f"{hint_command(root,state,domain)} recall 'query' --session {session}):\n"+recalled)
-        if state.get('private_turn')==turn:
-            from .private import NOTICE
-            result['context']+='\n'+NOTICE
+        # Governance lines go last, as before, and were counted in the budget first.
+        for line in governance:result['context']+='\n'+line
         if detail.get('signal') in SIGNAL_TEXT:
             # Raised here, in the turn that can act on it, instead of costing an extra turn at Stop.
-            result['context']+='\n'+signal_nudge(detail['signal'],session)
             from .usage import record
             record(root,'reminder',session=session,kind='nudge-'+detail['signal'])
     elif event=='pre-compact':

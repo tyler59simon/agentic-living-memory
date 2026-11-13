@@ -9,7 +9,9 @@ import json
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
 
-EVENTS=('inject','read','update','check','supersede','confirm','duplicate','resolve','reopen','reminder','signal-capture')
+# surface: a candidate the prompt hook found relevant but did not inject (cut by its cap); it is never evidence of
+# use or of disuse. An inject row may carry 'l', the delivery level (pointer, evidence or expanded; core/delivery.py).
+EVENTS=('inject','read','update','check','supersede','confirm','duplicate','resolve','reopen','reminder','signal-capture','surface')
 USE=('read','update','check','supersede','confirm','duplicate','resolve','reopen')   # evidence that a note mattered
 NOISY_MIN=3
 # Injection kinds that are standing context rather than an answer retrieved for a question: session-start
@@ -20,14 +22,15 @@ LOCK_SECONDS=1
 
 def _path(root,when):return Path(root)/'.turns'/f'usage-{when:%Y-%m-%d}.jsonl'
 
-def record(root,event,refs=(None,),session=None,kind=None):
-    """Append one line per ref. Never raises."""
+def record(root,event,refs=(None,),session=None,kind=None,levels=None):
+    """Append one line per ref. levels: ref -> delivery level, stored as 'l'. Never raises."""
     try:
         from .common import file_lock
         from .runtime import session_hash
         when=datetime.now(timezone.utc);path=_path(root,when)
         s=session_hash(session) if session and session!='unknown' else None
-        lines=''.join(json.dumps({'t':when.isoformat(timespec='seconds'),'e':event,'ref':ref,'s':s,'k':kind},separators=(',',':'))+'\n' for ref in refs)
+        row=lambda ref:{'t':when.isoformat(timespec='seconds'),'e':event,'ref':ref,'s':s,'k':kind,**({'l':levels[ref]} if levels and ref in levels else {})}
+        lines=''.join(json.dumps(row(ref),separators=(',',':'))+'\n' for ref in refs)
         if not lines:return
         with file_lock(path.with_suffix('.lock'),timeout=LOCK_SECONDS):
             with path.open('a',encoding='utf-8',newline='\n') as out:out.write(lines)
@@ -105,7 +108,7 @@ def stats(root,domains,days=30,limit=10):
             except (KeyError,ValueError,TypeError):continue
             weekly[key]=weekly.get(key,0)+1;continue
         ref=row.get('ref')
-        if not isinstance(ref,str) or ref.split(':',1)[0] not in domains:continue
+        if event=='surface' or not isinstance(ref,str) or ref.split(':',1)[0] not in domains:continue   # surfaced is neither shown nor used
         entry=counts.setdefault(ref,dict.fromkeys(('inject','standing')+USE,0))
         # Standing context is delivered whatever the prompt, so going unread says nothing about the note.
         entry['standing' if event=='inject' and row.get('k') in STANDING else event]+=1
