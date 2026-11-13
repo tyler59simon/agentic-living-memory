@@ -53,7 +53,7 @@
     {"prompt": "Implement the endpoint; the API must stay idempotent.", "kind": null},
     {"prompt": "You must not modify any files; answer from memory.", "kind": null},
     {"prompt": "You are not allowed to push; just report what you find.", "kind": null},
-    {"prompt": "From now on the team must never deploy on Fridays.", "kind": "preference"},
+    {"prompt": "From now on the team must never deploy on Fridays.", "kind": "decision"},
     {"prompt": "We must never push to main.", "kind": "decision"}
   ],
   "long_prompts": [

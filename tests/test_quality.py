@@ -67,7 +67,8 @@ class Quality(StoreFixture):
         self.assertIn('quality_warnings', change(n['id'], 'demo', 'update', self.root, body='Awaiting the rebuild.'))
 
     def test_protocol_and_reminder_steer_away_from_moment_notes(self):
-        self.assertIn('most turns do not', runtime.PROTOCOL)
+        self.assertIn('Count what you found yourself, not only what the user said', runtime.PROTOCOL)
+        self.assertIn('a turn that produced none saves nothing', runtime.PROTOCOL)
         self.assertIn('Skip progress snapshots, test counts', runtime.PROTOCOL)
         self.assertIn('concise note that points to the source', runtime.PROTOCOL)
         self.assertIn('--link', runtime.PROTOCOL)

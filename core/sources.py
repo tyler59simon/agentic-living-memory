@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib,math,os,re,sqlite3,struct,subprocess,sys,tempfile,time
 from collections import Counter
 from pathlib import Path
-from .common import atomic_write,canonical_domain,domain_prefixes,file_lock,load_bindings
+from .common import _common_dir,atomic_write,canonical_domain,domain_prefixes,file_lock,git_dir,load_bindings
 from .repository import canonical_json,find_secrets,now,read_json,store_lock
 from .projects import SLUG,_repos,_text
 
@@ -135,11 +135,14 @@ def _repos_under(prefix,deadline=None):
     return found
 
 def implicit_sources(domain,bindings,deadline=None):
-    """One folder source per git repo under the domain's bound folders, named by folder (a clash gains its parent folder)."""
-    repos=[]
+    """One folder source per git repo under the domain's bound folders, named by folder (a clash gains its parent folder).
+    A linked worktree of a repo already found is not a second source: it shares the common git dir, and the main checkout (a .git folder) wins."""
+    repos={}   # common git dir (the checkout itself when unreadable) -> work tree
     for prefix in domain_prefixes(domain,bindings):
         for repo in _repos_under(prefix,deadline):
-            if repo not in repos:repos.append(repo)
+            gd=git_dir(repo);key=_common_dir(gd) if gd else repo;held=repos.get(key)
+            if held is None or ((repo/'.git').is_dir() and not (held/'.git').is_dir()):repos[key]=repo
+    repos=list(repos.values())
     names=Counter(r.name for r in repos);found=[]
     for repo in sorted(repos):
         name=repo.name if names[repo.name]==1 else f'{repo.parent.name}-{repo.name}'
@@ -823,7 +826,8 @@ def _covers(stemset,term):
     from .search import stem
     s=stem(term);return s in stemset or (s[:-1] if s.endswith('e') else s+'e') in stemset or (s[:-1]+'i' if s.endswith('y') else s) in stemset
 
-TEST_PATH=re.compile(r'(?i)(?:^|/)(?:tests?|__tests__|spec)/|(?:^|/)test_[^/]*$|_test\.[^/]*$|\.(?:spec|test)\.[^/]*$|Test\.java$')
+# one test rule for search demotion and ingest-scan's classify (fixtures are test data, whatever their extension)
+TEST_PATH=re.compile(r'(?i)(?:^|/)(?:tests?|__tests__|spec|fixtures?|testdata)/|(?:^|/)test_[^/]*$|_test\.[^/]*$|\.(?:spec|test)\.[^/]*$|Test\.java$')
 WANTS_TESTS=re.compile(r'(?i)\b(?:tests?|testing|specs?)\b')
 TEST_PENALTY=2.5   # rank positions a test file's chunk drops: it loses near-ties to code, but a clearly better match still leads
 

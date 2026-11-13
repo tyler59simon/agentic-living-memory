@@ -31,8 +31,11 @@ def finalize(session,turn,notes=(),root=None):
     notes=resolved
     existing=status(session,turn,root);added=list(notes)
     if existing:
-        # A second capture in the same turn joins the receipt; a bare finalize changes nothing.
+        # A second capture in the same turn joins the receipt. A bare finalize after a capture records the agent's
+        # "nothing durable" for what is still pending (a statement, a document), which an unrelated capture does not settle.
         added=[n for n in notes if n not in existing.get('notes',[])]
+        if not notes and not existing.get('dismissed') and existing.get('outcome')=='saved':
+            atomic_write(root/'.turns'/(key+'.json'),canonical_json(dict(existing,dismissed=True)));return {'ok':True,'status':'dismissed'}
         if not added:return {'ok':True,'status':'already_finalized'}
         row=dict(existing,notes=(list(existing.get('notes',[]))+added)[:20],outcome='saved')
     else:

@@ -287,6 +287,11 @@ class Registry(Kb):
         shutil.rmtree(self.project/'.git');(self.project/'a'/'b'/'deep'/'.git').mkdir(parents=True);(self.project/'node_modules'/'pkg'/'.git').mkdir(parents=True)
         (self.project/'a'/'b'/'deep'/'c'/'.git').mkdir(parents=True)   # inside a repo: the walk of its parent covers it
         self.assertEqual(sorted(s['name'] for s in sources.resolve(self.root,'demo')),['deep','kb'])
+    def test_a_worktree_of_a_repo_already_found_is_not_a_second_source(self):
+        main=self.project/'main-repo';(main/'.git'/'worktrees'/'wt').mkdir(parents=True);(main/'.git'/'worktrees'/'wt'/'commondir').write_text('../..\n')
+        tree=self.project/'a-worktree';tree.mkdir();(tree/'.git').write_text(f'gitdir: {(main/".git"/"worktrees"/"wt").as_posix()}\n')   # sorts before main-repo: the main checkout still wins
+        clone=self.project/'clone';(clone/'.git').mkdir(parents=True)   # an independent clone is its own repo
+        self.assertEqual(sorted(s['name'] for s in sources.resolve(self.root,'demo')),['clone','kb','main-repo'])
     def test_protected_backed_up_and_not_in_a_snapshot_when_derived(self):
         self.register();self.assertEqual(protected_rule(str(self.root/'sources.json'),str(self.project),self.root),'config')
         self.sync();files=backup.canonical_files(self.root);self.assertIn('sources.json',files);self.assertFalse([f for f in files if 'sqlite3' in f])
@@ -358,7 +363,7 @@ class Commands(Kb):
         self.assertEqual(paths('wombat tariff computation tests')[0],'tests/test_tariff.py')
         self.assertEqual(paths('wombat tariff computation spec')[0],'tests/test_tariff.py')
     def test_what_counts_as_a_test_file(self):
-        for path in ('tests/a.py','test/a.py','src/__tests__/a.js','spec/a.rb','pkg/test_a.py','pkg/a_test.go','web/a.spec.ts','web/a.test.js','src/main/AppTest.java','Tests/A.cs'):
+        for path in ('tests/a.py','test/a.py','src/__tests__/a.js','spec/a.rb','pkg/test_a.py','pkg/a_test.go','web/a.spec.ts','web/a.test.js','src/main/AppTest.java','Tests/A.cs','tests/fixtures/kb_repo/docs/adr/0003.md','src/fixture/a.json','testdata/a.txt'):
             with self.subTest(path=path):self.assertTrue(sources.TEST_PATH.search(path))
         for path in ('src/a.py','docs/testing-guide.md','src/contest.py','src/attest.py','latest/a.py','README.md'):
             with self.subTest(path=path):self.assertFalse(sources.TEST_PATH.search(path))

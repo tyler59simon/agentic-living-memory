@@ -145,20 +145,19 @@ def record_skips(root,domain,items,cwd=None,bindings=None):
 ADR=re.compile(r'(?:^|/)(?:adrs?|decisions?|decision-records?)/|(?:^|/)adr[-_ ]?\d',re.I)
 ENTRY=frozenset('main app cli server index __main__ manage wsgi asgi program startup application bootstrap'.split())
 BUILD_NAMES=('pom.xml','build.gradle*','package.json','pyproject.toml','setup.py','setup.cfg','Cargo.toml','go.mod','*.csproj','Makefile','Dockerfile*','docker-compose*.yml','docker-compose*.yaml','CMakeLists.txt')
-TESTISH=re.compile(r'(?:^|/)(?:tests?|__tests__|spec)/|(?:^|/)(?:test_[^/]*|[^/]*_test|[^/]*\.(?:test|spec))\.\w+$',re.I)
 
 def classify(rel,source_kind='folder'):
     """(tier, kind) of a file of the source library: 0 decision records, 1 READMEs and top-level docs, 2 wiki and other docs, 3 entry points and
-    build files, 4 modules (ranked by references and size), 5 the rest."""
+    build files, 4 modules (ranked by references and size), 5 the rest. Anything under a test or fixture path is a test, a Markdown ADR fixture included."""
     from . import sources as library
     low=rel.casefold();name=low.rsplit('/',1)[-1];stem,ext=os.path.splitext(name)
+    if library.TEST_PATH.search(low):return 5,'test'
     if ext in library.DOC_EXT or ext in library.HTML_EXT:
-        if ADR.search(low):return 0,'adr'
+        if ADR.search(low) and stem!='readme':return 0,'adr'   # an ADR folder's README only indexes the records
         if stem=='readme' or (stem in library.BARE_DOCS) or ('/' not in rel and source_kind not in library.REMOTE):return 1,'readme' if stem=='readme' else 'doc'
         return 2,'wiki' if ext in library.HTML_EXT or source_kind in ('html-export','git-wiki')+library.REMOTE else 'doc'
     if any(fnmatch.fnmatch(name,b.casefold()) for b in BUILD_NAMES):return 3,'build'
     if stem in ENTRY:return 3,'entry'
-    if TESTISH.search(low):return 5,'test'
     return 4,'module'
 
 def _references(db,name,file_id):
