@@ -34,7 +34,7 @@ OWNERSHIP_SCHEMA = "living-memory-core-ownership-v1"
 PLAN_SCHEMA = "living-memory-core-plan-v1"
 RECEIPT_SCHEMA = "living-memory-core-install-receipt-v1"
 OPERATION_RE = re.compile(r"^[0-9a-f]{32}$")
-SOFTWARE_ROOTS = ("core", "scripts", "hooks", "integrations", "adapters")
+SOFTWARE_ROOTS = ("core", "scripts", "hooks", "integrations", "adapters", "assets")
 ROOT_DOCUMENTS = (
     "README.md", "INSTALLATION.md", "INTEGRATION.md", "MAINTENANCE.md",
     "OBSIDIAN.md", "PDF.md", "TAGGING.md", "VALIDATION.md", "AGENTS.md",

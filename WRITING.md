@@ -39,6 +39,17 @@ Every note starts with the summary and an optional caveat (`--important`, shown 
 
 Write a section with `--section 'Heading' 'Text'` on `capture` or `update`. On `update` it replaces only that section. `--drop-section 'Heading'` removes one. Links go under Links (`--link`), and open steps of a plan, bug or risk go under Action items (`--action`).
 
+## Action items for a dashboard
+
+Any plan, bug or risk note can be shown as a dashboard (`views add REF`, see [SCRIPT_REFERENCE.md](SCRIPT_REFERENCE.md)). The dashboard reads an Action item's text by one convention, and a note that does not follow it still shows, only without tags and IDs.
+
+- Start the text with one or more bracket groups, each a comma-separated list of tags: `[P2] [ALM] ...` or `[ALM, HM] [approved] ...`. The dashboard turns each tag into a badge and a filter chip. `P1`, `P2` and `P3` set the priority order.
+- Next comes an ID if the item has one: capitals, digits and hyphens, with at least one hyphen or digit (`CUR-1`, `HM-P4`, `MAP-REKEY`, `UX-Q2`). A plain capitalized word such as `API` is not an ID.
+- The rest is the item's title: `- [ ] [P2] [ALM] HOOK-4 Cap the total UserPromptSubmit context below the hook-context limit`.
+- Put the longer explanation in a Details bullet whose bold label is the ID: `- **HOOK-4:** the UserPromptSubmit path in core/runtime.py ...`. Indented lines under the bullet belong to it. The dashboard shows that text when the item's card is opened, and leaves the bullet out of the Details list. Write one such bullet per ID; an item with no ID or no bullet simply has no detail.
+
+Keep the title to one line and the Details bullet to the facts the reader needs to start the work.
+
 A knowledge note reads as a short article. Name each section after what it explains ("Updating a stale PR branch"), not with a generic label ("Details", "Notes", "Key points").
 
 ## Sentences

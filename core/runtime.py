@@ -12,7 +12,7 @@ SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 # Tools that cannot change files; anything else marks the turn as mutating.
 READ_TOOLS={'read','read_file','glob','grep','search','view_image','view','ls','list','webfetch','websearch','web_fetch','web_search','todowrite','task','agent','toolsearch','askuserquestion','exitplanmode','enterplanmode'}
 SHELL_TOOLS={'bash','powershell','shell','run_shell_command','exec_command','local_shell','execute'}
-ALLOWED_SUBCOMMANDS={'ask','sources','source-sync','ingest-scan','search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','promote-plan','projects','systems','changes','resolve','reopen','learn','log'}
+ALLOWED_SUBCOMMANDS={'ask','sources','source-sync','ingest-scan','search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','promote-plan','projects','systems','changes','views','resolve','reopen','learn','log'}
 # Subagents are read-only: these are denied for them even though the main agent gets them auto-allowed.
 MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm','resolve','reopen'}
 GLOBAL_OPTIONS={'--root','--domain','--cwd','--actor'}
@@ -71,8 +71,8 @@ def protected_rule(path,cwd,root):
         p=p.resolve();root=Path(root).resolve()
         from .storage import config_path
         if p.is_relative_to(root/'domains'):return 'domains'
-        if p.is_relative_to(root/'ledger'):return 'config'
-        if p in {root/'bindings.json',root/'tag_taxonomy.json',root/'projects.json',root/'systems.json',root/'sources.json',root/'changes.json',root/'.relocated.json',config_path().resolve()}:return 'config'
+        if p.is_relative_to(root/'ledger') or p.is_relative_to(root/'.views'):return 'config'
+        if p in {root/'bindings.json',root/'tag_taxonomy.json',root/'projects.json',root/'systems.json',root/'sources.json',root/'changes.json',root/'views.json',root/'.relocated.json',config_path().resolve()}:return 'config'
         # Vault edits are auto-applied and vault checkboxes approve plans, so agents must not write there either.
         return 'vault' if any(p.is_relative_to(v/folder) for v in vault_roots(root) for folder in ('Domains','Archive','Dashboards')) else None
     except (ValueError,OSError):return None
@@ -227,6 +227,18 @@ def remote_sync(text,grammar,root):
             if word in remote or (word.startswith('--a') and '--all-remote'.startswith(word.split('=')[0])):return True
     return False
 
+def views_write(text,grammar):
+    """True when a `views` command writes: add, remove, published, or render except `--format json` with no --out."""
+    for words in _parsed(text,grammar) or []:
+        index=0
+        while index<len(words) and words[index]!='views':index+=2 if words[index] in GLOBAL_OPTIONS else 1
+        rest=words[index+1:]
+        if not rest:continue
+        action=next((w for w in rest if not w.startswith('-')),'list')
+        if action in {'add','remove','published'}:return True
+        if action=='render' and (_option_values(rest,('--out',)) or 'json' not in _option_values(rest,('--format',))):return True
+    return False
+
 def auto_allowed(text,grammar,root,cwd,scratch=None):
     """True when an allow-listed memory command may skip the permission prompt: it uses the hook's own store
     and reads input files only from the working directory or the session scratchpad. Anything else is left to
@@ -238,7 +250,8 @@ def auto_allowed(text,grammar,root,cwd,scratch=None):
         for words in parsed:
             for value in _option_values(words,('--root',)):
                 if not value or Path(os.path.expandvars(value)).expanduser().resolve()!=store:return False
-            for value in _option_values(words,FILE_OPTIONS):
+            # Input files are read into a note; --out (views render) writes a file. Both stay inside what the session can see.
+            for value in _option_values(words,FILE_OPTIONS+('--out',)):
                 if not value:return False
                 path=Path(os.path.expandvars(value)).expanduser()
                 path=(path if path.is_absolute() else bases[0]/path).resolve()
@@ -1449,6 +1462,17 @@ def _process(harness,event,payload,root=None,info=None):
         from .sources import session_line
         kb=session_line(root,domain,bindings,detail.setdefault('sources',{}))
         if kb:prefix+=kb+'\n'
+        # A dashboard published as a Claude artifact only changes when a session republishes it, so say when it is behind its note.
+        if harness=='claude':
+            try:
+                from . import views
+                from .session_start import _scope
+                behind=views.behind(root,lambda:_scope(domain,root,bindings))
+                if behind:prefix+='\n'.join(line for _,line in behind)+'\n'
+                if session!='unknown' and (behind or state.get('views_told')):_update(root,session,lambda s:s.update(views_told=[key for key,_ in behind]))
+            except Exception as exc:
+                from .logs import swallowed
+                swallowed('runtime.views_hint',exc,root)
         # Prompts and tool hints read the index without checking it: bring a stale one (older schema, notes edited outside the scripts) up to date now.
         try:
             from .search import refresh_stale
@@ -1510,6 +1534,18 @@ def _process(harness,event,payload,root=None,info=None):
         if detail.get('signal') in SIGNAL_TEXT:
             changing=next((statements[k] for k in NUDGE_KINDS if k in statements),None)
             governance.append(signal_nudge(detail['signal'],session,detail.get('signals'),signal_notes(changing,domain,root,bindings) if changing else None))
+        if harness=='claude':
+            # Once per session and revision: the session start already said so, and a prompt every turn would only repeat it.
+            try:
+                from . import views
+                from .session_start import _scope
+                told=state.get('views_told') if isinstance(state.get('views_told'),list) else []
+                behind=[(key,line) for key,line in views.behind(root,lambda:_scope(domain,root,bindings),hint_command(root,state,domain)) if key not in told]
+                governance+=[line for _,line in behind]
+                if behind and session!='unknown':_update(root,session,lambda s:s.update(views_told=(list(s.get('views_told') or [])+[key for key,_ in behind])[-50:]))
+            except Exception as exc:
+                from .logs import swallowed
+                swallowed('runtime.views_hint',exc,root)
         fixed=len(header)+(len(maps_text)+1 if maps_text else 0)+sum(len(g)+1 for g in governance)
         room=max(0,injection.PROMPT_CAP-fixed-1) if DELIVERY else None
         if isinstance(prompt,str):hits,ids,overview=context(cwd,prompt,root,domain,shown_now,state.get('overview_shown',False),delivered,detail,session_delivered,topic,units_out,room)
@@ -1632,7 +1668,8 @@ def _process(harness,event,payload,root=None,info=None):
             entity,action=learn_operation(text,grammar);learn_write=not is_read(entity,action)
             # Turning learning on or off is the user's call, so it keeps the host's normal prompt.
             learn_settings=(entity,action)==('config','set')
-        if (subcommand in MUTATING_SUBCOMMANDS or learn_write) and _subagent(payload):
+        writes_view=subcommand=='views' and views_write(text,grammar)
+        if (subcommand in MUTATING_SUBCOMMANDS or learn_write or writes_view) and _subagent(payload):
             detail['decision']='deny:subagent'
             result['deny']='Living Memory: subagents are read-only. Return the proposed note to the main agent instead of running '+subcommand+'.'
             return result
