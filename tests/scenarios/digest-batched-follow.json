@@ -28,7 +28,7 @@
   {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/billing/src/export.py"}}, "expect": {"hints": ["@export"]}},
   {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/billing/src/plain.py"}}, "expect": {"hints": ["@plain"]}},
   {"hook": "stop", "expect": {"reminder": "follow", "reminder_contains": [
-    "You edited files whose digests may be outdated: ",
+    "You edited files that notes cover: ",
     "{short:@ledger} (billing/src/ledger.py)", "{short:@retry} (billing/src/retry.py)", "{short:@export} (billing/src/export.py)", "{short:@plain} (billing/src/plain.py)",
     "CMD confirm REF --session {session}", "CMD update REF --session {session} --set-detail", "has no project brief"],
    "reminder_excludes": ["which note"]}},
