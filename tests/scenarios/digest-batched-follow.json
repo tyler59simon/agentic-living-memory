@@ -1,6 +1,6 @@
 {
  "name": "digest-batched-follow",
- "description": "Digests of the code files edited in one turn are asked about in one Stop sentence naming every digest, not one sentence each; a plain note listing a file keeps its own sentence; confirming one is accepted from the reminder; a shell command that names no file brings no follow-through.",
+ "description": "The notes about the code files edited in one turn (digests, and a plain note that lists a file) are asked about in one Stop sentence naming every one of them with its file, not one sentence each; confirming one is accepted from the reminder; a shell command that changes no file brings no follow-through.",
  "harnesses": ["claude", "codex"],
  "git": [
   {"folder": "project/billing", "commits": [
@@ -29,12 +29,12 @@
   {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/billing/src/plain.py"}}, "expect": {"hints": ["@plain"]}},
   {"hook": "stop", "expect": {"reminder": "follow", "reminder_contains": [
     "You edited files whose digests may be outdated: ",
-    "{short:@ledger} (billing/src/ledger.py)", "{short:@retry} (billing/src/retry.py)", "{short:@export} (billing/src/export.py)",
-    "CMD confirm REF --session {session}", "CMD update REF --session {session} --set-detail",
-    "You edited billing/src/plain.py, which note {short:@plain} Plain module gotcha covers"]}},
+    "{short:@ledger} (billing/src/ledger.py)", "{short:@retry} (billing/src/retry.py)", "{short:@export} (billing/src/export.py)", "{short:@plain} (billing/src/plain.py)",
+    "CMD confirm REF --session {session}", "CMD update REF --session {session} --set-detail", "has no project brief"],
+   "reminder_excludes": ["which note"]}},
   {"cli": ["confirm", "@ledger", "--session", "{session}"], "expect": {"exit": 0, "status": "confirm"}},
   {"hook": "user-prompt", "payload": {"prompt": "run the formatter"}},
   {"hook": "pre-tool-use", "payload": {"tool_name": "Bash", "tool_input": {"command": "make format"}}},
-  {"hook": "stop", "expect": {"detail": {"pending": ["unbriefed"]}, "reminder_excludes": ["digests may be outdated", "You edited"]}}
+  {"hook": "stop", "expect": {"detail": {"pending": []}, "reminder_excludes": ["digests may be outdated", "You edited", "no project brief"]}}
  ]
 }

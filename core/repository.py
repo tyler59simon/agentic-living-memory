@@ -251,7 +251,7 @@ def parse_text(raw, path=""):
 
 # Frontmatter order: the properties a person reads first, then bookkeeping.
 FRONT_KEYS = ("title", "type", "status", "tags", "context", "files", "commands", "sources")
-SYSTEM_KEYS = ("id", "domain", "created", "updated", "review_by", "confirmed", "supersedes", "superseded_by", "schema_version", "capture_key", "origin", "repo")
+SYSTEM_KEYS = ("id", "domain", "created", "updated", "review_by", "confirmed", "supersedes", "superseded_by", "schema_version", "capture_key", "origin", "repo", "file_hashes", "checked")
 MAX_FILES = 30
 
 
@@ -293,14 +293,14 @@ MAX_SOURCES = 20
 SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
-def check_sources(value):
-    """The `sources` property must be a list of at most MAX_SOURCES {path, sha256} objects (path text of at most 300 characters, sha256 64 hex digits)."""
-    if not isinstance(value, list) or len(value) > MAX_SOURCES:
-        raise ValueError(f"sources must be a list of at most {MAX_SOURCES} {{path, sha256}} objects")
+def check_sources(value, limit=MAX_SOURCES, name="sources"):
+    """The `sources` property (or `file_hashes`, which has the same shape) must be a list of at most `limit` {path, sha256} objects (path text of at most 300 characters, sha256 64 hex digits)."""
+    if not isinstance(value, list) or len(value) > limit:
+        raise ValueError(f"{name} must be a list of at most {limit} {{path, sha256}} objects")
     for item in value:
         if (not isinstance(item, dict) or set(item) != {"path", "sha256"} or not isinstance(item["path"], str) or not item["path"].strip()
                 or len(item["path"]) > 300 or "\n" in item["path"] or not isinstance(item["sha256"], str) or not SHA256.fullmatch(item["sha256"])):
-            raise ValueError("sources entries are {path (text of at most 300 characters), sha256 (64 hex digits)}")
+            raise ValueError(f"{name} entries are {{path (text of at most 300 characters), sha256 (64 hex digits)}}")
 
 
 def clean_sources(value):
@@ -457,6 +457,13 @@ def validate(note, domain, root=None, new=False, extra_tags=()):
         raise ValueError("files must be a list of paths")
     if "sources" in note:
         check_sources(note["sources"])
+    if "file_hashes" in note:
+        check_sources(note["file_hashes"], MAX_FILES, "file_hashes")
+    if "checked" in note:
+        try:
+            datetime.fromisoformat(note["checked"])
+        except (TypeError, ValueError):
+            raise ValueError("checked must be an ISO timestamp") from None
     if "repo" in note and not isinstance(note["repo"], str):
         raise ValueError("repo must be text (the git identity of the folder a map or brief is about)")
     if "commands" in note:

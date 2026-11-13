@@ -64,6 +64,11 @@ def _identity_of(note,domain,bindings):
     folder=repo_of(note,domain,bindings)
     return repo_identity(folder) if folder is not None else None
 
+def _json(text):
+    try:found=json.loads(text or '[]')
+    except ValueError:return []
+    return found if isinstance(found,list) else []
+
 def _rows(domain,root,kind='map'):
     """Active rows of a note type (map or brief, or a tuple of types) from the domain's index (no rebuild: hooks must stay fast), else from the note files."""
     kinds=(kind,) if isinstance(kind,str) else tuple(kind)
@@ -75,10 +80,11 @@ def _rows(domain,root,kind='map'):
     if db_path.exists():
         try:
             db=sqlite3.connect(db_path.as_uri()+'?mode=ro',uri=True)
-            try:rows=db.execute(f"SELECT id,title,updated,files,body,path,revision,type,repo FROM notes WHERE status='active' AND type IN ({','.join('?'*len(kinds))})",kinds).fetchall()
+            try:rows=db.execute(f"SELECT id,title,updated,files,body,path,revision,type,repo,sources,file_hashes,checked FROM notes WHERE status='active' AND type IN ({','.join('?'*len(kinds))})",kinds).fetchall()
+            except sqlite3.OperationalError:rows=[r+('','','') for r in db.execute(f"SELECT id,title,updated,files,body,path,revision,type,repo FROM notes WHERE status='active' AND type IN ({','.join('?'*len(kinds))})",kinds)]   # an index from before file hashes
             finally:db.close()
-            return [{'id':i,'domain':domain,'title':t,'type':k,'updated':str(u or ''),'files':f,'body':b,'revision':r,'repo':e or ''}
-                    for i,t,u,f,b,p,r,k,e in rows if _unchanged(p,r)]
+            return [dict({'id':i,'domain':domain,'title':t,'type':k,'updated':str(u or ''),'files':f,'body':b,'revision':r,'repo':e or ''},**{n:v for n,v in (('sources',_json(s)),('file_hashes',_json(h)),('checked',c)) if v})
+                    for i,t,u,f,b,p,r,k,e,s,h,c in rows if _unchanged(p,r)]
         except sqlite3.Error:pass
     from .repository import inventory
     try:return [dict(n,domain=domain) for n in inventory(domain,root) if n.get('type') in kinds and n.get('status','active')=='active']
@@ -204,6 +210,10 @@ def cited_paths(hit,changed,repo=None,bindings=None):
                 or len(parts)<=2 and any(fnmatch.fnmatch(parts[-1].casefold(),b.casefold()) for b in BUILD_FILES))
     return [p for p in changed if cites(p)]
 
+def last_current(hit):
+    """When a map or brief was last known current: the later of `updated` (written) and `checked` (confirmed still true). Both are ISO timestamps."""
+    return max(str(hit.get('updated') or ''),str(hit.get('checked') or ''))
+
 def currency(hit,repo,bindings=None,cache=None):
     """(entry, computed): entry is {'rev': note revision, 'head': HEAD oid, 'changed': cited paths changed since the note was
     written, 'count': commits since} for the note, reused from `cache` (an earlier entry) while the note and HEAD are the same, so
@@ -211,7 +221,7 @@ def currency(hit,repo,bindings=None,cache=None):
     (a timeout or error): that entry is not a result to keep."""
     head=head_oid(repo);rev=str(hit.get('revision') or '')
     if cache and head and rev and cache.get('rev')==rev and cache.get('head')==head:return cache,False
-    updated=hit.get('updated')
+    updated=last_current(hit)
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(1) as pool:   # the commit count does not wait for the diff: process starts dominate on Windows
         count=pool.submit(commits_since,repo,updated);changed=_changed(repo,updated);count=count.result()
@@ -224,7 +234,7 @@ def stale_clause(hit,entry,what='map'):
     changed=(entry or {}).get('changed') or []
     if not changed:return ''
     names=', '.join(changed[:STALE_NAMES])+(f' and {len(changed)-STALE_NAMES} more' if len(changed)>STALE_NAMES else '')
-    return f"STALE: {names} changed since {str(hit.get('updated',''))[:10]} — check and update this {what}"
+    return f"STALE: {names} changed since {last_current(hit)[:10]} — check and update this {what}"
 
 def freshness(hit,repo,entry=None,bindings=None):
     entry=entry if entry is not None else currency(hit,repo,bindings)[0]
@@ -266,6 +276,7 @@ def repo_notes(hit,repo,root,bindings,shown,budget=REPO_NOTES_BUDGET,files=True,
     session (shown maps ref -> revision key) and refs in exclude are left out. '' and [] when none."""
     from .notes import short_ref,unconfirmed
     from .note_format import sections
+    from .digests import stale_note
     from .session_start import gist
     from .runtime import _unseen
     domain=hit['domain'];linked={t.strip().casefold() for t in LINK.findall(sections(str(hit.get('body',''))).get('links',''))}
@@ -282,7 +293,7 @@ def repo_notes(hit,repo,root,bindings,shown,budget=REPO_NOTES_BUDGET,files=True,
     for n in sorted(found,key=lambda n:n.get('updated',''),reverse=True):
         ref=f"{domain}:{n['id']}"
         if ref in exclude or not _unseen(dict(n,domain=domain),shown):continue
-        summary=gist(n);line=f"- {n['type'].upper()} {short_ref(domain,n['id'])} {unconfirmed(n)}{n['title']}"+(f' — {summary}' if summary else '')
+        stale=stale_note(n,root,bindings);summary=gist(n);line=f"- {n['type'].upper()} {short_ref(domain,n['id'])} {stale+' — ' if stale else ''}{unconfirmed(n)}{n['title']}"+(f' — {summary}' if summary else '')
         if used+len(line)+1>budget-len(head)-1:break
         lines.append(line);refs.append(ref);used+=len(line)+1
     return ('\n'.join([head]+lines),refs) if lines else ('',[])

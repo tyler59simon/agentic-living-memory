@@ -223,19 +223,43 @@ class BatchedFollowThrough(Digests):
         for path in shorts:self.edit(path)
         reason=self.hook('stop')['continue_reason']
         named=[s for s in shorts.values() if s+' (' in reason]
-        self.assertEqual(named,list(shorts.values())[:runtime.STOP_DIGESTS]);self.assertLessEqual(len(reason),runtime.STOP_TEXT_CAP)
-        self.assertEqual(len(self.state()['followed']),runtime.STOP_DIGESTS)
+        self.assertEqual(named,list(shorts.values())[:runtime.STOP_FOLLOW]);self.assertLessEqual(len(reason),runtime.STOP_TEXT_CAP)
+        self.assertEqual(len(self.state()['followed']),runtime.STOP_FOLLOW)
 
-    def test_a_plain_note_listing_the_file_keeps_its_own_sentence(self):
-        shorts=self.made(3);plain=self.note('Util gotcha','tiny returns one.',files=['kb/src/plain.py'])
+    def test_a_note_that_is_not_a_digest_joins_the_one_sentence_with_other_wording(self):
+        shorts=self.made(3);plain=self.note('Util decision','tiny returns one.',files=['kb/src/plain.py'],type='decision')
         self.hook('user-prompt')
         for path in [*shorts,'kb/src/plain.py']:self.edit(path)
         reason=self.hook('stop')['continue_reason']
-        self.assertIn('whose digests may be outdated',reason)
-        self.assertIn(f"You edited kb/src/plain.py, which note demo:{plain['id'][:8]} Util gotcha covers",reason)
-        self.assertEqual(reason.count('You edited'),2);self.assertLessEqual(len(reason),runtime.STOP_TEXT_CAP)
+        self.assertEqual(reason.count('You edited'),1);self.assertIn('You edited files that notes cover: ',reason);self.assertNotIn('digests may be outdated',reason)
+        self.assertIn(f"demo:{plain['id'][:8]} (kb/src/plain.py)",reason)
+        for path,short in shorts.items():self.assertIn(f'{short} ({path})',reason)
+        self.assertLessEqual(len(reason),runtime.STOP_TEXT_CAP);self.assertEqual(len(self.state()['followed']),4)
 
-    def test_a_digest_changed_only_by_a_shell_command_is_not_asked_about(self):
+    def test_one_edited_note_keeps_its_own_sentence_and_a_bug_adds_one_resolve_clause(self):
+        plain=self.note('Util gotcha','tiny returns one.',files=['kb/src/plain.py'],type='bug');self.hook('user-prompt');self.edit('kb/src/plain.py')
+        reason=self.hook('stop')['continue_reason']
+        self.assertIn(f"You edited kb/src/plain.py, which note demo:{plain['id'][:8]} Util gotcha covers",reason);self.assertEqual(reason.count('CMD resolve'),1)
+        self.hook('user-prompt');two=[self.note('Mod one bug','m1 fails.',files=['kb/src/mod1.py'],type='bug'),self.note('Mod two bug','m2 fails.',files=['kb/src/mod2.py'],type='bug')]
+        for path in ('kb/src/mod1.py','kb/src/mod2.py'):self.edit(path)
+        reason=self.hook('stop')['continue_reason']
+        self.assertEqual(reason.count('You edited'),1);self.assertEqual(reason.count('CMD resolve'),1);self.assertIn("'**Fix:** ...' then CMD resolve REF",reason)
+        for n in two:self.assertIn(f"demo:{n['id'][:8]}",reason)
+
+    def test_a_file_past_the_hint_cap_is_still_followed(self):
+        notes={p:self.note(f'{p} gotcha',f'{p} is odd.',files=[f'kb/src/{p}.py'],type='bug',allow_similar=True) for p in ('mod1','mod2','mod3','plain')}
+        for p in notes:put(self.repo/'src'/(p+'.py'),f'def {p}():'+chr(10)+'    return 2'+chr(10))
+        self.hook('user-prompt')
+        paths=[f'kb/src/{p}.py' for p in notes]
+        self.assertEqual(runtime.HINT_FILES_PER_CALL,3)
+        # One call editing four files looks up three; the fourth is found by the batch at Stop.
+        self.hook('pre-tool-use',tool_name='MultiEdit',tool_input={'edits':[{'file_path':p} for p in paths]})
+        self.assertEqual(self.state().get('unlooked'),[paths[3]])
+        reason=self.hook('stop')['continue_reason']
+        for p in paths:self.assertIn(f"demo:{notes[p.split('/')[-1][:-3]]['id'][:8]} ({p})",reason)
+        self.assertEqual(len(self.state()['followed']),4)
+
+    def test_a_shell_change_git_cannot_report_is_not_asked_about(self):   # a real repo is covered by tests/scenarios/shell-follow.json
         shorts=self.made(1);self.hook('user-prompt')
         put(self.repo/'src'/'ledger.py',LEDGER+'# changed by a script\n')
         self.hook('pre-tool-use',tool_name='Bash',tool_input={'command':'make format'})
@@ -339,5 +363,69 @@ class Scan(Digests):
         sources.sync(self.root,'demo')
         code,found=self.cli('--actor','subagent','ingest-scan','--limit','2');self.assertEqual(code,0);self.assertIn('ingest-scan',runtime.ALLOWED_SUBCOMMANDS)
         self.assertNotEqual(self.cli('--actor','subagent','capture','--title','x','--summary','y')[0],0)
+
+class HashCache(Digests):
+    """C1: stat-cached hashing, absolute paths, and the digest/note wording."""
+    def setUp(self):
+        super().setUp();digests._HASHES.clear();digests._DIRTY.clear()
+    def old(self,path,age=3600):
+        stamp=os.stat(path).st_mtime-age;os.utime(path,(stamp,stamp))
+    def cache_file(self):return self.root/'.cache'/'file-hashes.json'
+
+    def test_a_settled_file_is_cached_and_flushed_once(self):
+        path=self.repo/'README.md';self.old(path)
+        self.assertEqual(digests.cached_sha256(path,self.root),sha(README));self.assertFalse(self.cache_file().exists())
+        digests.flush_hashes(self.root);found=json.loads(self.cache_file().read_text(encoding='utf-8'))
+        self.assertEqual(found[str(path)][2],sha(README));self.assertEqual(found[str(path)][0],len(README))
+        before=self.cache_file().stat().st_mtime_ns;digests.cached_sha256(path,self.root);digests.flush_hashes(self.root)
+        self.assertEqual(self.cache_file().stat().st_mtime_ns,before)   # a hit adds nothing to write
+
+    def test_a_cache_hit_does_not_read_the_file(self):
+        path=self.repo/'README.md';self.old(path);digests.cached_sha256(path,self.root)
+        with patch.object(digests,'file_sha256',side_effect=AssertionError('read')):self.assertEqual(digests.cached_sha256(path,self.root),sha(README))
+
+    def test_a_file_modified_in_the_last_two_seconds_is_never_cached(self):
+        path=self.repo/'README.md'
+        self.assertEqual(digests.cached_sha256(path,self.root),sha(README));digests.flush_hashes(self.root)
+        self.assertFalse(self.cache_file().exists())
+        put(path,README.replace('30','31'));self.assertEqual(digests.cached_sha256(path,self.root),sha(README.replace('30','31')))
+
+    def test_a_changed_size_or_mtime_is_hashed_again(self):
+        path=self.repo/'README.md';self.old(path);digests.cached_sha256(path,self.root)
+        same_size=README.replace('30','31');put(path,same_size);self.old(path,1800)   # same length, a different mtime
+        self.assertEqual(digests.cached_sha256(path,self.root),sha(same_size))
+
+    def test_the_cache_keeps_at_most_2000_entries_and_survives_a_bad_file(self):
+        path=self.repo/'README.md';self.old(path);cache=digests._hash_cache(self.root)
+        for i in range(digests.HASH_CACHE_MAX+5):cache[f'/x/{i}']=[1,1,'0'*64]
+        digests.cached_sha256(path,self.root);self.assertEqual(len(cache),digests.HASH_CACHE_MAX);self.assertIn(str(path),cache);self.assertNotIn('/x/0',cache)
+        digests.flush_hashes(self.root);digests._HASHES.clear();self.cache_file().write_text('not json',encoding='utf-8')
+        self.assertEqual(digests.cached_sha256(path,self.root),sha(README))
+
+    def test_changed_uses_the_cache_and_still_notices_an_edit(self):
+        self.digest('kb/README.md');sources=[{'path':'kb/README.md','sha256':sha(README)}]
+        self.old(self.repo/'README.md');self.assertEqual(digests.changed(sources,'demo',self.root),[]);self.assertTrue(self.cache_file().exists())
+        edited=README.replace('30','31');put(self.repo/'README.md',edited);self.old(self.repo/'README.md',1800)
+        self.assertEqual(digests.changed(sources,'demo',self.root),['kb/README.md'])
+
+    def test_an_absolute_path_is_found_and_a_missing_one_is_unknown_not_stale(self):
+        outside=self.base/'elsewhere.md';put(outside,'x'+chr(10))
+        self.assertEqual(digests.locate(self.root,'demo',str(outside)),(outside,True))
+        gone=str(self.base/'gone.md');self.assertEqual(digests.locate(self.root,'demo',gone),(None,False))
+        self.assertEqual(digests.changed([{'path':gone,'sha256':'0'*64},{'path':str(outside),'sha256':sha('x'+chr(10))}],'demo',self.root),[])
+        self.assertEqual(digests.changed([{'path':str(outside),'sha256':'0'*64}],'demo',self.root),[str(outside)])
+
+    def test_stale_text_names_a_digest_or_a_note(self):
+        self.assertEqual(digests.stale_text(['a.md'],'note'),'STALE: a.md changed since this note')
+        self.assertEqual(digests.stale_text(['a.md']),'STALE: a.md changed since this digest')
+        item=[{'path':'kb/README.md','sha256':'0'*64}]
+        self.assertEqual(digests.stale_note({'domain':'demo','file_hashes':item},self.root),'STALE: kb/README.md changed since this note')
+        self.assertEqual(digests.stale_note({'domain':'demo','sources':item},self.root),'STALE: kb/README.md changed since this digest')
+        self.assertEqual(digests.stale_note({'domain':'demo','sources':[{'path':'kb/README.md','sha256':sha(README)}],'file_hashes':[]},self.root),'')
+
+    def test_mark_reads_file_hashes_and_drops_both_lists(self):
+        hits=[{'domain':'demo','file_hashes':[{'path':'kb/README.md','sha256':'0'*64}]},{'domain':'demo','sources':[{'path':'kb/README.md','sha256':sha(README)}],'file_hashes':[]},{'domain':'demo'}]
+        digests.mark(hits,self.root)
+        self.assertEqual(hits[0],{'domain':'demo','stale':'STALE: kb/README.md changed since this note'});self.assertEqual(hits[1:],[{'domain':'demo'},{'domain':'demo'}])
 
 if __name__=='__main__':unittest.main()

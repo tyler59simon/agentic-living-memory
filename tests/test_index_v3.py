@@ -26,13 +26,14 @@ class IndexV3(StoreFixture):
         self.cwd = str(self.base / 'project')
 
     def test_schema_has_commands_repo_and_a_vocabulary_of_active_notes(self):
-        self.assertEqual(search.INDEX_VERSION, 3)
+        self.assertEqual(search.INDEX_VERSION, 4)
         a = self.note('Cache rebuild', 'The cache rebuilds from canonical notes.')
         gone = self.note('Webcam driver', 'Reinstall the webcam driver.', type='knowledge')
         change(gone['id'], 'demo', 'archive', self.root)
         search.rebuild_index('demo', self.root)
         columns = [r[1] for r in table(self.root, 'PRAGMA table_info(notes)')]
         self.assertIn('commands', columns)
+        self.assertIn('file_hashes', columns)
         self.assertIn('repo', columns)
         self.assertEqual(table(self.root, 'SELECT commands, repo FROM notes WHERE id=?', a['id']), [('[]', '')])
         vocab = dict(table(self.root, 'SELECT stem, df FROM vocab'))
@@ -63,7 +64,7 @@ class IndexV3(StoreFixture):
         search.rebuild_index('demo', self.root)
         notes = inventory('demo', self.root, retired=True)
         self.assertTrue(search._fresh('demo', self.root, notes))
-        with patch.object(search, 'INDEX_VERSION', 4):
+        with patch.object(search, 'INDEX_VERSION', 5):
             self.assertFalse(search._fresh('demo', self.root, notes))
 
     def test_session_start_rebuilds_a_stale_index_without_a_model(self):
@@ -162,7 +163,7 @@ class VectorsSurviveABump(StoreFixture):
         before = self.vectors()
         self.assertEqual(len(before), 2)
         model = semantic.load(self.root)
-        with patch.object(search, 'INDEX_VERSION', 4), patch.object(model, 'embed', wraps=model.embed) as embed:
+        with patch.object(search, 'INDEX_VERSION', 5), patch.object(model, 'embed', wraps=model.embed) as embed:
             notes = inventory('demo', self.root, retired=True)
             self.assertFalse(search._fresh('demo', self.root, notes))   # the bump made the index stale ...
             self.assertTrue(search.refresh_stale('demo', self.root))     # ... and SessionStart's rebuild is lexical

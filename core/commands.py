@@ -205,14 +205,15 @@ def command_notes(text,domains,root=None,limit=2):
         if not db_path.exists():continue
         try:
             db=sqlite3.connect(db_path.as_uri()+'?mode=ro',uri=True)
-            try:rows=db.execute("SELECT id,title,type,updated,commands,body,path,revision FROM notes WHERE status='active' AND commands<>'[]' AND commands<>''").fetchall()
+            try:rows=db.execute("SELECT id,title,type,updated,commands,body,path,revision,sources,file_hashes FROM notes WHERE status='active' AND commands<>'[]' AND commands<>''").fetchall()
+            except sqlite3.OperationalError:rows=[r+('','') for r in db.execute("SELECT id,title,type,updated,commands,body,path,revision FROM notes WHERE status='active' AND commands<>'[]' AND commands<>''")]   # an index from before file hashes
             finally:db.close()
         except sqlite3.Error:continue
         if not rows:continue
         from .learning import published
         try:manifests,servable=published(root,domain)
         except (ValueError,OSError):manifests,servable={},set()
-        for note_id,title,kind,updated,commands,body,note_path,revision in rows:
+        for note_id,title,kind,updated,commands,body,note_path,revision,digested,hashed in rows:
             if note_id in manifests and note_id not in servable:continue
             try:listed=[c for c in json.loads(commands) if isinstance(c,str)]
             except ValueError:continue
@@ -227,6 +228,10 @@ def command_notes(text,domains,root=None,limit=2):
                  'snippet':search.snippet(body,search.terms(best[1]),200)}
             from .notes import is_interim
             if is_interim({'type':kind,'title':title,'body':body}):hit['interim']=True
+            for name,raw in (('sources',digested),('file_hashes',hashed)):   # for digests.mark: a note about a command can be stale too
+                try:found=json.loads(raw or '[]')
+                except ValueError:found=[]
+                if found:hit[name]=found
             if note_id in manifests:hit.update(procedure_id=manifests[note_id]['id'],procedure_version=manifests[note_id]['current_version'])
             ranked.append(hit)
     ranked.sort(key=lambda h:h['updated'],reverse=True)

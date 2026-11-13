@@ -211,9 +211,9 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
 
     flagged={}
     def flag(n):
-        """`STALE: a.md changed since this digest — ` before the title of a digest whose source file changed (core/digests.py),
-        then `UNCONFIRMED (as of date): ` for a note still holding an unconfirmed belief; '' for any other note."""
-        if not n.get('sources'):return unconfirmed(n)
+        """`STALE: a.md changed since this digest — ` before the title of a digest whose source file changed, or `since this note` for a note
+        whose hashed file changed (core/digests.py), then `UNCONFIRMED (as of date): ` for a note still holding an unconfirmed belief; '' for any other note."""
+        if not n.get('sources') and not n.get('file_hashes'):return unconfirmed(n)
         key=(n['domain'],n['id'])
         if key not in flagged:
             from .digests import stale_note

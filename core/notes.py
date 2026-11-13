@@ -7,6 +7,7 @@ from .common import memory_root,safe_domain,canonical_domain
 from .repository import inventory,parse,serialize,validate,read_json,transaction,reconcile,store_lock,now,digest,clean_files,clean_commands,clean_sources
 from .note_types import prefix_for,normalize,effective_type,default_review_by,KEYED_TYPES
 from .note_format import format_body,without_actions,summary_text,ACTION_TYPES
+from .digests import stale_note
 
 # Fields an agent may change directly (journaled and undoable, no plan) with `update`.
 UPDATABLE=('title','body','tags','type','context','review_by','files','commands','sources')
@@ -306,6 +307,28 @@ def _rehashed(note,domain,root):
     from .digests import rehash
     return rehash(note['sources'],domain,root,read_json(Path(root)/'bindings.json',{}))
 
+FILE_HASH_TYPES=frozenset({'knowledge','runbook','policy','bug','risk','research'})   # a changed file means these may now be wrong; decisions, plans, statuses and preferences are about a moment
+HASHED_FILES_MAX=5
+
+def _file_hashes(note,domain,root,keep=None):
+    """[{path, sha256}] for the first HASHED_FILES_MAX regular files a note of FILE_HASH_TYPES lists in `files`: the file's hash now, or the one in
+    `keep` ({path: sha256}) for a file already hashed. Folders, globs, files already in `sources` and files that are missing get none."""
+    if note.get('type') not in FILE_HASH_TYPES:return []
+    from .digests import locate,file_sha256
+    bindings=read_json(Path(root)/'bindings.json',{});digested={s['path'] for s in note.get('sources') or []};out=[]
+    for path in clean_files(note.get('files')):
+        if len(out)>=HASHED_FILES_MAX:break
+        if path in digested or len(path)>300 or chr(10) in path or any(c in path for c in '*?['):continue
+        if keep and path in keep:out.append({'path':path,'sha256':keep[path]});continue
+        found,_=locate(root,domain,path,bindings);sha=file_sha256(found) if found else None
+        if sha:out.append({'path':path,'sha256':sha})
+    return out
+
+def _set_file_hashes(note,domain,root,keep=None):
+    hashes=_file_hashes(note,domain,root,keep)
+    if hashes:note['file_hashes']=hashes
+    else:note.pop('file_hashes',None)
+
 def _set_identity(note,files,domain,root,moved=True):
     """A map or brief carries the git identity of its folder (`repo`, system-managed), so a clone of the same origin finds it.
     An update that leaves `files` alone (moved=False) keeps the identity when the folder is gone: the note was shared from another clone."""
@@ -329,6 +352,7 @@ def build_note(title,body,tags,domain,root,note_type='knowledge',context='',key=
     if commands:note['commands']=commands
     sources=clean_sources(sources)
     if sources:note['sources']=sources
+    _set_file_hashes(note,domain,root)
     if origin:note['origin']=str(origin)
     if note_type in KEYED_TYPES:_set_identity(note,files,domain,root)
     validate(note,domain,root,new=True,extra_tags=extra_tags)
@@ -516,11 +540,12 @@ def capture(title,body,tags,domain,root=None,**metadata):
         if supersedes:result['superseded']=[f'{domain}:{old}' for old in supersedes];result['carried_links']=carried;result['carried_files']=carried_files
         return result
 
-def _change_set(note_id,domain,action,root,expected_revision=None,successor=None,pending=None,carried=None,**values):
+def _change_set(note_id,domain,action,root,expected_revision=None,successor=None,pending=None,carried=None,rehash=True,**values):
     """Files to write for one note action, with the revisions they must still have. `pending` holds the
     changes of earlier steps in the same transaction (rel path -> text, or None when removed); files are
     read through it, so steps build on each other instead of overwriting one another. A standalone supersede carries the replaced
-    note's links and files into its successor (unless values has drop_links); `carried`, when a dict, receives what moved."""
+    note's links and files into its successor (unless values has drop_links); `carried`, when a dict, receives what moved.
+    `rehash=False` (check, rewrite-plan) leaves the recorded file hashes alone: those edits do not re-read the files."""
     pending=pending or {}
     path,note=find_note(note_id,domain,root)
     if note.get('learning_procedure'):
@@ -556,7 +581,10 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
             sources=clean_sources(values['sources'])
             if sources:note['sources']=sources
             else:note.pop('sources',None)
-        elif 'body' in values and note.get('sources'):note['sources']=_rehashed(note,domain,root)   # rewritten from the file as it is now
+        elif 'body' in values and note.get('sources') and rehash:note['sources']=_rehashed(note,domain,root)   # rewritten from the file as it is now
+        if rehash and set(values)&{'files','sources','body','title','type'}:
+            # A rewrite (body, title, type) vouches for the files as they are now; a change of only the list keeps the hashes of files still listed.
+            _set_file_hashes(note,domain,root,None if set(values)&{'body','title','type'} else {h['path']:h['sha256'] for h in note.get('file_hashes') or []})
         if 'review_by' in values:
             review=_review_date(values['review_by'])
             if review:note['review_by']=review
@@ -578,6 +606,7 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
         today=date.today().isoformat();confirmed=[d for d in note.get('confirmed') or [] if isinstance(d,str) and d!=today]
         note['confirmed']=(confirmed+[today])[-CONFIRM_KEEP:]
         if note.get('sources'):note['sources']=_rehashed(note,domain,root)   # still true of the file as it is now
+        _set_file_hashes(note,domain,root);note['checked']=now()   # a map or brief reads current from here until the next commit
         review=default_review_by(note['type'])
         if review:note['review_by']=review
         elif note.get('review_by'):
@@ -655,7 +684,7 @@ def parse_changed(pending_text,note):
     from .repository import parse_text
     return {**parse_text(pending_text,note['path']),'path':note['path']}
 
-def change(note_id,domain,action,root=None,expected_revision=None,plan_only=False,**values):
+def change(note_id,domain,action,root=None,expected_revision=None,plan_only=False,rehash=True,**values):
     root=Path(root or memory_root()).resolve()
     domain=canonical_domain(domain,root)
     with store_lock(root):
@@ -668,7 +697,7 @@ def change(note_id,domain,action,root=None,expected_revision=None,plan_only=Fals
             from .learning import stage_edit
             return stage_edit(root,domain,current,values,preview=plan_only)
         carried={}
-        changes,expected,target=_change_set(note_id,domain,action,root,expected_revision,carried=carried,**values)
+        changes,expected,target=_change_set(note_id,domain,action,root,expected_revision,carried=carried,rehash=rehash,**values)
         if plan_only:
             from .governance import plan
             return plan(root,changes,action,[domain],{'id':note_id,'action':action,'files':len(changes)})
@@ -706,7 +735,7 @@ def rewrite_plan(items,domain=None,root=None):
             if note.get('status','active')!='active':raise ValueError(f'{ref} is not active')
             if note.get('type') in REWRITE_FIXED_TYPES:
                 raise ValueError(f"{ref} is a {note['type']} note; it keeps its labelled layout, so update it with --set-detail")
-            step,_,_=_change_set(note_id,d,'update',root,item['revision'],pending=changes,body=item['body'])
+            step,_,_=_change_set(note_id,d,'update',root,item['revision'],pending=changes,rehash=False,body=item['body'])
             rel=path.relative_to(root).as_posix()
             after=parse_changed(step[rel],note)
             after['updated']=note.get('updated')
@@ -758,7 +787,7 @@ def confirm(note_id,domain,root=None):
     root=Path(root or memory_root()).resolve()
     with store_lock(root):
         _,note=find_note(note_id,domain,root)
-        if date.today().isoformat() in (note.get('confirmed') or []):
+        if date.today().isoformat() in (note.get('confirmed') or []) and note.get('type') not in KEYED_TYPES and not stale_note(note,root):   # a map or brief, or a note whose file changed since, is confirmed again
             return {'ok':True,'id':note['id'],'status':'unchanged','confirmed':note['confirmed'],'review_by':note.get('review_by')}
         result=change(note['id'],domain,'confirm',root,note['revision'])
         after=find_note(note['id'],domain,root)[1]
@@ -787,7 +816,7 @@ def check_action(note_id,domain,root=None,item=None,index=None,done=True):
             chosen=matches[0]
         if items[chosen][0]==done:
             return {'ok':True,'id':note['id'],'status':'unchanged','item':items[chosen][1],'done':done}
-        result=change(note['id'],domain,'update',root,note['revision'],body=set_action(note['body'],chosen,done))
+        result=change(note['id'],domain,'update',root,note['revision'],rehash=False,body=set_action(note['body'],chosen,done))
         result.update(item=items[chosen][1],index=chosen+1,done=done,open=sum(1 for d,_ in action_items(find_note(note['id'],domain,root)[1]['body']) if not d))
         if done and not result['open']:
             ref=short_ref(domain,note['id'])

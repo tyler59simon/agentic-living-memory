@@ -701,6 +701,9 @@ def main(argv=None):
             from .notes import find_note
             d,n=_reference(args.reference,domain,root);path,note=find_note(n,d,root)
             result={k:v for k,v in note.items() if k not in {'body','path','digest'}}
+            from .digests import stale_note
+            stale=stale_note(note,root)   # a digest's source file, or a hashed file the note lists, changed since it was written
+            if stale:result['stale']=stale
             if args.section:
                 # One section, as the prompt hook's evidence lines name it: "Why", or a path like "Notes > Deeper detail".
                 # The text comes from the note as served (an approved learned runbook's approved body, not an unreviewed edit of
