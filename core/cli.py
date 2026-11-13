@@ -162,6 +162,9 @@ def doctor(root,cwd,explicit=None,domain=None):
     from .changes import listing as changes_listing
     try:warnings+=['changes: '+w for w in changes_listing(root)['warnings']]
     except ValueError as exc:warnings.append(f'changes.json: {exc}')
+    from .views import warnings as views_warnings
+    try:warnings+=['views: '+w for w in views_warnings(root)]
+    except ValueError as exc:warnings.append(f'views.json: {exc}')
     stale=staleness_warning(root,sum(counts.values()))
     if stale:warnings.append(stale)
     from .logs import summary as log_summary
@@ -237,7 +240,7 @@ def _sectioned(args,body='',note_type=None):
 
 # source-sync writes only the derived knowledge-base index (as search --rebuild does the notes' one), so subagents and viewers may run it
 # (not for a remote source, which it would pull from the network: sources.sync refuses that for them).
-READ_ONLY={'search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','ask','sources','source-sync','ingest-scan','changes','log'}
+READ_ONLY={'search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','ask','sources','source-sync','ingest-scan','changes','views','log'}
 # Viewer: a human-facing app browsing the store. Read-only, and its reads are not usage evidence for the diary.
 VIEWER=READ_ONLY|{'taxonomy','review','diff','inspect-plan'}
 SERVE_API=2
@@ -520,6 +523,10 @@ def main(argv=None):
     p=sub('ask');p.add_argument('query',nargs='+',help='A question about the project');p.add_argument('--limit',type=int,default=5,help='Notes and source excerpts shown, at most, of each')
     p=sub('change-plan');p.add_argument('action',choices=['create','update','close']);p.add_argument('--payload-file',type=Path)
     p=sub('changes');p.add_argument('--status',choices=['active','done','cancelled','any'],default='any');p.add_argument('--project',help='Only the changes of this project slug')
+    p=sub('views');p.add_argument('action',nargs='?',choices=['list','add','remove','render','published'],help='Default: list');p.add_argument('reference',nargs='?',help='The note (REF, ID prefix or exact title)')
+    p.add_argument('--all-domains',action='store_true',help='list: every domain, not only --domain');p.add_argument('--title',help="add: the view's short title (default: the note title)")
+    p.add_argument('--all',action='store_true',help='render: every registered view');p.add_argument('--target',choices=['local','artifact'],default='local',help="render: local (dark, reloads itself) or artifact (follows the viewer's theme)")
+    p.add_argument('--format',choices=['html','json'],default='html',help='render: the page, or the view model as JSON');p.add_argument('--out',type=Path,help='render: write here instead of the standard path');p.add_argument('--url',help='published: where the artifact page lives')
     p=sub('batch');p.add_argument('--payload-file',type=Path)
     p=sub('retag-plan');p.add_argument('--payload-file',type=Path)
     p=sub('remap-plan');p.add_argument('--payload-file',type=Path)
@@ -582,6 +589,8 @@ def main(argv=None):
         else:learning_read=False
         if args.actor=='subagent' and cmd not in READ_ONLY and not learning_read:raise ValueError('Subagents are read-only; return mutation proposals to the main agent')
         if args.actor=='viewer' and cmd not in VIEWER and not learning_read:raise ValueError('Viewers are read-only; run changes as --actor main')
+        if cmd=='views' and (args.action or 'list')!='list' and args.actor in {'subagent','viewer'} and not (args.action=='render' and args.format=='json' and not args.out):
+            raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' are read-only: views list and render --format json (no --out) are allowed; run the rest as --actor main')
         if cmd=='serve':return serve(root,cwd,set(subs.choices)-{'serve','setup'})
         if cmd=='bind':
             from .init_domain import init_domain
@@ -1033,6 +1042,33 @@ def main(argv=None):
         elif cmd=='changes':
             from .changes import listing
             result=listing(root,args.status,args.project)
+        elif cmd=='views':
+            from . import views
+            action=args.action or 'list'
+            if action=='list':
+                if not domain and not args.all_domains:raise ValueError('unbound_project')
+                result=views.listing(root,None if args.all_domains else domain)
+            elif action=='render' and args.all:
+                if args.reference:raise ValueError('Name one note or pass --all, not both')
+                if args.out:raise ValueError('--out needs exactly one view')
+                rows=views.render(root,views.load(root)['views'],args.target,None,args.format)
+                result={'ok':True,'count':len(rows),**({'models':[r['model'] for r in rows]} if args.format=='json' else {'rendered':rows})}
+            else:
+                if not args.reference:raise ValueError(f'views {action} needs a note: REF, ID prefix or exact title')
+                d,n=_reference(args.reference,domain,root)
+                registered=next((v for v in views.load(root)['views'] if v['note']==n),None)
+                if action=='add':result=views.add(root,d,n,args.title)
+                elif action=='remove':result=views.remove(root,n)
+                elif action=='published':
+                    if not args.url:raise ValueError('views published needs --url')
+                    result=views.published(root,n,args.url)
+                else:
+                    if not registered and not (args.format=='json' or args.out):raise ValueError('That note has no view; add one with views add REF, or pass --out or --format json')
+                    from .notes import find_note
+                    entry=registered or views.transient(dict(find_note(n,d,root)[1],domain=d))
+                    rows=views.render(root,[entry],args.target,args.out,args.format)
+                    result={'ok':True,'model':rows[0]['model']} if args.format=='json' else {'ok':True,'target':args.target}
+                    if 'path' in rows[0]:result['path']=rows[0]['path']
         elif cmd=='taxonomy':result=read_json(root/'tag_taxonomy.json',{'tags':[]})
         elif cmd=='batch':
             import contextlib,io
