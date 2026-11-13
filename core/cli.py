@@ -468,7 +468,7 @@ def main(argv=None):
     p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
     sections_args(p,update=True);_file_flags(p)
     p=sub('supersede');p.add_argument('reference');p.add_argument('--by',required=True,help='REF of the note that replaces it; its links and files are carried over (see --drop-links)');p.add_argument('--drop-links',action='store_true',help='Do not carry the links and files of the replaced note over');p.add_argument('--session');p.add_argument('--turn')
-    p=sub('review');p.add_argument('--limit',type=int,default=20);p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)')
+    p=sub('review');p.add_argument('--kind',action='append',choices=['stale','due','interim','duplicate','warned','noisy'],help='Only this kind of row (repeatable): stale, due, interim, duplicate, warned, noisy');p.add_argument('--limit',type=int,default=20);p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)')
     p=sub('open');p.add_argument('--limit',type=int,default=50);p.add_argument('--all-domains',action='store_true',help='Every domain folder, not parents and global only');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)')
     p=sub('check');p.add_argument('reference');p.add_argument('item',nargs='?',help='Text of the action item: exact, or a unique part of it');p.add_argument('--index',type=int,help="1-based position among the note's action items, as open lists it");p.add_argument('--undo',action='store_true',help='Untick instead');p.add_argument('--session');p.add_argument('--turn')
     p=sub('timeline');p.add_argument('reference',nargs='?',help='Anchor note; default: the newest note');p.add_argument('--date',help='YYYY-MM-DD: anchor at the first note on or after this date');p.add_argument('--before',type=int,default=5);p.add_argument('--after',type=int,default=5);p.add_argument('--type',choices=NOTE_TYPES,action='append');p.add_argument('--by',choices=['updated','created'],default='updated');p.add_argument('--all',action='store_true',help='Include superseded, archived and resolved notes')
@@ -799,17 +799,15 @@ def main(argv=None):
             record(root,'supersede',[f'{d}:{n}'],args.session)
             _receipt(args,d,bn,root)
         elif cmd=='review':
-            from .note_types import review_due,review_order,last_confirmed
-            from .usage import used_refs
+            from .worklist import worklist,KINDS
             if args.all_domains:domains=[d['name'] for d in list_domains(root)['domains'] if (root/'domains'/d['name']/'notes').is_dir()]
             elif domain:domains=[domain]
             else:raise ValueError('unbound_project')
-            pool=[dict(n,domain=d) for d in domains for n in inventory(d,root) if all(t in (n.get('tags') or []) for t in args.tag)]
-            from .digests import stale_note
-            bindings=load_bindings(root);stale={k:v for k,v in {(n['domain'],n['id']):stale_note(n,root,bindings) for n in pool if n.get('sources')}.items() if v}   # digests whose source file changed
-            due=review_order([n for n in pool if review_due(n) or (n['domain'],n['id']) in stale],used_refs(root),None if args.all_domains else domain)
-            result={'ok':True,'domain':None if args.all_domains else domain,'due':len(due),'stale_digests':len(stale),'notes':[{**({'stale':stale[(n['domain'],n['id'])]} if (n['domain'],n['id']) in stale else {}),'ref':f"{n['domain']}:{n['id']}",'title':n['title'],'type':n.get('type'),'updated':str(n.get('updated',''))[:10],'review_by':n.get('review_by'),'confirmed':last_confirmed(n),'revision':n['revision'],'domain':n['domain']} for n in due[:max(1,min(100,args.limit))]],
-                    'hint':'For each note: still true -> confirm REF; changed -> update REF; replaced -> supersede it; obsolete -> ask for an archive plan. A STALE digest: read its source, then update REF (or confirm REF if it still holds). Never-confirmed notes nobody has read lately come first.'}
+            # Read-only for every actor: the worklist writes no usage rows, so a viewer's browsing is no evidence either.
+            found=worklist(root,domains,args.kind or None,max(1,min(100,args.limit)),args.tag)
+            result={'ok':True,'domain':None if args.all_domains else domain,'due':found['total'],'stale_digests':found['counts'].get('stale',0),'kinds':list(KINDS),'counts':found['counts'],'notes':found['items'],
+                    'hint':'Each note lists why (kinds, reason) and an action. Still true -> confirm REF; changed -> update REF; replaced -> supersede REF --by NEW; finished -> resolve REF. A STALE note: read its files, then update REF (or confirm REF if it still holds). '
+                           'For a duplicate (pair) or an obsolete note, propose plans for archive or merge; the user applies them. Stale notes come first, never-confirmed notes nobody has read lately lead the due ones.'}
         elif cmd=='open':
             from .notes import open_work,short_ref
             from .runtime import parent_domains

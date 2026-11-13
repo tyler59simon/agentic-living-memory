@@ -23,6 +23,16 @@ class CaptureErgonomics(StoreFixture):
         runtime.process('claude','session-start',payload,self.root);runtime.process('claude','user-prompt',payload,self.root)
     def tags(self,result):return find_note(result['id'],'demo',self.root)[1]['tags']
 
+    def test_related_lists_same_group_notes_the_new_one_may_replace(self):
+        old=self.note('Index storage engine','We keep the search index in SQLite FTS5 files, one per domain.',type='decision')
+        policy=self.note('Per-domain SQLite rule','Each domain keeps its search index in a SQLite FTS5 file beside its notes.',type='policy')
+        self.note('Index search tuning','Query weights for the SQLite FTS5 search index were tuned on a fixture.',type='knowledge')
+        self.note('Index digest of kb','The SQLite FTS5 search index lives in one file per domain.',type='knowledge',sources=[{'path':'kb/README.md','sha256':'a'*64}])
+        new=self.note('Search index moves to one shared file','The search index moves from per-domain SQLite FTS5 files to one shared SQLite FTS5 file.',type='decision')
+        self.assertEqual({r['ref'] for r in new['related']},{f"demo:{old['id']}",f"demo:{policy['id']}"})   # decision and policy are one group
+        self.assertEqual({r['type'] for r in new['related']},{'decision','policy'})
+        self.assertIn(f"supersede REF --by demo:{new['id']}",new['related_hint']);self.assertNotIn(f"demo:{new['id']}",[r['ref'] for r in new['related']])
+        self.assertNotIn('related',self.note('Unrelated billing rounding','Invoices round half up to cents.',type='decision'))
     def test_session_supplies_the_domain(self):
         self.start()
         code,result=self.cli('--cwd',str(self.elsewhere),'capture','--session','s1','--type','decision','--title','Use SQLite','--summary','We chose SQLite.')

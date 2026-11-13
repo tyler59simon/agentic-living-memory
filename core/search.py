@@ -516,6 +516,35 @@ def search_domains(query,domains,limit=3,root=None,filters=None,rebuild=False,we
         power=usage.strength_map(Path(root or memory_root()),{h['domain'] for h in hits});top=max(power.values(),default=0) or 1
         for hit in hits:hit['score']*=1+usage.STRENGTH_NUDGE*power.get(f"{hit['domain']}:{hit['id']}",0)/top
     return sorted(hits,key=lambda h:(-h['score'],h['domain'],h['id']))[:limit]
+def relevance_gate(query,root,trace=None,body=True,least=0):
+    """The prompt hook's relevance test as a search_domains `keep` filter: enough of the query's informative
+    words in a note's title or body, or (with a semantic model) a close match in meaning. trace, when a list,
+    receives one row per candidate: ref, rank, engine, engine score, relevance, similarity and the verdict.
+    body=False ignores body coverage: for a query spread over a whole long prompt, words found in a note's body
+    match by chance ("each", "one", "change"), so only its title (or its meaning) can vouch for the note. least is
+    the number of query words body coverage must find: a short piece of a long prompt covers itself too easily."""
+    from .semantic import threshold
+    count=len({stem(t) for t in query_terms(query or '')});near=threshold(root)
+    def relevant(hits):
+        kept=[]
+        for hit in hits:
+            overlap=hit.get('titleOverlap',0);title=hit.get('titleTerms',0);informative=hit.get('queryTerms',count)
+            if not informative:gate='dropped:no_informative'   # only words that appear in most notes
+            # One-word prompts ("continue", "yes") inject only on a title hit.
+            elif informative==1:gate='kept:title' if overlap else 'dropped:one_word_no_title'
+            elif body and hit.get('coverage',0)>=0.5 and (informative<4 or hit.get('coverage',0)>0.5) and round(hit.get('coverage',0)*informative)>=least:gate='kept:coverage'
+            elif overlap>=2 or (title and overlap/title>=0.5):gate='kept:title'
+            # Same meaning in other words ("laid out" for "layout"): only a close semantic match counts.
+            elif near is not None and hit.get('similarity',0)>=near:gate='kept:semantic'
+            else:gate='dropped:weak'
+            if gate.startswith('kept'):kept.append(hit)
+            if isinstance(trace,list):
+                # keep runs before search_domains replaces score with the fused rank score
+                trace.append({'ref':f"{hit['domain']}:{hit['id']}",'rank':hit.get('rank'),'engine':hit.get('engine'),
+                              'engine_score':round(hit['score'],4) if isinstance(hit.get('score'),(int,float)) else None,
+                              'relevance':hit.get('relevance'),'similarity':hit.get('similarity'),'gate':gate})
+        return kept
+    return relevant
 def note_hits(refs,root=None,query=None):
     """Search-shaped hits for these 'domain:id' refs, active notes only, in the order given, with their units scored
     against query when a model is installed. Read-only: from the derived indexes, never a rebuild. For a follow-up

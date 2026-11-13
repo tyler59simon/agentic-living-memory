@@ -1,7 +1,7 @@
 import json,unittest
 from pathlib import Path
 from test_core import StoreFixture
-from core.notes import TitleScorer,title_similarity,similar_title,near_titles
+from core.notes import TitleScorer,title_similarity,similar_title,near_titles,pair_score,LENIENT_CAP
 
 FIXTURE=json.loads((Path(__file__).parent/'fixtures'/'title_pairs.json').read_text(encoding='utf-8'))
 THRESHOLD=0.8
@@ -51,5 +51,24 @@ class CaptureUsesIt(StoreFixture):
         self.note('rdlp-plugin release checklist','Plugin steps.')
         self.assertEqual(self.note('rdlp-api release checklist','API steps.')['status'],'created')
         with self.assertRaisesRegex(ValueError,'possible_duplicate'):self.note('Hook timeout','A different body.')
+
+class NumberedTitles(StoreFixture):
+    def fill(self):
+        for title in FIXTURE['corpus']:self.note(title,'Body for '+title,allow_similar=True)
+    def test_numbered_status_titles_are_advisory_similar_never_a_refusal(self):
+        self.fill();self.note('Sprint 3 status','Sprint 3 closed two tickets.',type='status')
+        result=self.note('Sprint 4 status','Sprint 4 closed five tickets.',type='status')
+        self.assertEqual(result['status'],'created');self.assertEqual([s['title'] for s in result['similar']],['Sprint 3 status'])
+    def test_numbered_plan_titles_keep_the_identifier_veto(self):
+        self.fill();self.note('Phase 1 plan','Phase one steps.',type='plan')
+        result=self.note('Phase 2 plan','Phase two steps.',type='plan')
+        self.assertEqual(result['status'],'created');self.assertNotIn('similar',result)
+    def test_lenient_scores_stay_below_the_refusal_threshold(self):
+        corpus=[{'title':t} for t in FIXTURE['corpus']]+[{'title':'Sprint 3 status'}]
+        scorer=TitleScorer(corpus)
+        self.assertEqual(scorer.score('Sprint 4 status','Sprint 3 status'),0.0)
+        self.assertEqual(scorer.score('Sprint 4 status','Sprint 3 status',lenient=True),1.0)
+        self.assertEqual(pair_score(scorer,'Sprint 4 status','Sprint 3 status','status','status'),LENIENT_CAP)
+        self.assertEqual(pair_score(scorer,'Sprint 4 status','Sprint 3 status','plan','plan'),0.0)
 
 if __name__=='__main__':unittest.main()

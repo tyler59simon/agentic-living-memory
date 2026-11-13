@@ -224,7 +224,8 @@ QUALITY_CHECKS=(
     (INTERIM,'this reads as an interim hypothesis: say so in the note (e.g. **Hypothesis:** ...) and update REF once it is confirmed'),
 )
 
-def quality_warnings(note):
+def quality_checks(note):
+    """The content checks of QUALITY_CHECKS that a note trips (no style checks); the review worklist recomputes these."""
     title=note.get('title','');body=note.get('body','')
     found=[]
     for pattern,message in QUALITY_CHECKS:
@@ -235,9 +236,12 @@ def quality_warnings(note):
         # Open steps belong in a bug or risk note's action items; elsewhere they are a passing state.
         text=title+'\n'+(without_actions(body) if unfinished and note.get('type') in ACTION_TYPES else body)
         if pattern.search(text):found.append(message)
+    return found
+
+def quality_warnings(note):
     # Writing habits and type shape (WRITING.md); advisory like the checks above.
     from .style import style_warnings
-    return found+style_warnings(note)
+    return quality_checks(note)+style_warnings(note)
 
 # Below this many active notes, document frequencies say little; the overlap rule above is used instead.
 IDF_MIN_NOTES=8
@@ -278,8 +282,11 @@ class TitleScorer:
                 if not _identifier(t) and not _identifier(u) and cls._base(t)==cls._base(u):
                     y.discard(u);y.add(t);break
         return y
-    def score(self,a,b):
+    def score(self,a,b,lenient=False):
+        """lenient: words that differ only as identifiers ("Sprint 3" / "Sprint 4") count as the same, for numbered status notes."""
         x,y=_title_words(a),_title_words(b)
+        if lenient:
+            drop={t for t in x^y if _identifier(t)};x,y=x-drop,y-drop
         if not x or not y:return 0.0
         y=self._fold(x,y)
         if x==y:return 1.0
@@ -298,9 +305,16 @@ def similar_title(title,notes,threshold=0.8):
         if score>top:best,top=note,score
     return best if top>=threshold else None
 
-def near_titles(title,notes,low=0.6,high=0.8):
+LENIENT_CAP=0.79   # numbered status notes are advisory `similar`, never a refusal
+
+def pair_score(scorer,a,b,a_type,b_type):
+    """Title score of two notes; two status notes score leniently, capped below the refusal threshold."""
+    if a_type==b_type=='status':return min(scorer.score(a,b,lenient=True),LENIENT_CAP)
+    return scorer.score(a,b)
+
+def near_titles(title,notes,low=0.6,high=0.8,note_type=None):
     scorer=TitleScorer(notes)
-    scored=sorted(((scorer.score(title,n['title']),n) for n in notes),key=lambda s:-s[0])
+    scored=sorted(((pair_score(scorer,title,n['title'],note_type,effective_type(n)),n) for n in notes),key=lambda s:-s[0])
     return [n for s,n in scored if low<=s<high][:3]
 
 def _rehashed(note,domain,root):
@@ -432,6 +446,24 @@ def _carry_pointers(body,files,old_notes,dest):
     merged=clean_files(mine+more)
     return body,(merged or files),[re.sub(r'^(?:[-*+]|\d+\.)\s+','',l) for l in links],[f for f in merged if f not in mine]
 
+RELATED_GROUPS={'decision':'decision','policy':'decision','preference':'decision'}   # one subject often moves between these
+
+def _related(note,domain,root,skip):
+    """Up to 3 active notes of the same type group the new note may replace: one search over its title and summary through the
+    relevance gate (semantic matching joins through RRF when installed). Advisory: never raises, and digests and keyed types get none."""
+    kind=note.get('type');group=RELATED_GROUPS.get(kind,kind)
+    if kind in KEYED_TYPES or note.get('sources'):return []
+    try:
+        from .search import search_domains,relevance_gate
+        query=f"{note['title']} {summary_text(note.get('body') or '') or ''}"
+        hits=search_domains(query,[domain],6,root,keep=relevance_gate(query,root))
+        found=[h for h in hits if h['id']!=note['id'] and h['id'] not in skip and not h.get('sources') and h.get('type') not in KEYED_TYPES
+               and RELATED_GROUPS.get(h.get('type'),h.get('type'))==group]
+        return [{'ref':f"{domain}:{h['id']}",'title':h['title'],'type':h['type']} for h in found[:3]]
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('notes.related',exc,root);return []
+
 def capture(title,body,tags,domain,root=None,**metadata):
     root=Path(root or memory_root()).resolve();domain=canonical_domain(domain,root)
     with store_lock(root):
@@ -533,8 +565,12 @@ def capture(title,body,tags,domain,root=None,**metadata):
         result.update(id=note['id'],domain=domain,status='created',path=str(path))
         hint=None if domain in global_domains(root) else scope_hint(note)
         if hint:result['scope_hint']={'reason':hint,'next':f'If this holds beyond this project, run `promote-plan {domain}:{note["id"]}`.'}
-        near=near_titles(title,[n for n in existing if n.get('status','active')=='active' and n['id'] not in set(supersedes) and not other_map(n)])
+        near=near_titles(title,[n for n in existing if n.get('status','active')=='active' and n['id'] not in set(supersedes) and not other_map(n)],note_type=selected_type)
         if near:result['similar']=[{'ref':f"{domain}:{n['id']}",'title':n['title']} for n in near]
+        related=_related(note,domain,root,{n['id'] for n in near}|set(supersedes))
+        if related:
+            result['related']=related
+            result['related_hint']=f"if this replaces one of them: supersede REF --by {domain}:{note['id']}; a different subject: nothing to do"
         warnings=quality_warnings(note)
         if warnings:result['quality_warnings']=warnings
         if supersedes:result['superseded']=[f'{domain}:{old}' for old in supersedes];result['carried_links']=carried;result['carried_files']=carried_files

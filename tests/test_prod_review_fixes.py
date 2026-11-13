@@ -708,8 +708,10 @@ class VectorReuse(StoreFixture):
 
     def test_a_capture_embeds_only_the_new_note(self):
         texts = self.embedded(lambda: self.note('Rebuild note', 'Rebuild the cache.', allow_similar=True))
-        self.assertEqual(len(texts), 1, texts)
+        # The new note, then one query for the capture's `related` hint (its title and summary): no older note is embedded again.
+        self.assertEqual(len(texts), 2, texts)
         self.assertTrue(texts[0].startswith('Rebuild note'))
+        self.assertEqual(texts[1], 'Rebuild note Rebuild the cache.')
         self.assertEqual(self.vectors(), 4)
 
     def test_another_model_revision_embeds_everything_again(self):

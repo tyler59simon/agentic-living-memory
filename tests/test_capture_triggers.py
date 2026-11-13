@@ -353,6 +353,14 @@ class Statements(DocFixture):
         self.assertEqual(len([line for line in context.splitlines() if 'Living Memory: the user' in line]),1)
         self.assertEqual(runtime.signal_nudge('preference','s',['preference']).count('stated a preference'),1)
 
+    def test_the_nudge_names_an_existing_note_the_statement_may_change(self):
+        old=self.note('Prefer short runbooks','The user prefers short runbooks of at most one page.',type='preference')
+        self.note('Money representation','Amounts are stored as long cents.',type='knowledge')
+        context=self.prompt('I prefer short runbooks of half a page.')['context']
+        self.assertIn(f"It may change demo:{old['id'][:8]} Prefer short runbooks",context);self.assertIn('update that note instead of capturing a new one',context)
+        self.assertNotIn('Money representation',context.split('Living Memory: the user')[1])
+        self.payload['session_id']='s2'
+        self.assertNotIn('It may change',self.prompt('Run the tests please.')['context'])   # no signal, no search
     def test_a_decision_statement_blocks_and_names_what_the_user_did(self):
         self.prompt('We decided to store money as BigDecimal.')
         reason=self.stop()['continue_reason']

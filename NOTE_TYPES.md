@@ -105,6 +105,8 @@ A system's passport is a `context` note tagged `system/<slug>` (with `subject/pr
 
 A change's brief is a `plan` note tagged `project/<slug>` (with `subject/project` and `concern/workflow`); `change-plan create` writes it, or adopts an existing plan note, and `changes.json` links to it.
 
+Titles that differ only by a number ("Sprint 3 status", "Sprint 4 status") are not refused as duplicates for status notes: `capture` saves the note and lists the earlier one under `similar`, and `review` offers the pair as a `duplicate` row. Plan titles keep the number as a difference ("Phase 1 plan" and "Phase 2 plan" are distinct). A bug, knowledge or decision note that reads as an unconfirmed belief (UNCONFIRMED) and has not been updated or confirmed for 14 days is listed by `review` as `interim`.
+
 Date status snapshots in the body and preserve the information needed to interpret them later. When a snapshot becomes misleading, use an approved update, archive or supersession plan. The system does not automatically expire status notes or treat a plan, risk or policy as an executable instruction.
 
 ## Capture and existing-note conversion

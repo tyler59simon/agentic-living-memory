@@ -1037,14 +1037,37 @@ def covers_signal(root,refs,state):
         if len(wanted&set(content_hashes(salt,(note.get('title') or '')+' '+(note.get('body') or ''))))>=min(MIN_COVER_WORDS,len(wanted)):return True
     return False
 
-def signal_nudge(signal,session,kinds=None):
+NUDGE_KINDS=('preference','correction','decision')   # statements that often change a note already saved
+NUDGE_NOTE_TYPES=frozenset({'preference','policy','decision','knowledge'})
+NUDGE_NOTES=2
+
+def signal_notes(statement,domain,root,bindings):
+    """Up to NUDGE_NOTES saved notes (preference, policy, decision, knowledge; not digests) in this domain, its parents and the global
+    domains that the statement may change, through the relevance gate. The statement is searched, never stored. Fails open: []."""
+    try:
+        from .search import search_domains
+        from .common import global_domains
+        domains=list(dict.fromkeys([domain,*parent_domains(domain,bindings),*global_domains(root)]))
+        hits=search_domains(statement,domains,6,root,keep=relevance_gate(statement,root))
+        return [h for h in hits if h.get('type') in NUDGE_NOTE_TYPES and not h.get('sources')][:NUDGE_NOTES]
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('runtime.signal_notes',exc,root);return []
+
+def signal_nudge(signal,session,kinds=None,notes=None):
     """The one line a prompt with a durable statement adds to its own context. It names every kind the prompt carried
-    (kinds, in priority order) but suggests the capture command of the primary one (signal)."""
+    (kinds, in priority order) but suggests the capture command of the primary one (signal). notes (signal_notes hits) are
+    named as notes the statement may change."""
     said,hint=SIGNAL_TEXT[signal]
     said=[SIGNAL_TEXT[k][0] for k in kinds if k in SIGNAL_TEXT] if kinds and signal in kinds else [said]
     said=said[0] if len(said)==1 else ', '.join(said[:-1])+' and '+said[-1]
-    return (f"Living Memory: the user {said} in this prompt. If it should outlast this session, update its note or "
-            f"CMD capture --session {session} {hint} --title '...' --summary '...' before you finish; if not, nothing is needed.")
+    line=(f"Living Memory: the user {said} in this prompt. If it should outlast this session, update its note or "
+          f"CMD capture --session {session} {hint} --title '...' --summary '...' before you finish; if not, nothing is needed.")
+    if notes:
+        from .notes import short_ref
+        names=' or '.join(f"{short_ref(h['domain'],h['id'])} {h['title'][:70]}" for h in notes)
+        line+=f" It may change {names}; update that note instead of capturing a new one."
+    return line
 
 def hit_line(hit,width=HIT_SNIPPET):
     snippet=hit.get('snippet','')
@@ -1074,36 +1097,7 @@ def _unseen(hit,shown):
     seen=shown.get(ref) if isinstance(shown,dict) else None
     return bool(seen) and seen!=revision_key(hit)
 
-def relevance_gate(query,root,trace=None,body=True,least=0):
-    """The prompt hook's relevance test as a search_domains `keep` filter: enough of the query's informative
-    words in a note's title or body, or (with a semantic model) a close match in meaning. trace, when a list,
-    receives one row per candidate: ref, rank, engine, engine score, relevance, similarity and the verdict.
-    body=False ignores body coverage: for a query spread over a whole long prompt, words found in a note's body
-    match by chance ("each", "one", "change"), so only its title (or its meaning) can vouch for the note. least is
-    the number of query words body coverage must find: a short piece of a long prompt covers itself too easily."""
-    from .search import query_terms,stem
-    from .semantic import threshold
-    count=len({stem(t) for t in query_terms(query or '')});near=threshold(root)
-    def relevant(hits):
-        kept=[]
-        for hit in hits:
-            overlap=hit.get('titleOverlap',0);title=hit.get('titleTerms',0);informative=hit.get('queryTerms',count)
-            if not informative:gate='dropped:no_informative'   # only words that appear in most notes
-            # One-word prompts ("continue", "yes") inject only on a title hit.
-            elif informative==1:gate='kept:title' if overlap else 'dropped:one_word_no_title'
-            elif body and hit.get('coverage',0)>=0.5 and (informative<4 or hit.get('coverage',0)>0.5) and round(hit.get('coverage',0)*informative)>=least:gate='kept:coverage'
-            elif overlap>=2 or (title and overlap/title>=0.5):gate='kept:title'
-            # Same meaning in other words ("laid out" for "layout"): only a close semantic match counts.
-            elif near is not None and hit.get('similarity',0)>=near:gate='kept:semantic'
-            else:gate='dropped:weak'
-            if gate.startswith('kept'):kept.append(hit)
-            if isinstance(trace,list):
-                # keep runs before search_domains replaces score with the fused rank score
-                trace.append({'ref':f"{hit['domain']}:{hit['id']}",'rank':hit.get('rank'),'engine':hit.get('engine'),
-                              'engine_score':round(hit['score'],4) if isinstance(hit.get('score'),(int,float)) else None,
-                              'relevance':hit.get('relevance'),'similarity':hit.get('similarity'),'gate':gate})
-        return kept
-    return relevant
+from .search import relevance_gate   # moved to search.py so notes.capture can use it; kept here for callers and patches
 
 # A task brief is mostly boilerplate: past this many characters a prompt is searched in pieces, so the assignment
 # in the middle is not lost to the team header and the closing checklist.
@@ -1378,6 +1372,7 @@ def _process(harness,event,payload,root=None,info=None):
             # The first prompts after a compaction may ask about something only the transcript still holds.
             if source=='compact':s['recall_prompts']=AUTO_RECALL_PROMPTS;s['recalled']=[]
         state=_update(root,session,pin)
+    statements={}
     if event=='user-prompt':
         turn=turn or str(payload.get('timestamp') or now())
         if session!='unknown':
@@ -1386,6 +1381,7 @@ def _process(harness,event,payload,root=None,info=None):
             text=payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or payload.get('transformedPrompt') or ''
             raised,hashed=signals_seen(root,domain) if domain else (None,None)
             kinds=[] if planning else signals_of(text,raised);signal,source=kinds[0] if kinds else (None,None)
+            statements=dict(kinds)   # held for this hook only, to search the notes a statement may change
             # Only the kind and a salted hash of the statement are kept, never the prompt text; the hash settles at Stop.
             shash=hashed(source) if signal and hashed else None
             # Every statement the nudge names settles at Stop, so none of them is raised again when repeated.
@@ -1500,7 +1496,9 @@ def _process(harness,event,payload,root=None,info=None):
         if state.get('private_turn')==turn:
             from .private import NOTICE
             governance.append(NOTICE)
-        if detail.get('signal') in SIGNAL_TEXT:governance.append(signal_nudge(detail['signal'],session,detail.get('signals')))
+        if detail.get('signal') in SIGNAL_TEXT:
+            changing=next((statements[k] for k in NUDGE_KINDS if k in statements),None)
+            governance.append(signal_nudge(detail['signal'],session,detail.get('signals'),signal_notes(changing,domain,root,bindings) if changing else None))
         fixed=len(header)+(len(maps_text)+1 if maps_text else 0)+sum(len(g)+1 for g in governance)
         room=max(0,injection.PROMPT_CAP-fixed-1) if DELIVERY else None
         if isinstance(prompt,str):hits,ids,overview=context(cwd,prompt,root,domain,shown_now,state.get('overview_shown',False),delivered,detail,session_delivered,topic,units_out,room)

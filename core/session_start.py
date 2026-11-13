@@ -191,7 +191,7 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
         try:notes.extend(dict(n,domain=domain) for n in inventory(domain,root))
         except (OSError,ValueError):continue
     project,here=_project_context(cwd,active,root,bindings)
-    tail=_finished_line(notes)+_review_line(active,root)+_problem_line(active,root)+_backup_line(root)
+    tail=_finished_line(notes)+_review_line(active,root,[n for n in notes if n['domain']==active])+_problem_line(active,root)+_backup_line(root)
     last=_last_session_line(active,root,session,notes)
     notes=_collapse([n for n in notes if n.get('id') and n.get('title')])
     from . import usage
@@ -278,15 +278,22 @@ def _cap(text,budget):
 def render_context(cwd: str,root: Path|None=None,budget: int=BUDGET)->str|None:
     return build_context(cwd,root,budget)[0]
 
-def _review_line(domain,root,shown=2):
-    from .note_types import review_due,review_order
-    from .usage import used_refs
-    try:due=[n for n in inventory(domain,root) if review_due(n)]
-    except (OSError,ValueError):return []
-    if not due:return []
-    due=review_order(due,used_refs(root),domain)
-    listed='; '.join(f"{short_ref(domain,n['id'])} {_title(n['title'])}" for n in due[:shown])
-    return [f"{len(due)} note(s) due for review (confirm if still true, update if changed, supersede if replaced; `review` lists all): {listed}"]
+REVIEW_LINE_MAX=260
+REVIEW_TITLE=40
+
+def _review_line(domain,root,notes=None,shown=2):
+    """One line from the review worklist (worklist.py, without the duplicate scan): counts by kind and the first `shown` notes. notes are the
+    active domain's notes already loaded, each carrying its domain. Fails open."""
+    from .worklist import worklist
+    try:found=worklist(root,[domain],limit=shown,cheap=True,notes=notes)
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('session_start.review_line',exc,root);return []
+    if not found['total']:return []
+    kinds=', '.join(f'{c} {k}' for k,c in found['counts'].items() if c)
+    listed='; '.join(f"{short_ref(*r['ref'].split(':',1))} {_title(r['title'])[:REVIEW_TITLE]}" for r in found['items'])
+    line=f"{found['total']} note(s) due for review ({kinds}; `review` lists all): {listed}"
+    return [line if len(line)<=REVIEW_LINE_MAX else line[:REVIEW_LINE_MAX-1]+'…']
 
 def _finished_line(notes,shown=2):
     """Active plan, bug and risk notes whose action items are all ticked: finished work that keeps taking
