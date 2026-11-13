@@ -1959,10 +1959,10 @@ def repo_heads(cwd,state):
     return {r.as_posix():h for r in _turn_repos(cwd,state) if (h:=head_oid(r))}
 
 def turn_changed(root,bindings,state,domain,cwd):
-    """({shown name: absolute path}, pulled, added) for files a shell command changed this turn, which no hook can name (relative paths): the files
+    """({shown name: absolute path}, pulled, edited) for files a shell command changed this turn, which no hook can name (relative paths): the files
     git reports changed since the turn began, or committed since HEAD was recorded at its first prompt, inside the domain's bound folders.
     pulled is True when HEAD moved by more than CHANGE_GUARD_COMMITS commits or more than CHANGE_GUARD_FILES files changed: a pull or checkout, not the agent's work.
-    added is the set of shown names the moved HEAD added (empty unless pulled): all that a pull brings in that doc_pending still counts."""
+    edited is the set of shown names of existing files the moved HEAD modified (empty unless pulled): what doc_pending leaves out after a pull."""
     from .common import domain_prefixes,display_path,head_oid
     from .triggers import changed_since,committed_since,commit_count
     prefixes=domain_prefixes(domain,bindings);files={};pulled=False;total=0;moved=[]
@@ -1984,18 +1984,18 @@ def turn_changed(root,bindings,state,domain,cwd):
                 name,p=show(path)
                 if name:files[name]=p
     pulled=pulled or total>CHANGE_GUARD_FILES
-    return files,pulled,({show(p)[0] for repo,start,head in moved for p in committed_since(repo,start,head,added=True)} - {None}) if pulled else set()
+    return files,pulled,({show(p)[0] for repo,start,head in moved for p in committed_since(repo,start,head,edited=True)} - {None}) if pulled else set()
 
 def doc_pending(root,bindings,state,domain,cwd,changed=None):
     """[('doc', {path, notes})] for decision documents changed this turn that no reminder has covered yet: the
     paths PreToolUse recorded, those carried over from an earlier Stop (docs_left), and, after shell edits (whose
     relative paths no hook can see), the files turn_changed reports. All of them: stop_text names STOP_DOCS at a time.
-    After a pull-sized change only the docs the pull added count (a teammate's new ADR; follow_pending ignores the whole pull), not
-    the existing ones it edited; docs and docs_left are the agent's own edits and always count. changed, when given, is the memoized turn_changed."""
+    After a pull-sized change the existing docs the pulled commits edited are left out (follow_pending ignores the whole pull); a doc the
+    pull added (a teammate's new ADR), one the agent wrote in the working tree, and docs and docs_left (edit-tool edits) still count. changed, when given, is the memoized turn_changed."""
     from .common import domain_prefixes
     from .triggers import decision_docs
-    prefixes=domain_prefixes(domain,bindings);files,pulled,added=(changed or (lambda:turn_changed(root,bindings,state,domain,cwd)))()
-    shown=list(state.get('docs_left',[]))+list(state.get('docs',[]))+[f for f in files if not pulled or f in added]
+    prefixes=domain_prefixes(domain,bindings);files,pulled,edited=(changed or (lambda:turn_changed(root,bindings,state,domain,cwd)))()
+    shown=list(state.get('docs_left',[]))+list(state.get('docs',[]))+[f for f in files if not pulled or f not in edited]
     done=set(state.get('docs_reminded',[]))
     docs=[d for d in decision_docs(shown,bindings) if d not in done][:MAX_DOCS]
     return [('doc',{'path':d,'notes':doc_notes(root,bindings,domain,d,files.get(d) or _doc_file(d,prefixes))}) for d in docs]

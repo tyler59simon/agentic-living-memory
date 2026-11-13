@@ -213,6 +213,12 @@ class ShellFallback(DocFixture):
         self.commit_edits({adr:'# ADR-004: Money\nedit\n'},{new:'# ADR-011: Teammate decision\n'},*({adr:f'# ADR-004: Money\nedit {i}\n'} for i in range(runtime.CHANGE_GUARD_COMMITS)))
         reason=self.stop()['continue_reason'];self.assertIn('You changed '+new,reason);self.assertNotIn('ADR-004',reason)
 
+    def test_a_decision_document_the_agent_writes_after_a_pull_still_reminds(self):
+        adr='docs/adr/ADR-004-money.md';mine='docs/adr/ADR-012-mine.md'
+        self.commit_edits(*({adr:f'# ADR-004: Money\nedit {i}\n'} for i in range(runtime.CHANGE_GUARD_COMMITS+1)))   # the pull
+        (self.project/mine).write_text('# ADR-012: My decision\n',encoding='utf-8')   # then a shell command writes a new ADR, uncommitted
+        reason=self.stop()['continue_reason'];self.assertIn('You changed '+mine,reason);self.assertNotIn('ADR-004',reason)
+
     def test_a_small_commit_that_edits_an_existing_decision_document_still_reminds(self):
         self.commit_edits({'docs/adr/ADR-004-money.md':'# ADR-004: Money\nedit\n'})
         self.assertIn('You changed docs/adr/ADR-004-money.md',self.stop()['continue_reason'])

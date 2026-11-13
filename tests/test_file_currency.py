@@ -172,9 +172,9 @@ class BatchedFollow(Base):
             start=head_oid(self.project);state=self.state(turn_started=time.time(),heads={self.project.resolve().as_posix():start,self.project.as_posix():start})
             for i in range(count):commit(names[i::count] or names[:1],f'c{i}')
             return runtime.turn_changed(self.root,runtime.load_bindings(self.root),state,'demo',str(self.project))
-        files,pulled,added=run(2,['src/a.py','src/b.py']);self.assertEqual((sorted(files),pulled,added),(['src/a.py','src/b.py'],False,set()))
-        files,pulled,added=run(runtime.CHANGE_GUARD_COMMITS+1,['src/a.py']);self.assertTrue(pulled);self.assertIn('src/a.py',files);self.assertEqual(added,set())   # still reported, for the document reminder; none of it added
-        files,pulled,added=run(1,[f'vendor/f{i}.txt' for i in range(runtime.CHANGE_GUARD_FILES+1)]);self.assertTrue(pulled);self.assertIn('vendor/f0.txt',added)
+        files,pulled,edited=run(2,['src/a.py','src/b.py']);self.assertEqual((sorted(files),pulled,edited),(['src/a.py','src/b.py'],False,set()))
+        files,pulled,edited=run(runtime.CHANGE_GUARD_COMMITS+1,['src/a.py']);self.assertTrue(pulled);self.assertIn('src/a.py',files);self.assertEqual(edited,{'src/a.py'})   # still reported; edited by the pull, so the document reminder leaves it out
+        files,pulled,edited=run(1,[f'vendor/f{i}.txt' for i in range(runtime.CHANGE_GUARD_FILES+1)]);self.assertTrue(pulled);self.assertEqual(edited,set())   # all added
         self.assertEqual(runtime.turn_changed(self.root,runtime.load_bindings(self.root),{'mutating':True},'demo',str(self.project)),({},False,set()))   # no shell command, no look
 
     def test_many_notes_are_named_in_one_sentence_up_to_the_limit(self):
