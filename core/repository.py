@@ -792,4 +792,8 @@ def reconcile(domain, root=None, sync_overlay=True):
             from .sync import build_overlay, is_managed
             if is_managed(state["vault"]):
                 build_overlay(domain, Path(state["vault"]), root, trigger="memory change")
+        # Note views (HTML dashboards): derived from the notes, so every write path that reconciles keeps them current.
+        # refresh never raises, and costs one stat when the store has no views.
+        from . import views
+        views.refresh(domain, root)
 

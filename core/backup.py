@@ -18,7 +18,7 @@ INTERVAL_HOURS=24
 STALE_HOURS=48
 # Hooks skip automatic snapshots of very large stores; doctor already flags that size.
 AUTO_MAX_NOTES=1500
-TOP_LEVEL=('bindings.json','tag_taxonomy.json','projects.json','systems.json','sources.json','changes.json','schema-version.json','learning.json')
+TOP_LEVEL=('bindings.json','tag_taxonomy.json','projects.json','systems.json','sources.json','changes.json','views.json','schema-version.json','learning.json')
 # ledger/ is append-only history with no other copy (journals do not hold it), so a snapshot saves it and a restore only adds to it.
 LEDGER=re.compile(r'ledger/sessions-\d{4}\.jsonl')
 MEMBER=re.compile(r'domains/[A-Za-z0-9_.-]+/(?:notes|archive)/(?:[^/\\]+/)*[^/\\]+\.md')
