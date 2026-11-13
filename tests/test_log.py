@@ -6,7 +6,7 @@ from core import backup,runtime
 from core.capture import finalize
 from core.init_domain import init_domain
 from core.notes import capture
-from core.repository import canonical_json
+from core.repository import canonical_json,recover
 
 TAGS=['subject/project','concern/architecture']
 
@@ -95,6 +95,11 @@ class Cache(Log):
             folder=self.root/'.operations'/name;folder.mkdir();(folder/'journal.json').write_text(canonical_json({**value,'id':name,**fields}),encoding='utf-8')
         self.assertEqual(len(self.rows()),1);ops=self.cache();self.assertEqual((ops['sync01']['rows'],ops['back01']['rows']),([],[]))
 
+    def test_a_recovered_journal_is_read_again_so_the_log_follows_it_both_ways(self):
+        self.note('Cache policy','Body one.');op=self.rows()[0]['op'];self.assertEqual(len(self.rows()),1);self.assertEqual(self.cache()[op]['rows'][0]['event'],'created')   # cached
+        recover(self.root,op,'backward');self.assertEqual(self.rows(),[])
+        recover(self.root,op,'forward');self.assertEqual([r['event'] for r in self.rows()],['created'])
+
     def test_first_run_is_slower_than_later_runs(self):
         init_domain('bulk',[str(self.base/'bulk')],self.root)
         for i in range(60):capture(f'Bulk note number {i}',f'Body about topic {i}.',TAGS,'bulk',self.root,allow_similar=True)
@@ -125,6 +130,16 @@ class Filters(Log):
         self.assertEqual(len(self.rows('--limit','2')),2);self.assertEqual(self.log('--limit','2')['count'],len(self.log()['rows']))
         self.assertEqual(self.rows('--project','nothing'),[])
 
+    def test_bounds_compare_instants_not_strings_and_a_date_covers_its_whole_utc_day(self):
+        for title,stamp in (('Noon note','2026-10-01T12:00:00.000000+00:00'),('Late note','2026-10-01T23:59:59.999999+00:00')):
+            with patch('core.notes.now',return_value=stamp),patch('core.repository.now',return_value=stamp):self.note(title,'Written then.')
+        titles=lambda *a:[r['title'] for r in self.rows('--domain','demo','--type','knowledge',*a) if r['title'] in ('Noon note','Late note')]
+        self.assertEqual(titles('--since','2026-10-01T13:00:00+02:00','--until','2026-10-01T14:00:00+02:00'),['Noon note'])   # 11:00 to 12:00 UTC
+        self.assertEqual(titles('--since','2026-10-01T14:00:00+02:00'),['Late note','Noon note']);self.assertEqual(titles('--until','2026-10-01T13:59:59+02:00'),[])
+        self.assertEqual(titles('--since','2026-10-01','--until','2026-10-01'),['Late note','Noon note'])   # both ends whole-day inclusive
+        self.assertEqual(titles('--since','2026-10-02'),[]);self.assertEqual(titles('--until','2026-09-30'),[])
+        self.assertEqual(titles('--since','2026-10-01T12:00:00'),['Late note','Noon note']);self.assertEqual(titles('--until','2026-10-01T12:00:00'),['Noon note'])   # naive is UTC
+
     def test_bad_arguments_are_refused(self):
         for argv in (('--since','yesterday'),('--event','exploded'),('--note','not-a-note')):
             code,_=self.cli('log',*argv);self.assertNotEqual(code,0,argv)
@@ -147,6 +162,10 @@ class Ledger(Log):
         state=json.loads(runtime._pointer(self.root,'one').read_text());finalize('one',state['turn'],['demo:'+n['id']],self.root)
         return n
 
+    def work_ledger(self):
+        n=self.note('Saved in a parent session','A.');state=json.loads(runtime._pointer(self.root,'one').read_text());finalize('one',state['turn'],['demo:'+n['id']],self.root)
+        self.hook('stop');return self.lines()[-1]
+
     def test_repeated_stops_give_one_session_row(self):
         n=self.work();self.hook('stop');self.hook('stop')
         rows=self.lines();self.assertEqual(len(rows),1);row=rows[0]
@@ -159,6 +178,12 @@ class Ledger(Log):
         s=sessions[0];self.assertEqual((s['files'],s['harness'],s['domain'],s['projects'],s['type'],s['ref']),(2,'claude','demo',['paystream'],'session',runtime.session_hash('one')))
         self.assertIn('claude: 1 note(s) saved, 2 file(s) changed',s['title'])
         self.assertEqual(len(self.rows('--note','demo:'+n['id'],'--event','session')),1);self.assertEqual(self.rows('--project','other'),[])
+
+    def test_a_session_in_a_parent_folder_is_attributed_to_the_project_whose_file_it_touched(self):
+        self.payload['cwd']=str(self.base/'project')   # the domain's bound folder, above the registered billing repo
+        self.hook('session-start');self.hook('user-prompt');self.edit('billing/a.py')
+        row=self.work_ledger()
+        self.assertEqual(row['p'],['paystream']);self.assertEqual([r['title'] for r in self.rows('--event','session','--project','paystream')],[self.rows('--event','session')[0]['title']])
 
     def test_a_quiet_session_and_a_failing_ledger_leave_the_stop_alone(self):
         self.hook('user-prompt');self.hook('stop');self.assertFalse((self.root/'ledger').exists())

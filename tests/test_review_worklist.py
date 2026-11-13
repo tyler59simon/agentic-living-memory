@@ -81,6 +81,13 @@ class Worklist(Base):
         change(made['id'],'demo','update',self.root,body='Still pending: wire the adapter later.')   # a new update is a new look
         self.assertEqual(self.rows()[self.ref(made)]['kinds'],['warned'])
 
+    def test_confirm_edit_confirm_on_one_day_dismisses_the_warned_row_again(self):
+        made=self.cap('Wiring task','Pending: wire the adapter.',type='knowledge')
+        confirm(made['id'],'demo',self.root);change(made['id'],'demo','update',self.root,body='Still pending: wire the adapter later.')
+        self.assertEqual(self.rows()[self.ref(made)]['kinds'],['warned'])
+        self.assertEqual(confirm(made['id'],'demo',self.root)['status'],'confirm');self.assertEqual(self.rows(),{})
+        self.assertEqual(confirm(made['id'],'demo',self.root)['status'],'unchanged')   # nothing changed since this confirmation
+
     def test_confirming_either_note_dismisses_a_duplicate_pair_until_the_next_update(self):
         first=self.cap('Retry limit setting','The retry limit is three attempts.');second=self.cap('Retry limit setting value','The retry limit is three attempts per request.')
         self.assertIn(self.ref(second),self.rows(kinds=['duplicate']))

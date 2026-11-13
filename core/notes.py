@@ -851,7 +851,7 @@ def confirm(note_id,domain,root=None):
     root=Path(root or memory_root()).resolve()
     with store_lock(root):
         _,note=find_note(note_id,domain,root)
-        if date.today().isoformat() in (note.get('confirmed') or []) and note.get('type') not in KEYED_TYPES and not stale_note(note,root):   # a map or brief, or a note whose file changed since, is confirmed again
+        if date.today().isoformat() in (note.get('confirmed') or []) and note.get('type') not in KEYED_TYPES and not stale_note(note,root) and not (note.get('checked') and note['checked']<str(note.get('updated') or '')):   # a map or brief, a note whose file changed since, or one edited since its last confirmation, is confirmed again
             return {'ok':True,'id':note['id'],'status':'unchanged','confirmed':note['confirmed'],'review_by':note.get('review_by')}
         result=change(note['id'],domain,'confirm',root,note['revision'])
         after=find_note(note['id'],domain,root)[1]

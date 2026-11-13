@@ -3,10 +3,10 @@
 `log` reads note edits from the operation journals (.operations/*/journal.json: every note change keeps its before and after text),
 the change registry (changes.json) from the same journals, and sessions from ledger/sessions-YYYY.jsonl. The journal rows are a
 derived, incremental cache (.cache/activity.json, keyed by operation ID): a deleted cache rebuilds from the journals, and a
-journal that is not final yet is not cached. The ledger is the only canonical part: append-only, never pruned, no text."""
+journal that is not final yet is not cached; an entry also keeps its journal's mtime and size, so a journal that recovery rewrote is read again. The ledger is the only canonical part: append-only, never pruned, no text."""
 from __future__ import annotations
 import base64,json,os,re
-from datetime import datetime
+from datetime import datetime,timedelta,timezone
 from pathlib import Path
 from .repository import BOOKKEEPING_KINDS,FINAL_STATES,_TAIL_STATE,canonical_json,digest,now,parse_text,read_json
 
@@ -94,15 +94,21 @@ def _change_rows(op,kind,created,effects):
             rows.append(_row(op,created,event,display(number),entry.get('title'),'change',str(entry.get('brief') or '').partition(':')[0] or None,[entry['project']] if entry.get('project') else [],**extra))
     return rows
 
+def _sig(path):
+    """[mtime_ns, size] of a journal file, None when it is gone: recovery rewrites a final journal (committed <-> rolled_back), which changes both."""
+    try:st=path.stat()
+    except OSError:return None
+    return [st.st_mtime_ns,st.st_size]
+
 def _read(path):
     """The cache entry for one journal, or None while it is not final (it is read again next time)."""
-    state=_final(path)
-    if state is None:return None
+    sig=_sig(path);state=_final(path)
+    if state is None or sig is None:return None
     try:
         journal=read_json(path);op,kind,created,effects=journal['id'],str(journal['kind']),str(journal['created']),journal['effects']
         rows=[] if state!='committed' or kind in BOOKKEEPING_KINDS else _note_rows(op,kind,created,effects)+_change_rows(op,kind,created,effects)
     except (ValueError,KeyError,TypeError,UnicodeError):return None
-    return {'created':created,'kind':kind,'rows':rows}
+    return {'created':created,'kind':kind,'rows':rows,'sig':sig}
 
 def _cached(root):
     try:value=json.loads(_cache_file(root).read_text(encoding='utf-8'))
@@ -111,11 +117,11 @@ def _cached(root):
     return ops if isinstance(ops,dict) else {}
 
 def journal_rows(root):
-    """Rows of every final note, change and undo journal. Journals already in the cache are not opened: a run after the first only lists the folder."""
+    """Rows of every final note, change and undo journal. Journals already in the cache are not opened: a run after the first only lists and stats the folder."""
     root=Path(root);cached=_cached(root);found={};fresh=False
     for path in sorted(root.glob('.operations/*/journal.json')):
         op=path.parent.name;hit=cached.get(op)
-        if isinstance(hit,dict) and isinstance(hit.get('rows'),list):found[op]=hit;continue
+        if isinstance(hit,dict) and isinstance(hit.get('rows'),list) and hit.get('sig')==_sig(path):found[op]=hit;continue
         entry=_read(path)
         if entry is not None:found[op]=entry;fresh=True
     if fresh or set(found)!=set(cached):
@@ -125,11 +131,17 @@ def journal_rows(root):
         except OSError:pass   # derived: a cache that cannot be written only costs a rebuild
     return [row for entry in found.values() for row in entry['rows']]
 
-def _slugs(root,cwd,state):
+def _absolute(path,prefixes):
+    """A touched path as the hooks store it (relative to a folder bound to the domain, else absolute) made absolute: the bound folder that holds the file, else the first."""
+    if Path(path).is_absolute() or not prefixes:return path
+    return str(next((p/path for p in prefixes if (p/path).exists()),prefixes[0]/path))
+
+def _slugs(root,cwd,state,domain=None):
     from . import projects
-    try:entries=projects.load(root)['projects']
+    from .common import domain_prefixes,load_bindings
+    try:entries=projects.load(root)['projects'];prefixes=domain_prefixes(domain,load_bindings(root))
     except (OSError,ValueError):return []
-    paths=([str(cwd)] if cwd else [])+list(state.get('touched_session') or [])
+    paths=([str(cwd)] if cwd else [])+[_absolute(x,prefixes) for x in state.get('touched_session') or []]
     return sorted({p['slug'] for p in (projects.match_path(x,entries) for x in paths) if p})
 
 def record_session(root,domain,session,state,cwd=None):
@@ -138,7 +150,7 @@ def record_session(root,domain,session,state,cwd=None):
     session's last one (state['ledger_sig']). Returns the new signature when a row was appended, else None."""
     saved=list(dict.fromkeys(state.get('saved') or []));files=len(state.get('touched_session') or [])
     if not saved and not files:return None
-    row={'s':session,'h':state.get('harness') or 'unknown','d':domain,'p':_slugs(root,cwd,state),'n':saved,'f':files}
+    row={'s':session,'h':state.get('harness') or 'unknown','d':domain,'p':_slugs(root,cwd,state,domain),'n':saved,'f':files}
     sig=digest(canonical_json(row).encode())[:12]
     if sig==state.get('ledger_sig'):return None
     stamp=now();path=_ledger_dir(root)/f'sessions-{stamp[:4]}.jsonl';path.parent.mkdir(parents=True,exist_ok=True)
@@ -161,23 +173,33 @@ def session_rows(root):
         rows.append(_row(None,r['t'],'session',sid,f"{harness}: {len(notes)} note(s) saved, {files} file(s) changed",'session',r.get('d'),[p for p in r.get('p') or [] if isinstance(p,str)],harness=harness,notes=notes,files=files))
     return rows
 
-def _bound(value,name):
-    try:datetime.fromisoformat(value)
+def _instant(value):
+    """The aware datetime of an ISO date or time (naive counts as UTC, as the store writes UTC); ValueError when it is neither."""
+    moment=datetime.fromisoformat(value[:-1]+'+00:00' if value.endswith('Z') else value)
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+def _bound(value,name,end=False):
+    """The instant of a --since or --until value; a date alone covers its whole day, so --until DATE reaches the day's last microsecond."""
+    try:moment=_instant(value)
     except ValueError:raise ValueError(f'--{name} must be an ISO date or time, such as 2026-11-13') from None
-    return value
+    return moment+timedelta(days=1,microseconds=-1) if end and 'T' not in value and ' ' not in value else moment
+
+def _at(row):
+    try:return _instant(row['time'])
+    except (ValueError,TypeError):return None
 
 def log(root,domain=None,project=None,since=None,until=None,note=None,kind=None,event=None,limit=50):
     """Rows newest first {time, event, ref, title, type, domain, projects, op}; a change row may add detail and a session row harness, notes and files.
-    note: a full note ID or a change number such as CHG-014. since and until are ISO dates or times, until inclusive."""
+    note: a full note ID or a change number such as CHG-014. since and until are ISO dates or times compared as instants (naive is UTC; a date alone covers that whole UTC day), until inclusive."""
     if event and event not in EVENTS:raise ValueError('--event must be one of '+', '.join(EVENTS))
-    if since:_bound(since,'since')
-    if until:_bound(until,'until')
+    low=_bound(since,'since') if since else None;high=_bound(until,'until',True) if until else None
     wanted=[]
     for row in journal_rows(root)+session_rows(root):
         if domain and row['domain']!=domain:continue
         if project and project not in row['projects']:continue
-        if since and row['time'][:len(since)]<since:continue
-        if until and row['time'][:len(until)]>until:continue
+        if low or high:
+            when=_at(row)
+            if when is None or (low and when<low) or (high and when>high):continue
         if kind and row['type']!=kind:continue
         if event and row['event']!=event:continue
         if note and note.casefold() not in [row['ref'].rpartition(':')[2].casefold(),*[n.rpartition(':')[2].casefold() for n in row.get('notes') or []]]:continue

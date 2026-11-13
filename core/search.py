@@ -562,7 +562,9 @@ def note_hits(refs,root=None,query=None):
             db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)
             try:
                 fingerprint=db.execute('SELECT fingerprint FROM metadata').fetchone()[0]
-                rows=db.execute(f"SELECT id,title,type,updated,body,revision,tags FROM notes WHERE status='active' AND id IN ({','.join('?'*len(ids))})",ids).fetchall()
+                marks=','.join('?'*len(ids))
+                try:rows=db.execute(f"SELECT id,title,type,updated,body,revision,tags,sources,file_hashes FROM notes WHERE status='active' AND id IN ({marks})",ids).fetchall()
+                except sqlite3.OperationalError:rows=[r+('','') for r in db.execute(f"SELECT id,title,type,updated,body,revision,tags FROM notes WHERE status='active' AND id IN ({marks})",ids)]   # an index from before digests or file hashes
             finally:db.close()
         except (ValueError,sqlite3.Error,TypeError):continue
         # The same publication rule as search: a learned runbook that is suspended, retired or no longer supported is not served.
@@ -574,9 +576,13 @@ def note_hits(refs,root=None,query=None):
         try:units=index.units(wanted,[r[0] for r in rows]) if index is not None else {}
         finally:
             if index is not None:index.close()
-        for note_id,title,kind,updated,body,revision,tags in rows:
+        for note_id,title,kind,updated,body,revision,tags,digested,hashed in rows:
             hit={'id':note_id,'domain':domain,'title':title,'type':kind or 'knowledge','updated':str(updated or '')[:10],'status':'active',
                  'revision':revision,'snippet':snippet(body,[]),'engine':'topic','units':units.get(note_id,[])}
+            try:digest_sources=json.loads(digested or '[]');file_hashes=json.loads(hashed or '[]')
+            except ValueError:digest_sources=[];file_hashes=[]
+            if digest_sources:hit['sources']=digest_sources
+            if file_hashes:hit['file_hashes']=file_hashes
             if note_id in manifests:hit.update(procedure_id=manifests[note_id]['id'],procedure_version=manifests[note_id]['current_version'])
             if is_interim({'type':kind,'title':title,'body':body}):hit['interim']=True
             found[f'{domain}:{note_id}']=hit

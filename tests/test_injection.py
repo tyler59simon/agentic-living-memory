@@ -60,6 +60,13 @@ class Delivery(Base):
         text=self.prompt('what were the alternatives?')
         self.assertIn('§ Alternatives considered',text)
 
+    def test_a_follow_up_answers_stale_when_a_hashed_file_changed_since_the_topic_was_found(self):
+        src=self.base/'project'/'cfg.py';src.parent.mkdir(parents=True,exist_ok=True);src.write_bytes(b'retry = 3\n')
+        capture('Retry limit config','The retry limit is read from the config.\n\n## Why\nThe limit keeps a failing call from looping forever.',['subject/project','concern/architecture'],'demo',self.root,files=['cfg.py'])
+        self.assertNotIn('STALE',self.prompt('retry limit config'))
+        src.write_bytes(b'retry = 5\n');text=self.prompt('why?')
+        self.assertIn('Retry limit config',text);self.assertIn('STALE: cfg.py changed since this note',text)
+
     def test_a_follow_up_with_no_previous_topic_is_quiet(self):
         self.assertNotIn('Event delivery',self.prompt('why?','fresh'))
 
