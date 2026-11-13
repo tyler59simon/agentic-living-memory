@@ -33,6 +33,14 @@ class CaptureErgonomics(StoreFixture):
         self.assertEqual({r['type'] for r in new['related']},{'decision','policy'})
         self.assertIn(f"supersede REF --by demo:{new['id']}",new['related_hint']);self.assertNotIn(f"demo:{new['id']}",[r['ref'] for r in new['related']])
         self.assertNotIn('related',self.note('Unrelated billing rounding','Invoices round half up to cents.',type='decision'))
+    def test_extra_values_after_one_detail_flag_are_refused_not_read_as_title_or_domain(self):
+        base=('--domain','demo','capture','--title','Cache policy','--summary','The cache is rebuilt nightly.','--detail','**A:** one')
+        for extra in (['**B:** two'],['**B:** two','**C:** three'],['**B:** two','**C:** three','**D:** four']):
+            code,result=self.cli(*base,*extra)
+            self.assertEqual(code,2,result);self.assertIn("--detail 'A' --detail 'B'",result['error']['message'])
+        code,result=self.cli(*base,'--detail','**B:** two');self.assertEqual(code,0,result)
+        self.assertEqual(find_note(result['id'],'demo',self.root)[1]['title'],'Cache policy')
+        code,result=self.cli('--domain','demo','capture','Positional title','Positional body.');self.assertEqual(code,0,result)   # the positional form still works
     def test_session_supplies_the_domain(self):
         self.start()
         code,result=self.cli('--cwd',str(self.elsewhere),'capture','--session','s1','--type','decision','--title','Use SQLite','--summary','We chose SQLite.')
