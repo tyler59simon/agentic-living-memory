@@ -1,9 +1,12 @@
 """Stop hook: real file changes by the main agent are tracked but end the turn quietly; a durable statement
 by the user arms the reminder."""
+import contextlib
+import io
 import json
 
 from test_core import StoreFixture
 from core import runtime
+from core.cli import main
 
 
 class StopFixture(StoreFixture):
@@ -155,6 +158,59 @@ class ConversationalSignal(StopFixture):
         from core.capture import finalize
         finalize('session', 't1', [], self.root)
         self.assertEqual(runtime.process('claude', 'stop', {**self.payload, 'turn_id': 't1'}, self.root), {})
+
+    def cli(self, *argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = main(['--root', str(self.root), '--domain', 'demo', *argv])
+        self.assertEqual(code, 0, out.getvalue())
+        return json.loads(out.getvalue())
+
+    def capture(self, title, summary):
+        return self.cli('capture', '--session', 'session', '--type', 'knowledge', '--tag', 'subject/project', '--tag', 'concern/architecture', '--title', title, '--summary', summary)
+
+    def test_an_unrelated_capture_does_not_settle_a_request_to_remember(self):
+        self.payload = {**self.payload, 'prompt': 'Remember that the staging box is shared'}
+        runtime.process('claude', 'user-prompt', self.payload, self.root)
+        self.capture('Retries use jittered backoff', 'Clients retry with a random delay.')
+        self.assertIn('asked you to remember something', runtime.process('claude', 'stop', self.payload, self.root)['continue_reason'])
+        self.assertEqual(runtime.process('claude', 'stop', self.payload, self.root), {})   # still one reminder per reply
+
+    def test_a_capture_that_paraphrases_the_statement_settles_it(self):
+        self.payload = {**self.payload, 'prompt': 'Remember that the staging box is shared'}
+        runtime.process('claude', 'user-prompt', self.payload, self.root)
+        self.capture('Shared staging box', 'Everyone deploys to one staging box, so coordinate before you use it.')
+        self.assertEqual(runtime.process('claude', 'stop', self.payload, self.root), {})
+
+    def test_an_update_of_a_note_that_covers_the_statement_settles_it(self):
+        old = self.note('Staging environment', 'Staging hosts the nightly build.')
+        self.payload = {**self.payload, 'prompt': 'Remember that the staging box is shared'}
+        runtime.process('claude', 'user-prompt', self.payload, self.root)
+        self.cli('update', 'demo:' + old['id'], '--session', 'session', '--add-detail', '**Access:** the box is shared between teams')
+        self.assertEqual(runtime.process('claude', 'stop', self.payload, self.root), {})
+
+    def test_capture_finalize_settles_it_even_after_an_unrelated_capture(self):
+        self.payload = {**self.payload, 'prompt': 'Remember that the staging box is shared'}
+        runtime.process('claude', 'user-prompt', {**self.payload, 'turn_id': 't1'}, self.root)
+        from core.capture import finalize
+        finalize('session', 't1', [], self.root)
+        self.assertEqual(runtime.process('claude', 'stop', {**self.payload, 'turn_id': 't1'}, self.root), {})
+
+    def test_only_salted_word_hashes_of_the_statement_are_kept(self):
+        runtime.process('claude', 'user-prompt', {**self.payload, 'prompt': 'Remember that we use zebra-tabs'}, self.root)
+        state = json.loads(runtime._pointer(self.root, 'session').read_text(encoding='utf-8'))
+        self.assertEqual(len(state['signal_words']), 4)
+        self.assertNotIn('zebra', json.dumps(state))
+        runtime.process('claude', 'stop', self.payload, self.root)
+        state = json.loads(runtime._pointer(self.root, 'session').read_text(encoding='utf-8'))
+        self.assertNotIn('signal_words', state)
+
+    def test_state_without_stored_words_is_settled_by_any_receipt(self):
+        self.payload = {**self.payload, 'prompt': 'Remember that the staging box is shared'}
+        runtime.process('claude', 'user-prompt', self.payload, self.root)
+        runtime._update(self.root, 'session', lambda s: s.pop('signal_words'))
+        self.capture('Retries use jittered backoff', 'Clients retry with a random delay.')
+        self.assertEqual(runtime.process('claude', 'stop', self.payload, self.root), {})
 
     def test_one_reminder_per_turn_and_no_prompt_text_kept(self):
         runtime.process('claude', 'user-prompt', {**self.payload, 'prompt': 'Remember that we use zebra-tabs'}, self.root)

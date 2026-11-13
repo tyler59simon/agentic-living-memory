@@ -339,6 +339,20 @@ class Statements(DocFixture):
             with self.subTest(prompt=prompt):self.assertEqual(runtime.durable_signal(prompt),'decision')
         self.assertEqual(runtime.durable_signal('We must stay on Python 3.10.'),'decision')
 
+    def test_a_blocking_kind_wins_over_a_non_blocking_one_in_the_same_prompt(self):
+        for prompt,kind in [('I prefer short runbooks. We decided to standardize on the SDK.','decision'),('No, we decided to use X.','decision'),
+                            ('From now on use tabs. Remember that CI runs on Linux.','remember'),('No, the cache lives in AppData. Always use tabs.','correction'),
+                            ('I prefer short runbooks.','preference'),('I prefer short runbooks.\n> Policy: all deploys need two approvals.','directive'),
+                            ('No, the cache lives in AppData.\n> Policy: all deploys need two approvals.','directive')]:
+            with self.subTest(prompt=prompt):self.assertEqual(runtime.durable_signal(prompt),kind)
+        self.assertEqual(runtime.signal_of('I prefer short runbooks. We decided to standardize on the SDK.'),('decision','We decided to standardize on the SDK.'))
+
+    def test_the_nudge_names_every_kind_and_suggests_the_primary_one(self):
+        context=self.prompt('I prefer short runbooks. We decided to standardize on the SDK.')['context']
+        self.assertIn('the user made a decision and stated a preference in this prompt',context);self.assertIn('--type decision --concern decision',context)
+        self.assertEqual(len([line for line in context.splitlines() if 'Living Memory: the user' in line]),1)
+        self.assertEqual(runtime.signal_nudge('preference','s',['preference']).count('stated a preference'),1)
+
     def test_a_decision_statement_blocks_and_names_what_the_user_did(self):
         self.prompt('We decided to store money as BigDecimal.')
         reason=self.stop()['continue_reason']

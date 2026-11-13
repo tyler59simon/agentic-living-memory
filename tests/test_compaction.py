@@ -81,6 +81,7 @@ class Hooks(CompactionFixture):
         runtime._update(self.root,'session',lambda s:s.update(saved=[f"demo:{note['id']}"]))
         result=runtime.process('claude','pre-compact',{**self.payload,'trigger':'manual'},self.root)
         self.assertIn(runtime.UNCAPTURED,result['instructions'])
+        self.assertIn('each root cause, fix or constraint the work itself verified (a suspected cause marked as a hypothesis)',' '.join(result['instructions'].split()))
         self.assertIn('Cache',result['instructions'])   # the saved note, by title
         state=json.loads(runtime._pointer(self.root,'session').read_text())
         self.assertEqual(state['compactions'][-1]['trigger'],'manual');self.assertEqual(state['transcript'],str(self.transcript))

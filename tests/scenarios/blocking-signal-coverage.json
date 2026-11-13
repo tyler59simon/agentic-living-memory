@@ -1,0 +1,19 @@
+{
+ "name": "blocking-signal-coverage",
+ "description": "A request to remember or a decision is settled by a note that shares words with the statement or by capture-finalize, not by an unrelated capture in the same turn.",
+ "notes": [
+  {"key": "cache", "title": "Cache eviction policy", "body": "LRU eviction."}
+ ],
+ "steps": [
+  {"hook": "session-start"},
+  {"hook": "user-prompt", "payload": {"prompt": "remember that the staging server was retired"}, "expect": {"detail": {"signal": "remember"}}},
+  {"cli": ["capture", "--session", "{session}", "--type", "knowledge", "--concern", "architecture", "--title", "Retries use jittered backoff", "--summary", "Clients retry with a random delay."], "expect": {"exit": 0, "status": "created"}},
+  {"hook": "stop", "expect": {"reminder": "remember", "reminder_contains": ["The user asked you to remember something"]}},
+  {"hook": "user-prompt", "payload": {"prompt": "remember that YAML files use spaces"}, "expect": {"detail": {"signal": "remember"}}},
+  {"cli": ["capture", "--session", "{session}", "--type", "knowledge", "--concern", "architecture", "--title", "YAML files use spaces", "--summary", "Indent YAML files with spaces, never tabs."], "expect": {"exit": 0, "status": "created"}},
+  {"hook": "stop", "expect": {"stop_reason": "receipt", "reminder": null}},
+  {"hook": "user-prompt", "payload": {"prompt": "We decided to store money as BigDecimal."}, "expect": {"detail": {"signal": "decision"}}},
+  {"cli": ["capture-finalize", "--session", "{session}"], "expect": {"exit": 0, "status": "nothing_durable"}},
+  {"hook": "stop", "expect": {"stop_reason": "receipt", "reminder": null}}
+ ]
+}

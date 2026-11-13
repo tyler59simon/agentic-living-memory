@@ -857,8 +857,9 @@ def steering(root,state):
     lines=['Living Memory asks this summary to also keep:',
            '- For each decision: the reason, and the alternatives that were rejected.',
            '- The exact identifiers needed to continue: paths, commands, error strings, IDs and numbers.',
-           f'- Under the heading "{UNCAPTURED}": each preference, correction, decision or constraint the user stated that should outlast '
-           'this session and was not saved with the Living Memory capture or update command, in the user\'s words '
+           f'- Under the heading "{UNCAPTURED}": each preference, correction, decision or constraint the user stated, and each root cause, fix '
+           'or constraint the work itself verified (a suspected cause marked as a hypothesis), that should outlast this session and was not saved '
+           'with the Living Memory capture or update command, in the user\'s words where the user said it '
            '(never text the user marked <private>). Write "none" if there are none.']
     saved=_titled(root,list(state.get('saved',[]))[-HANDOFF_NOTES:])
     if saved:lines.append('- Notes saved to Living Memory this session (keep the refs; do not restate their content): '+'; '.join(saved))
@@ -896,6 +897,8 @@ HIT_SNIPPET=220
 # Conversation is where preferences, corrections and decisions are stated, and those turns often edit no files.
 # Deterministic and conservative. A match adds one line to that prompt's context; a request to remember, a decision
 # or a directive (BLOCKING_SIGNALS) can also hold the turn open at Stop, so those are matched most narrowly.
+# A prompt can carry several kinds: they are tried in priority order (remember, decision, directive, correction,
+# preference), so a blocking kind is never hidden by a non-blocking one ("No, we decided to use X").
 # Fenced code and machine tags are never read. Pasted blocks and blockquotes (a memo, a ticket) are read only for a directive.
 IGNORED=re.compile(r'```.*?(?:```|\Z)|<(system-reminder|agent-message|task-notification)\b.*?(?:</\1>|\Z)',re.S|re.I)
 QUOTED=re.compile(r'<pasted_content\b[^>]*>(.*?)(?:</pasted_content>|\Z)|^[ \t]*>[ \t]*([^\r\n]*)$',re.S|re.M|re.I)
@@ -907,21 +910,22 @@ TRANSIENT=re.compile(r"\b(?:for now|for the moment|this time|just this once|righ
 SIGNALS=(
     # "don't forget to run the tests" is an instruction for this turn, not a fact to keep.
     ('remember',re.compile(r"\b(?:remember (?:that|this|we|it)|keep in mind|for (?:the )?record|don'?t forget(?! to\b))\b",re.I)),
-    ('correction',re.compile(r"^\s*(?:no|nope)\s*[,.!:;—-]|^\s*actually,?\s+(?:it'?s|it is|that'?s|the|we|i|you)\b|\bthat'?s (?:wrong|not right|incorrect|not what i)\b|\byou(?:'re| are| were) wrong\b|\bi meant\b",re.I)),
-    # "always"/"never" count when they address the agent or state a habit, not inside a description
-    # ("the API should always use HTTPS").
-    ('preference',re.compile(r"\b(?:i(?:'d)? prefer|i'?d rather|i (?:hate|don'?t like)|from now on|going forward|in (?:the )?future|please (?:don'?t|do not|never|always)|stop doing|don'?t ever|by default,? use"
-                             r"|(?:you should|you must|we) (?:always|never)|i (?:always|never) (?:use|want|like|do))\b|^\s*(?:always|never)\s+\w",re.I)),
     # A bare "must", "approved" or "regulator" describes the task, so only a statement addressed to the team
     # ("we must never ...") or a decision's own wording counts. "You must not ..." and "you are not allowed to ..."
     # constrain the agent's task; they are not a decision of the team.
     ('decision',re.compile(r"\b(?:let'?s (?:go with|use)|we(?:'ll| will) (?:go with|use)|we decided|i(?:'ve)? decided|go with option|we(?:'ve| have)? (?:agreed|chosen|settled on)"
                            r"|the decision is|effective (?:immediately|today|from|as of)|(?<!\byou )(?:is|are) (?:not )?(?:allowed|permitted|prohibited)|(?:we|the team) must (?:never|not|always|stay|remain))\b|\bdecision:",re.I)),
+    ('correction',re.compile(r"^\s*(?:no|nope)\s*[,.!:;—-]|^\s*actually,?\s+(?:it'?s|it is|that'?s|the|we|i|you)\b|\bthat'?s (?:wrong|not right|incorrect|not what i)\b|\byou(?:'re| are| were) wrong\b|\bi meant\b",re.I)),
+    # "always"/"never" count when they address the agent or state a habit, not inside a description
+    # ("the API should always use HTTPS").
+    ('preference',re.compile(r"\b(?:i(?:'d)? prefer|i'?d rather|i (?:hate|don'?t like)|from now on|going forward|in (?:the )?future|please (?:don'?t|do not|never|always)|stop doing|don'?t ever|by default,? use"
+                             r"|(?:you should|you must|we) (?:always|never)|i (?:always|never) (?:use|want|like|do))\b|^\s*(?:always|never)\s+\w",re.I)),
 )
 # A memo quoted in the prompt states a directive: one strong phrase, or two weaker ones.
 DIRECTIVE_STRONG=re.compile(r"\b(?:decided|decision|directive|policy|effective (?:immediately|today|from|as of)|must never|must not|may not)\b",re.I)
 DIRECTIVE_WEAK=tuple(re.compile(p,re.I) for p in (r"\bmust (?:be|use|stay|remain|always)\b",r"\b(?:replac(?:es|ing)|supersed(?:es|ing)|no longer)\b",
                                                    r"\b(?:going forward|from now on|in future)\b",r"\b(?:all|every|each) [\w -]{0,40}\b(?:must|shall)\b"))
+PRIORITY=('remember','decision','directive','correction','preference')
 SIGNAL_TEXT={'remember':('asked you to remember something','--type TYPE --concern CONCERN'),
              'correction':('corrected you','--type knowledge --concern correction'),
              'preference':('stated a preference','--type preference --concern preference'),
@@ -934,23 +938,30 @@ BLOCKING_SIGNALS=frozenset({'remember','decision','directive'})
 def _statements(text):
     return [s for s in STATEMENT_BREAK.split(text) if s.strip() and not s.rstrip().endswith('?') and not TRANSIENT.search(s)]
 
-def signal_of(prompt,skip=None):
-    """(kind, the statement that carries it) for the user's own words, else (None, None). Pasted and
-    harness-generated text is ignored, and so are questions ("why does it never use the cache?") and remarks
-    about this task only. Quoted text (a blockquote, a pasted block) yields only a 'directive'. skip, when
-    given, is called with a statement and returns True for one already settled, which then signals nothing."""
-    if not isinstance(prompt,str) or MACHINE_PROMPT.match(prompt):return None,None
+def signals_of(prompt,skip=None):
+    """[(kind, the statement that carries it)], one per kind the user's own words carry, highest priority first
+    (PRIORITY), else []. Pasted and harness-generated text is ignored, and so are questions ("why does it never use
+    the cache?") and remarks about this task only. Quoted text (a blockquote, a pasted block) yields only a
+    'directive'. skip, when given, is called with a statement and returns True for one already settled, which then
+    signals nothing."""
+    if not isinstance(prompt,str) or MACHINE_PROMPT.match(prompt):return []
     plain=IGNORED.sub(' ',prompt)
     statements=[s for s in _statements(QUOTED.sub(' ',plain)) if not (skip and skip(s))]
+    found={}
     for kind,pattern in SIGNALS:
-        found=next((s for s in statements if pattern.search(s)),None)
-        if found:return kind,found
+        hit=next((s for s in statements if pattern.search(s)),None)
+        if hit:found[kind]=hit
     quoted=[s for s in _statements('\n'.join(m[1] or m[2] or '' for m in QUOTED.finditer(plain))[:QUOTED_CHARS]) if not (skip and skip(s))]
     strong=next((s for s in quoted if DIRECTIVE_STRONG.search(s)),None)
-    if strong:return 'directive',strong
     weak=[(s,p) for s in quoted for p in DIRECTIVE_WEAK if p.search(s)]
-    if len({p for _,p in weak})>=2:return 'directive',weak[0][0]
-    return None,None
+    if strong:found['directive']=strong
+    elif len({p for _,p in weak})>=2:found['directive']=weak[0][0]
+    return [(kind,found[kind]) for kind in PRIORITY if kind in found]
+
+def signal_of(prompt,skip=None):
+    """(kind, statement) of the highest-priority kind signals_of finds, else (None, None)."""
+    found=signals_of(prompt,skip)
+    return found[0] if found else (None,None)
 
 def durable_signal(prompt):
     """The kind of durable statement the user's own words carry ('preference', 'correction', 'decision',
@@ -990,9 +1001,34 @@ def settle_signal(root,domain,value):
         if row.get('salt') and seen!=row.get('seen'):atomic_write(path,canonical_json({**row,'seen':seen[-MAX_SIGNALS_SEEN:]}))
     except (OSError,ValueError,AttributeError):pass
 
-def signal_nudge(signal,session):
-    """The one line a prompt with a durable statement adds to its own context."""
+MAX_SIGNAL_WORDS=12
+MIN_COVER_WORDS=2
+
+def content_hashes(salt,text,limit=None):
+    """Salted hashes of the distinct content words (no stopwords, no tokens under 3 characters, light stemming) of a
+    text, in order. A blocking statement keeps these instead of its text, so Stop can tell whether a note covers it."""
+    from .private import _hash,_words
+    from .search import STOP,stem
+    words=dict.fromkeys(stem(w) for w in _words(text) if w not in STOP and len(w)>2)
+    return [_hash(salt,[w]) for w in list(words)[:limit]]
+
+def covers_signal(root,refs,state):
+    """True when one of the notes (refs, DOMAIN:ID) a turn's receipts touched shares at least min(2, n) content words
+    with the statement that armed the turn, n being the number of word hashes the prompt stored."""
+    from .notes import find_note
+    wanted=set(state.get('signal_words') or []);salt=state.get('signal_salt')
+    for ref in dict.fromkeys(refs):
+        try:domain,note_id=ref.split(':',1);note=find_note(note_id,domain,root)[1]
+        except (ValueError,OSError):continue
+        if len(wanted&set(content_hashes(salt,(note.get('title') or '')+' '+(note.get('body') or ''))))>=min(MIN_COVER_WORDS,len(wanted)):return True
+    return False
+
+def signal_nudge(signal,session,kinds=None):
+    """The one line a prompt with a durable statement adds to its own context. It names every kind the prompt carried
+    (kinds, in priority order) but suggests the capture command of the primary one (signal)."""
     said,hint=SIGNAL_TEXT[signal]
+    said=[SIGNAL_TEXT[k][0] for k in kinds if k in SIGNAL_TEXT] if kinds and signal in kinds else [said]
+    said=said[0] if len(said)==1 else ', '.join(said[:-1])+' and '+said[-1]
     return (f"Living Memory: the user {said} in this prompt. If it should outlast this session, update its note or "
             f"CMD capture --session {session} {hint} --title '...' --summary '...' before you finish; if not, nothing is needed.")
 
@@ -1335,18 +1371,24 @@ def _process(harness,event,payload,root=None,info=None):
             planning=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()=='plan'
             text=payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or payload.get('transformedPrompt') or ''
             raised,hashed=signals_seen(root,domain) if domain else (None,None)
-            signal,source=(None,None) if planning else signal_of(text,raised)
+            kinds=[] if planning else signals_of(text,raised);signal,source=kinds[0] if kinds else (None,None)
             # Only the kind and a salted hash of the statement are kept, never the prompt text; the hash settles at Stop.
             shash=hashed(source) if signal and hashed else None
             from . import private
-            detail.update(signal=signal,private_spans=len(private.spans(text)) if isinstance(text,str) and not MACHINE_PROMPT.match(text) else 0)
+            detail.update(signal=signal,signals=[k for k,_ in kinds],private_spans=len(private.spans(text)) if isinstance(text,str) and not MACHINE_PROMPT.match(text) else 0)
             heads=repo_heads(cwd,state)
             def opened(s):
                 if not s.get('open_turns'):
                     s['turn_started']=time.time()  # the turn's first prompt: shell edits are found by mtime
                     s['heads']=heads  # ...and a shell commit by HEAD moving
                 s['turn']=turn;s['open_turns']=(list(s.get('open_turns',[]))+[turn])[-20:]
-                if signal:s['signal']=signal;s['signal_hash']=shash
+                if signal:
+                    s['signal']=signal;s['signal_hash']=shash
+                    # Hashes of the statement's words, under a per-session salt, so Stop can check a note covers it.
+                    if not s.get('signal_salt'):
+                        import secrets
+                        s['signal_salt']=secrets.token_hex(16)
+                    s['signal_words']=content_hashes(s['signal_salt'],source,MAX_SIGNAL_WORDS)
                 # <private> spans: salted shingle hashes only, so a capture that copies one can be refused.
                 if isinstance(text,str) and not MACHINE_PROMPT.match(text) and private.remember(s,text):s['private_turn']=turn
                 if transcript:s['transcript']=transcript
@@ -1442,7 +1484,7 @@ def _process(harness,event,payload,root=None,info=None):
         if state.get('private_turn')==turn:
             from .private import NOTICE
             governance.append(NOTICE)
-        if detail.get('signal') in SIGNAL_TEXT:governance.append(signal_nudge(detail['signal'],session))
+        if detail.get('signal') in SIGNAL_TEXT:governance.append(signal_nudge(detail['signal'],session,detail.get('signals')))
         fixed=len(header)+(len(maps_text)+1 if maps_text else 0)+sum(len(g)+1 for g in governance)
         room=max(0,injection.PROMPT_CAP-fixed-1) if DELIVERY else None
         if isinstance(prompt,str):hits,ids,overview=context(cwd,prompt,root,domain,shown_now,state.get('overview_shown',False),delivered,detail,session_delivered,topic,units_out,room)
@@ -1753,7 +1795,7 @@ def map_sentence(key,kind,data,session):
             f"(CMD read {short}, then CMD update {short} --session {session} --set-detail '**Layout:** ...' for each bullet that changed).")
 
 # Per-turn state a Stop clears (reminded keeps `touched` for a capture that answers it).
-TURN_STATE=('open_turns','mutating','signal','signal_hash','touched','docs','shell','turn_started','heads')
+TURN_STATE=('open_turns','mutating','signal','signal_hash','signal_words','touched','docs','shell','turn_started','heads')
 MAP_KINDS=('unmapped','grown','stale')
 BRIEF_KINDS=('unbriefed','brief')
 # Kinds that name their own reminder in the usage diary; the map kinds report as 'explored' or 'grown'.
@@ -1769,13 +1811,14 @@ def stop_pending(root,bindings,state,session,turns,domain=None,cwd=None,planning
     unbriefed, brief (the project has no brief, or a decision this turn may have outdated it); unmapped, grown (a
     repo explored without a map, or grown at its top level)."""
     pending=[];signal=state.get('signal')
-    # A receipt settles a statement and the housekeeping, so only the brief (which a captured decision may have outdated)
-    # is still asked about. A decision document or a file a note covers is settled only by a note that covers it (or by
-    # "nothing durable"), so an unrelated capture does not silence it.
+    # A receipt settles the housekeeping, so only the brief (which a captured decision may have outdated) is still asked
+    # about. A blocking statement, a decision document or a file a note covers is settled only by a note that covers it
+    # (or by "nothing durable"), so an unrelated capture does not silence it. A statement that stored no words
+    # (older state, or nothing but stopwords) is settled by any receipt.
     receipts=[r for r in (capture_status(session,t,root) for t in turns) if r]
     receipted=bool(receipts);dismissed=any(r.get('outcome')=='nothing_durable' for r in receipts)
     saved=[ref for r in receipts for ref in r.get('notes',[])]
-    if signal in BLOCKING_SIGNALS and not receipted:pending.append((signal,{'files':bool(state.get('mutating'))}))
+    if signal in BLOCKING_SIGNALS and not (dismissed or (covers_signal(root,saved,state) if state.get('signal_words') else receipted)):pending.append((signal,{'files':bool(state.get('mutating'))}))
     if (state.get('mutating') or state.get('docs_left')) and domain and not dismissed:
         for name,find in (('doc',lambda:doc_pending(root,bindings,state,domain,cwd)),('follow',lambda:follow_pending(root,state) if state.get('mutating') else [])):
             try:found=[(kind,data) for kind,data in find() if not (kind=='doc' and saved and covered_by(root,saved,data['path']))]

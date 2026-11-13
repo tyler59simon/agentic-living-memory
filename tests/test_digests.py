@@ -217,14 +217,16 @@ class Scan(Digests):
         super().setUp()
         put(self.repo/'src'/'server.py','def serve():\n    pass\n'+'# padding\n'*60)
         put(self.repo/'pom.xml','<project>\n'+'<!-- padding -->\n'*40+'</project>\n')
+        for rel,text in {'tests/fixtures/kb_repo/docs/adr/0003-use-event-sourcing.md':ADR,'docs/adr/README.md':'# Decision records\n\nIndex of the records in this folder.\n'}.items():
+            (self.repo/rel).parent.mkdir(parents=True,exist_ok=True);put(self.repo/rel,text)
         sources.sync(self.root,'demo')
     def scan(self,*argv):
         code,found=self.cli('ingest-scan',*argv);self.assertEqual(code,0,found);return found
     def test_the_worklist_is_ranked_adrs_readmes_docs_entry_points_then_modules(self):
         items=self.scan('--limit','100')['items'];paths=[i['path'] for i in items]
         self.assertEqual(paths[0],'kb/docs/adr/0003-use-event-sourcing.md')
-        self.assertEqual(paths[1],'kb/README.md');self.assertEqual(paths[2],'kb/docs/guide.md')
-        kinds=[i['kind'] for i in items];self.assertEqual(kinds[:3],['adr','readme','doc'])
+        self.assertEqual(paths[1:4],['kb/README.md','kb/docs/adr/README.md','kb/docs/guide.md'])
+        kinds=[i['kind'] for i in items];self.assertEqual(kinds[:4],['adr','readme','readme','doc'])
         entry=[i['path'] for i in items if i['kind'] in ('entry','build')];self.assertEqual(entry,['kb/pom.xml','kb/src/main.py','kb/src/server.py'])
         self.assertLess(paths.index('kb/src/server.py'),paths.index('kb/src/ledger.py'))   # entry points before modules
         self.assertLess(paths.index('kb/src/ledger.py'),paths.index('kb/src/util.py'))      # a referenced, larger module before a tiny one
@@ -232,6 +234,13 @@ class Scan(Digests):
         self.assertEqual(items[paths.index('kb/tests/test_ledger.py')]['kind'],'test')
         for item in items:self.assertEqual(set(item)-{'digest','file'},{'path','source','kind','size','status','abs'});self.assertTrue(Path(item['abs']).is_file())
         self.assertTrue(all(i['status']=='new' for i in items))
+
+    def test_a_fixture_adr_is_a_test_and_an_adr_folders_readme_is_a_readme(self):
+        by={i['path']:i for i in self.scan('--limit','100')['items']};paths=list(by)
+        self.assertEqual(by['kb/tests/fixtures/kb_repo/docs/adr/0003-use-event-sourcing.md']['kind'],'test')
+        self.assertEqual(by['kb/docs/adr/README.md']['kind'],'readme');self.assertEqual([i['path'] for i in by.values() if i['kind']=='adr'],['kb/docs/adr/0003-use-event-sourcing.md'])
+        self.assertLess(paths.index('kb/docs/adr/README.md'),paths.index('kb/docs/guide.md'))
+        self.assertEqual(digests.classify('tests/fixtures/pom.xml'),(5,'test'));self.assertEqual(digests.classify('docs/adr/README.md'),(1,'readme'))
 
     def test_references_count_other_files_that_mention_the_module(self):
         found=self.scan('--limit','100');modules=[i for i in found['items'] if i['kind']=='module'];self.assertEqual(modules[0]['path'],'kb/src/ledger.py')
