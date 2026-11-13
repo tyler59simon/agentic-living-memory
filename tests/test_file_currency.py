@@ -121,7 +121,7 @@ class BatchedFollow(Base):
     """C5: one batch lookup for files no hint looked up and for files a shell or git changed; the pull guard; one sentence for many notes."""
     def state(self,**extra):return {'mutating':True,'shell':True,**extra}
     def follow(self,state,files=(),pulled=False):
-        return runtime.follow_pending(self.root,state,runtime.load_bindings(self.root),'demo',lambda:({f:self.project/f for f in files},pulled))
+        return runtime.follow_pending(self.root,state,runtime.load_bindings(self.root),'demo',lambda:({f:self.project/f for f in files},pulled,set()))
 
     def test_files_notes_matches_files_sources_hashes_and_bug_bodies_in_one_scan(self):
         a=self.cap('Retry limit',['src/a.py']);b=self.cap('Timeout digest',['src/b.py'],sources=[{'path':'src/b.py','sha256':sha(B)}])
@@ -152,7 +152,7 @@ class BatchedFollow(Base):
 
     def test_turn_changed_is_asked_once_per_stop_for_both_reminders(self):
         self.cap('Retry limit',['src/a.py']);calls=[]
-        def fake(*args):calls.append(1);return {'src/a.py':self.project/'src'/'a.py'},False
+        def fake(*args):calls.append(1);return {'src/a.py':self.project/'src'/'a.py'},False,set()
         with patch.object(runtime,'turn_changed',fake):
             pending=runtime.stop_pending(self.root,runtime.load_bindings(self.root),self.state(),'s1',['t1'],'demo',str(self.project))
         self.assertEqual(len(calls),1);self.assertEqual([k for k,_ in pending if k=='follow'],['follow'])
@@ -172,10 +172,10 @@ class BatchedFollow(Base):
             start=head_oid(self.project);state=self.state(turn_started=time.time(),heads={self.project.resolve().as_posix():start,self.project.as_posix():start})
             for i in range(count):commit(names[i::count] or names[:1],f'c{i}')
             return runtime.turn_changed(self.root,runtime.load_bindings(self.root),state,'demo',str(self.project))
-        files,pulled=run(2,['src/a.py','src/b.py']);self.assertEqual((sorted(files),pulled),(['src/a.py','src/b.py'],False))
-        files,pulled=run(runtime.CHANGE_GUARD_COMMITS+1,['src/a.py']);self.assertTrue(pulled);self.assertIn('src/a.py',files)   # still reported, for the document reminder
-        files,pulled=run(1,[f'vendor/f{i}.txt' for i in range(runtime.CHANGE_GUARD_FILES+1)]);self.assertTrue(pulled)
-        self.assertEqual(runtime.turn_changed(self.root,runtime.load_bindings(self.root),{'mutating':True},'demo',str(self.project)),({},False))   # no shell command, no look
+        files,pulled,edited=run(2,['src/a.py','src/b.py']);self.assertEqual((sorted(files),pulled,edited),(['src/a.py','src/b.py'],False,set()))
+        files,pulled,edited=run(runtime.CHANGE_GUARD_COMMITS+1,['src/a.py']);self.assertTrue(pulled);self.assertIn('src/a.py',files);self.assertEqual(edited,{'src/a.py'})   # still reported; edited by the pull, so the document reminder leaves it out
+        files,pulled,edited=run(1,[f'vendor/f{i}.txt' for i in range(runtime.CHANGE_GUARD_FILES+1)]);self.assertTrue(pulled);self.assertEqual(edited,set())   # all added
+        self.assertEqual(runtime.turn_changed(self.root,runtime.load_bindings(self.root),{'mutating':True},'demo',str(self.project)),({},False,set()))   # no shell command, no look
 
     def test_many_notes_are_named_in_one_sentence_up_to_the_limit(self):
         items=[('follow',{'ref':f'demo:{i}','short':f'demo:{i:08d}','title':'t','type':'bug' if i==1 else 'knowledge','path':f'src/m{i}.py','digest':False}) for i in range(runtime.STOP_FOLLOW+1)]

@@ -61,7 +61,7 @@ class Batches(IngestRun):
         out=self.run_script('--batch','3','--dry-run')
         self.assertTrue(out['dry_run']);self.assertEqual(out['files'],self.total());self.assertEqual(len(out['batches']),-(-self.total()//3))
         first=out['batches'][0];self.assertEqual(first['paths'],['kb/docs/adr/0003-use-event-sourcing.md','kb/README.md','kb/docs/guide.md'])
-        for text in ('capture --type TYPE','--source','--file','300-1,200 characters','decision for decision records','project brief','codebase map','"digested"','read: '):self.assertIn(text,first['prompt'])
+        for text in ('capture --type TYPE','--source','--file','300-1,200 characters','decision for decision records','project brief','codebase map','"digested"','read: ','starts with the quoted interpreter path: no shell functions, variables'):self.assertIn(text,first['prompt'])
         self.assertFalse(self.calls.exists());self.assertEqual(self.active(),[])
 
     def test_files_go_to_the_agent_in_ranked_batches_and_get_digests(self):

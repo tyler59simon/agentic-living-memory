@@ -60,10 +60,10 @@ def commit_count(repo,start,end):
         return int(done.stdout.strip()) if done.returncode==0 else None
     except (OSError,ValueError,subprocess.SubprocessError):return None
 
-def committed_since(repo,start,end):
-    """Existing files that changed between two commits (`git diff --name-only start..end`), at most MAX_COMMITTED. Never raises."""
+def committed_since(repo,start,end,edited=False):
+    """Existing files that changed between two commits (`git diff --name-only start..end`), at most MAX_COMMITTED; only the files the range modified (not added or renamed) when `edited`. Never raises."""
     try:
-        done=subprocess.run(['git','-c','core.quotepath=off','-C',str(repo),'diff','--name-only','--diff-filter=d',f'{start}..{end}'],capture_output=True,timeout=GIT_TIMEOUT)
+        done=subprocess.run(['git','-c','core.quotepath=off','-C',str(repo),'diff','--name-only','--diff-filter='+('M' if edited else 'd'),f'{start}..{end}'],capture_output=True,timeout=GIT_TIMEOUT)
         if done.returncode:return []
         names=[n.strip().strip('"') for n in done.stdout.decode('utf-8','replace').splitlines() if n.strip()][:MAX_COMMITTED]
         return [Path(repo)/n for n in names if (Path(repo)/n).is_file()]

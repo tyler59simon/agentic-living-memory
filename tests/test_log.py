@@ -82,7 +82,8 @@ class Cache(Log):
         cache.write_text('{broken');self.assertEqual(len(self.rows()),2)
 
     def test_a_journal_that_is_not_final_is_not_cached(self):
-        self.note('Cache policy','Body one.');journal=next((self.root/'.operations').glob('*/journal.json'))
+        # The capture's own journal: folder names are random, so the first one found may be a fixture charter's, which has no rows.
+        self.note('Cache policy','Body one.');journal=self.root/'.operations'/self.rows()[0]['op']/'journal.json'
         value=json.loads(journal.read_text(encoding='utf-8'));copy=self.root/'.operations'/'pending01'/'journal.json';copy.parent.mkdir()
         copy.write_text(canonical_json({**value,'id':'pending01','state':'applying'}),encoding='utf-8')
         self.assertEqual(len(self.rows()),1);self.assertNotIn('pending01',self.cache())
