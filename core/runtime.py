@@ -227,6 +227,18 @@ def remote_sync(text,grammar,root):
             if word in remote or (word.startswith('--a') and '--all-remote'.startswith(word.split('=')[0])):return True
     return False
 
+def views_write(text,grammar):
+    """True when a `views` command writes: add, remove, published, or render except `--format json` with no --out."""
+    for words in _parsed(text,grammar) or []:
+        index=0
+        while index<len(words) and words[index]!='views':index+=2 if words[index] in GLOBAL_OPTIONS else 1
+        rest=words[index+1:]
+        if not rest:continue
+        action=next((w for w in rest if not w.startswith('-')),'list')
+        if action in {'add','remove','published'}:return True
+        if action=='render' and (_option_values(rest,('--out',)) or 'json' not in _option_values(rest,('--format',))):return True
+    return False
+
 def auto_allowed(text,grammar,root,cwd,scratch=None):
     """True when an allow-listed memory command may skip the permission prompt: it uses the hook's own store
     and reads input files only from the working directory or the session scratchpad. Anything else is left to
@@ -238,7 +250,8 @@ def auto_allowed(text,grammar,root,cwd,scratch=None):
         for words in parsed:
             for value in _option_values(words,('--root',)):
                 if not value or Path(os.path.expandvars(value)).expanduser().resolve()!=store:return False
-            for value in _option_values(words,FILE_OPTIONS):
+            # Input files are read into a note; --out (views render) writes a file. Both stay inside what the session can see.
+            for value in _option_values(words,FILE_OPTIONS+('--out',)):
                 if not value:return False
                 path=Path(os.path.expandvars(value)).expanduser()
                 path=(path if path.is_absolute() else bases[0]/path).resolve()
@@ -1655,7 +1668,8 @@ def _process(harness,event,payload,root=None,info=None):
             entity,action=learn_operation(text,grammar);learn_write=not is_read(entity,action)
             # Turning learning on or off is the user's call, so it keeps the host's normal prompt.
             learn_settings=(entity,action)==('config','set')
-        if (subcommand in MUTATING_SUBCOMMANDS or learn_write) and _subagent(payload):
+        writes_view=subcommand=='views' and views_write(text,grammar)
+        if (subcommand in MUTATING_SUBCOMMANDS or learn_write or writes_view) and _subagent(payload):
             detail['decision']='deny:subagent'
             result['deny']='Living Memory: subagents are read-only. Return the proposed note to the main agent instead of running '+subcommand+'.'
             return result

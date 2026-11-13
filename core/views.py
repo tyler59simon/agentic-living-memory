@@ -444,12 +444,25 @@ def _render_local(root,entry,note,cache):
     cache[entry['note']]={'revision':_revision(note),'renderer':RENDERER}
     return path
 
+def _lives_in(root,domain,note_id):
+    """True when a note file of this ID (named ...-<id8>.md) is in the domain's folder."""
+    folder=Path(root)/'domains'/domain
+    return folder.is_dir() and any(True for _ in folder.rglob(f'*-{note_id[:8]}.md'))
+
+def _out_path(root,out):
+    """An --out destination: anywhere outside the store, or under its .views folder. Inside the store it would overwrite
+    canonical files (notes, registries) with no revision check or journal."""
+    path=Path(out).resolve()
+    if path.is_relative_to(root) and not path.is_relative_to(root/'.views'):raise ValueError('--out must be outside the memory store (or under its .views folder)')
+    return path
+
 def refresh(domain,root):
     """Re-render the local pages of this domain's views whose note changed. Called at the end of reconcile(), on every
     write: with no registry or no view in the domain it returns after one stat. It never raises."""
     try:
         if not _path(root).is_file():return
-        entries=[v for v in load(root)['views'] if v['domain']==domain]
+        # A promoted or remapped note keeps its registry domain, so also take views whose note file now lives here.
+        entries=[v for v in load(root)['views'] if v['domain']==domain or _lives_in(root,domain,v['note'])]
         if not entries:return
         from .repository import inventory
         notes={n['id']:dict(n,domain=domain) for n in inventory(domain,root,retired=True) if n.get('id')}
@@ -528,6 +541,7 @@ def render(root,entries,target='local',out=None,fmt='html'):
     (one entry only), or json models. Local pages update the cache like refresh does."""
     root=Path(root).resolve();rows=[]
     if out is not None and len(entries)!=1:raise ValueError('--out needs exactly one view')
+    if out is not None:out=_out_path(root,out)
     with store_lock(root):
         cache=_cache(root);changed=False
         for entry in entries:

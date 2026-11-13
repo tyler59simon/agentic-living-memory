@@ -1055,7 +1055,10 @@ def main(argv=None):
                 result={'ok':True,'count':len(rows),**({'models':[r['model'] for r in rows]} if args.format=='json' else {'rendered':rows})}
             else:
                 if not args.reference:raise ValueError(f'views {action} needs a note: REF, ID prefix or exact title')
-                d,n=_reference(args.reference,domain,root)
+                # A view whose note was deleted can still be removed by its registered ID (or a prefix of it).
+                orphan=[v for v in views.load(root)['views'] if v['note'].startswith(args.reference.split(':')[-1].lower())] if action=='remove' else []
+                if len(orphan)==1 and not views._find(orphan[0],root):d,n=orphan[0]['domain'],orphan[0]['note']
+                else:d,n=_reference(args.reference,domain,root)
                 registered=next((v for v in views.load(root)['views'] if v['note']==n),None)
                 if action=='add':result=views.add(root,d,n,args.title)
                 elif action=='remove':result=views.remove(root,n)

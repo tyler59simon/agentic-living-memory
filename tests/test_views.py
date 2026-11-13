@@ -272,4 +272,52 @@ class Hint(Fixture):
     def test_a_broken_registry_never_costs_the_hook(self):
         (self.root/'views.json').write_text('{broken');self.assertTrue(self.start());self.assertNotIn('is behind its note',self.prompt())
 
+class ReviewFixes(Fixture):
+    """Findings of the Codex review of the views branch."""
+    def command(self,rest):
+        import sys
+        return f'"{sys.executable}" "{runtime.SCRIPT}" --root "{self.root}" --domain demo {rest}'
+    def decision(self,rest,cwd,**extra):
+        return runtime.process('claude','pre-tool-use',{'cwd':cwd,'session_id':'allow','tool_name':'Bash','tool_input':{'command':self.command(rest)},**extra},self.root)
+
+    def test_render_out_never_writes_canonical_store_files(self):
+        note_id=self.plan_note();self.add(note_id);before=(self.root/'views.json').read_text(encoding='utf-8')
+        for target in ('views.json','bindings.json',str(find_note(note_id,'demo',self.root)[0].relative_to(self.root))):
+            for fmt in ('html','json'):
+                with self.subTest(target=target,fmt=fmt):
+                    code,error=self.cli('views','render',note_id,'--format',fmt,'--out',str(self.root/target));self.assertEqual(code,2);self.assertIn('outside the memory store',str(error))
+        self.assertEqual((self.root/'views.json').read_text(encoding='utf-8'),before)
+        self.ok('views','render',note_id,'--out',str(self.root/'.views'/'copy.html'));self.ok('views','render',note_id,'--out',str(self.base/'out.html'))
+
+    def test_render_out_is_auto_allowed_only_inside_the_session(self):
+        note_id=self.plan_note();project=self.base/'project';project.mkdir(exist_ok=True);cwd=str(project)
+        self.assertIn('allow',self.decision(f'views render {note_id} --out "{project/"x.html"}"',cwd))
+        self.assertIn('allow',self.decision(f'views render {note_id} --out x.html',cwd))
+        for rest in (f'views render {note_id} --out "{self.base/"elsewhere.html"}"',f'views render {note_id} --out=../elsewhere.html'):
+            with self.subTest(rest=rest):reply=self.decision(rest,cwd);self.assertNotIn('allow',reply);self.assertNotIn('deny',reply)
+
+    def test_subagents_are_denied_view_writes_in_the_hook(self):
+        note_id=self.plan_note();project=self.base/'project';project.mkdir(exist_ok=True);cwd=str(project)
+        for rest in (f'views add {note_id}',f'views remove {note_id}',f'views published {note_id} --url https://x.example/a',f'views render {note_id}',
+                     f'views render {note_id} --format json --out x.json',f'views render --all'):
+            with self.subTest(rest=rest):self.assertIn('deny',self.decision(rest,cwd,agent_id='sub1'))
+        for rest in ('views','views --all-domains',f'views render {note_id} --format json',f'views render {note_id} --format=json'):
+            with self.subTest(rest=rest):self.assertIn('allow',self.decision(rest,cwd,agent_id='sub1'))
+
+    def test_a_view_whose_note_is_gone_can_be_removed(self):
+        for title,ref in (('First plan',lambda n:n[:8]),('Second plan',lambda n:f'demo:{n[:8]}')):
+            with self.subTest(title=title):
+                note_id=self.plan_note(title);self.add(note_id,title);page=Path(self.ok('views')['views'][0]['path'])
+                path,_=find_note(note_id,'demo',self.root);path.unlink();reconcile('demo',self.root)
+                self.assertEqual(self.ok('views','remove',ref(note_id))['status'],'removed')
+                self.assertFalse(page.exists());self.assertEqual(self.ok('views')['views'],[])
+
+    def test_a_view_follows_its_note_into_another_domain(self):
+        note_id=self.plan_note();self.add(note_id);page=Path(self.ok('views')['views'][0]['path'])
+        source,_=find_note(note_id,'demo',self.root);moved=self.root/'domains'/'other'/'notes'/source.name
+        moved.parent.mkdir(parents=True,exist_ok=True);source.replace(moved)
+        text=moved.read_text(encoding='utf-8');moved.write_text(text.replace('- [ ] [P2] [ALM] HOOK-4','- [x] [P2] [ALM] HOOK-4',1),encoding='utf-8')
+        views.refresh('other',self.root)
+        self.assertIn('"done":true',page.read_text(encoding='utf-8').replace(' ',''));self.assertNotIn('was not found',page.read_text(encoding='utf-8'))
+
 if __name__=='__main__':unittest.main()
