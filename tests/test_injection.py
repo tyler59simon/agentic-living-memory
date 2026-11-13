@@ -23,7 +23,7 @@ RUNBOOK='''Rotate the signing keys every quarter.
 3. Check `keyctl status` shows the new key id.
 '''
 
-class Delivery(StoreFixture):
+class Base(StoreFixture):
     def setUp(self):
         super().setUp()
         self.decision=capture('Event delivery design',DECISION,TAGS,'demo',self.root,type='decision')
@@ -33,6 +33,7 @@ class Delivery(StoreFixture):
     def start(self,session='s',source='startup'):
         runtime.process('claude','session-start',{'cwd':str(self.base/'project'),'session_id':session,'source':source},self.root)
 
+class Delivery(Base):
     def test_a_section_question_gets_that_section_as_evidence(self):
         text=self.prompt('why do we poll the outbox dispatcher transaction')
         self.assertIn('Event delivery design — Event delivery uses the outbox table polled by the dispatcher. § Why',text)   # the summary leads the section
@@ -120,3 +121,70 @@ class Classifiers(StoreFixture):
     def test_acks(self):
         for text in ('yes','Thanks!','ok go ahead','lgtm','sounds good, proceed'):self.assertTrue(injection.is_ack(text),text)
         for text in ('yes, but why the outbox?','ok so what about kafka','no'):self.assertFalse(injection.is_ack(text),text)
+
+class ReviewFindings(Base):
+    """Regressions for the 2026-11-12 Codex review of this branch."""
+    def test_a_named_new_topic_is_not_a_follow_up(self):
+        self.assertIsNone(injection.follow_up('why Redis?',{'redis'}))
+        self.assertEqual(injection.follow_up('why is that slow?',{'slow'}),'rationale')
+        self.prompt('event delivery design')
+        self.assertNotIn('§ Why',self.prompt('why Redis?'))
+
+    def test_a_prompt_that_finds_nothing_clears_the_topic(self):
+        self.prompt('event delivery design')
+        self.prompt('banana orchard harvest schedule')
+        self.assertNotIn('Event delivery',self.prompt('why?'))
+
+    def test_fenced_steps_keep_their_lines_and_indentation(self):
+        fence='`'*3
+        body=('Recreate the queue config.\n\n## Steps\nRun this on the broker host:\n'+fence+'bash\ncat <<EOF > /etc/q.conf\n  retention: 7d\nEOF\n'+fence+'\nThen restart the broker.')
+        capture('Queue config recreation',body,TAGS,'demo',self.root,type='runbook',allow_similar=True)
+        text=self.prompt('show me the exact steps to recreate the queue config on the broker host')
+        self.assertIn('cat <<EOF > /etc/q.conf\n      retention: 7d\n    EOF',text)   # indented under the hit line, inner indent kept
+
+    def test_a_learned_runbook_keeps_its_report_hint_at_every_level(self):
+        hit={'domain':'demo','id':'abcdef123456','title':'T','type':'runbook','updated':'2026-11-12','procedure_id':'proc12345678','procedure_version':2,
+             'units':[{'unit':'u1','role':'procedure','heading':'Steps','lines':[5,7],'similarity':None,'excerpt':'Do the thing.'}]}
+        for level in ('evidence','expanded'):
+            self.assertIn('learn use report --procedure proc1234',injection.line(hit,hit['units'][0],level,220))
+
+    def test_a_withdrawn_procedure_is_not_a_follow_up_answer(self):
+        from core import search
+        ref=f"demo:{self.decision['id']}"
+        self.assertEqual(len(search.note_hits([ref],self.root)),1)
+        manifest={self.decision['id']:{'id':'p1','current_version':1}}
+        with patch('core.learning.published',return_value=(manifest,set())):
+            self.assertEqual(search.note_hits([ref],self.root),[])
+
+    def test_recall_cut_by_the_budget_stays_eligible(self):
+        self.start(source='compact')
+        with patch('core.recall.auto',return_value=('x'*5000,[1,2])),patch.object(runtime,'RECALL_HARNESSES',{'claude'}):
+            self.prompt('event delivery design')
+        state=runtime.read_json(runtime._pointer(self.root,'s'),{})
+        self.assertEqual(state.get('recalled'),[])
+
+    def test_read_section_returns_that_section_of_the_served_body(self):
+        import io,json,contextlib
+        from core.cli import main
+        out=io.StringIO()
+        with contextlib.redirect_stdout(out):code=main(['--root',str(self.root),'--domain','demo','read',self.decision['id'],'--section','why'])
+        result=json.loads(out.getvalue())
+        self.assertEqual(code,0);self.assertEqual(result['section']['heading'],'Why');self.assertIn('no message is lost',result['body'])
+        self.assertNotIn('Kafka',result['body'])
+        path=next((self.root/'domains/demo/notes').glob('*event-delivery*'));lines=path.read_text(encoding='utf-8').split('\n')
+        first,last=result['section']['lines'];self.assertEqual(lines[first-1],'## Why');self.assertIn('no message is lost',lines[last-1])
+
+    def test_read_section_serves_the_approved_body_not_an_unreviewed_file_edit(self):
+        import io,json,contextlib
+        from core import notes
+        from core.cli import main
+        real=notes.find_note
+        def approved(note_id,domain,root=None,*a,**k):
+            path,note=real(note_id,domain,root,*a,**k)
+            return path,dict(note,body=note['body'].replace('no message is lost','APPROVED TEXT'))   # as approved_notes serves a learned runbook
+        out=io.StringIO()
+        with patch.object(notes,'find_note',approved),contextlib.redirect_stdout(out):
+            main(['--root',str(self.root),'--domain','demo','read',self.decision['id'],'--section','Why'])
+        result=json.loads(out.getvalue())
+        self.assertIn('APPROVED TEXT',result['body']);self.assertNotIn('no message is lost',result['body'])
+        self.assertIsNone(result['section']['lines'])   # the file no longer holds that body, so its line numbers would mislead

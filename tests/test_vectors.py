@@ -208,6 +208,19 @@ class Native(UnitIndexCase):
             self.assertEqual([i for i,_ in native],[i for i,_ in python],text)
             for (_,a),(_,b) in zip(native,python):self.assertAlmostEqual(a,b,places=5)
 
+    def test_ties_at_the_knn_cutoff_resolve_like_python(self):
+        for i in range(8):self.note(f'Kafka copy {i}','Kafka broker queue messaging.',allow_similar=True)   # identical embeddings
+        self.install();ids={n['id'] for n in inventory('demo',self.root)}
+        with patch.object(vectors,'K_START',2):
+            index,_=self.open()
+            try:native=index.top_notes(self.query('kafka'),ids,2)
+            finally:index.close()
+        with patch.object(vectors,'NATIVE',False):
+            index,_=self.open()
+            try:python=index.top_notes(self.query('kafka'),ids,2)
+            finally:index.close()
+        self.assertEqual([i for i,_ in native],[i for i,_ in python])
+
     def test_a_write_without_the_extension_marks_the_native_table_stale_until_resynced(self):
         self.note('Authentication design',DECISION);self.install()
         with patch.object(vectors,'NATIVE',False):self.note('Messaging',"Kafka broker queue messaging.",allow_similar=True)

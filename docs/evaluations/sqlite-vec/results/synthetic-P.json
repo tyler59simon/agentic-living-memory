@@ -7,7 +7,7 @@
     "false_injection": 0.0,
     "forbid_violations": [],
     "mean_injected_chars": 265,
-    "mean_ms": 14.1,
+    "mean_ms": 13.9,
     "overview_rate": 0.286,
     "misses": [],
     "false_injections": []
@@ -18,7 +18,7 @@
     "negative": 4,
     "recall": 1.0,
     "false_injection": 0.0,
-    "mean_ms": 25.5,
+    "mean_ms": 24.9,
     "misses": [],
     "false_injections": []
   },
@@ -29,7 +29,7 @@
     "recall": 1.0,
     "notes_recalled": 0.833,
     "false_injection": 0.0,
-    "mean_ms": 63.1,
+    "mean_ms": 63.7,
     "max_chars": 983,
     "misses": [],
     "false_injections": []
@@ -55,7 +55,7 @@
     "hit@3": 1.0,
     "prompt_recall": 1.0,
     "false_injection": 0.0,
-    "mean_ms": 5.8,
+    "mean_ms": 5.9,
     "misses": [],
     "prompt_misses": [],
     "false_injections": []
@@ -109,6 +109,6 @@
     "mode": "units",
     "native_table": "absent",
     "size_bytes": 81920,
-    "updated": "2026-11-13T02:27:00Z"
+    "updated": "2026-11-13T03:10:57Z"
   }
 }

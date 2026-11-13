@@ -242,7 +242,11 @@ class Index:
                         note_id=owner.get(rowid)
                         if note_id in eligible and note_id not in best:best[note_id]=1.0-distance
                     # Retired or filtered-out notes may fill the first k: widen until enough eligible notes or nothing is left.
-                    if len(best)>=top or k>=self.vectors:return sorted(best.items(),key=lambda r:(-r[1],r[0]))[:top]
+                    # A unit tied with the last note kept may lie past k (vec0 cuts ties arbitrarily); widen through the tie,
+                    # so the note-id tiebreak sees every tied note, as the Python scan does.
+                    chosen=sorted(best.items(),key=lambda r:(-r[1],r[0]))[:top]
+                    tied=bool(rows) and chosen and len(rows)==k and rows[-1][1]<=1.0-chosen[-1][1]+1e-9
+                    if (len(best)>=top and not tied) or k>=self.vectors:return chosen
                     if k>=K_MAX:self.backend,self.reason='python','knn_k_cap';break
                     k=min(self.vectors,k*4,K_MAX)
                 else:return []

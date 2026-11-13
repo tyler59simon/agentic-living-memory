@@ -1,0 +1,417 @@
+<title>How I Fixed Memory Retrieval</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one 46rem reading column; wide figures (diagrams, tables) break out to 64rem. Single dark theme by design. */
+:root{
+  --bg:#0e1311; --panel:#141b18; --panel-2:#1a2420; --line:#26332d;
+  --fg:#e3ebe7; --muted:#93a59c; --faint:#66786f;
+  --accent:#4fbf8d; --accent-soft:rgba(79,191,141,.14);
+  --warn:#d9a54a; --bad:#e07a6e;
+  --display:"Instrument Serif",Georgia,"Times New Roman",serif;
+  --body:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,"Cascadia Mono",Consolas,monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:16px/1.65 var(--body);margin:0;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:0}
+main{max-width:64rem;margin:0 auto;padding-block:3rem 5rem}
+.col{max-width:46rem;margin-inline:auto}
+h1,h2,h3{font-family:var(--display);font-weight:400;text-wrap:balance;line-height:1.1;margin:0}
+h1{font-size:clamp(2.8rem,7vw,4.6rem);letter-spacing:-.01em}
+h2{font-size:clamp(1.9rem,4vw,2.6rem);margin-top:4.5rem;margin-bottom:1rem}
+h3{font-family:var(--body);font-weight:600;font-size:1.02rem;margin-top:1.8rem;margin-bottom:.4rem}
+p{margin:.7rem 0}
+a{color:var(--accent)}
+code,.mono{font-family:var(--mono);font-size:.86em}
+p code,li code,td code{background:var(--panel-2);padding:.08em .35em;border-radius:4px}
+.eyebrow{font:500 .74rem/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+.lede{font-size:1.18rem;color:var(--muted);max-width:40rem}
+.meta{display:flex;flex-wrap:wrap;gap:.5rem 1.4rem;margin-top:1.6rem;font:400 .8rem/1.4 var(--mono);color:var(--faint)}
+.meta b{color:var(--muted);font-weight:500}
+.tag{display:inline-block;font:500 .66rem/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;padding:.3em .5em;border-radius:3px;vertical-align:.15em;border:1px solid var(--line);color:var(--muted)}
+.tag.m{color:var(--accent);border-color:rgba(79,191,141,.4)}
+.tag.s{color:var(--warn);border-color:rgba(217,165,74,.4)}
+.tag.n{color:var(--faint)}
+.glance{display:grid;grid-template-columns:repeat(auto-fit,minmax(13.5rem,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-top:2.4rem}
+.glance div{background:var(--panel);padding:1.1rem 1.2rem;min-width:0}
+.glance .v{font:400 2rem/1.1 var(--display);color:var(--fg);font-variant-numeric:tabular-nums}
+.glance .v small{font:400 .9rem var(--mono);color:var(--muted)}
+.glance .k{font-size:.86rem;color:var(--muted);margin-top:.4rem}
+.wide{max-width:64rem;margin-inline:auto}
+.flows{display:grid;grid-template-columns:1fr 1fr;gap:1.2rem;margin-top:1.2rem}
+@media (max-width:760px){.flows{grid-template-columns:1fr}}
+.flow{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:1.1rem;min-width:0}
+.flow h3{margin-top:0;font-family:var(--mono);font-weight:500;font-size:.78rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.flow ol{list-style:none;margin:.6rem 0 0;padding:0;display:grid;gap:.35rem}
+.flow li{border:1px solid var(--line);border-radius:5px;padding:.45rem .65rem;font-size:.9rem;background:var(--bg)}
+.flow li.new{border-color:rgba(79,191,141,.55);background:var(--accent-soft)}
+.flow li .mono{color:var(--muted)}
+.flow .arrow{font:400 .75rem var(--mono);color:var(--faint);padding-left:.65rem}
+.proj{display:grid;grid-template-columns:auto 1fr;gap:.4rem 1rem;font-size:.9rem;margin-top:1rem;align-items:baseline}
+.proj .mono{color:var(--accent)}
+.tbl{overflow-x:auto;margin-top:1rem;border:1px solid var(--line);border-radius:8px}
+table{border-collapse:collapse;width:100%;font-size:.86rem;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:.55rem .75rem;border-bottom:1px solid var(--line);vertical-align:top}
+th{font:500 .72rem/1.3 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);background:var(--panel)}
+tr:last-child td{border-bottom:0}
+td.num{text-align:right;white-space:nowrap}
+tr.hl td{background:var(--accent-soft)}
+.caption{font-size:.8rem;color:var(--faint);margin-top:.6rem}
+.bars{display:grid;gap:.5rem;margin-top:1rem}
+.bar{display:grid;grid-template-columns:2.2rem 1fr 3.4rem;gap:.7rem;align-items:center;font:400 .82rem var(--mono)}
+.bar .track{height:.85rem;background:var(--panel-2);border-radius:2px;overflow:hidden}
+.bar .fill{height:100%;background:var(--faint)}
+.bar.e .fill{background:var(--accent)}
+.bar .val{text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
+.charts{display:grid;grid-template-columns:1fr 1fr;gap:2rem;margin-top:1rem}
+@media (max-width:760px){.charts{grid-template-columns:1fr}}
+.charts figure{margin:0;min-width:0}
+.charts figcaption{font-size:.86rem;color:var(--fg);font-weight:500}
+.tabs{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:1rem}
+.tabs button{font:500 .8rem var(--mono);background:var(--panel);color:var(--muted);border:1px solid var(--line);border-radius:5px;padding:.45rem .7rem;cursor:pointer}
+.tabs button[aria-selected="true"]{color:var(--fg);border-color:var(--accent)}
+.tabs button:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:.8rem}
+@media (max-width:760px){.pair{grid-template-columns:1fr}}
+.pair > div{min-width:0}
+.label{font:500 .7rem var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:.35rem}
+pre{background:#0a0f0d;border:1px solid var(--line);border-radius:6px;padding:.85rem 1rem;overflow-x:auto;font:400 .78rem/1.6 var(--mono);color:#cfdbd5;margin:0;white-space:pre-wrap;word-break:break-word}
+pre.cmd{white-space:pre}
+pre .k{color:var(--accent)}
+.prompt{font:400 .9rem var(--mono);color:var(--fg);background:var(--panel);border-left:2px solid var(--accent);padding:.55rem .8rem;margin-top:.9rem}
+ul.plain{padding-left:1.1rem}
+ul.plain li{margin:.35rem 0}
+details{border:1px solid var(--line);border-radius:8px;background:var(--panel);margin-top:.7rem}
+summary{cursor:pointer;padding:.75rem 1rem;font-weight:500}
+details > div{padding:0 1rem 1rem}
+.status{font:500 .72rem var(--mono);text-transform:uppercase;letter-spacing:.05em}
+.status.ok{color:var(--accent)}.status.warn{color:var(--warn)}
+footer{margin-top:4rem;padding-top:1.4rem;border-top:1px solid var(--line);color:var(--faint);font-size:.82rem}
+@media (prefers-reduced-motion:no-preference){.fill{transition:width .6s ease}}
+</style>
+
+<main>
+<header class="col">
+  <div class="eyebrow">Agentic Living Memory · engineering case study</div>
+  <h1 style="margin-top:.8rem">How I Fixed Memory Retrieval</h1>
+  <p class="lede">Rebuilding Agentic Living Memory with SQLite-vec, hybrid search, and token-efficient context. The search was already finding the right notes. Most of what it handed the agent was the wrong part of them.</p>
+  <div class="meta">
+    <span><b>Branch</b> feat/sqlite-vec-memory-retrieval</span>
+    <span><b>Base</b> origin/main c01b082</span>
+    <span><b>Measured</b> 2026-11-12</span>
+    <span><b>State</b> local branch, not pushed, no PR</span>
+  </div>
+</header>
+
+<section class="wide" aria-label="At a glance">
+  <div class="glance">
+    <div><div class="v">0.48 → 0.78</div><div class="k">Prompts whose answer was already in the injected text, before and after the injection controller <span class="tag m">measured</span> <span class="tag s">synthetic fixture</span></div></div>
+    <div><div class="v">157 → 110 <small>tokens</small></div><div class="k">Estimated tokens per answered prompt, counting the follow-up read the agent would need <span class="tag m">measured</span> <span class="tag s">chars ÷ 4</span></div></div>
+    <div><div class="v">0.78 → 0.85</div><div class="k">Prompts that got the right note at all, note-level vectors vs section-level units <span class="tag m">measured</span></div></div>
+    <div><div class="v">33 → 2.8 <small>ms</small></div><div class="k">Vector query p50 at 1,000 vectors, Python scan vs sqlite-vec, identical results <span class="tag s">synthetic vectors</span></div></div>
+  </div>
+  <p class="caption">Fixture: 12 invented notes, 60 seeded distractors, 32 prompts and 4 sessions. Machine: Windows 11, Intel i7-9750H, 16 GB, Python 3.15.2, SQLite 3.53.4, sqlite-vec 0.1.9, model potion-retrieval-32M (512 dimensions). Nothing here was measured on agent task outcomes.</p>
+</section>
+
+<section class="col">
+  <h2>The problem</h2>
+  <p>Living Memory keeps an agent's durable notes as Markdown files and injects the relevant ones into each prompt through native hooks. Before this work, its optional semantic search embedded each note's title and summary only, scanned every vector in Python, and fused that ranking with SQLite FTS5 by reciprocal rank. The prompt hook then injected one line per relevant note: the title and a 220-character window of the body.</p>
+  <p>That design found the right note most of the time. What it got wrong was what it delivered. Three things I measured or reproduced:</p>
+  <ul class="plain">
+    <li><b>The answer was usually somewhere else in the note.</b> Asked "what options did we turn down for token refresh?", the hook injected the note's summary and the opening of its reasons, then cut off before the rejected options. With note-level vectors, the answer was in the injected text for 0.444 of prompts.</li>
+    <li><b>Facts buried in sections were invisible to the vectors.</b> A title-and-summary vector cannot know that a sync-service note says Osaka timestamps arrive in JST. Note-level vectors missed 6 of 8 paraphrased questions about buried facts.</li>
+    <li><b>Conversations broke it.</b> "Why?" after a question has no searchable words, so it got nothing. Across four scripted sessions, 0.615 of steps were handled correctly.</li>
+  </ul>
+  <p>Two things were design risks rather than measured failures: the Python scan grows linearly (synthetic: 3.4 s per query at 100,000 vectors), and the prompt hook had no total size budget, relying on Codex's 4,000-character limit to truncate from outside.</p>
+
+  <h2>The constraints</h2>
+  <p>Living Memory is a standard-library Python tool that runs inside hooks with a 15 to 30 second timeout and starts a new process for every prompt. The rules for this work:</p>
+  <ul class="plain">
+    <li>No MCP server, no daemon, no database server, no embedding API, no extra model calls during a hook.</li>
+    <li>Canonical Markdown stays the only source of truth. Every SQLite file is derived and can be deleted.</li>
+    <li>FTS5 keyword search keeps working on a clean machine with nothing installed. sqlite-vec may speed things up but must never be required, because some Python builds cannot load SQLite extensions at all.</li>
+    <li>No network or downloads inside a hook; no note text in logs; Windows first (Python 3.15, file locking).</li>
+  </ul>
+  <p>The user chose to ship sqlite-vec as an optional pinned pip package, and to keep Python cosine, FTS5 and the lexical gates working together as a complete fallback.</p>
+
+  <h2>The insight</h2>
+  <p>Nearest neighbours are candidate discovery, not delivery. Finding the note is one decision; deciding which part of it the agent needs, whether the session already has it, and whether it is worth the tokens is another. I kept the two separate: retrieval still answers "which notes are plausible", the existing relevance gate still answers "which are relevant", and a new controller answers "how much of each".</p>
+</section>
+
+<section class="wide">
+  <h2 class="col" style="max-width:46rem">Before and after</h2>
+  <div class="flows">
+    <div class="flow">
+      <h3>Before</h3>
+      <ol>
+        <li>Prompt → query terms</li>
+        <li>FTS5 BM25 over notes</li>
+        <li>Python cosine over one title+summary vector per note</li>
+        <li>RRF fusion, per-domain relevance gate</li>
+        <li>Dedupe by note revision</li>
+        <li>One line per note: title + 220-char snippet, up to 3 notes</li>
+      </ol>
+    </div>
+    <div class="flow">
+      <h3>After</h3>
+      <ol>
+        <li>Prompt → acknowledgment check → follow-up check (uses the previous prompt's note refs)</li>
+        <li>FTS5 BM25 over notes <span class="mono">(unchanged)</span></li>
+        <li class="new">Units: overview, caveat and every section embedded; best unit per note; sqlite-vec KNN or the same scan in Python</li>
+        <li>RRF fusion, per-domain relevance gate <span class="mono">(unchanged)</span></li>
+        <li class="new">Choose a unit: role cue, meaning, or shared words</li>
+        <li class="new">Dedupe by note revision, section and level</li>
+        <li class="new">Pointer, evidence (summary opening + section) or expanded, inside one 4,000-char budget</li>
+      </ol>
+    </div>
+  </div>
+  <div class="col" style="max-width:46rem">
+    <h3>What lives where</h3>
+    <div class="proj">
+      <span class="mono">notes/*.md</span><span>Canonical. Never written by retrieval.</span>
+      <span class="mono">search.sqlite3</span><span>Derived, unchanged schema: FTS5, vocabulary, note-level vectors. Code without the extension still opens it.</span>
+      <span class="mono">vectors.sqlite3</span><span>Derived and new: units with roles, line spans and excerpts, one embedding per distinct text, and a <code>vec0</code> table when sqlite-vec loads. Safe to delete.</span>
+      <span class="mono">.turns/&lt;session&gt;</span><span>Session state: which note, section and level were delivered, and the refs of the last topic. No prompt text.</span>
+    </div>
+  </div>
+</section>
+
+<section class="col">
+  <h2>Inside the new engine</h2>
+  <h3>Memory units</h3>
+  <p><code>core/units.py</code> cuts each note into an overview (title plus summary, byte-for-byte the text the old note vector embedded), the <code>&gt; **Important:**</code> caveat, and one unit per section heading. Headings inside fenced code are text. A section over 360 words splits between paragraphs, never inside a fence. Each unit gets a role from its heading: <i>Why</i> is rationale, <i>Alternatives considered</i> is alternative, <i>Steps</i> and <i>Roll back</i> are procedure. Unit ids come from the note id and the normalized heading path, so moving a section keeps its id; the text hash decides re-embedding, so moving a section costs no embedding and editing one re-embeds only that one.</p>
+  <h3>The unit index and its backends</h3>
+  <p><code>core/vectors.py</code> keeps the units in a sidecar per domain, updated in one transaction per write that bumps a generation number. A reader sees the old generation or the new one, never a mix. The index stores the model identity, the vector dimension (read from the model file) and the note index's fingerprint; if any of them disagree, it is not read and search falls back to note-level vectors, saying so on every hit as <code>backendReason</code>.</p>
+  <p>When sqlite-vec loads, the same transaction writes a <code>vec0</code> table and queries use its exact KNN. Retired notes are not stored in the vector table, so the query widens k until enough eligible notes appear. A note's score is its best unit, never a sum, so a long note earns nothing from its length. Without the extension, the identical embeddings are scored in Python with the identical tie-break.</p>
+  <h3>The injection controller</h3>
+  <p><code>core/injection.py</code> picks one unit per relevant note. A role cue in the prompt ("why", "turned down", "fixed", "how do I") picks a section of that role. Otherwise a section wins over the overview when its similarity clears the model's 0.45 threshold and beats the overview, with 0.05 added per shared prompt word, or, without a model, when it shares at least two prompt words. The line then leads with the summary's opening, because a section's reasons only make sense next to the decision they support. A rejected-options section always carries a label saying so.</p>
+</section>
+
+<section class="col">
+  <h2>One query, before and after</h2>
+  <p>Real output from the evaluation, config B (before) and E (after), on the synthetic fixture. Only the note ids differ between runs.</p>
+  <div class="tabs" role="tablist" aria-label="Example prompts">
+    <button role="tab" id="t1" aria-selected="true" aria-controls="p1">Rejected options</button>
+    <button role="tab" id="t2" aria-selected="false" aria-controls="p2" tabindex="-1">How a bug was fixed</button>
+    <button role="tab" id="t3" aria-selected="false" aria-controls="p3" tabindex="-1">Kafka (no change)</button>
+  </div>
+  <div role="tabpanel" id="p1" aria-labelledby="t1">
+    <div class="prompt">what options did we turn down for token refresh</div>
+    <div class="pair">
+      <div><div class="label">Before (B)</div><pre>- [DECISION 2026-11-13] evalunits:5c9b4b44 Token refresh design — Token refresh happens in one place: the auth gateway renews every session. Each mobile and web client used to retry expired sessions on its own, so a single outage produced a storm of duplicate renewal calls. Per-client …</pre></div>
+      <div><div class="label">After (E)</div><pre>- [DECISION 2026-11-13] evalunits:843d95e8 Token refresh design — Token refresh happens in one place: the auth gateway renews every session. § Alternatives considered [rejected or considered options, not the decision] (lines 23-25): Per-client refresh with jittered retries: rejected, it kept the duplicated logic in every app. A shared client SDK: rejected because the iOS release cycle is too slow to ship fixes.</pre></div>
+    </div>
+  </div>
+  <div role="tabpanel" id="p2" aria-labelledby="t2" hidden>
+    <div class="prompt">how was the payroll export crash fixed</div>
+    <div class="pair">
+      <div><div class="label">Before (B)</div><pre>- [BUG 2026-11-13] evalunits:5c306f29 Payroll export crash — The nightly payroll export crashed on large months. The CSV writer raised `MemoryError: cannot allocate 2147483648 bytes` because it buffered the whole month in memory. Stream rows in pages with `export --page-size …</pre></div>
+      <div><div class="label">After (E)</div><pre>- [BUG 2026-11-13] evalunits:91cc9375 Payroll export crash — The nightly payroll export crashed on large months. § Fix (lines 24-25): Stream rows in pages with `export --page-size 5000`; memory now stays flat.</pre></div>
+    </div>
+  </div>
+  <div role="tabpanel" id="p3" aria-labelledby="t3" hidden>
+    <div class="prompt">should we publish domain events with kafka</div>
+    <div class="pair">
+      <div><div class="label">Before (B)</div><pre>- [DECISION 2026-11-13] evalunits:dee7171e Event publishing design — Domain events are written to an outbox table and published by a poller. Writing the event in the same database transaction as the change means nothing is lost if the process crashes before publishing. Kafka: rejected; …</pre></div>
+      <div><div class="label">After (E)</div><pre>- [DECISION 2026-11-13] evalunits:126f74da Event publishing design — Domain events are written to an outbox table and published by a poller. Writing the event in the same database transaction as the change means nothing is lost if the process crashes before publishing. Kafka: rejected; …</pre></div>
+    </div>
+    <p class="caption">No cue word and no section clearly ahead of the summary, so the controller keeps the pointer line. The rejection still shows, but only because it happens to fit in the snippet.</p>
+  </div>
+</section>
+
+<section class="wide">
+  <div class="col" style="max-width:46rem">
+    <h2>Proof it worked, and where it didn't</h2>
+    <p>Six variants on the same fixture, each built in a fresh temporary store with the real model. A and B are the system before this work.</p>
+  </div>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>Config</th><th>What changes</th><th class="num">Right note injected</th><th class="num">Answer in hook text</th><th class="num">False injection</th><th class="num">Est. tokens / answered</th><th class="num">Sessions correct</th><th class="num">Prompt p50</th></tr></thead>
+      <tbody>
+        <tr><td>A</td><td>FTS5 only</td><td class="num">0.704</td><td class="num">0.370</td><td class="num">0.0</td><td class="num">182</td><td class="num">0.615</td><td class="num">16.8 ms</td></tr>
+        <tr><td>B</td><td>Note vectors, Python (before)</td><td class="num">0.778</td><td class="num">0.444</td><td class="num">0.0</td><td class="num">165</td><td class="num">0.615</td><td class="num">16.7 ms</td></tr>
+        <tr><td>C</td><td>Note vectors, sqlite-vec</td><td class="num">0.778</td><td class="num">0.444</td><td class="num">0.0</td><td class="num">165</td><td class="num">0.615</td><td class="num">20.6 ms</td></tr>
+        <tr><td>P</td><td>Section units, Python</td><td class="num">0.852</td><td class="num">0.481</td><td class="num">0.2</td><td class="num">157</td><td class="num">0.615</td><td class="num">21.8 ms</td></tr>
+        <tr><td>D</td><td>Section units, sqlite-vec</td><td class="num">0.852</td><td class="num">0.481</td><td class="num">0.2</td><td class="num">157</td><td class="num">0.615</td><td class="num">19.8 ms</td></tr>
+        <tr class="hl"><td>E</td><td>D + injection controller (shipped)</td><td class="num">0.852</td><td class="num">0.778</td><td class="num">0.2</td><td class="num">110</td><td class="num">1.000</td><td class="num">19.9 ms</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="caption">27 positive and 5 negative prompts; 13 session steps. "Est. tokens" counts injected characters plus one follow-up read when the note was injected without the answer, divided by 4. Recall@1 was 1.0 for every variant: the distractors share no vocabulary with the targets, so this fixture cannot separate the variants by rank. In-process timings, not hook processes.</p>
+
+  <div class="charts">
+    <figure>
+      <figcaption>Answer already in the injected text</figcaption>
+      <div class="bars" role="img" aria-label="Share of prompts answered in the injected text: A 0.370, B 0.444, C 0.444, P 0.481, D 0.481, E 0.778">
+        <div class="bar"><span>A</span><div class="track"><div class="fill" style="width:37%"></div></div><span class="val">0.370</span></div>
+        <div class="bar"><span>B</span><div class="track"><div class="fill" style="width:44.4%"></div></div><span class="val">0.444</span></div>
+        <div class="bar"><span>C</span><div class="track"><div class="fill" style="width:44.4%"></div></div><span class="val">0.444</span></div>
+        <div class="bar"><span>P</span><div class="track"><div class="fill" style="width:48.1%"></div></div><span class="val">0.481</span></div>
+        <div class="bar"><span>D</span><div class="track"><div class="fill" style="width:48.1%"></div></div><span class="val">0.481</span></div>
+        <div class="bar e"><span>E</span><div class="track"><div class="fill" style="width:77.8%"></div></div><span class="val">0.778</span></div>
+      </div>
+      <p class="caption">Scale 0 to 1.</p>
+    </figure>
+    <figure>
+      <figcaption>Estimated tokens per answered prompt (lower is better)</figcaption>
+      <div class="bars" role="img" aria-label="Estimated tokens per answered prompt: A 182, B 165, C 165, P 157, D 157, E 110">
+        <div class="bar"><span>A</span><div class="track"><div class="fill" style="width:91%"></div></div><span class="val">182</span></div>
+        <div class="bar"><span>B</span><div class="track"><div class="fill" style="width:82.5%"></div></div><span class="val">165</span></div>
+        <div class="bar"><span>C</span><div class="track"><div class="fill" style="width:82.5%"></div></div><span class="val">165</span></div>
+        <div class="bar"><span>P</span><div class="track"><div class="fill" style="width:78.5%"></div></div><span class="val">157</span></div>
+        <div class="bar"><span>D</span><div class="track"><div class="fill" style="width:78.5%"></div></div><span class="val">157</span></div>
+        <div class="bar e"><span>E</span><div class="track"><div class="fill" style="width:55%"></div></div><span class="val">110</span></div>
+      </div>
+      <p class="caption">Scale 0 to 200 tokens; characters ÷ 4.</p>
+    </figure>
+  </div>
+
+  <div class="col" style="max-width:46rem">
+    <h3>Reading it honestly</h3>
+    <ul class="plain">
+      <li><b>sqlite-vec changed speed, not results.</b> B and C match exactly, as do P and D. On a copy of a real 87-note store (490 units), 24 of 24 queries gave identical top-20 lists, with the largest score difference 5.8e-7.</li>
+      <li><b>Section units bought a little recall and cost one false positive.</b> They caught 2 of 8 buried paraphrases that note-level vectors missed. They also let "write a haiku about autumn leaves" match a short distractor section full of the word "autumn" at similarity 0.56. Short sections give peakier similarities. I kept the failing case in the fixture rather than tune a threshold around it.</li>
+      <li><b>The controller is where the gain is.</b> Same retrieval as D, but the answer arrives in the injected text for 0.778 of prompts instead of 0.481, and follow-ups like "why?" and "what were the alternatives?" now work.</li>
+      <li><b>No regression on the older fixture.</b> <code>eval_synthetic.json</code> scores identically in all six variants: hit@3 1.0, false injection 0.0, long prompts, quizzes and source excerpts unchanged.</li>
+    </ul>
+
+    <h3>Speed of the vector backends</h3>
+  </div>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>Vectors <span class="tag s">synthetic</span></th><th class="num">Python p50</th><th class="num">sqlite-vec p50</th><th class="num">Python build</th><th class="num">vec0 build</th><th class="num">File, blobs</th><th class="num">File + vec0</th><th class="num">Identical top-20</th></tr></thead>
+      <tbody>
+        <tr><td>1,000</td><td class="num">33 ms</td><td class="num">2.8 ms</td><td class="num">0.24 s</td><td class="num">0.05 s</td><td class="num">4.1 MB</td><td class="num">6.3 MB</td><td class="num">20/20</td></tr>
+        <tr><td>10,000</td><td class="num">334 ms</td><td class="num">25 ms</td><td class="num">2.5 s</td><td class="num">0.51 s</td><td class="num">41 MB</td><td class="num">62 MB</td><td class="num">20/20</td></tr>
+        <tr><td>100,000</td><td class="num">3,406 ms</td><td class="num">226 ms</td><td class="num">25 s</td><td class="num">5.1 s</td><td class="num">411 MB</td><td class="num">619 MB</td><td class="num">5/5</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col" style="max-width:46rem">
+    <p class="caption">Random 512-dimension unit vectors, not a corpus. Loading the extension takes about 0.5 ms per connection.</p>
+    <p>For the whole hook, as harnesses run it (a new process per prompt, against a copy of the 87-note store, 10 runs): p50 399 ms with sqlite-vec and 417 ms in Python, against 389 to 401 ms for the code before this work. At this store size, process start and imports dominate, and the vector backend is a small share. The native speedup only becomes worth having at thousands of units.</p>
+  </div>
+</section>
+
+<section class="col">
+  <h2>Reliability and fallback</h2>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>Situation</th><th>What happens</th><th>Tested</th></tr></thead>
+      <tbody>
+        <tr><td>sqlite-vec not installed</td><td>Python scan over the same embeddings; <code>backendReason: not_installed</code></td><td><span class="status ok">unit test</span></td></tr>
+        <tr><td>Library will not load (policy, broken binary)</td><td>Python; <code>load_blocked</code></td><td><span class="status ok">unit test (mocked path)</span></td></tr>
+        <tr><td>Python built without extension loading</td><td>Python; <code>load_unsupported</code></td><td><span class="status warn">code path only, not run</span></td></tr>
+        <tr><td>Switched off (<code>semantic native off</code>)</td><td>Python; <code>disabled</code>. Full suite passes this way.</td><td><span class="status ok">1,139 tests</span></td></tr>
+        <tr><td>A write happened without the extension</td><td>vec0 table marked stale and never queried until a write with it resyncs</td><td><span class="status ok">native test</span></td></tr>
+        <tr><td>Unit index damaged, stale or for another model</td><td>Not read; note-level vectors serve; next write rebuilds</td><td><span class="status ok">unit test</span></td></tr>
+        <tr><td>No model</td><td>FTS5 and the gates; units still give section evidence by shared words</td><td><span class="status ok">unit test, hook smoke</span></td></tr>
+        <tr><td>Reader open during a write</td><td>Sees one whole generation (units and vec0 rows match)</td><td><span class="status ok">native test</span></td></tr>
+        <tr><td>Retired notes crowd the nearest neighbours</td><td>k widens until enough eligible notes</td><td><span class="status ok">unit test</span></td></tr>
+        <tr><td>macOS and Linux</td><td>Same code; sqlite-vec ships wheels for both</td><td><span class="status warn">not run</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>Canonical notes are never written by any of this. Backups, store relocation and the installer ignore the new file, as they ignore <code>search.sqlite3</code>.</p>
+
+  <h2>The hard parts</h2>
+  <details open><summary>sqlite-vec takes only its own <code>ORDER BY distance</code></summary><div><p>My first KNN query joined the <code>vec0</code> result to the unit table inside a CTE. SQLite flattened it and pushed a second sort key into the virtual table, which sqlite-vec rejects. The fix was to run the KNN alone and resolve notes and tie-breaks in Python.</p></div></details>
+  <details><summary>Importing the package loads numpy</summary><div><p><code>import sqlite_vec</code> imports numpy when it is installed, which costs a hook process real time. The loader finds the bundled <code>vec0</code> library with <code>importlib.util.find_spec</code> and loads only that fixed path, with extension loading switched on for that one call.</p></div></details>
+  <details><summary>Headings "Part 1" and "Part 2" were the same heading</summary><div><p>My first heading normalizer kept letters only, so numbered sections got the same unit id, the unique constraint failed, and the whole unit-index update was rolled back. The failure was caught and logged by design, which is exactly why it was quiet. A test with eight numbered sections found it.</p></div></details>
+  <details><summary>Windows would not replace a file I still had open</summary><div><p>When the unit index was damaged, the reader returned "unreadable" but left its connection open. On Windows that handle blocked the rebuild's atomic replace. The reader now closes on every failure path.</p></div></details>
+  <details><summary>Each new note was embedded twice</summary><div><p>The note-level vector and the overview unit embed the same text. An existing test that counts embeddings caught the double work; the rebuild now hands its fresh embeddings to the unit index, and an edit that leaves the summary alone reuses the overview unit's vector.</p></div></details>
+  <details><summary>Section evidence dropped the actual answer</summary><div><p>For "when are the database backups taken", the best section was <i>Details</i> while the time was in the summary. Evidence lines now lead with the summary's opening. Separately, every section embedding includes the note title, so sections of one note score close together; a small bonus per shared prompt word separates them.</p></div></details>
+  <details><summary>The Codex review found eight more</summary><div>
+    <p>An independent review (Codex, gpt-6.1-sol, extra-high reasoning) of the whole branch found two P1 and six P2 issues. All eight were real. All are fixed, each with a regression test that I checked fails on the code before the fix and passes after.</p>
+    <ul class="plain">
+      <li><b>P1</b> Follow-up topic notes skipped the learned-runbook publication check, so a suspended procedure could come back on "what are the steps?".</li>
+      <li><b>P1</b> <code>read --section</code> read the raw file instead of the approved body, exposing an unreviewed edit of a learned runbook.</li>
+      <li><b>P2</b> "why Redis?" after an outbox question was treated as a follow-up to the outbox.</li>
+      <li><b>P2</b> A question that found nothing kept the old topic, so a later "why?" answered the wrong thing.</li>
+      <li><b>P2</b> Post-compaction recall cut by the budget was still marked delivered.</li>
+      <li><b>P2</b> Fenced commands lost their newlines and indentation in evidence lines.</li>
+      <li><b>P2</b> Evidence lines dropped a learned runbook's usage-report hint.</li>
+      <li><b>P2</b> sqlite-vec could cut tied neighbours at k differently from the Python scan.</li>
+    </ul>
+  </div></details>
+
+  <h2>Lessons and tradeoffs</h2>
+  <ul class="plain">
+    <li>The cheapest gain was not in the index. Choosing which part of an already-found note to deliver beat every indexing change I measured.</li>
+    <li>A native backend is easy to make faster and hard to make different. Keeping native and Python on the same embeddings and the same tie-break made "identical results" testable, and the review still found a tie case.</li>
+    <li>Section vectors are peakier than note vectors. The 0.45 threshold was tuned on note vectors; it needs re-tuning on a harder fixture before I trust section-only matches more.</li>
+    <li>I deliberately did not add learned gates, bandits or usage-based suppression. The usage diary now records the delivery level and a <code>surface</code> event for candidates cut by the cap, so a future experiment has data, but "injected and not opened" is not treated as "unused".</li>
+  </ul>
+</section>
+
+<section class="col">
+  <h2>How to use it</h2>
+  <pre class="cmd"><span class="k"># optional native acceleration, into the Python the hooks run</span>
+py -3.15 -m pip install --user sqlite-vec==0.1.9
+living_memory.py semantic rebuild        <span class="k"># rebuild units and the vec0 tables</span>
+living_memory.py semantic status         <span class="k"># backend, native: loadable/version, units per domain</span>
+living_memory.py search "why outbox" --explain
+living_memory.py read REF --section "Alternatives considered"
+living_memory.py semantic native off     <span class="k"># keep the extension unloaded; same results in Python</span></pre>
+  <p>Without the package, nothing changes for the user except speed. To roll back entirely, check out an earlier release: its code ignores <code>vectors.sqlite3</code>, which can then be deleted. The deployed hooks run an installed copy, so none of this reaches them until <code>install.py</code> is re-run.</p>
+
+  <h2>What comes next</h2>
+  <ul class="plain">
+    <li>A harder fixture with near-miss notes, so rank metrics stop saturating, then a re-tuned similarity threshold for section units.</li>
+    <li>Agent task outcomes: run real agents on fixture tasks and score their answers, not just whether the hook text contains a phrase.</li>
+    <li>Run the suite on macOS and Linux, and on a Python built without extension loading.</li>
+    <li>Reconcile with the unmerged <code>explain</code> command on the feature/retrieval-quality branch.</li>
+    <li>Review, push, open a PR, and deploy with <code>install.py</code>: all still to do.</li>
+  </ul>
+
+  <h2>Verification and provenance</h2>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>Check</th><th>Command</th><th>Result</th></tr></thead>
+      <tbody>
+        <tr><td>Baseline suite (before)</td><td><code>python -m unittest discover -s tests</code></td><td>1,085 OK, 1 skipped</td></tr>
+        <tr><td>Suite, sqlite-vec loaded</td><td>same</td><td id="suite-on">1,139 OK, 1 skipped</td></tr>
+        <tr><td>Suite, native off</td><td><code>LIVING_MEMORY_NATIVE=0</code> + same</td><td id="suite-off">1,139 OK, 6 skipped</td></tr>
+        <tr><td>Hook simulation</td><td><code>scripts/simulate.py --scenario all --harness all</code></td><td>83 passed</td></tr>
+        <tr><td>Hook smoke, Claude and Codex</td><td>native on, off, no model</td><td>valid JSON, under 4,000 chars</td></tr>
+        <tr><td>Variant evaluation</td><td><code>scripts/eval_retrieval.py --fixture tests/fixtures/eval_units.json --config A..E</code></td><td>table above</td></tr>
+        <tr><td>Vector benchmark</td><td><code>scripts/benchmark.py --vectors N</code></td><td>table above</td></tr>
+        <tr><td>Independent review</td><td><code>codex review --base origin/main</code></td><td>8 findings, 8 fixed</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="meta" style="margin-top:1.2rem">
+    <span><b>Repository</b> tyler59simon/agentic-living-memory</span>
+    <span><b>Branch</b> feat/sqlite-vec-memory-retrieval, in its own worktree</span>
+    <span><b>Base</b> c01b0827f923 (origin/main, PR #40, 2026-11-12)</span>
+    <span><b>Commits</b> <span id="commits">499371c (implementation), then the review fixes</span></span>
+    <span><b>Pushed</b> no</span>
+  </p>
+  <p>Main and the existing feature/retrieval-quality worktree were not changed. All results, fixtures and the write-up are in the branch under <code>docs/evaluations/sqlite-vec/</code>.</p>
+</section>
+
+<footer class="col">Written in the first person by the engineer who did the work, an AI agent (Claude), for the project's maintainer. Every number on this page comes from a file in the branch; synthetic results are labelled.</footer>
+</main>
+
+<script>
+(function(){
+  var tabs=[].slice.call(document.querySelectorAll('[role="tab"]'));
+  function show(tab){
+    tabs.forEach(function(t){
+      var on=t===tab;t.setAttribute('aria-selected',on?'true':'false');t.tabIndex=on?0:-1;
+      document.getElementById(t.getAttribute('aria-controls')).hidden=!on;
+    });
+  }
+  tabs.forEach(function(t,i){
+    t.addEventListener('click',function(){show(t)});
+    t.addEventListener('keydown',function(e){
+      var d=e.key==='ArrowRight'?1:e.key==='ArrowLeft'?-1:0;
+      if(d){e.preventDefault();var n=tabs[(i+d+tabs.length)%tabs.length];show(n);n.focus();}
+    });
+  });
+})();
+</script>

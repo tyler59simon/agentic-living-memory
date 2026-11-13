@@ -514,6 +514,11 @@ def note_hits(refs,root=None,query=None):
                 rows=db.execute(f"SELECT id,title,type,updated,body,revision,tags FROM notes WHERE status='active' AND id IN ({','.join('?'*len(ids))})",ids).fetchall()
             finally:db.close()
         except (ValueError,sqlite3.Error,TypeError):continue
+        # The same publication rule as search: a learned runbook that is suspended, retired or no longer supported is not served.
+        from .learning import published
+        try:manifests,servable=published(root,domain)
+        except (ValueError,OSError):manifests,servable={},set()
+        rows=[r for r in rows if r[0] not in manifests or r[0] in servable]
         index,_=vectors.open_index(domain,root,fingerprint,identity,model.dim if model else 0)
         try:units=index.units(wanted,[r[0] for r in rows]) if index is not None else {}
         finally:
@@ -521,6 +526,7 @@ def note_hits(refs,root=None,query=None):
         for note_id,title,kind,updated,body,revision,tags in rows:
             hit={'id':note_id,'domain':domain,'title':title,'type':kind or 'knowledge','updated':str(updated or '')[:10],'status':'active',
                  'revision':revision,'snippet':snippet(body,[]),'engine':'topic','units':units.get(note_id,[])}
+            if note_id in manifests:hit.update(procedure_id=manifests[note_id]['id'],procedure_version=manifests[note_id]['current_version'])
             if is_interim({'type':kind,'title':title,'body':body}):hit['interim']=True
             found[f'{domain}:{note_id}']=hit
     return [found[r] for r in refs if r in found]

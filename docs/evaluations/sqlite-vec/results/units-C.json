@@ -16,8 +16,8 @@
     "injected_chars": 10280,
     "read_chars": 4856,
     "tokens_per_answered": 165.0,
-    "p50_ms": 19.1,
-    "p95_ms": 21.1,
+    "p50_ms": 20.6,
+    "p95_ms": 23.8,
     "by_kind": {
       "exact": {
         "cases": 3,
@@ -85,11 +85,11 @@
         "kind": "paraphrase",
         "prompt": "are Japanese depot clock readings adjusted before comparing",
         "ranked": [
-          "evalunits:ca68f2a3-f352-4056-bc71-fc5d5937ce69",
-          "evalunits:9c5e444a-40ee-4f62-924f-f414b4d2c936",
-          "evalunits:c710b06b-bff0-4557-abc1-e913cfae553b",
-          "evalunits:425a3763-7f77-47e0-9678-d3a37e1b7b03",
-          "evalunits:b69f1e04-fcb7-44d9-acc2-f753a3620c9e"
+          "evalunits:cbedec5a-ba9e-4924-85ce-a474098ad67b",
+          "evalunits:cb304edf-2067-464f-afd5-5a82368cb0e6",
+          "evalunits:2628f4d7-6ad9-4e1d-940a-91e5a97c3186",
+          "evalunits:a5c05b1f-7380-4253-80ff-62594662187e",
+          "evalunits:74373445-4853-4915-af9a-550b054e1806"
         ],
         "injected": []
       },
@@ -97,11 +97,11 @@
         "kind": "buried-paraphrase",
         "prompt": "how long until stale stock alerts page someone",
         "ranked": [
-          "evalunits:ca68f2a3-f352-4056-bc71-fc5d5937ce69",
-          "evalunits:d48fe304-3110-4179-9bf3-a13cc3073e8f",
-          "evalunits:c710b06b-bff0-4557-abc1-e913cfae553b",
-          "evalunits:058cec2b-d40d-41ed-b542-266ad70501e9",
-          "evalunits:2f2b2c80-1ec8-4da7-b402-1110968732a5"
+          "evalunits:cbedec5a-ba9e-4924-85ce-a474098ad67b",
+          "evalunits:f7155205-0d71-4dee-bcd2-83b716932b20",
+          "evalunits:2628f4d7-6ad9-4e1d-940a-91e5a97c3186",
+          "evalunits:dbac5ea5-d99b-4d44-ad38-c920c4d5918e",
+          "evalunits:533176f8-3fa0-4cb8-aa81-364096b1d7f3"
         ],
         "injected": []
       },
@@ -109,11 +109,11 @@
         "kind": "buried-paraphrase",
         "prompt": "do signatures made with the new secret still verify after undoing a rotation",
         "ranked": [
-          "evalunits:b01e371c-ea94-4670-a395-9a1cebacbb8d",
-          "evalunits:9742bbdf-4c6a-4d1f-8471-df7b3efc6b28",
-          "evalunits:c710b06b-bff0-4557-abc1-e913cfae553b",
-          "evalunits:69b7aa0a-86fb-4a74-9d89-202329f43328",
-          "evalunits:cb095edc-8893-4e94-98d6-a1bfd109148c"
+          "evalunits:53539ed4-7c5f-442f-901d-a06347b884f6",
+          "evalunits:3a87e329-af61-44ad-8e5f-521adb084bcc",
+          "evalunits:2628f4d7-6ad9-4e1d-940a-91e5a97c3186",
+          "evalunits:6f4bed3e-46ff-4662-b145-94a81d1b4c45",
+          "evalunits:297bce8a-d006-4ea4-9c10-e4a8651eada3"
         ],
         "injected": []
       },
@@ -121,11 +121,11 @@
         "kind": "buried-paraphrase",
         "prompt": "what memory problem did the salary file job hit",
         "ranked": [
-          "evalunits:d48fe304-3110-4179-9bf3-a13cc3073e8f",
-          "evalunits:ca68f2a3-f352-4056-bc71-fc5d5937ce69",
-          "evalunits:9742bbdf-4c6a-4d1f-8471-df7b3efc6b28",
-          "evalunits:f775195d-ee45-4c05-9956-d437cb8429bd",
-          "evalunits:c710b06b-bff0-4557-abc1-e913cfae553b"
+          "evalunits:f7155205-0d71-4dee-bcd2-83b716932b20",
+          "evalunits:cbedec5a-ba9e-4924-85ce-a474098ad67b",
+          "evalunits:3a87e329-af61-44ad-8e5f-521adb084bcc",
+          "evalunits:84e8c4b0-d6cd-49c0-99ee-ebd1bf8f8bff",
+          "evalunits:2628f4d7-6ad9-4e1d-940a-91e5a97c3186"
         ],
         "injected": []
       },
@@ -133,11 +133,11 @@
         "kind": "buried-paraphrase",
         "prompt": "how many days are database copies retained",
         "ranked": [
-          "evalunits:f775195d-ee45-4c05-9956-d437cb8429bd",
-          "evalunits:ca68f2a3-f352-4056-bc71-fc5d5937ce69",
-          "evalunits:c710b06b-bff0-4557-abc1-e913cfae553b",
-          "evalunits:9c5e444a-40ee-4f62-924f-f414b4d2c936",
-          "evalunits:b01e371c-ea94-4670-a395-9a1cebacbb8d"
+          "evalunits:84e8c4b0-d6cd-49c0-99ee-ebd1bf8f8bff",
+          "evalunits:cbedec5a-ba9e-4924-85ce-a474098ad67b",
+          "evalunits:2628f4d7-6ad9-4e1d-940a-91e5a97c3186",
+          "evalunits:cb304edf-2067-464f-afd5-5a82368cb0e6",
+          "evalunits:53539ed4-7c5f-442f-901d-a06347b884f6"
         ],
         "injected": []
       },
@@ -145,11 +145,11 @@
         "kind": "buried-paraphrase",
         "prompt": "what made the iOS release cadence matter for the refresh decision",
         "ranked": [
-          "evalunits:69b7aa0a-86fb-4a74-9d89-202329f43328",
-          "evalunits:f12ceb1f-4e37-4ada-bddd-bdbd7ef7d16b",
-          "evalunits:2f2b2c80-1ec8-4da7-b402-1110968732a5",
-          "evalunits:ca68f2a3-f352-4056-bc71-fc5d5937ce69",
-          "evalunits:b0f4396c-a30c-41a1-99ce-1b7d36eedfdb"
+          "evalunits:6f4bed3e-46ff-4662-b145-94a81d1b4c45",
+          "evalunits:25b2c615-dfe3-4afd-96bb-75818fddab18",
+          "evalunits:533176f8-3fa0-4cb8-aa81-364096b1d7f3",
+          "evalunits:cbedec5a-ba9e-4924-85ce-a474098ad67b",
+          "evalunits:1617d917-7f07-45da-88af-16a25a742447"
         ],
         "injected": []
       }
@@ -283,6 +283,6 @@
     "mode": "overview",
     "native_table": "fresh",
     "size_bytes": 2510848,
-    "updated": "2026-11-13T02:26:45Z"
+    "updated": "2026-11-13T03:10:42Z"
   }
 }

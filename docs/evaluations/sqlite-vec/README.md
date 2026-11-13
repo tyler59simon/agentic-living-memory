@@ -28,12 +28,12 @@ Measured 2026-11-12 on branch `feat/sqlite-vec-memory-retrieval`, built from `or
 
 | Config | recall@1 | injected hit | false injection | answer in hook text | answered with one read | polarity errors | est. tokens per answered | prompt p50 / p95 ms | session steps correct |
 |---|---|---|---|---|---|---|---|---|---|
-| A | 1.0 | 0.704 | 0.0 | 0.370 | 0.704 | 0 | 182 | 16.6 / 19.2 | 0.615 |
-| B | 1.0 | 0.778 | 0.0 | 0.444 | 0.778 | 0 | 165 | 16.7 / 18.9 | 0.615 |
-| C | 1.0 | 0.778 | 0.0 | 0.444 | 0.778 | 0 | 165 | 19.1 / 21.1 | 0.615 |
-| P | 1.0 | 0.852 | 0.2 | 0.481 | 0.852 | 0 | 157 | 22.4 / 24.6 | 0.615 |
-| D | 1.0 | 0.852 | 0.2 | 0.481 | 0.852 | 0 | 157 | 19.8 / 21.7 | 0.615 |
-| E | 1.0 | 0.852 | 0.2 | 0.778 | 0.852 | 0 | 110 | 20.0 / 22.1 | 1.000 |
+| A | 1.0 | 0.704 | 0.0 | 0.370 | 0.704 | 0 | 182 | 16.8 / 19.0 | 0.615 |
+| B | 1.0 | 0.778 | 0.0 | 0.444 | 0.778 | 0 | 165 | 16.7 / 20.1 | 0.615 |
+| C | 1.0 | 0.778 | 0.0 | 0.444 | 0.778 | 0 | 165 | 20.6 / 23.8 | 0.615 |
+| P | 1.0 | 0.852 | 0.2 | 0.481 | 0.852 | 0 | 157 | 21.8 / 24.7 | 0.615 |
+| D | 1.0 | 0.852 | 0.2 | 0.481 | 0.852 | 0 | 157 | 19.8 / 22.9 | 0.615 |
+| E | 1.0 | 0.852 | 0.2 | 0.778 | 0.852 | 0 | 110 | 19.9 / 30.2 | 1.000 |
 
 Reading it:
 
@@ -65,7 +65,8 @@ Every variant: retrieval hit@3 1.0, false injection 0.0, 265 mean injected chara
 ## Tests
 
 - Baseline before any change: 1,085 tests, OK (1 skipped), 468 s (`baseline/unittest.txt`).
-- After: see `results/unittest-final.txt`. New: `tests/test_units.py`, `tests/test_vectors.py` (its `Native` class needs sqlite-vec and is skipped without it), `tests/test_injection.py`, one source test. Adapted: `tests/test_index_v3.py` (note-level embed counts exclude the unit index), `tests/scenarios/retrieval-gate.json` (an explicit "remind me" now delivers again, per the task; a repeat without it is still suppressed).
+- After, including the review fixes: 1,139 tests OK (1 skipped) with sqlite-vec loaded, and 1,139 OK (6 skipped: the 5 native tests and the existing skip) with `LIVING_MEMORY_NATIVE=0` (`results/unittest-final.txt`, `results/unittest-final-native-off.txt`); about 555 s each, the two run side by side. One more test, added after those runs for the read --section finding, passes on its own.
+- Codex review (gpt-6.1-sol, extra-high reasoning, `codex review --base origin/main`): 2 P1 and 6 P2 findings, all confirmed and fixed; each has a regression test in `tests/test_injection.py` (class `ReviewFindings`) or `tests/test_vectors.py` (`test_ties_at_the_knn_cutoff_resolve_like_python`) that fails on commit 499371c and passes after. New: `tests/test_units.py`, `tests/test_vectors.py` (its `Native` class needs sqlite-vec and is skipped without it), `tests/test_injection.py`, one source test. Adapted: `tests/test_index_v3.py` (note-level embed counts exclude the unit index), `tests/scenarios/retrieval-gate.json` (an explicit "remind me" now delivers again, per the task; a repeat without it is still suppressed).
 - Hook smoke test (Claude and Codex adapters, native on, off, and a store with no model): valid JSON, 2,495 to 2,877 characters.
 - Not run: macOS and Linux, a Python built without extension loading (covered by a mocked `load_unsupported` path only), an endpoint policy that blocks DLL loading (covered by a mocked `load_blocked` path).
 

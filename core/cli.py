@@ -703,12 +703,20 @@ def main(argv=None):
             result={k:v for k,v in note.items() if k not in {'body','path','digest'}}
             if args.section:
                 # One section, as the prompt hook's evidence lines name it: "Why", or a path like "Notes > Deeper detail".
-                from .units import extract,_norm
-                wanted=_norm(args.section);found=[u for u in extract(dict(note,path=path)) if u['role']!='overview' and (_norm(u['heading'])==wanted or _norm(u['heading'].split(' > ')[-1])==wanted)]
-                if not found:raise ValueError(f"no section {args.section!r} in this note; sections: {', '.join(u['heading'] for u in extract(dict(note,path=path)) if u['role']!='overview') or 'none'}")
-                lines=Path(path).read_text(encoding='utf-8-sig').replace('\r\n','\n').split('\n')
-                text='\n\n'.join('\n'.join(lines[u['lines'][0]-1:u['lines'][1]]) for u in found if u['lines'])
-                result.update(section={'heading':found[0]['heading'],'role':found[0]['role'],'lines':[found[0]['lines'][0],found[-1]['lines'][1]]},
+                # The text comes from the note as served (an approved learned runbook's approved body, not an unreviewed edit of
+                # its file); file line numbers are given only when the file still holds exactly that body.
+                from .units import extract,_norm,_sections,role_of
+                from .repository import parse_text
+                wanted=_norm(args.section);body=note['body']
+                found=[(p,h,rows) for p,h,rows in _sections(body)[1:] if h and (_norm(' > '.join(p))==wanted or _norm(h)==wanted)]
+                if not found:raise ValueError(f"no section {args.section!r} in this note; sections: {', '.join(' > '.join(p) for p,h,_ in _sections(body)[1:] if h) or 'none'}")
+                path_,heading,rows=found[0];text='\n'.join(t for _,t in rows).strip()
+                try:same=(parse_text(Path(path).read_text(encoding='utf-8-sig'),path) or {}).get('body')==body
+                except (OSError,UnicodeDecodeError):same=False
+                spans={}
+                for u in extract(dict(note,path=path)) if same else []:spans.setdefault(u['heading'],u['lines'])
+                span=spans.get(' > '.join(path_));last=max(n for n,t in rows if t.strip())
+                result.update(section={'heading':' > '.join(path_),'role':role_of(heading),'lines':[span[0],span[0]+last-rows[0][0]] if span else None},
                               body=text[:max(0,min(64000,args.max_chars))],truncated=len(text)>args.max_chars)
             elif not args.metadata_only:result.update(body=note['body'][:max(0,min(64000,args.max_chars))],truncated=len(note['body'])>args.max_chars)
             if note.get('learning_procedure') and note.get('learning_state')=='active':

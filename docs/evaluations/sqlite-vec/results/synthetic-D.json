@@ -7,7 +7,7 @@
     "false_injection": 0.0,
     "forbid_violations": [],
     "mean_injected_chars": 265,
-    "mean_ms": 16.9,
+    "mean_ms": 16.7,
     "overview_rate": 0.286,
     "misses": [],
     "false_injections": []
@@ -18,7 +18,7 @@
     "negative": 4,
     "recall": 1.0,
     "false_injection": 0.0,
-    "mean_ms": 31.5,
+    "mean_ms": 30.9,
     "misses": [],
     "false_injections": []
   },
@@ -29,7 +29,7 @@
     "recall": 1.0,
     "notes_recalled": 0.833,
     "false_injection": 0.0,
-    "mean_ms": 77.4,
+    "mean_ms": 76.1,
     "max_chars": 983,
     "misses": [],
     "false_injections": []
@@ -55,7 +55,7 @@
     "hit@3": 1.0,
     "prompt_recall": 1.0,
     "false_injection": 0.0,
-    "mean_ms": 5.9,
+    "mean_ms": 6.0,
     "misses": [],
     "prompt_misses": [],
     "false_injections": []
@@ -101,7 +101,7 @@
   },
   "config": "D",
   "index": {
-    "build_s": 0.05,
+    "build_s": 0.06,
     "units": 11,
     "notes": 11,
     "vectors": 11,
@@ -109,6 +109,6 @@
     "mode": "units",
     "native_table": "fresh",
     "size_bytes": 2215936,
-    "updated": "2026-11-13T02:27:10Z"
+    "updated": "2026-11-13T03:11:07Z"
   }
 }

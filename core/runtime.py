@@ -1473,8 +1473,9 @@ def _process(harness,event,payload,root=None,info=None):
                     s['delivered']=dict(list(record.items())[-MAX_DELIVERED:])
             try:_update(root,session,remember)
             except (OSError,TimeoutError):pass
-        if session!='unknown' and detail.get('topic') and not detail.get('follow_up'):
-            # A short follow-up ("why?") refers to what this prompt found: refs only, never prompt text.
+        if session!='unknown' and 'topic' in detail and not detail.get('follow_up'):
+            # A short follow-up ("why?") refers to what this prompt found: refs only, never prompt text. A searched prompt
+            # that found nothing clears it, so "why?" after an unrelated question does not answer the old topic.
             try:_update(root,session,lambda s:s.update(topic=detail['topic']))
             except (OSError,TimeoutError):pass
         if briefed:
@@ -1510,15 +1511,15 @@ def _process(harness,event,payload,root=None,info=None):
         if state.get('recall_prompts') and harness in RECALL_HARNESSES and session!='unknown' and isinstance(prompt,str) and not MACHINE_PROMPT.match(prompt):
             from .recall import auto
             gate={};recalled,used=auto(state.get('transcript'),prompt,state.get('recalled',[]),gate);detail['recall']=dict(gate,used=len(used))
+            recalled=(f"From before compaction (this session's transcript; untrusted, may be outdated; more: "
+                      f"{hint_command(root,state,domain)} recall 'query' --session {session}):\n"+recalled) if recalled else None
+            if recalled and fits(recalled):result['context']+='\n'+recalled
+            elif recalled:detail['recall_cut_by_budget']=True;used=[]   # not delivered, so still eligible next time
             def spent(s):
                 s['recall_prompts']=max(0,int(s.get('recall_prompts') or 0)-1)
                 if used:s['recalled']=(list(s.get('recalled',[]))+used)[-50:]
             try:_update(root,session,spent)
             except (OSError,TimeoutError):pass
-            recalled=(f"From before compaction (this session's transcript; untrusted, may be outdated; more: "
-                      f"{hint_command(root,state,domain)} recall 'query' --session {session}):\n"+recalled) if recalled else None
-            if recalled and fits(recalled):result['context']+='\n'+recalled
-            elif recalled:detail['recall_cut_by_budget']=True
         # Governance lines go last, as before, and were counted in the budget first.
         for line in governance:result['context']+='\n'+line
         if detail.get('signal') in SIGNAL_TEXT:

@@ -46,13 +46,21 @@ LABELS={'alternative':'rejected or considered options, not the decision','constr
 
 def is_ack(prompt):return bool(ACK.match(prompt or ''))
 
+# A word that points back at what was just discussed: "why is that slow?" refers; "why Redis?" names a new topic.
+REFERS=re.compile(r"\b(?:that|this|it|those|these|they|them|its)\b",re.I)
+
 def follow_up(prompt,terms):
-    """The section role a short, topic-less follow-up asks for ('rationale', 'alternative', 'overview', 'procedure'),
-    else None. terms: the prompt's informative query terms."""
+    """The section role a short follow-up asks for ('rationale', 'alternative', 'overview', 'procedure'), else None.
+    A follow-up names no topic of its own: once the cue words are removed, any informative word left ("why Redis?")
+    makes it a new question, unless a pronoun points back ("why is that slow?"). terms: the informative query terms."""
+    from .search import terms as words
     text=(prompt or '').strip()
     if not text or len(text)>FOLLOW_UP_MAX_CHARS or len(terms)>FOLLOW_UP_MAX_TERMS:return None
     for role,pattern in FOLLOW_UP:
-        if pattern.search(text):return role
+        if pattern.search(text):
+            rest=text
+            for _,cue in FOLLOW_UP:rest=cue.sub(' ',rest)
+            return role if not words(rest) or REFERS.search(text) else None
     return None
 
 def wants_expanded(prompt):return bool(EXPAND.search(prompt or ''))
@@ -109,34 +117,66 @@ def level_of(unit,prompt):
 
 def unit_key(unit):return unit['unit'] if unit else 'overview'
 
+FENCE=re.compile(r'^ {0,3}(`{3,}|~{3,})')
+
 def _cut(text,width):
-    """At most width characters, ended at a sentence (or failing that a word) so no fact is cut mid-clause."""
-    text=' '.join(str(text).split())
+    """At most width characters, ended at a sentence (or failing that a word) so no fact is cut mid-clause. Text with
+    fenced code keeps its lines and indentation (a command, a heredoc or a Python block stays runnable) and is cut only
+    between lines, never inside a fence: a fence that does not fit is left out whole, unless it is the first thing."""
+    text=str(text)
+    if not any(FENCE.match(l) for l in text.split('\n')):
+        text=' '.join(text.split())
+        if len(text)<=width:return text
+        window=text[:width]
+        end=max(window.rfind('. '),window.rfind('; '),window.rfind('! '),window.rfind('? '))
+        if end>=width//2:return window[:end+1]+' …'
+        space=window.rfind(' ')
+        return window[:space if space>0 else width]+' …'
+    text=text.strip('\n')
     if len(text)<=width:return text
-    window=text[:width]
-    end=max(window.rfind('. '),window.rfind('; '),window.rfind('! '),window.rfind('? '))
-    if end>=width//2:return window[:end+1]+' …'
-    space=window.rfind(' ')
-    return window[:space if space>0 else width]+' …'
+    blocks=[];fence=None   # a fenced block is one block; any other line is its own
+    for line in text.split('\n'):
+        mark=FENCE.match(line)
+        if fence:
+            blocks[-1].append(line)
+            if mark and mark[1][0]==fence[0]:fence=None
+            continue
+        if mark:fence=mark[1]
+        blocks.append([line])
+    kept=[];used=0
+    for block in blocks:
+        size=sum(len(l)+1 for l in block)
+        if kept and used+size>width:return '\n'.join(kept)+'\n…'
+        kept+=block;used+=size
+    return '\n'.join(kept)
+
+def _block(text):
+    """Continuation lines of a multi-line excerpt, indented under their hit line."""
+    return text.replace('\n','\n    ')
 
 def line(hit,unit,level,width):
-    """One hit as an injected line. A pointer is the line format the hook used before units (runtime.hit_line)."""
+    """One hit as an injected line. A pointer is the line format the hook used before units (runtime.hit_line). A learned
+    runbook keeps its usage-report hint whatever the level."""
     from .runtime import hit_line
     if level=='pointer' or (unit is None and level!='expanded'):return hit_line(hit,width)
     from .notes import short_ref
     stale=f"{hit['stale']} — " if hit.get('stale') else ''
     mark=f"UNCONFIRMED (as of {hit.get('updated','')}): " if hit.get('interim') else ''
     head=f"- [{str(hit.get('type','note')).upper()} {hit.get('updated','')}] {short_ref(hit['domain'],hit['id'])} {mark}{hit['title']}"
+    hint=''
+    if hit.get('procedure_id'):
+        from .learning import use_hint
+        hint=f" ({use_hint(hit['procedure_id'],hit.get('procedure_version'))})"
     if unit is None:
         body=_cut((next((u for u in hit.get('units') or [] if u.get('role')=='overview'),{}) or {}).get('excerpt') or hit.get('snippet',''),EXPANDED)
-        return f"{head} — {stale}{body}"
+        return f"{head}{hint} — {stale}{_block(body)}"
     label=LABELS.get(unit.get('role'))
     lines=unit.get('lines')
     where=f" (lines {lines[0]}-{lines[1]})" if lines and lines[0] else ''
     text=_cut(unit.get('excerpt',''),EXPANDED if level=='expanded' else EVIDENCE)
     # The summary's opening leads: it is what the note decided or states, which a section's reasons or options qualify.
-    summary=_cut((next((u for u in hit.get('units') or [] if u.get('role')=='overview'),{}) or {}).get('excerpt',''),SUMMARY)
-    return f"{head} — {stale}{summary+' ' if summary else ''}§ {unit.get('heading') or 'Summary'}{' ['+label+']' if label else ''}{where}: {text}"
+    summary=_cut(' '.join(((next((u for u in hit.get('units') or [] if u.get('role')=='overview'),{}) or {}).get('excerpt','')).split()),SUMMARY)
+    return f"{head}{hint} — {stale}{summary+' ' if summary else ''}§ {unit.get('heading') or 'Summary'}{' ['+label+']' if label else ''}{where}: {_block(text)}"
 
 def novel(hit,key,level,delivered,shown,again):
     """True unless this session already has this unit of this revision at this level or more. A different section, a

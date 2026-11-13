@@ -16,8 +16,8 @@
     "injected_chars": 10228,
     "read_chars": 4856,
     "tokens_per_answered": 181.7,
-    "p50_ms": 16.6,
-    "p95_ms": 19.2,
+    "p50_ms": 16.8,
+    "p95_ms": 19.0,
     "by_kind": {
       "exact": {
         "cases": 3,
@@ -85,8 +85,8 @@
         "kind": "paraphrase",
         "prompt": "are Japanese depot clock readings adjusted before comparing",
         "ranked": [
-          "evalunits:af890182-7bf0-46e4-a7d6-f884d62ee55c",
-          "evalunits:d2563a4a-4e1e-4018-a085-b714be1202f5"
+          "evalunits:56ce7ff2-d0e3-4a8c-b952-2d16e093b8c2",
+          "evalunits:7d9e3db1-21a8-4863-8e91-d9059355aaba"
         ],
         "injected": []
       },
@@ -94,7 +94,7 @@
         "kind": "paraphrase",
         "prompt": "when are the Postgres snapshots taken",
         "ranked": [
-          "evalunits:b1a4dd84-b5ac-46ce-b193-12999d572fa9"
+          "evalunits:8b8238c7-bf12-409c-83ab-4d2f759ff479"
         ],
         "injected": []
       },
@@ -102,8 +102,8 @@
         "kind": "superseded",
         "prompt": "how long do we keep application logs",
         "ranked": [
-          "evalunits:5e6d223c-9c99-4fa4-914f-6fe122555a78",
-          "evalunits:af8b9d33-c3bd-4c52-a3e3-efe1d2e16bc9"
+          "evalunits:361f3253-d375-4b36-97ae-73ab37bf679c",
+          "evalunits:1328bc49-1e00-421d-8eca-5995b1dd61d4"
         ],
         "injected": []
       },
@@ -111,8 +111,8 @@
         "kind": "buried-paraphrase",
         "prompt": "how long until stale stock alerts page someone",
         "ranked": [
-          "evalunits:af890182-7bf0-46e4-a7d6-f884d62ee55c",
-          "evalunits:af8b9d33-c3bd-4c52-a3e3-efe1d2e16bc9"
+          "evalunits:56ce7ff2-d0e3-4a8c-b952-2d16e093b8c2",
+          "evalunits:1328bc49-1e00-421d-8eca-5995b1dd61d4"
         ],
         "injected": []
       },
@@ -120,8 +120,8 @@
         "kind": "buried-paraphrase",
         "prompt": "do signatures made with the new secret still verify after undoing a rotation",
         "ranked": [
-          "evalunits:4f765ebd-b6ac-4dca-849a-d4d3a1d0cea1",
-          "evalunits:6a81e89e-07ff-4327-a015-bed8ab9d08fa"
+          "evalunits:a8b625a4-31ff-4c7e-b5ab-aa6f0dc3186a",
+          "evalunits:50539e78-b421-4433-8a25-c2d6e09bed8b"
         ],
         "injected": []
       },
@@ -129,8 +129,8 @@
         "kind": "buried-paraphrase",
         "prompt": "what memory problem did the salary file job hit",
         "ranked": [
-          "evalunits:af8b9d33-c3bd-4c52-a3e3-efe1d2e16bc9",
-          "evalunits:af890182-7bf0-46e4-a7d6-f884d62ee55c"
+          "evalunits:1328bc49-1e00-421d-8eca-5995b1dd61d4",
+          "evalunits:56ce7ff2-d0e3-4a8c-b952-2d16e093b8c2"
         ],
         "injected": []
       },
@@ -138,11 +138,11 @@
         "kind": "buried-paraphrase",
         "prompt": "how many days are database copies retained",
         "ranked": [
-          "evalunits:b1a4dd84-b5ac-46ce-b193-12999d572fa9",
-          "evalunits:af890182-7bf0-46e4-a7d6-f884d62ee55c",
-          "evalunits:5e6d223c-9c99-4fa4-914f-6fe122555a78",
-          "evalunits:d2563a4a-4e1e-4018-a085-b714be1202f5",
-          "evalunits:4f765ebd-b6ac-4dca-849a-d4d3a1d0cea1"
+          "evalunits:8b8238c7-bf12-409c-83ab-4d2f759ff479",
+          "evalunits:56ce7ff2-d0e3-4a8c-b952-2d16e093b8c2",
+          "evalunits:361f3253-d375-4b36-97ae-73ab37bf679c",
+          "evalunits:7d9e3db1-21a8-4863-8e91-d9059355aaba",
+          "evalunits:a8b625a4-31ff-4c7e-b5ab-aa6f0dc3186a"
         ],
         "injected": []
       },
@@ -150,7 +150,7 @@
         "kind": "buried-paraphrase",
         "prompt": "what made the iOS release cadence matter for the refresh decision",
         "ranked": [
-          "evalunits:d0c473e8-6c65-4c23-9018-f0e6cc1b55f2"
+          "evalunits:ad48b221-8602-4788-bf20-b9339943bbaf"
         ],
         "injected": []
       }
@@ -283,6 +283,6 @@
     "mode": "units",
     "native_table": "absent",
     "size_bytes": 118784,
-    "updated": "2026-11-13T02:26:25Z"
+    "updated": "2026-11-13T03:10:22Z"
   }
 }

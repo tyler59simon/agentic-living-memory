@@ -16,8 +16,8 @@
     "injected_chars": 10512,
     "read_chars": 5286,
     "tokens_per_answered": 156.9,
-    "p50_ms": 22.4,
-    "p95_ms": 24.6,
+    "p50_ms": 21.8,
+    "p95_ms": 24.7,
     "by_kind": {
       "exact": {
         "cases": 3,
@@ -85,11 +85,11 @@
         "kind": "paraphrase",
         "prompt": "are Japanese depot clock readings adjusted before comparing",
         "ranked": [
-          "evalunits:82bddbca-dfec-40f3-8f5f-15b1f99e8323",
-          "evalunits:7fef38eb-ac21-4f08-9ac2-ec59a119267e",
-          "evalunits:fefa0223-9606-43a4-8bf6-21c67241d61c",
-          "evalunits:db490f7a-96c2-4ad2-bacb-6618b91855f3",
-          "evalunits:825b5474-7025-42b9-865d-34036866c10d"
+          "evalunits:9ad6c7a6-3217-441f-89b1-20c9a6badae4",
+          "evalunits:3128cee3-e8dc-4e3f-8013-df2649cbea8c",
+          "evalunits:759a0fad-41c0-4e3c-ba68-58e37f6d77d3",
+          "evalunits:0edbc1f8-5276-42ff-871b-af78836b4945",
+          "evalunits:7b2666f2-539f-4152-b962-6a9ac73c425b"
         ],
         "injected": []
       },
@@ -97,11 +97,11 @@
         "kind": "buried-paraphrase",
         "prompt": "how long until stale stock alerts page someone",
         "ranked": [
-          "evalunits:82bddbca-dfec-40f3-8f5f-15b1f99e8323",
-          "evalunits:bab43bde-e67d-49b6-9ced-3fc163ff86fb",
-          "evalunits:fefa0223-9606-43a4-8bf6-21c67241d61c",
-          "evalunits:78f91c28-f11e-4e01-8c28-7229bbd80ceb",
-          "evalunits:571f383e-b422-406c-87dd-f92e130181ef"
+          "evalunits:9ad6c7a6-3217-441f-89b1-20c9a6badae4",
+          "evalunits:53624db7-0926-4b21-8454-28407a12fde7",
+          "evalunits:759a0fad-41c0-4e3c-ba68-58e37f6d77d3",
+          "evalunits:548da2ad-69f0-44a4-8531-c8f8fd190c95",
+          "evalunits:f37123d3-3505-4917-9497-8f6d3f9b4eb9"
         ],
         "injected": []
       },
@@ -109,11 +109,11 @@
         "kind": "buried-paraphrase",
         "prompt": "do signatures made with the new secret still verify after undoing a rotation",
         "ranked": [
-          "evalunits:3333a80b-2fee-4f15-9f94-18e9ef91e1b9",
-          "evalunits:5ba0c8ae-3f6a-48a6-ad8e-a6acd3e4e6e0",
-          "evalunits:fefa0223-9606-43a4-8bf6-21c67241d61c",
-          "evalunits:78f91c28-f11e-4e01-8c28-7229bbd80ceb",
-          "evalunits:9ffb3044-2dac-440f-b8f3-202c61a65262"
+          "evalunits:c6d0875f-4acf-4b31-9954-e6feb552beed",
+          "evalunits:a53a8e36-5610-49c8-afdd-e9756860dc16",
+          "evalunits:759a0fad-41c0-4e3c-ba68-58e37f6d77d3",
+          "evalunits:548da2ad-69f0-44a4-8531-c8f8fd190c95",
+          "evalunits:6f0ca7ef-6827-4a7b-9bc6-d0c5350a2998"
         ],
         "injected": []
       },
@@ -121,11 +121,11 @@
         "kind": "buried-paraphrase",
         "prompt": "what memory problem did the salary file job hit",
         "ranked": [
-          "evalunits:bab43bde-e67d-49b6-9ced-3fc163ff86fb",
-          "evalunits:82bddbca-dfec-40f3-8f5f-15b1f99e8323",
-          "evalunits:5ba0c8ae-3f6a-48a6-ad8e-a6acd3e4e6e0",
-          "evalunits:0792f1b6-2815-4e90-b5e9-dc2500fa2bd6",
-          "evalunits:fefa0223-9606-43a4-8bf6-21c67241d61c"
+          "evalunits:53624db7-0926-4b21-8454-28407a12fde7",
+          "evalunits:9ad6c7a6-3217-441f-89b1-20c9a6badae4",
+          "evalunits:a53a8e36-5610-49c8-afdd-e9756860dc16",
+          "evalunits:4d4a81c2-88de-450e-bb09-e11e01729efa",
+          "evalunits:759a0fad-41c0-4e3c-ba68-58e37f6d77d3"
         ],
         "injected": []
       }
@@ -134,7 +134,7 @@
       {
         "prompt": "write a haiku about autumn leaves",
         "injected": [
-          "evalunits:03fa29b5-8cb2-4954-b659-af3e4c4b5282"
+          "evalunits:ce3403d4-e573-4be9-b340-d31662712082"
         ]
       }
     ]
@@ -266,6 +266,6 @@
     "mode": "units",
     "native_table": "absent",
     "size_bytes": 745472,
-    "updated": "2026-11-13T02:26:56Z"
+    "updated": "2026-11-13T03:10:53Z"
   }
 }
