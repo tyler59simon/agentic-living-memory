@@ -80,6 +80,25 @@ class AutoAllow(Cli):
         self.assertEqual(runtime.memory_subcommand(doubled, 'powershell'), 'capture')
         self.assertIn('allow', self.decision('PowerShell', doubled))
 
+    def test_interpreter_and_script_paths_may_be_single_quoted(self):
+        single = f"'{sys.executable}' '{runtime.SCRIPT}' --root '{self.root}' --domain demo "
+        ps = '& ' + single + "capture --title 'it''s fine' --summary 'x'"
+        self.assertEqual(runtime.memory_subcommand(ps, 'powershell'), 'capture')
+        self.assertIn('allow', self.decision('PowerShell', ps))
+        self.assertEqual(runtime.memory_subcommand(single + 'search x', 'posix'), 'search')
+        self.assertIn('allow', self.decision('Bash', single + 'search x'))
+        mixed = f"""'{sys.executable}' "{runtime.SCRIPT}" search x"""
+        self.assertEqual(runtime.memory_subcommand(mixed, 'posix'), 'search')
+
+    def test_other_prefix_forms_are_still_not_recognised(self):
+        py, lm = sys.executable, runtime.SCRIPT
+        for command in (f"'{py}\'x' '{lm}' search x", f"'{py}\" '{lm}' search x", f"\"{py}' '{lm}' search x", f"'{py}' '{lm}\" search x",
+                        '& $py $lm capture --title t', f"& '{py}' $lm capture", f"'{py}' '{lm}' search x; rm -rf y", f"& '{py}' '{lm}' search x | tee y", f"{py} {lm} search x"):
+            with self.subTest(command=command):
+                for grammar in (None, 'posix', 'powershell'):
+                    self.assertIsNone(runtime.memory_subcommand(command, grammar))
+        self.assertNotIn('allow', self.decision('PowerShell', f"& '{py}' '{lm}' search x; rm y"))
+
     def test_a_curly_apostrophe_is_ordinary_text_in_bash(self):
         self.assertEqual(runtime.memory_subcommand(self.cmd("search 'don\u2019t repeat'"), 'posix'), 'search')
 

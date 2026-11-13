@@ -163,11 +163,11 @@ def _words(rest,grammar):
     return None if ps and STOP_PARSING in words else words
 
 def _parsed(text,grammar=None):
-    """The argument words of an exact, unchained living_memory.py invocation, once per shell grammar that
+    """The argument words of an exact, unchained living_memory.py invocation (interpreter and script paths each double- or single-quoted, an optional leading `&`), once per shell grammar that
     may apply, else None. A tool that does not name its shell must be inert under both grammars."""
-    match=re.match(r'\s*(?:&\s*)?"([^"]+)"\s+"([^"]+)"(.*)\Z',text,re.S)
-    if not match or _norm(match[1])!=_norm(sys.executable) or _norm(match[2])!=_norm(SCRIPT):return None
-    found=[_words(match[3],g) for g in ((grammar,) if grammar in SHELL_GRAMMARS else SHELL_GRAMMARS)]
+    match=re.match(r'''\s*(?:&\s*)?(?:"([^"]+)"|'([^']+)')\s+(?:"([^"]+)"|'([^']+)')(.*)\Z''',text,re.S)   # each path double- or single-quoted: literal in both shells
+    if not match or _norm(match[1] or match[2])!=_norm(sys.executable) or _norm(match[3] or match[4])!=_norm(SCRIPT):return None
+    found=[_words(match[5],g) for g in ((grammar,) if grammar in SHELL_GRAMMARS else SHELL_GRAMMARS)]
     return None if any(words is None for words in found) else found
 
 def _subcommand(words):

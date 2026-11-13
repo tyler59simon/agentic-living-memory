@@ -17,12 +17,13 @@ cost=float(options[options.index('--cost')+1]) if '--cost' in options else 0.5
 prompt=sys.stdin.read()
 with open(calls,'a',encoding='utf-8') as f:f.write(json.dumps(prompt)+'\\n')
 if '--fail' in options:sys.exit(3)
-digested,skipped=[],[]
+digested,skipped,failed=[],[],[]
 for line in prompt.splitlines():
     found=re.match(r'^\\d+\\. ("(?:[^"\\\\]|\\\\.)*") \\((\\w+), (\\d+) bytes, (\\w+)(, no --file)?\\) read: (.+)$',line)
     if not found:continue
     path=json.loads(found[1]);kind=found[2];status=found[4];abs_=found[6]
     if '--skip-util' in options and path.endswith('util.py'):skipped.append({'path':path,'reason':'trivial'});continue
+    if '--fail-util' in options and path.endswith('util.py'):failed.append({'path':path,'reason':'capture blocked'});continue
     wording=len(Path(abs_).read_text(encoding='utf-8'))
     args=[sys.executable,cli,'--root',root,'--domain','demo','--cwd',cwd,'capture','--type','decision' if kind=='adr' else 'knowledge',
           '--title',f'{path}: a {kind} file of the kb','--summary',f'What {path} is.','--detail',f'**Facts:** {path} is {status}, {wording} characters long ({path}:1).',
@@ -31,8 +32,9 @@ for line in prompt.splitlines():
     done=subprocess.run(args,capture_output=True,text=True,encoding='utf-8')
     if done.returncode:print(done.stdout,done.stderr,file=sys.stderr);sys.exit(4)
     digested.append(path)
-report={'digested':digested,'skipped':skipped}
-if '--wrap' in options:print(json.dumps({'type':'result','is_error':False,'total_cost_usd':cost,'result':'Done.\\n'+json.dumps(report)}))
+report={'digested':digested,'skipped':skipped,**({'failed':failed} if '--no-failed-key' not in options else {})}
+denials=[{'tool_name':'PowerShell','tool_input':{}}] if '--denials' in options else []
+if '--wrap' in options:print(json.dumps({'type':'result','is_error':False,'total_cost_usd':cost,'permission_denials':denials,'result':'Done.\\n'+json.dumps(report)}))
 else:print(json.dumps({**report,'cost_usd':cost}))
 '''
 
@@ -116,6 +118,23 @@ class Reruns(IngestRun):
         retired={n['id']:n for n in inventory('demo',self.root,retired=True)}[old['id']];self.assertEqual(retired['status'],'superseded');self.assertEqual(retired['superseded_by'],active[0]['id'])
         self.assertEqual(self.cli('ingest-scan','--changed','--limit','100')[1]['counts']['stale'],0)
 
+class Failures(IngestRun):
+    UTIL='kb/src/util.py'
+    def skip_sidecar(self):return json.loads(p.read_text(encoding='utf-8')) if (p:=self.root/'domains'/'demo'/'.ingest-skips.json').exists() else {}
+    def status(self):return {i['path']:i['status'] for i in self.cli('ingest-scan','--limit','100')[1]['items']}[self.UTIL]
+    def test_a_failed_capture_is_logged_as_failed_and_never_recorded_as_a_skip(self):
+        out=self.run_script('--batch','100',agent=('--fail-util',));self.assertEqual((out['files_failed'],out['files_skipped'],out['verified']['still_open']),(1,0,1))
+        self.assertEqual(self.skip_sidecar(),{});self.assertEqual(self.status(),'new')
+        row=json.loads(self.log.read_text(encoding='utf-8').splitlines()[0]);self.assertEqual((row['failed'],row['skipped'],row['permission_denials']),([{'path':self.UTIL,'reason':'capture blocked'}],[],0))
+        self.calls.unlink();self.run_script();self.assertEqual([self.listed(p) for p in self.prompts()],[[self.UTIL]])   # offered again
+    def test_permission_denials_cancel_the_batchs_skips(self):
+        out=self.run_script('--batch','100',agent=('--wrap','--skip-util','--denials'));self.assertEqual((out['files_failed'],out['files_skipped']),(1,0))
+        self.assertEqual(self.skip_sidecar(),{});self.assertEqual(self.status(),'new')
+        row=json.loads(self.log.read_text(encoding='utf-8').splitlines()[0]);self.assertEqual((row['permission_denials'],row['skipped'],[f['path'] for f in row['failed']]),(1,[],[self.UTIL]))
+    def test_a_trivial_skip_is_still_recorded_and_an_agent_without_a_failed_key_works(self):
+        out=self.run_script('--batch','100',agent=('--wrap','--skip-util','--no-failed-key'));self.assertEqual((out['files_failed'],out['files_skipped']),(0,1))
+        self.assertEqual(list(self.skip_sidecar()),[self.UTIL]);self.assertEqual(self.status(),'skipped')
+
 class Skips(IngestRun):
     UTIL='kb/src/util.py'
     def setUp(self):
@@ -139,6 +158,15 @@ class Skips(IngestRun):
             for name in ('a','b','c'):
                 put(self.repo/f'{name}.md',name);digests.record_skips(self.root,'demo',[{'path':f'kb/{name}.md','reason':'x'}])
         self.assertEqual(sorted(digests.skips(self.root,'demo')),['kb/b.md','kb/c.md'])
+    def skip_cli(self,payload):
+        file=self.base/'skip-payload.json';file.write_text(json.dumps(payload),encoding='utf-8');return self.cli('ingest-skip','--payload-file',str(file))
+    def test_clearing_a_skip_makes_the_file_new_again_and_an_unknown_path_clears_nothing(self):
+        code,out=self.skip_cli({'clear':[self.UTIL,'kb/nothing.md']});self.assertEqual(code,0,out)
+        self.assertEqual((out['recorded'],out['cleared']),(0,1));self.assertEqual({i['path']:i['status'] for i in self.cli('ingest-scan','--limit','100')[1]['items']}[self.UTIL],'new')
+        self.assertEqual(self.skip_cli({'clear':[self.UTIL]})[1]['cleared'],0)
+    def test_one_payload_may_record_and_clear(self):
+        put(self.repo/'extra.md','x');code,out=self.skip_cli({'skipped':[{'path':'kb/extra.md','reason':'tiny'}],'clear':[self.UTIL]});self.assertEqual((out['recorded'],out['cleared']),(1,1))
+        self.assertEqual(sorted(json.loads((self.root/'domains'/'demo'/'.ingest-skips.json').read_text(encoding='utf-8'))),['kb/extra.md'])
     def test_ingest_skip_is_a_main_agent_write(self):
         code,_=self.cli('--actor','subagent','ingest-skip');self.assertNotEqual(code,0)
 

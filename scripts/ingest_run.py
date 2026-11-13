@@ -12,7 +12,9 @@ was already digested is left alone, and a changed file's new digest replaces the
 The agent argv template takes {prompt} and {model}; without {prompt} the prompt goes to the agent's stdin. No shell is used.
 The default template is `claude -p {prompt} --model MODEL --output-format json --permission-mode acceptEdits --allowedTools ...`
 (files to read, the LM CLI to run); on Windows a .cmd shim gets the prompt on stdin instead, as it cannot carry a multi-line argument.
-Each agent ends with one JSON object, {"digested": [paths], "skipped": [{"path", "reason"}]}; cost is read from the agent's own JSON
+Each agent ends with one JSON object, {"digested": [paths], "skipped": [{"path", "reason"}], "failed": [{"path", "reason"}]}
+("failed" is a file whose capture was refused or errored; it is never remembered as a skip, and neither is any skip of a batch in which Claude reported
+permission denials); cost is read from the agent's own JSON
 (total_cost_usd or cost_usd) and is the agent's claim. A run log (JSON lines) goes to the store's logs/ folder, or --log. The summary
 on stdout also counts how many of the batch files really have a current digest afterwards (a fresh ingest-scan, not the agents' word).
 """
@@ -38,12 +40,13 @@ Read each of these {count} files (the location after "read:"), then write ONE di
 - TYPE: {types}. Subject and concern tags are inferred.
 - 300-1,200 characters of load-bearing facts in all: what the file is, its key rules, decisions, constraints and gotchas, and how it connects to the rest. Cite lines as path:line. Do not copy code or long passages; never put a secret in a note.
 - Give --source the path exactly as listed; add --file '<path>' unless the file is marked (no --file).
-- Skip a trivial file (empty, boilerplate, generated, a few lines): capture nothing, give a one-line reason.
+- Skip a trivial file (empty, boilerplate, generated, a few lines): capture nothing, give a one-line reason. "skipped" is only for trivial files.
+- If a capture of a file fails (the command is refused or errors, or a permission prompt blocks it), do not retry it in another way and never report it as skipped: list it under "failed" with the reason.
 - A file marked "stale" has an old digest: capture the new one anyway and it replaces the old one. If a capture is refused as a possible duplicate, read the note it names and update it instead.
 Files:
 {files}
 After the files: if this batch changed what the project brief or the codebase map should say, update them (find them with {cmd} list --type brief and {cmd} list --type map, then {cmd} update REF --set-detail '**Label:** ...'); otherwise leave them alone.
-Finish with exactly one JSON object as the last thing you print: {{"digested": ["path", ...], "skipped": [{{"path": "...", "reason": "..."}}]}}"""
+Finish with exactly one JSON object as the last thing you print: {{"digested": ["path", ...], "skipped": [{{"path": "...", "reason": "..."}}], "failed": [{{"path": "...", "reason": "..."}}]}}"""
 
 
 def lm(args, *argv, check=True, stdin=None):
@@ -98,27 +101,31 @@ def last_json(text, keys=()):
 
 
 def read_report(stdout):
-    """(cost, digested paths, skipped rows) from an agent's stdout: Claude's `--output-format json` wraps the agent's last message in
+    """(cost, digested paths, skipped rows, failed rows, permission denials) from an agent's stdout: Claude's `--output-format json` wraps the agent's last message in
     {"result": "...", "total_cost_usd": ...}; a plain agent prints the report itself."""
     outer = last_json(stdout) or {}
-    inner = last_json(str(outer.get('result') or ''), ('digested', 'skipped')) if isinstance(outer.get('result'), str) else None
-    report = inner or (outer if {'digested', 'skipped'} & set(outer) else {})
+    inner = last_json(str(outer.get('result') or ''), ('digested', 'skipped', 'failed')) if isinstance(outer.get('result'), str) else None
+    report = inner or (outer if {'digested', 'skipped', 'failed'} & set(outer) else {})
     cost = next((v for v in (outer.get('total_cost_usd'), outer.get('cost_usd'), report.get('cost_usd')) if isinstance(v, (int, float))), 0.0)
     digested = [p for p in report.get('digested') or [] if isinstance(p, str)]
     skipped = [s for s in report.get('skipped') or [] if isinstance(s, dict) and isinstance(s.get('path'), str)]
-    return float(cost), digested, skipped
+    failed = [s for s in report.get('failed') or [] if isinstance(s, dict) and isinstance(s.get('path'), str)]
+    denials = outer.get('permission_denials')
+    return float(cost), digested, skipped, failed, len(denials) if isinstance(denials, list) else 0
 
 
 def run_batch(args, number, items):
     prompt = prompt_for(args, items)
     argv, stdin = agent_argv(args, prompt)
     started = time.perf_counter()
-    row = {'batch': number, 'paths': [i['path'] for i in items], 'cost_usd': 0.0, 'digested': [], 'skipped': []}
+    row = {'batch': number, 'paths': [i['path'] for i in items], 'cost_usd': 0.0, 'digested': [], 'skipped': [], 'failed': [], 'permission_denials': 0}
     try:
         done = subprocess.run(argv, input=stdin, capture_output=True, text=True, encoding='utf-8', timeout=args.timeout, cwd=args.cwd, env=dict(os.environ, PYTHONUTF8='1', LIVING_MEMORY_HEADLESS='1'))
         row.update(returncode=done.returncode, stderr=done.stderr[-500:])
         if done.returncode == 0:
-            row['cost_usd'], row['digested'], row['skipped'] = read_report(done.stdout)
+            row['cost_usd'], row['digested'], row['skipped'], row['failed'], row['permission_denials'] = read_report(done.stdout)
+            if row['permission_denials']:   # a blocked capture may have been reported as a skip: remember none of this batch's skips
+                row['failed'], row['skipped'] = row['failed'] + row['skipped'], []
     except (OSError, subprocess.TimeoutExpired) as exc:
         row.update(returncode=-1, stderr=f'{type(exc).__name__}: {exc}')
     row['seconds'] = round(time.perf_counter() - started, 2)
@@ -182,12 +189,12 @@ def main(argv=None):
                     lm(args, 'ingest-skip', stdin=json.dumps({'skipped': row['skipped']}), check=False)
                 out.write(json.dumps(row, ensure_ascii=False) + '\n')
                 out.flush()
-                print(f"batch {row['batch']}: {len(row['digested'])} digested, {len(row['skipped'])} skipped, ${row['cost_usd']:.2f}"
-                      + (f", agent exit {row['returncode']}" if row['returncode'] else ''), file=sys.stderr)
+                print(f"batch {row['batch']}: {len(row['digested'])} digested, {len(row['skipped'])} skipped, {len(row['failed'])} failed, ${row['cost_usd']:.2f}"
+                      + (f", {row['permission_denials']} permission denials" if row['permission_denials'] else '') + (f", agent exit {row['returncode']}" if row['returncode'] else ''), file=sys.stderr)
         ran = {p for r in rows for p in r['paths']}
         after = {i['path']: i['status'] for i in lm(args, 'ingest-scan', '--limit', '1000000', *(['--source', args.source] if args.source else []))['items']} if rows else {}
         summary = {'ok': not failed, 'domain': scan['domain'], 'batches_run': len(rows), 'batches_planned': len(batches), 'files_digested': len({p for r in rows for p in r['digested']}),
-                   'files_skipped': len({s['path'] for r in rows for s in r['skipped']}), 'cost_usd': round(spent, 4),
+                   'files_skipped': len({s['path'] for r in rows for s in r['skipped']}), 'files_failed': len({s['path'] for r in rows for s in r['failed']}), 'cost_usd': round(spent, 4),
                    'verified': {'current': sum(after.get(p) == 'current' for p in ran), 'skipped': sum(after.get(p) == 'skipped' for p in ran), 'still_open': sum(after.get(p) in ('new', 'stale') for p in ran)},
                    'batches_failed': failed, 'log': str(log)}
         out.write(json.dumps({'summary': summary}) + '\n')
