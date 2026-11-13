@@ -44,6 +44,7 @@ Read each of these {count} files (the location after "read:"), then write ONE di
 - Skip a trivial file (empty, boilerplate, generated, a few lines): capture nothing, give a one-line reason. "skipped" is only for trivial files.
 - If a capture of a file fails (the command is refused or errors, or a permission prompt blocks it), do not retry it in another way and never report it as skipped: list it under "failed" with the reason.
 - A file marked "stale" has an old digest: capture the new one anyway and it replaces the old one. If a capture is refused as a possible duplicate, read the note it names and update it instead.
+- Run each LM command as its own Bash call that starts with the quoted interpreter path: no shell functions, variables, `&&` chains or multi-line scripts (the permission rule only matches that form).
 Files:
 {files}
 After the files: if this batch changed what the project brief or the codebase map should say, update them (find them with {cmd} list --type brief and {cmd} list --type map, then {cmd} update REF --set-detail '**Label:** ...'); otherwise leave them alone.
