@@ -33,4 +33,8 @@ Command lines at debug add the result's `status`, `operation_id` and `ref`, and 
 
 **Currency cache.** `.cache/currency.json` keeps what git said about each shown map or brief (which cited files changed since it was written, commits since), so a new session at an unchanged HEAD runs no git. At most 200 entries, oldest dropped. Derived: safe to delete (it is rebuilt), unreadable content is ignored, and backups, bundles and relocation skip `.cache`.
 
+**Activity cache.** `.cache/activity.json` keeps the rows `log` derived from each finished operation journal, keyed by operation ID. Derived: safe to delete (the next `log` rebuilds it from the journals, about a second for a few hundred note edits), unreadable content is ignored, and backups, relocation and `restore-plan` skip it. It grows with the journals, which note edits keep for good; only the overlay bookkeeping journals are pruned.
+
+**Session ledger.** `ledger/sessions-YYYY.jsonl` is not a cache: one line per session that saved notes or changed files (time, session hash, harness, domain, project slugs, refs saved, files changed; no text), appended at Stop, never pruned and never edited by agents. Backups include it and a restore only adds to it. Keep it; deleting it loses the session history `log` shows, which no journal holds.
+
 Stores created by earlier releases may contain an `improvement/` folder (categorical search/read events and engine state). Nothing reads it any more; it is safe to delete by hand.

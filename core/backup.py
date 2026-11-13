@@ -4,7 +4,7 @@ Journals make every script operation reversible; snapshots cover what journals c
 mangled store folder (an external sync tool, a bad manual edit). Indexes, turn state, journals, plans
 and staged files are derived or transient and are not included."""
 from __future__ import annotations
-import os,re,zipfile
+import json,os,re,zipfile
 from datetime import datetime,timezone
 from pathlib import Path
 from .common import atomic_write,retry_sharing
@@ -19,6 +19,8 @@ STALE_HOURS=48
 # Hooks skip automatic snapshots of very large stores; doctor already flags that size.
 AUTO_MAX_NOTES=1500
 TOP_LEVEL=('bindings.json','tag_taxonomy.json','projects.json','systems.json','sources.json','changes.json','schema-version.json','learning.json')
+# ledger/ is append-only history with no other copy (journals do not hold it), so a snapshot saves it and a restore only adds to it.
+LEDGER=re.compile(r'ledger/sessions-\d{4}\.jsonl')
 MEMBER=re.compile(r'domains/[A-Za-z0-9_.-]+/(?:notes|archive)/(?:[^/\\]+/)*[^/\\]+\.md')
 NAME=re.compile(r'lm-(\d{8}-\d{6})(?:-(\d+))?\.zip')
 
@@ -28,6 +30,7 @@ def canonical_files(root):
     """Store-relative POSIX paths of the canonical set."""
     root=Path(root)
     found=[name for name in TOP_LEVEL if (root/name).is_file()]
+    if (root/'ledger').is_dir() and not (root/'ledger').is_symlink():found+=sorted(p.relative_to(root).as_posix() for p in (root/'ledger').glob('sessions-*.jsonl') if LEDGER.fullmatch(p.relative_to(root).as_posix()) and p.is_file() and not p.is_symlink())
     for domain in sorted((root/'domains').iterdir()) if (root/'domains').is_dir() else []:
         for folder in ('notes','archive'):
             base=domain/folder
@@ -43,7 +46,7 @@ def canonical_files(root):
 
 def _allowed(name):
     learning=re.fullmatch(r'domains/[A-Za-z0-9_.-]+/learning/(?:tasks|attempts|evidence|candidates|procedures|versions|uses|feedback)/[a-f0-9.-]+\.json',name)
-    return (name in TOP_LEVEL or bool(MEMBER.fullmatch(name)) or bool(learning)) and '..' not in name.split('/')
+    return (name in TOP_LEVEL or bool(MEMBER.fullmatch(name)) or bool(LEDGER.fullmatch(name)) or bool(learning)) and '..' not in name.split('/')
 
 def snapshots(root):
     """Existing snapshots, newest first: by timestamp, then by same-second sequence (lm-T.zip, lm-T-1.zip, ...)."""
@@ -104,7 +107,12 @@ def verify(path):
         for info in archive.infolist():
             if info.is_dir() or not _allowed(info.filename):raise ValueError(f'Backup member outside the canonical set: {info.filename}')
             data=archive.read(info)
-            if info.filename.endswith('.md'):
+            if info.filename.startswith('ledger/'):
+                try:
+                    for line in data.decode('utf-8').splitlines():
+                        if line.strip():json.loads(line)
+                except (UnicodeError,ValueError):found.append({'member':info.filename,'problem':'invalid JSON lines'})
+            elif info.filename.endswith('.md'):
                 try:text=data.decode('utf-8')
                 except UnicodeError:found.append({'member':info.filename,'problem':'not UTF-8'});continue
                 if parse_text(text,info.filename) is None:found.append({'member':info.filename,'problem':'does not parse as a note'})
@@ -169,6 +177,7 @@ def restore_plan(root,source):
     for rel,text in wanted.items():
         path=root/rel
         if path.is_file() and path.read_bytes()==text.encode('utf-8'):unchanged+=1
+        elif LEDGER.fullmatch(rel) and path.is_file() and not text.encode('utf-8').startswith(path.read_bytes()):unchanged+=1   # the ledger only grows: keep a copy that holds rows the snapshot lacks
         else:changes[rel]=text
     for rel in current:
         if rel not in wanted and rel not in skipped and rel not in TOP_LEVEL:changes[rel]=None
