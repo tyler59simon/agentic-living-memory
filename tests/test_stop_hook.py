@@ -189,7 +189,7 @@ class ConversationalSignal(StopFixture):
         self.cli('update', 'demo:' + old['id'], '--session', 'session', '--add-detail', '**Access:** the box is shared between teams')
         self.assertEqual(runtime.process('claude', 'stop', self.payload, self.root), {})
 
-    def test_capture_finalize_settles_it_even_after_an_unrelated_capture(self):
+    def test_capture_finalize_settles_it(self):
         self.payload = {**self.payload, 'prompt': 'Remember that the staging box is shared'}
         runtime.process('claude', 'user-prompt', {**self.payload, 'turn_id': 't1'}, self.root)
         from core.capture import finalize
@@ -199,11 +199,32 @@ class ConversationalSignal(StopFixture):
     def test_only_salted_word_hashes_of_the_statement_are_kept(self):
         runtime.process('claude', 'user-prompt', {**self.payload, 'prompt': 'Remember that we use zebra-tabs'}, self.root)
         state = json.loads(runtime._pointer(self.root, 'session').read_text(encoding='utf-8'))
-        self.assertEqual(len(state['signal_words']), 4)
+        self.assertEqual(len(state['signal_words']), 3)   # use, zebra, tabs: the request wording is not content
         self.assertNotIn('zebra', json.dumps(state))
         runtime.process('claude', 'stop', self.payload, self.root)
         state = json.loads(runtime._pointer(self.root, 'session').read_text(encoding='utf-8'))
         self.assertNotIn('signal_words', state)
+
+    def test_capture_finalize_after_an_unrelated_capture_settles_it(self):
+        self.payload = {**self.payload, 'prompt': 'Remember that the staging box is shared'}
+        runtime.process('claude', 'user-prompt', self.payload, self.root)
+        self.capture('Retries use jittered backoff', 'Clients retry with a random delay.')
+        self.assertEqual(self.cli('capture-finalize', '--session', 'session')['status'], 'dismissed')
+        self.assertEqual(runtime.process('claude', 'stop', self.payload, self.root), {})
+
+    def test_a_verbatim_save_of_a_short_technical_statement_settles_it(self):
+        self.payload = {**self.payload, 'prompt': 'Remember that CI uses Go.'}
+        runtime.process('claude', 'user-prompt', self.payload, self.root)
+        self.capture('CI uses Go', 'CI uses Go.')
+        self.assertEqual(runtime.process('claude', 'stop', self.payload, self.root), {})
+
+    def test_every_statement_the_nudge_names_is_raised_once(self):
+        self.payload = {**self.payload, 'prompt': 'I prefer short runbooks. We decided to standardize on the SDK.'}
+        first = runtime.process('claude', 'user-prompt', self.payload, self.root)
+        self.assertIn('stated a preference', json.dumps(first))
+        runtime.process('claude', 'stop', self.payload, self.root)
+        again = runtime.process('claude', 'user-prompt', self.payload, self.root)
+        self.assertNotIn('Living Memory: the user', json.dumps(again))
 
     def test_state_without_stored_words_is_settled_by_any_receipt(self):
         self.payload = {**self.payload, 'prompt': 'Remember that the staging box is shared'}

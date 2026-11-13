@@ -1004,12 +1004,21 @@ def settle_signal(root,domain,value):
 MAX_SIGNAL_WORDS=12
 MIN_COVER_WORDS=2
 
+# Function words and the signals' own wording ("remember that", "we decided"): a note about the statement need not
+# repeat them. Not search.STOP, which drops words a fact is often about ("go", "fix", "run").
+SIGNAL_STOP=frozenset('''a an the and or but of to in on at by for with from into as so if then than that this these those there here
+is are was were be been being am do does did done it its we i you they he she our my your their me us them not no yes ok please just
+also too very will would should can could may might must shall let lets ll ve re
+remember keep mind forget record prefer rather like hate decided decide decision agreed chosen settled going forward future now
+always never actually wrong meant team effective immediately today allowed permitted prohibited'''.split())
+
 def content_hashes(salt,text,limit=None):
-    """Salted hashes of the distinct content words (no stopwords, no tokens under 3 characters, light stemming) of a
-    text, in order. A blocking statement keeps these instead of its text, so Stop can tell whether a note covers it."""
+    """Salted hashes of the distinct content words (no SIGNAL_STOP words, no single letters, light stemming) of a
+    text, in order. A blocking statement keeps these instead of its text, so Stop can tell whether a note covers it.
+    Short identifiers count ("CI uses Go")."""
     from .private import _hash,_words
-    from .search import STOP,stem
-    words=dict.fromkeys(stem(w) for w in _words(text) if w not in STOP and len(w)>2)
+    from .search import stem
+    words=dict.fromkeys(stem(w) for w in _words(text) if w not in SIGNAL_STOP and len(w)>1)
     return [_hash(salt,[w]) for w in list(words)[:limit]]
 
 def covers_signal(root,refs,state):
@@ -1374,6 +1383,8 @@ def _process(harness,event,payload,root=None,info=None):
             kinds=[] if planning else signals_of(text,raised);signal,source=kinds[0] if kinds else (None,None)
             # Only the kind and a salted hash of the statement are kept, never the prompt text; the hash settles at Stop.
             shash=hashed(source) if signal and hashed else None
+            # Every statement the nudge names settles at Stop, so none of them is raised again when repeated.
+            shashes=list(dict.fromkeys(hashed(s) for _,s in kinds)) if signal and hashed else []
             from . import private
             detail.update(signal=signal,signals=[k for k,_ in kinds],private_spans=len(private.spans(text)) if isinstance(text,str) and not MACHINE_PROMPT.match(text) else 0)
             heads=repo_heads(cwd,state)
@@ -1383,7 +1394,7 @@ def _process(harness,event,payload,root=None,info=None):
                     s['heads']=heads  # ...and a shell commit by HEAD moving
                 s['turn']=turn;s['open_turns']=(list(s.get('open_turns',[]))+[turn])[-20:]
                 if signal:
-                    s['signal']=signal;s['signal_hash']=shash
+                    s['signal']=signal;s['signal_hash']=shash;s['signal_hashes']=shashes
                     # Hashes of the statement's words, under a per-session salt, so Stop can check a note covers it.
                     if not s.get('signal_salt'):
                         import secrets
@@ -1684,7 +1695,7 @@ def _process(harness,event,payload,root=None,info=None):
             if left or s.get('docs_left'):s['docs_left']=left
         signal=state.get('signal');detail.update(turns=len(turns),mutating=bool(state.get('mutating')),signal=signal)
         # The turn ends here whatever happens next, so its statement is settled: a header repeated in every brief raises once.
-        settle_signal(root,domain,state.get('signal_hash'))
+        for value in state.get('signal_hashes') or [state.get('signal_hash')]:settle_signal(root,domain,value)
         # Plan mode cannot save anything, so a repo explored there is reminded about at the next Stop outside plan mode.
         planning=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()=='plan'
         try:pending=stop_pending(root,bindings,state,session,turns,domain,cwd,planning)
@@ -1795,7 +1806,7 @@ def map_sentence(key,kind,data,session):
             f"(CMD read {short}, then CMD update {short} --session {session} --set-detail '**Layout:** ...' for each bullet that changed).")
 
 # Per-turn state a Stop clears (reminded keeps `touched` for a capture that answers it).
-TURN_STATE=('open_turns','mutating','signal','signal_hash','signal_words','touched','docs','shell','turn_started','heads')
+TURN_STATE=('open_turns','mutating','signal','signal_hash','signal_hashes','signal_words','touched','docs','shell','turn_started','heads')
 MAP_KINDS=('unmapped','grown','stale')
 BRIEF_KINDS=('unbriefed','brief')
 # Kinds that name their own reminder in the usage diary; the map kinds report as 'explored' or 'grown'.
@@ -1816,7 +1827,7 @@ def stop_pending(root,bindings,state,session,turns,domain=None,cwd=None,planning
     # (or by "nothing durable"), so an unrelated capture does not silence it. A statement that stored no words
     # (older state, or nothing but stopwords) is settled by any receipt.
     receipts=[r for r in (capture_status(session,t,root) for t in turns) if r]
-    receipted=bool(receipts);dismissed=any(r.get('outcome')=='nothing_durable' for r in receipts)
+    receipted=bool(receipts);dismissed=any(r.get('outcome')=='nothing_durable' or r.get('dismissed') for r in receipts)
     saved=[ref for r in receipts for ref in r.get('notes',[])]
     if signal in BLOCKING_SIGNALS and not (dismissed or (covers_signal(root,saved,state) if state.get('signal_words') else receipted)):pending.append((signal,{'files':bool(state.get('mutating'))}))
     if (state.get('mutating') or state.get('docs_left')) and domain and not dismissed:
