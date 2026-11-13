@@ -17,11 +17,11 @@ The summary is the opening paragraph, before any heading. It carries the note on
 
 Before:
 
-> On 2026-11-11 the user approved a 7-phase remediation of Living Memory driven by the lm-team-sim findings: capture load-bearing knowledge from docs and code as concise pointer notes, block Stop once per reply everywhere when docs, decisions or described files change, a living project brief per project, command hints and better long-prompt retrieval, ...
+> On 2026-11-11 the user approved a 7-phase remediation of Living Memory driven by the alm-simulation-benchmark findings: capture load-bearing knowledge from docs and code as concise pointer notes, block Stop once per reply everywhere when docs, decisions or described files change, a living project brief per project, command hints and better long-prompt retrieval, ...
 
 After:
 
-> On 2026-11-11 the user approved a seven-phase fix of Living Memory, based on what the lm-team-sim runs found. The phases are listed under Why; the deferred work is under Alternatives considered.
+> On 2026-11-11 the user approved a seven-phase fix of Living Memory, based on what the alm-simulation-benchmark runs found. The phases are listed under Why; the deferred work is under Alternatives considered.
 
 ## Sections by type
 
@@ -47,7 +47,7 @@ A knowledge note reads as a short article. Name each section after what it expla
 - **Plain verbs.** "is", "are", "has". Not "serves as", "stands as", "functions as", "boasts", "features".
 - **Say who acts.** "The hook refuses the write", not "the write is refused". "The user chose", not "it was decided".
 - **One fact per bullet**, in a full sentence. Split a bullet that strings facts together with semicolons.
-- **Explain project words once**, or link to the note that does. "lm-team-sim (the simulation harness in sandbox/lm-team-sim)".
+- **Explain project words once**, or link to the note that does. "alm-simulation-benchmark (the simulation harness in sandbox/alm-simulation-benchmark)".
 - **Keep exact text exact.** Commands, paths, errors, IDs and quotations go in backticks and are never paraphrased.
 - **State doubt once.** A cause you haven't confirmed is a hypothesis: say so in one sentence, and update the note when you know. Don't stack qualifiers ("could potentially possibly").
 - **Vary sentence length.** A list of same-shaped sentences reads like a form.

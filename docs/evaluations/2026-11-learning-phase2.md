@@ -210,4 +210,4 @@ Neither can be checked mechanically; a reviewer has to judge them. The gate stay
 Next steps:
 - Keep the rule.
 - Point the review guidance (Hivemind Review, LEARNING.md) at whether each exclusion has a fallback action.
-- Measure real benefit on environment-specific tasks, the planned lm-team-sim on-call scenario, where baseline cannot reach the ceiling.
+- Measure real benefit on environment-specific tasks, the planned alm-simulation-benchmark on-call scenario, where baseline cannot reach the ceiling.
