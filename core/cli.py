@@ -1055,10 +1055,14 @@ def main(argv=None):
                 result={'ok':True,'count':len(rows),**({'models':[r['model'] for r in rows]} if args.format=='json' else {'rendered':rows})}
             else:
                 if not args.reference:raise ValueError(f'views {action} needs a note: REF, ID prefix or exact title')
-                # A view whose note was deleted can still be removed by its registered ID (or a prefix of it).
-                orphan=[v for v in views.load(root)['views'] if v['note'].startswith(args.reference.split(':')[-1].lower())] if action=='remove' else []
-                if len(orphan)==1 and not views._find(orphan[0],root):d,n=orphan[0]['domain'],orphan[0]['note']
-                else:d,n=_reference(args.reference,domain,root)
+                try:d,n=_reference(args.reference,domain,root)
+                except ValueError:
+                    # A view whose note was deleted can still be removed by its registered ID, or an 8+ character prefix of it.
+                    import re
+                    prefix=args.reference.split(':')[-1].lower()
+                    orphan=[v for v in views.load(root)['views'] if v['note'].startswith(prefix)] if action=='remove' and re.fullmatch(r'[0-9a-f][0-9a-f-]{7,}',prefix) else []
+                    if len(orphan)!=1 or views._find(orphan[0],root):raise
+                    d,n=orphan[0]['domain'],orphan[0]['note']
                 registered=next((v for v in views.load(root)['views'] if v['note']==n),None)
                 if action=='add':result=views.add(root,d,n,args.title)
                 elif action=='remove':result=views.remove(root,n)

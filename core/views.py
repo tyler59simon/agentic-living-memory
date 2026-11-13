@@ -444,10 +444,10 @@ def _render_local(root,entry,note,cache):
     cache[entry['note']]={'revision':_revision(note),'renderer':RENDERER}
     return path
 
-def _lives_in(root,domain,note_id):
-    """True when a note file of this ID (named ...-<id8>.md) is in the domain's folder."""
+def _ids_in(root,domain):
+    """The 8-character ID suffixes of the note files (named ...-<id8>.md) in the domain's folder."""
     folder=Path(root)/'domains'/domain
-    return folder.is_dir() and any(True for _ in folder.rglob(f'*-{note_id[:8]}.md'))
+    return {p.stem[-8:] for p in folder.rglob('*-????????.md')} if folder.is_dir() else set()
 
 def _out_path(root,out):
     """An --out destination: anywhere outside the store, or under its .views folder. Inside the store it would overwrite
@@ -461,8 +461,10 @@ def refresh(domain,root):
     write: with no registry or no view in the domain it returns after one stat. It never raises."""
     try:
         if not _path(root).is_file():return
-        # A promoted or remapped note keeps its registry domain, so also take views whose note file now lives here.
-        entries=[v for v in load(root)['views'] if v['domain']==domain or _lives_in(root,domain,v['note'])]
+        # A promoted or remapped note keeps its registry domain, so also take views whose note file now lives here
+        # (one scan of the domain folder, and only when some view is registered elsewhere).
+        registered=load(root)['views'];here=_ids_in(root,domain) if any(v['domain']!=domain for v in registered) else set()
+        entries=[v for v in registered if v['domain']==domain or v['note'][:8] in here]
         if not entries:return
         from .repository import inventory
         notes={n['id']:dict(n,domain=domain) for n in inventory(domain,root,retired=True) if n.get('id')}

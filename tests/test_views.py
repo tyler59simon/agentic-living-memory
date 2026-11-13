@@ -312,6 +312,12 @@ class ReviewFixes(Fixture):
                 self.assertEqual(self.ok('views','remove',ref(note_id))['status'],'removed')
                 self.assertFalse(page.exists());self.assertEqual(self.ok('views')['views'],[])
 
+    def test_a_malformed_reference_never_removes_an_orphaned_view(self):
+        note_id=self.plan_note();self.add(note_id);path,_=find_note(note_id,'demo',self.root);path.unlink();reconcile('demo',self.root)
+        for ref in ('demo:',note_id[:1],note_id[:7],':'):
+            with self.subTest(ref=ref):self.assertEqual(self.cli('views','remove',ref)[0],2)
+        self.assertEqual(len(self.ok('views')['views']),1)
+
     def test_a_view_follows_its_note_into_another_domain(self):
         note_id=self.plan_note();self.add(note_id);page=Path(self.ok('views')['views'][0]['path'])
         source,_=find_note(note_id,'demo',self.root);moved=self.root/'domains'/'other'/'notes'/source.name
