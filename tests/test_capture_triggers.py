@@ -193,6 +193,30 @@ class ShellFallback(DocFixture):
         subprocess.run(['git','-C',str(self.project),'add','docs/adr/ADR-009-queues.md'],check=True);subprocess.run(['git','-C',str(self.project),'commit','-qm','adr 9'],check=True)
         self.assertIn('You changed docs/adr/ADR-009-queues.md',self.stop()['continue_reason'])
 
+    def commit_edits(self,*commits):
+        """One commit per dict {relative path: text}, run after the turn began, as a shell command or a pull would."""
+        self.prompt();self.tool('Bash',{'command':'git pull'})
+        for i,files in enumerate(commits):
+            for name,text in files.items():
+                path=self.project/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(text,encoding='utf-8')
+            subprocess.run(['git','-C',str(self.project),'add','--',*files],check=True);subprocess.run(['git','-C',str(self.project),'commit','-qm',f'c{i}'],check=True)
+
+    def test_a_pull_that_only_edits_an_existing_decision_document_is_quiet(self):
+        adr='docs/adr/ADR-004-money.md'
+        self.commit_edits(*({adr:f'# ADR-004: Money\nedit {i}\n'} for i in range(runtime.CHANGE_GUARD_COMMITS+1)))   # too many commits
+        self.assertEqual(self.stop(),{})
+        self.commit_edits({adr:'# ADR-004: Money\nlast\n',**{f'vendor/f{i}.txt':'x\n' for i in range(runtime.CHANGE_GUARD_FILES+1)}})   # too many files, one commit
+        self.assertEqual(self.stop(),{})
+
+    def test_a_pull_that_adds_a_decision_document_still_reminds_for_that_document_only(self):
+        adr='docs/adr/ADR-004-money.md';new='docs/adr/ADR-011-teammate.md'
+        self.commit_edits({adr:'# ADR-004: Money\nedit\n'},{new:'# ADR-011: Teammate decision\n'},*({adr:f'# ADR-004: Money\nedit {i}\n'} for i in range(runtime.CHANGE_GUARD_COMMITS)))
+        reason=self.stop()['continue_reason'];self.assertIn('You changed '+new,reason);self.assertNotIn('ADR-004',reason)
+
+    def test_a_small_commit_that_edits_an_existing_decision_document_still_reminds(self):
+        self.commit_edits({'docs/adr/ADR-004-money.md':'# ADR-004: Money\nedit\n'})
+        self.assertIn('You changed docs/adr/ADR-004-money.md',self.stop()['continue_reason'])
+
     def test_a_commit_that_touches_no_decision_document_is_quiet(self):
         self.prompt();(self.project/'src.py').write_text('x=1\n',encoding='utf-8')
         self.tool('Bash',{'command':'git add src.py && git commit -m code'})

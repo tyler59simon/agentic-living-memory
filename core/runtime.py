@@ -1959,38 +1959,43 @@ def repo_heads(cwd,state):
     return {r.as_posix():h for r in _turn_repos(cwd,state) if (h:=head_oid(r))}
 
 def turn_changed(root,bindings,state,domain,cwd):
-    """({shown name: absolute path}, pulled) for files a shell command changed this turn, which no hook can name (relative paths): the files
+    """({shown name: absolute path}, pulled, added) for files a shell command changed this turn, which no hook can name (relative paths): the files
     git reports changed since the turn began, or committed since HEAD was recorded at its first prompt, inside the domain's bound folders.
-    pulled is True when HEAD moved by more than CHANGE_GUARD_COMMITS commits or more than CHANGE_GUARD_FILES files changed: a pull or checkout, not the agent's work."""
+    pulled is True when HEAD moved by more than CHANGE_GUARD_COMMITS commits or more than CHANGE_GUARD_FILES files changed: a pull or checkout, not the agent's work.
+    added is the set of shown names the moved HEAD added (empty unless pulled): all that a pull brings in that doc_pending still counts."""
     from .common import domain_prefixes,display_path,head_oid
     from .triggers import changed_since,committed_since,commit_count
-    prefixes=domain_prefixes(domain,bindings);files={};pulled=False;total=0
+    prefixes=domain_prefixes(domain,bindings);files={};pulled=False;total=0;moved=[]
+    def show(path):
+        try:p=path.resolve()
+        except OSError:return None,None
+        if p.is_relative_to(root) or not any(p.is_relative_to(x) for x in prefixes):return None,None
+        return display_path(p,prefixes),p
     if state.get('shell') and cwd:
         heads=state.get('heads') if isinstance(state.get('heads'),dict) else {}
         for repo in _turn_repos(cwd,state):
             found=changed_since(repo,state['turn_started']) if state.get('turn_started') else []
             start=heads.get(repo.as_posix());head=head_oid(repo) if start else None
             if start and head and head!=start:
-                found+=committed_since(repo,start,head)
+                found+=committed_since(repo,start,head);moved.append((repo,start,head))
                 pulled=pulled or (commit_count(repo,start,head) or 0)>CHANGE_GUARD_COMMITS
             total+=len(found)
             for path in found:
-                try:p=path.resolve()
-                except OSError:continue
-                if p.is_relative_to(root) or not any(p.is_relative_to(x) for x in prefixes):continue
-                name=display_path(p,prefixes)
+                name,p=show(path)
                 if name:files[name]=p
-    return files,pulled or total>CHANGE_GUARD_FILES
+    pulled=pulled or total>CHANGE_GUARD_FILES
+    return files,pulled,({show(p)[0] for repo,start,head in moved for p in committed_since(repo,start,head,added=True)} - {None}) if pulled else set()
 
 def doc_pending(root,bindings,state,domain,cwd,changed=None):
     """[('doc', {path, notes})] for decision documents changed this turn that no reminder has covered yet: the
     paths PreToolUse recorded, those carried over from an earlier Stop (docs_left), and, after shell edits (whose
     relative paths no hook can see), the files turn_changed reports. All of them: stop_text names STOP_DOCS at a time.
-    A pull-sized change still counts here (the guard is for follow_pending); changed, when given, is the memoized turn_changed."""
+    After a pull-sized change only the docs the pull added count (a teammate's new ADR; follow_pending ignores the whole pull), not
+    the existing ones it edited; docs and docs_left are the agent's own edits and always count. changed, when given, is the memoized turn_changed."""
     from .common import domain_prefixes
     from .triggers import decision_docs
-    prefixes=domain_prefixes(domain,bindings);files=(changed or (lambda:turn_changed(root,bindings,state,domain,cwd)))()[0]
-    shown=list(state.get('docs_left',[]))+list(state.get('docs',[]))+list(files)
+    prefixes=domain_prefixes(domain,bindings);files,pulled,added=(changed or (lambda:turn_changed(root,bindings,state,domain,cwd)))()
+    shown=list(state.get('docs_left',[]))+list(state.get('docs',[]))+[f for f in files if not pulled or f in added]
     done=set(state.get('docs_reminded',[]))
     docs=[d for d in decision_docs(shown,bindings) if d not in done][:MAX_DOCS]
     return [('doc',{'path':d,'notes':doc_notes(root,bindings,domain,d,files.get(d) or _doc_file(d,prefixes))}) for d in docs]
@@ -2010,7 +2015,7 @@ def follow_pending(root,state,bindings=None,domain=None,changed=None):
             if ref not in skip:wanted.setdefault(ref,path)
     paths=[p for p in state.get('unlooked',[]) if p not in hinted]
     if changed:
-        files,pulled=changed()
+        files,pulled,_=changed()
         if not pulled:paths+=[p for p in files if p not in hinted]
     paths=list(dict.fromkeys(paths))[:FOLLOW_BATCH_FILES]
     if paths and domain:
