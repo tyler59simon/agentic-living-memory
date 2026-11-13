@@ -1,0 +1,271 @@
+{
+  "units": {
+    "cases": 32,
+    "positive": 27,
+    "negative": 5,
+    "recall@1": 1.0,
+    "recall@3": 1.0,
+    "recall@5": 1.0,
+    "mrr": 1.0,
+    "hit": 0.852,
+    "false_injection": 0.2,
+    "answered_in_context": 0.481,
+    "answered": 0.852,
+    "polarity_errors": 0,
+    "forbid_violations": 0,
+    "injected_chars": 10512,
+    "read_chars": 5286,
+    "tokens_per_answered": 156.9,
+    "p50_ms": 22.4,
+    "p95_ms": 24.6,
+    "by_kind": {
+      "exact": {
+        "cases": 3,
+        "hit": 3,
+        "answered_in_context": 2
+      },
+      "buried": {
+        "cases": 4,
+        "hit": 4,
+        "answered_in_context": 1
+      },
+      "paraphrase": {
+        "cases": 3,
+        "hit": 2,
+        "answered_in_context": 2
+      },
+      "overview": {
+        "cases": 1,
+        "hit": 1,
+        "answered_in_context": 1
+      },
+      "rationale": {
+        "cases": 2,
+        "hit": 2,
+        "answered_in_context": 2
+      },
+      "alternative": {
+        "cases": 1,
+        "hit": 1,
+        "answered_in_context": 0
+      },
+      "polarity": {
+        "cases": 1,
+        "hit": 1,
+        "answered_in_context": 1
+      },
+      "procedure": {
+        "cases": 1,
+        "hit": 1,
+        "answered_in_context": 0
+      },
+      "fix": {
+        "cases": 1,
+        "hit": 1,
+        "answered_in_context": 0
+      },
+      "superseded": {
+        "cases": 1,
+        "hit": 1,
+        "answered_in_context": 1
+      },
+      "multi": {
+        "cases": 1,
+        "hit": 1,
+        "answered_in_context": 0
+      },
+      "buried-paraphrase": {
+        "cases": 8,
+        "hit": 5,
+        "answered_in_context": 3
+      }
+    },
+    "misses": [
+      {
+        "kind": "paraphrase",
+        "prompt": "are Japanese depot clock readings adjusted before comparing",
+        "ranked": [
+          "evalunits:82bddbca-dfec-40f3-8f5f-15b1f99e8323",
+          "evalunits:7fef38eb-ac21-4f08-9ac2-ec59a119267e",
+          "evalunits:fefa0223-9606-43a4-8bf6-21c67241d61c",
+          "evalunits:db490f7a-96c2-4ad2-bacb-6618b91855f3",
+          "evalunits:825b5474-7025-42b9-865d-34036866c10d"
+        ],
+        "injected": []
+      },
+      {
+        "kind": "buried-paraphrase",
+        "prompt": "how long until stale stock alerts page someone",
+        "ranked": [
+          "evalunits:82bddbca-dfec-40f3-8f5f-15b1f99e8323",
+          "evalunits:bab43bde-e67d-49b6-9ced-3fc163ff86fb",
+          "evalunits:fefa0223-9606-43a4-8bf6-21c67241d61c",
+          "evalunits:78f91c28-f11e-4e01-8c28-7229bbd80ceb",
+          "evalunits:571f383e-b422-406c-87dd-f92e130181ef"
+        ],
+        "injected": []
+      },
+      {
+        "kind": "buried-paraphrase",
+        "prompt": "do signatures made with the new secret still verify after undoing a rotation",
+        "ranked": [
+          "evalunits:3333a80b-2fee-4f15-9f94-18e9ef91e1b9",
+          "evalunits:5ba0c8ae-3f6a-48a6-ad8e-a6acd3e4e6e0",
+          "evalunits:fefa0223-9606-43a4-8bf6-21c67241d61c",
+          "evalunits:78f91c28-f11e-4e01-8c28-7229bbd80ceb",
+          "evalunits:9ffb3044-2dac-440f-b8f3-202c61a65262"
+        ],
+        "injected": []
+      },
+      {
+        "kind": "buried-paraphrase",
+        "prompt": "what memory problem did the salary file job hit",
+        "ranked": [
+          "evalunits:bab43bde-e67d-49b6-9ced-3fc163ff86fb",
+          "evalunits:82bddbca-dfec-40f3-8f5f-15b1f99e8323",
+          "evalunits:5ba0c8ae-3f6a-48a6-ad8e-a6acd3e4e6e0",
+          "evalunits:0792f1b6-2815-4e90-b5e9-dc2500fa2bd6",
+          "evalunits:fefa0223-9606-43a4-8bf6-21c67241d61c"
+        ],
+        "injected": []
+      }
+    ],
+    "false_injections": [
+      {
+        "prompt": "write a haiku about autumn leaves",
+        "injected": [
+          "evalunits:03fa29b5-8cb2-4954-b659-af3e4c4b5282"
+        ]
+      }
+    ]
+  },
+  "sessions": {
+    "steps": 13,
+    "correct": 0.615,
+    "injected_chars": 1538,
+    "redundant_chars": 0,
+    "wrong": [
+      {
+        "session": "pointer then detail",
+        "prompt": "why?",
+        "ok": false,
+        "lines": 0,
+        "chars": 0
+      },
+      {
+        "session": "pointer then detail",
+        "prompt": "what were the alternatives?",
+        "ok": false,
+        "lines": 0,
+        "chars": 0
+      },
+      {
+        "session": "topic shift",
+        "prompt": "and how do I roll back a bad key rotation",
+        "ok": false,
+        "lines": 0,
+        "chars": 0
+      },
+      {
+        "session": "same topic, new question",
+        "prompt": "how often does the warehouse import job run",
+        "ok": false,
+        "lines": 0,
+        "chars": 0
+      },
+      {
+        "session": "same topic, new question",
+        "prompt": "what happens when a warehouse fetch fails",
+        "ok": false,
+        "lines": 0,
+        "chars": 0
+      }
+    ]
+  },
+  "retrieval": {
+    "cases": 0,
+    "positive": 0,
+    "negative": 0,
+    "hit@3": null,
+    "false_injection": null,
+    "forbid_violations": [],
+    "mean_injected_chars": null,
+    "mean_ms": null,
+    "overview_rate": null,
+    "misses": [],
+    "false_injections": []
+  },
+  "long_prompts": {
+    "cases": 0,
+    "positive": 0,
+    "negative": 0,
+    "recall": null,
+    "false_injection": null,
+    "mean_ms": null,
+    "misses": [],
+    "false_injections": []
+  },
+  "quiz": {
+    "cases": 0,
+    "positive": 0,
+    "negative": 0,
+    "recall": null,
+    "notes_recalled": null,
+    "false_injection": null,
+    "mean_ms": null,
+    "max_chars": null,
+    "misses": [],
+    "false_injections": []
+  },
+  "interim": {
+    "cases": 0,
+    "correct": null,
+    "wrong": []
+  },
+  "commands": {
+    "cases": 0,
+    "positive": 0,
+    "negative": 0,
+    "recall": null,
+    "false_hint": null,
+    "misses": [],
+    "false_hints": []
+  },
+  "sources": {
+    "cases": 0,
+    "positive": 0,
+    "negative": 0,
+    "hit@3": null,
+    "prompt_recall": null,
+    "false_injection": null,
+    "mean_ms": null,
+    "misses": [],
+    "prompt_misses": [],
+    "false_injections": []
+  },
+  "session": {
+    "chars": 2902,
+    "fallback_chars": 5032,
+    "budget": 3500,
+    "index_coverage": null,
+    "not_listed": []
+  },
+  "signals": {
+    "cases": 0,
+    "per_kind": {},
+    "false_arm": null,
+    "wrong": []
+  },
+  "config": "P",
+  "index": {
+    "build_s": 0.21,
+    "units": 150,
+    "notes": 72,
+    "vectors": 150,
+    "generation": 1,
+    "mode": "units",
+    "native_table": "absent",
+    "size_bytes": 745472,
+    "updated": "2026-11-13T02:26:56Z"
+  }
+}

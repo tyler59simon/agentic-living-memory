@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 from test_core import StoreFixture
 from test_semantic import write_model
-from core import backup,runtime,semantic,sources,storage
+from core import backup,runtime,semantic,sources,storage,vectors
 from core.cli import main
 from core.runtime import protected_rule
 
@@ -208,6 +208,16 @@ class Index(Kb):
             self.assertTrue(sources.search(self.root,'demo','cache layout note')[0]['path']=='docs/oncall.txt')
             semantic.remove(self.root);self.assertIsNone(self.sync()['vectors']);
             with contextlib.closing(self.db()) as db:self.assertFalse(db.execute("SELECT 1 FROM sqlite_master WHERE name='vec'").fetchone())
+    def test_a_chunk_with_no_shared_word_is_found_by_meaning_for_a_question_but_not_by_the_hook(self):
+        source=self.base/'tiny';hashes=write_model(source)
+        with patch.dict(semantic.MODELS,{'tiny':{'repo':'none/tiny','revision':'0','min_similarity':0.45,'files':hashes}},clear=True):
+            self.addCleanup(semantic._unload);semantic.install(self.root,'tiny',source)
+            (self.repo/'docs'/'screens.txt').write_text('Every screen is laid out on a twelve column grid.\n');self.sync()
+            for native in (None,False):
+                with self.subTest(native=native),patch.object(vectors,'NATIVE',native):
+                    found=sources.search(self.root,'demo','layout')   # "layout" is in no chunk: meaning only
+                    self.assertEqual(found[0]['path'],'docs/screens.txt');self.assertEqual(found[0]['matched'],0)
+                    self.assertEqual(sources.search(self.root,'demo','layout',gate=0.5,least=1),[])   # the prompt hook's gate needs words
 
 class Limits(Kb):
     def test_a_tree_over_the_file_limit_is_indexed_up_to_it_and_says_so(self):

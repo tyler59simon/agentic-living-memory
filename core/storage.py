@@ -140,7 +140,7 @@ def _manifest(root):
         rel = path.relative_to(root)
         if rel.parts[0] in ('.turns', 'hooks', 'logs', '.cache', '__pycache__', 'sources-cache') or path.name in ('.store.lock', '.relocated.json'):
             continue
-        if path.name in ('search.sqlite3', 'search.sqlite3-wal', 'search.sqlite3-shm', 'sources.sqlite3') or path.name.startswith('.sources-'):
+        if path.name in ('search.sqlite3', 'search.sqlite3-wal', 'search.sqlite3-shm', 'sources.sqlite3', 'vectors.sqlite3', 'vectors.sqlite3-journal') or path.name.startswith(('.sources-', '.vectors-')):
             continue
         if path.name.endswith('.relocation-copy'):
             continue

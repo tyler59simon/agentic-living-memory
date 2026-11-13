@@ -188,11 +188,20 @@ def _sha256(path):
 def _fetch(url,target):
     with urllib.request.urlopen(url,timeout=60) as response,open(target,'wb') as out:shutil.copyfileobj(response,out,1<<20)
 
-def rebuild_all(root):
+def rebuild_all(root,units=False):
+    """Rebuild every domain's note index (and with it the unit index, core/vectors.py). units: discard each unit index
+    first, so it is rebuilt from the notes with fresh embeddings rather than updated in place."""
     from .search import rebuild_index
+    from .repository import store_lock
+    from .common import retry_sharing
+    from .vectors import FILE
     rebuilt=[]
     for directory in sorted((Path(root)/'domains').iterdir()) if (Path(root)/'domains').is_dir() else []:
-        if (directory/'notes').is_dir():rebuild_index(directory.name,root);rebuilt.append(directory.name)
+        if not (directory/'notes').is_dir():continue
+        with store_lock(Path(root).resolve()):
+            if units and (directory/FILE).exists():retry_sharing((directory/FILE).unlink)
+            rebuild_index(directory.name,root)
+        rebuilt.append(directory.name)
     return rebuilt
 
 def install(root,name=DEFAULT_MODEL,source=None):
@@ -251,7 +260,12 @@ def status(root):
             try:indexes[directory.name]='vectors' if db.execute("SELECT 1 FROM sqlite_master WHERE name='vectors'").fetchone() else 'lexical'
             finally:db.close()
         except sqlite3.Error:indexes[directory.name]='unreadable'
-    result={'enabled':bool(model),'model':name,'available':list(MODELS),'indexes':indexes}
+    from . import vectors
+    units={directory.name:vectors.status(directory.name,root) for directory in sorted((Path(root)/'domains').iterdir()) if (directory/'search.sqlite3').is_file()} if (Path(root)/'domains').is_dir() else {}
+    native={**vectors.probe(),'enabled':vectors.enabled(root)}
+    # The backend a prompt would use now: native needs the extension, the switch on and a fresh vec0 table.
+    backend='lexical' if not model else 'native' if native['loadable'] and native['enabled'] and units and all(u.get('native_table')=='fresh' for u in units.values()) else 'python'
+    result={'enabled':bool(model),'model':name,'dim':model.dim if model else None,'available':list(MODELS),'indexes':indexes,'backend':backend,'native':native,'units':units}
     if folder:result['size_bytes']=sum(p.stat().st_size for p in folder.iterdir() if p.is_file())
     if name and not model:result['error']=_errors.get(str(folder.resolve()),'unreadable')
     return result

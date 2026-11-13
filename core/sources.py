@@ -10,7 +10,7 @@ then sha256 decide what is re-chunked. Layer 2 (agent-written digests) reads the
 `confluence` and `notion` kinds: their pages are pulled into sources-cache/<name>/ only by an explicit `source-sync NAME` (or
 `--all-remote`) and indexed from there like an html-export or Markdown folder, with each page's title and URL as its citation."""
 from __future__ import annotations
-import hashlib,math,os,re,sqlite3,subprocess,sys,tempfile,time
+import hashlib,math,os,re,sqlite3,struct,subprocess,sys,tempfile,time
 from collections import Counter
 from pathlib import Path
 from .common import atomic_write,canonical_domain,domain_prefixes,file_lock,load_bindings
@@ -846,20 +846,25 @@ def search(root,domain,query,limit=5,vocab=None,informative=False,gate=None,leas
         words=list(dict.fromkeys(terms(split_camel(query))))[:32]
         total,df=vocab if vocab and vocab[0] else _vocab(db,words)
         words=idf_terms(split_camel(query),(total,df)) if informative else [w for w in words if df_of(df,w)]
-        if not words or (gate is not None and len(words)<max(2,least)):return []   # too few words to vouch for a chunk
+        if gate is not None and len(words)<max(2,least):return []   # too few words to vouch for a chunk
         weight={w:math.log((total+1)/(df_of(df,w)+1))+0.1 for w in words}
         wanted={stem(w) for w in words};rows=[];listed=set()
-        for joiner in (' AND ',' OR '):
+        for joiner in (' AND ',' OR ') if words else ():
             match=joiner.join('"'+w+'"' for w in words)
             batch=db.execute('SELECT c.id,c.source,c.path,c.kind,c.symbol,c.line_start,c.line_end,f.text,bm25(chunk_fts,6.0,3.0,1.5,1.0),fl.url,fl.title FROM chunk_fts f JOIN chunk c ON c.id=f.rowid JOIN file fl ON fl.id=c.file_id WHERE chunk_fts MATCH ? ORDER BY bm25(chunk_fts,6.0,3.0,1.5,1.0) LIMIT 60',(match,)).fetchall()
             rows+=[r for r in batch if r[0] not in listed];listed|={r[0] for r in batch}
             if len(rows)>=limit*3 or len(words)==1:break
-        rows=_tests_last(_fuse_vectors(db,root,query,rows),query)
+        lexical=len(rows)
+        # An explicit question (no gate) also gets the chunks nearest it in meaning, found on their own: a chunk that says
+        # it in other words can answer. The prompt hook's gate needs matched words, so it keeps the lexical candidates.
+        if gate is None:rows+=[r for r in _semantic_rows(db,root,query) if r[0] not in listed]
+        if not rows:return []
+        rows=_tests_last(_fuse_vectors(db,root,query,rows,lexical),query)
         roots={n:r for n,r in db.execute('SELECT name,root FROM source')}
         out=[];per_file={};taken=[]
         for cid,source,path,kind,symbol,start,end,text,score,url,title in rows[:40]:
             have=_stems(symbol,path,text);hit=[w for w in words if _covers(have,w)]
-            share=sum(weight[w] for w in hit)/sum(weight.values())
+            share=sum(weight[w] for w in hit)/sum(weight.values()) if weight else 0.0
             if gate is not None and (len(hit)<max(2,least) or share<gate):continue
             if per_file.get((source,path),0)>=2 or any(s==source and p==path and a<=end and start<=b for s,p,a,b in taken):continue
             per_file[(source,path)]=per_file.get((source,path),0)+1;taken.append((source,path,start,end))
@@ -873,17 +878,43 @@ def search(root,domain,query,limit=5,vocab=None,informative=False,gate=None,leas
     except sqlite3.Error:return []
     finally:db.close()
 
-def _fuse_vectors(db,root,query,rows):
-    """With a model and stored vectors, fuse the lexical order with the candidates' meaning order (reciprocal rank)."""
+SEMANTIC_TOP=20   # chunks the meaning channel contributes to an explicit question
+
+def _semantic_rows(db,root,query,limit=SEMANTIC_TOP):
+    """The chunks nearest the query in meaning, independent of shared words, shaped like the FTS rows (score 0). Ranked
+    natively with sqlite-vec's vec_distance_cosine over the stored vectors when the extension loads, else in Python:
+    same vectors, same order. Only this domain's registered sources are in the index, so scope is unchanged."""
+    try:
+        import heapq
+        from . import semantic,vectors
+        from .search import _vector_identity,_query_vector
+        model=semantic.load(root)
+        if not model or not _has_vectors(db) or _meta(db,'vectors')!=_vector_identity(root):return []
+        wanted=_query_vector(model,query)
+        if wanted is None:return []
+        size=model.dim*4;native=vectors.enabled(root) and vectors.load(db)[0]
+        if native:
+            near=[r for (r,) in db.execute('SELECT rowid FROM vec WHERE length(vec)=? ORDER BY vec_distance_cosine(vec,?),rowid LIMIT ?',(size,vectors._blob(wanted),limit))]
+        else:
+            near=[r for _,r in heapq.nsmallest(limit,((-semantic.cosine(wanted,semantic.from_blob(b)),r) for r,b in db.execute('SELECT rowid,vec FROM vec WHERE length(vec)=?',(size,))))]
+        if not near:return []
+        found={r[0]:r for r in db.execute(f"SELECT c.id,c.source,c.path,c.kind,c.symbol,c.line_start,c.line_end,f.text,0.0,fl.url,fl.title FROM chunk_fts f JOIN chunk c ON c.id=f.rowid JOIN file fl ON fl.id=c.file_id WHERE c.id IN ({','.join('?'*len(near))})",near)}
+        return [found[r] for r in near if r in found]
+    except (sqlite3.Error,ValueError,struct.error):return []
+
+def _fuse_vectors(db,root,query,rows,lexical=None):
+    """With a model and stored vectors, fuse the lexical order of the first `lexical` rows (all by default) with every
+    candidate's meaning order (reciprocal rank). Rows found only by meaning get no lexical credit."""
     try:
         from . import semantic
-        model=semantic.load(root)
+        from .search import _query_vector
+        model=semantic.load(root);lexical=len(rows) if lexical is None else lexical
         if not model or not rows or not _has_vectors(db):return rows
-        wanted=model.embed(query)
+        wanted=_query_vector(model,query)
         if wanted is None:return rows
         blobs=dict(db.execute(f"SELECT rowid,vec FROM vec WHERE rowid IN ({','.join('?'*len(rows))})",[r[0] for r in rows]).fetchall())
         similar=sorted((r for r in rows if blobs.get(r[0])),key=lambda r:-semantic.cosine(wanted,semantic.from_blob(blobs[r[0]])))
-        fused={r[0]:1/(60+k) for k,r in enumerate(rows,1)}
+        fused={r[0]:(1/(60+k) if k<=lexical else 0.0) for k,r in enumerate(rows,1)}
         for k,r in enumerate(similar,1):fused[r[0]]+=1/(60+k)
         return sorted(rows,key=lambda r:(-round(fused[r[0]],12),rows.index(r)))
     except Exception:return rows

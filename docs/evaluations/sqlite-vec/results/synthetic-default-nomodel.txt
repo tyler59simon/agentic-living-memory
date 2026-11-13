@@ -1,0 +1,32 @@
+Retrieval: 7 cases (5 positive, 2 negative)
+  hit@3            1.0   (target >= 0.8)
+  false injection  0.0   (target <= 0.1)
+  forbid hits      0
+  mean chars       265
+  mean ms          12.2   (prompt-time retrieval, in process)
+  overview rate    0.286
+Long prompts: 8 cases (4 positive, 4 negative)
+  recall           1.0   (target >= 0.8)
+  false injection  0.0   (target 0)
+  mean ms          23.0
+Quizzes: 3 cases (2 positive, 1 negative)
+  recall           1.0   (target 1.0: at least `min` expected notes each)
+  notes recalled   0.833
+  false injection  0.0   (target 0)
+  mean ms          55.1   (max 983 chars injected)
+Interim notes: 2 cases; UNCONFIRMED marker correct 1.0   (target 1.0)
+Command hints: 9 cases (4 positive, 5 negative)
+  recall           1.0   (target >= 0.8)
+  false hint       0.0   (target 0)
+Sources: 17 cases (5 positive, 12 negative; the negatives include the retrieval and long-prompt ones)
+  ask hit@3        1.0   (target >= 0.8)
+  prompt recall    1.0   (target >= 0.8)
+  false injection  0.0   (target 0)
+  mean ms          4.9   (ask plus the hook's lookup)
+Session start: 2860 chars (target <= 3500); index coverage 1.0; 5046 chars if the instruction block is stale
+Signals: 19 cases; false-arm 0.0
+  remember    precision 1.0 recall 1.0 (1 cases)
+  correction  precision 1.0 recall 1.0 (1 cases)
+  preference  precision 1.0 recall 1.0 (3 cases)
+  decision    precision 1.0 recall 1.0 (2 cases)
+  directive   precision 1.0 recall 1.0 (1 cases)

@@ -71,7 +71,8 @@ INDEX_VERSION=3
 # What stored vectors were made from: the model and how a note becomes embedding text. Separate from INDEX_VERSION,
 # so a schema change rebuilds the index without re-embedding every note.
 EMBED_VERSION=2
-# An installed semantic model is part of the fingerprint, so installing or removing it makes the index stale.
+# An installed model's vector identity (EMBED_VERSION, name and pinned revision) is part of the fingerprint, so
+# installing, removing or re-pinning it, or changing how notes become embedding text, makes the index stale.
 # Without one the fingerprint is unchanged, so lexical indexes built by earlier releases stay fresh.
 def _fingerprint(notes,model=None):
     key=[INDEX_VERSION,[(n.get('id'),n['revision']) for n in notes]]
@@ -200,6 +201,8 @@ def rebuild_index(domain,root=None):
     with store_lock(root):
         notes=inventory(domain,root,retired=True);model=semantic.load(root)
         identity=_vector_identity(root) if model else None;kept=_stored_vectors(directory/'search.sqlite3',identity)
+        from . import vectors
+        reuse=vectors.reuse(domain,root,identity);fresh={}
         fd,name=tempfile.mkstemp(prefix='.search-',suffix='.sqlite3',dir=directory);os.close(fd)
         db=sqlite3.connect(name)
         try:
@@ -217,21 +220,32 @@ def rebuild_index(domain,root=None):
                 if not model:continue
                 blob=kept.get((n['id'],n['revision']))
                 if blob is None:
-                    vector=model.embed(_embedding_text(n));blob=semantic.to_blob(vector) if vector else None
+                    text=_embedding_text(n);vector=reuse(text)   # same text, same model: the overview unit's embedding
+                    if vector is None:
+                        vector=model.embed(text)
+                        if vector:fresh[hashlib.sha256(text.encode('utf-8')).hexdigest()]=vector   # the unit index reuses it below
+                    blob=semantic.to_blob(vector) if vector else None
                 if blob:db.execute('INSERT INTO vectors VALUES(?,?)',(cursor.lastrowid,blob))
             db.executemany('INSERT INTO vocab VALUES(?,?)',df.items())
-            db.execute('INSERT INTO metadata VALUES(?,?)',(_fingerprint(notes,semantic.installed(root)),identity));db.commit();db.close();os.replace(name,directory/'search.sqlite3')
+            fingerprint=_fingerprint(notes,_vector_identity(root))
+            db.execute('INSERT INTO metadata VALUES(?,?)',(fingerprint,identity));db.commit();db.close();os.replace(name,directory/'search.sqlite3')
         finally:
-            db.close()
+            db.close();reuse.close()   # before the unit index update, which may replace that file
             if os.path.exists(name):os.unlink(name)
+        # The unit index follows the note index; a failure costs section-level matches, never the write.
+        try:
+            from . import vectors
+            vectors.update(domain,root,notes,model,identity,fingerprint,fresh)
+        except Exception as exc:
+            from .logs import swallowed
+            swallowed('search.unit_index',exc,root)
     return len(notes)
 def _fresh(domain,root,notes):
-    from .semantic import installed
     path=domain_dir(domain,root)/'search.sqlite3'
     if not path.exists():return False
     try:
         db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)
-        try:return db.execute('SELECT fingerprint FROM metadata').fetchone()[0]==_fingerprint(notes,installed(root))
+        try:return db.execute('SELECT fingerprint FROM metadata').fetchone()[0]==_fingerprint(notes,_vector_identity(root))
         finally:db.close()
     except (sqlite3.Error,IndexError,TypeError):return False
 
@@ -338,7 +352,7 @@ def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False):
         if filters:
             # Filters narrow the active notes; retired ones need an explicit status filter.
             active=[n for n in (notes if 'status' in filters else active) if all((v in n.get('tags',[]) if k=='tag' else file_matches(n.get('files'),v) if k=='file' else n.get(k)==v) for k,v in filters.items())]
-        ranked=[];engine='canonical_bm25';coverage={};common=set();similarity=None
+        ranked=[];engine='canonical_bm25';coverage={};common=set();similarity=None;units={};semantic_info={'backend':'lexical'}
         if fresh:
             engine='fts5';db=sqlite3.connect((domain_dir(domain,root)/'search.sqlite3').as_uri()+'?mode=ro',uri=True)
             try:
@@ -353,7 +367,7 @@ def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False):
                 rows=found;ranked=[(ids[note_id],-score) for note_id,score,_ in rows]
                 per_row,informative,common=_coverage_fts(db,tokens)
                 coverage={note_id:per_row.get(rowid,0)/max(1,len(informative)) for note_id,_,rowid in rows} if informative else {note_id:0.0 for note_id,_,_ in rows}
-                similarity=_similarities(db,query,ids,root)
+                similarity,units,semantic_info=_semantic(db,query,ids,root,domain,[note_id for note_id,_,_ in rows])
                 if similarity is not None:
                     engine='fts5+semantic';ranked=_fuse(ranked,similarity,ids)
                     # Notes found by meaning alone still report how many query words they carry.
@@ -378,19 +392,80 @@ def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False):
             if note.get('learning_procedure'):
                 output[-1].update(procedure_id=note['learning_procedure'],procedure_version=note['learning_version'],evidence_status=note.get('learning_state'))
             if similarity is not None:output[-1]['similarity']=round(similarity.get(note['id'],0.0),4)
+            output[-1]['backend']=semantic_info['backend']
+            if semantic_info.get('reason'):output[-1]['backendReason']=semantic_info['reason']
+            # Scored units, best first: the prompt hook picks its evidence from them; the CLI shows their headings.
+            if note['id'] in units:output[-1]['units']=units[note['id']]
+        LAST_SEMANTIC[domain]=semantic_info
         return output
 
+_queries={}
+def _query_vector(model,query):
+    """The query's embedding, computed once per process for a query searched in several domains."""
+    key=(id(model),query)
+    if key not in _queries:
+        if len(_queries)>64:_queries.clear()
+        _queries[key]=model.embed(query)
+    return _queries[key]
+
 def _similarities(db,query,ids,root):
-    """note id -> cosine with the query, for candidate notes; None when the index or model has no vectors."""
+    """note id -> cosine with the query over the note-level vectors in search.sqlite3; None when the index or model has
+    no vectors. The fallback when the unit index (core/vectors.py) is missing or stale."""
     from . import semantic
     model=semantic.load(root)
     if not model:return None
     try:rows=db.execute('SELECT n.id,v.vec FROM vectors v JOIN notes n ON n.rowid=v.rowid').fetchall()
     except sqlite3.Error:return None   # built before the model was installed, or without it
-    try:wanted=model.embed(query)
+    try:wanted=_query_vector(model,query)
     except (ValueError,struct.error):return None
     if wanted is None:return {}
     return {note_id:semantic.cosine(wanted,semantic.from_blob(blob)) for note_id,blob in rows if note_id in ids}
+
+# How the semantic channel is served; the eval reads it. units: the unit index (core/vectors.py) when fresh;
+# notes: only the note-level vectors in search.sqlite3 (the behaviour before units).
+SEMANTIC_SOURCE='units'
+# domain -> the last search's semantic info (backend, reason, candidate counts, ms), for diagnostics in this process.
+LAST_SEMANTIC={}
+
+def _semantic(db,query,ids,root,domain,lexical):
+    """(note id -> similarity, or None without a model; note id -> scored units; info) for one domain.
+
+    The unit index finds candidates by meaning on its own, so a note with no query word can rank, each scored by its
+    best unit. Lexical candidates are scored too, so the relevance gate sees every hit's similarity. info: backend
+    (native, python, notes or lexical), reason when not native, candidate counts and milliseconds. A missing or stale
+    unit index falls back to the note-level vectors; nothing here raises for a missing model or extension."""
+    import time
+    from . import semantic,vectors
+    started=time.perf_counter();info={'backend':'lexical'}
+    model=semantic.load(root)
+    identity=_vector_identity(root) if model else None
+    try:fingerprint=db.execute('SELECT fingerprint FROM metadata').fetchone()[0]
+    except (sqlite3.Error,TypeError):fingerprint=None
+    index,reason=vectors.open_index(domain,root,fingerprint,identity,model.dim if model else 0) if SEMANTIC_SOURCE=='units' else (None,'units_off')
+    wanted_ids=[i for i in lexical if i in ids]
+    try:
+        wanted=None
+        if model:
+            try:wanted=_query_vector(model,query)
+            except (ValueError,struct.error):wanted=None
+        if index is not None and model and index.vectors:
+            similarity={}
+            if wanted is not None:similarity=dict(index.top_notes(wanted,ids,SEMANTIC_TOP))
+            info.update(backend=index.backend,vectors=index.vectors,semantic_candidates=len(similarity))   # top_notes may fall back to python
+            units=index.units(wanted,list(dict.fromkeys(wanted_ids+list(similarity))))
+            for note_id,rows in units.items():
+                scored=[u['similarity'] for u in rows if u['similarity'] is not None]
+                if scored and note_id not in similarity:similarity[note_id]=max(scored)
+            if index.reason:info['reason']=index.reason
+        else:
+            similarity=_similarities(db,query,ids,root) if model else None
+            units=index.units(None,wanted_ids) if index is not None else {}
+            if similarity is not None:info.update(backend='notes',reason=reason or 'no_unit_vectors')
+            elif reason:info['reason']=reason
+        info.update(lexical_candidates=len(lexical),ms=round((time.perf_counter()-started)*1000,1))
+        return similarity,units,info
+    finally:
+        if index is not None:index.close()
 
 def _fuse(ranked,similarity,ids):
     """Reciprocal rank fusion of the lexical order and the semantic top: 1/(k+lexical rank) + 1/(k+semantic rank).
@@ -419,6 +494,37 @@ def search_domains(query,domains,limit=3,root=None,filters=None,rebuild=False,we
         power=usage.strength_map(Path(root or memory_root()),{h['domain'] for h in hits});top=max(power.values(),default=0) or 1
         for hit in hits:hit['score']*=1+usage.STRENGTH_NUDGE*power.get(f"{hit['domain']}:{hit['id']}",0)/top
     return sorted(hits,key=lambda h:(-h['score'],h['domain'],h['id']))[:limit]
+def note_hits(refs,root=None,query=None):
+    """Search-shaped hits for these 'domain:id' refs, active notes only, in the order given, with their units scored
+    against query when a model is installed. Read-only: from the derived indexes, never a rebuild. For a follow-up
+    prompt ("why?") whose topic is the notes the previous prompt found."""
+    from . import semantic,vectors
+    from .notes import is_interim
+    root=Path(root or memory_root()).resolve();found={}
+    model=semantic.load(root);identity=_vector_identity(root) if model else None
+    wanted=_query_vector(model,query) if model and query else None
+    for domain in dict.fromkeys(r.split(':',1)[0] for r in refs):
+        ids=[r.split(':',1)[1] for r in refs if r.startswith(domain+':')]
+        try:
+            path=domain_dir(domain,root)/'search.sqlite3'
+            if not path.exists():continue
+            db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)
+            try:
+                fingerprint=db.execute('SELECT fingerprint FROM metadata').fetchone()[0]
+                rows=db.execute(f"SELECT id,title,type,updated,body,revision,tags FROM notes WHERE status='active' AND id IN ({','.join('?'*len(ids))})",ids).fetchall()
+            finally:db.close()
+        except (ValueError,sqlite3.Error,TypeError):continue
+        index,_=vectors.open_index(domain,root,fingerprint,identity,model.dim if model else 0)
+        try:units=index.units(wanted,[r[0] for r in rows]) if index is not None else {}
+        finally:
+            if index is not None:index.close()
+        for note_id,title,kind,updated,body,revision,tags in rows:
+            hit={'id':note_id,'domain':domain,'title':title,'type':kind or 'knowledge','updated':str(updated or '')[:10],'status':'active',
+                 'revision':revision,'snippet':snippet(body,[]),'engine':'topic','units':units.get(note_id,[])}
+            if is_interim({'type':kind,'title':title,'body':body}):hit['interim']=True
+            found[f'{domain}:{note_id}']=hit
+    return [found[r] for r in refs if r in found]
+
 def recent_notes(domain,limit=3,root=None):
     notes=sorted(inventory(domain,root),key=lambda n:str(n.get('updated',n.get('created',''))),reverse=True)[:max(1,min(20,limit))]
     for note in notes:note.update(domain=domain,snippet=snippet(note['body'],[],SNIPPET))   # only the few that are shown

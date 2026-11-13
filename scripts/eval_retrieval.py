@@ -27,8 +27,17 @@ def _build(fixture,root):
     atomic_write(root/'tag_taxonomy.json',canonical_json({'tags':tags}))
     keys={}
     for n in fixture['notes']:
-        made=capture(n['title'],n['body'],n.get('tags',['subject/project','concern/knowledge']),domain,root,type=n.get('type','knowledge'),allow_similar=True)
+        extra={'supersedes':[keys[n['supersedes'][1:]]]} if n.get('supersedes') else {}
+        made=capture(n['title'],n['body'],n.get('tags',['subject/project','concern/knowledge']),domain,root,type=n.get('type','knowledge'),allow_similar=True,**extra)
         keys[n['key']]=f"{domain}:{made['id']}"
+    # Seeded filler notes on unrelated everyday topics, so rank metrics are not decided by a dozen notes.
+    import random
+    rng=random.Random(11);topics=('garden','recipe','travel','bicycle','music','library','aquarium','hiking','pottery','chess','sailing','baking')
+    words=('morning','blue','quiet','river','paper','window','autumn','basket','lantern','meadow','pebble','violet','harbor','candle','orchard','thread')
+    for i in range(int(fixture.get('distractors',0))):
+        topic=topics[i%len(topics)];text=' '.join(rng.choice(words) for _ in range(18))
+        capture(f'{topic.title()} note {i}',f'Notes about {topic}: {text}.\n\n## Details\n'+' '.join(rng.choice(words) for _ in range(30))+'.',
+                ['subject/project','concern/knowledge'],domain,root,allow_similar=True)
     if fixture.get('source_files'):
         # The project holds a git repo of docs and code (a .git folder is all discovery needs): the knowledge base indexes it.
         from core import sources
@@ -49,6 +58,118 @@ def _resolver(domain,root,keys):
     return resolve
 
 def _ratio(num,den):return round(num/den,3) if den else None
+
+# The retrieval variants compared on one fixture (VALIDATION.md). Each sets the switches below before the store is built:
+#   A  lexical: FTS5 and the gates, no model, the line-per-note delivery
+#   B  Python note-level: the model's title+summary vectors in search.sqlite3 (the behaviour before units)
+#   C  native note-level: the same vectors through sqlite-vec (the unit index with overview units only)
+#   P  Python units: every section embedded, scored in Python (separates indexing from acceleration)
+#   D  native units: every section embedded, sqlite-vec KNN
+#   E  D plus the injection controller (core/injection.py): evidence, follow-ups, acks, per-section dedupe, one budget
+CONFIGS={
+    'A':{'semantic':False,'source':'units','units':True,'native':None,'delivery':False},
+    'B':{'semantic':True,'source':'notes','units':True,'native':None,'delivery':False},
+    'C':{'semantic':True,'source':'units','units':False,'native':None,'delivery':False},
+    'P':{'semantic':True,'source':'units','units':True,'native':False,'delivery':False},
+    'D':{'semantic':True,'source':'units','units':True,'native':None,'delivery':False},
+    'E':{'semantic':True,'source':'units','units':True,'native':None,'delivery':True},
+}
+
+def configure(name):
+    """Set the switches for one variant; returns a function that restores them."""
+    from core import search,semantic,vectors
+    saved=(semantic.USE_SEMANTIC,search.SEMANTIC_SOURCE,vectors.USE_UNITS,vectors.NATIVE,runtime.DELIVERY)
+    c=CONFIGS[name]
+    semantic.USE_SEMANTIC,search.SEMANTIC_SOURCE,vectors.USE_UNITS,vectors.NATIVE,runtime.DELIVERY=c['semantic'],c['source'],c['units'],c['native'],c['delivery']
+    def restore():semantic.USE_SEMANTIC,search.SEMANTIC_SOURCE,vectors.USE_UNITS,vectors.NATIVE,runtime.DELIVERY=saved
+    return restore
+
+def _pct(values,q):
+    values=sorted(values)
+    return round(values[min(len(values)-1,int(round(q*(len(values)-1))))],1) if values else None
+
+def _read_cost(root,ref,answer,sections):
+    """Characters an agent reads to find the answer after the hook gave it only a pointer: the matching section with
+    `read REF --section` when the controller is on (sections True), else the whole body with `read REF`."""
+    from core.notes import find_note
+    domain,note_id=ref.split(':',1);_,note=find_note(note_id,domain,root);body=note['body']
+    if sections and answer:
+        from core.units import extract
+        for unit in extract(note):
+            if unit['role']!='overview' and answer.casefold() in unit['excerpt'].casefold():return len(unit['excerpt'])
+    return len(body)
+
+def evaluate_units(fixture,root,cwd,domain,resolve):
+    """Section-level cases: rank metrics over the ranked notes (search_domains, no gate), injection, answerability and
+    token cost (injected characters plus a follow-up read when the answer was not injected; tokens = chars/4, an
+    estimate), polarity errors (a rejected option shown without a rejection marker on its line), and latency."""
+    from core.search import search_domains
+    rows=[]
+    for case in fixture.get('units',[]):
+        expect=[resolve(r) for r in case.get('expect',[])];forbid=[resolve(r) for r in case.get('forbid',[])]
+        ranked=[f"{h['domain']}:{h['id']}" for h in search_domains(case['prompt'],[domain],10,root)]
+        started=time.perf_counter();text,ids,overview=runtime.context(cwd,case['prompt'],root,domain);ms=(time.perf_counter()-started)*1000
+        text=text or '';answer=case.get('answer')
+        answered=bool(answer) and answer.casefold() in text.casefold() and bool(set(expect)&set(ids))
+        read=0
+        if expect and not answered and set(expect)&set(ids):
+            read=_read_cost(root,next(r for r in expect if r in ids),answer,runtime.DELIVERY);answered=True   # one follow-up read finds it
+        first=next((i for i,r in enumerate(ranked,1) if r in expect),None)
+        polarity=case.get('polarity');bad=False
+        if polarity:
+            bad=any(polarity['phrase'].casefold() in line.casefold() and polarity['marker'].casefold() not in line.casefold() for line in text.splitlines())
+        rows.append({'kind':case.get('kind'),'prompt':case['prompt'],'expect':expect,'ranked':ranked[:5],'injected':ids,'overview':overview,
+                     'first_rank':first,'hit':bool(set(expect)&set(ids)) if expect else None,'false':bool(ids) if not expect else None,
+                     'answered_in_context':bool(answer) and answer.casefold() in text.casefold(),'answered':answered if expect else None,
+                     'chars':len(text),'read_chars':read,'polarity_error':bad,'forbidden':sorted(set(forbid)&set(ids)),'ms':ms})
+    positive=[r for r in rows if r['expect']];negative=[r for r in rows if not r['expect']]
+    def at(k):return _ratio(sum(1 for r in positive if r['first_rank'] and r['first_rank']<=k),len(positive))
+    answered=[r for r in positive if r['answered']]
+    by_kind={}
+    for r in positive:
+        k=by_kind.setdefault(r['kind'],{'cases':0,'hit':0,'answered_in_context':0})
+        k['cases']+=1;k['hit']+=bool(r['hit']);k['answered_in_context']+=bool(r['answered_in_context'])
+    total=sum(r['chars']+r['read_chars'] for r in positive)
+    return {'cases':len(rows),'positive':len(positive),'negative':len(negative),
+            'recall@1':at(1),'recall@3':at(3),'recall@5':at(5),
+            'mrr':round(sum(1/r['first_rank'] for r in positive if r['first_rank'])/len(positive),3) if positive else None,
+            'hit':_ratio(sum(bool(r['hit']) for r in positive),len(positive)),
+            'false_injection':_ratio(sum(bool(r['false']) for r in negative),len(negative)),
+            'answered_in_context':_ratio(sum(r['answered_in_context'] for r in positive),len(positive)),
+            'answered':_ratio(len(answered),len(positive)),
+            'polarity_errors':sum(r['polarity_error'] for r in rows),'forbid_violations':sum(bool(r['forbidden']) for r in rows),
+            'injected_chars':sum(r['chars'] for r in rows),'read_chars':sum(r['read_chars'] for r in positive),
+            'tokens_per_answered':round(total/4/len(answered),1) if answered else None,
+            'p50_ms':_pct([r['ms'] for r in rows],.5),'p95_ms':_pct([r['ms'] for r in rows],.95),
+            'by_kind':by_kind,
+            'misses':[{'kind':r['kind'],'prompt':r['prompt'],'ranked':r['ranked'],'injected':r['injected']} for r in positive if not r['hit']],
+            'false_injections':[{'prompt':r['prompt'],'injected':r['injected']} for r in negative if r['false']]}
+
+def evaluate_sessions(fixture,root,cwd,domain,resolve):
+    """Prompt sequences in one session through the real prompt hook: per step, the expected note injected, the answer
+    phrase present, or nothing injected (acknowledgments, repeats). Also the injected characters and how many of them
+    repeat a line this session already received (redundant)."""
+    from core.search import rebuild_index
+    steps=[];total=0;redundant=0
+    for number,session in enumerate(fixture.get('sessions',[])):
+        sid=f'eval-session-{number}';seen=set()
+        for turn,step in enumerate(session['steps']):
+            if step.get('edit'):
+                from core.notes import find_note
+                d,i=resolve(step['edit']).split(':',1);path,_=find_note(i,d,root);path=Path(path)
+                old,new=step['replace'];path.write_text(path.read_text(encoding='utf-8').replace(old,new),encoding='utf-8');rebuild_index(d,root);continue
+            payload={'cwd':cwd,'session_id':sid,'turn_id':f't{turn}','prompt':step['prompt']}
+            text=runtime.process('claude','user-prompt',payload,root).get('context') or ''
+            lines=[l for l in text.splitlines() if l.startswith('- [')]
+            ids=[r for r in (resolve(x) for x in step.get('expect',[]))]
+            from core.notes import short_ref
+            got_ids=all(any(short_ref(*r.split(':',1)) in l for l in lines) for r in ids)
+            ok=got_ids and (not step.get('answer') or step['answer'].casefold() in text.casefold()) and (not step.get('expect_none') or not lines)
+            chars=sum(len(l)+1 for l in lines);total+=chars
+            redundant+=sum(len(l)+1 for l in lines if l in seen);seen|=set(lines)
+            steps.append({'session':session['name'],'prompt':step['prompt'],'ok':ok,'lines':len(lines),'chars':chars})
+    return {'steps':len(steps),'correct':_ratio(sum(s['ok'] for s in steps),len(steps)),'injected_chars':total,'redundant_chars':redundant,
+            'wrong':[s for s in steps if not s['ok']]}
 
 def evaluate(fixture,root,cwd=None,domain=None,keys=None,harness='claude'):
     """Metrics for one fixture against the store at root."""
@@ -132,7 +253,10 @@ def evaluate(fixture,root,cwd=None,domain=None,keys=None,harness='claude'):
         predicted=sum(1 for s in signals if s['got']==kind);actual=sum(1 for s in signals if s['kind']==kind)
         if predicted or actual:per_kind[kind]={'precision':_ratio(tp,predicted),'recall':_ratio(tp,actual),'cases':actual}
     neutral=[s for s in signals if not s['kind']]
-    return {
+    extra={}
+    if fixture.get('units'):extra['units']=evaluate_units(fixture,root,cwd,domain,resolve)
+    if fixture.get('sessions'):extra['sessions']=evaluate_sessions(fixture,root,cwd,domain,resolve)   # last: it edits notes
+    return {**extra,
         'retrieval':{
             'cases':len(cases),'positive':len(positive),'negative':len(negative),
             'hit@3':_ratio(sum(c['hit'] for c in positive),len(positive)),
@@ -179,15 +303,30 @@ def evaluate(fixture,root,cwd=None,domain=None,keys=None,harness='claude'):
                    'wrong':[s for s in signals if s['got']!=s['kind']]},
     }
 
-def run(fixture_path,root=None,semantic_mode=None):
-    """semantic_mode 'on'/'off' measures with or without the installed semantic model, then puts the indexes back."""
+def run(fixture_path,root=None,semantic_mode=None,config=None,model_dir=None):
+    """semantic_mode 'on'/'off' measures with or without the installed semantic model, then puts the indexes back.
+    A synthetic fixture runs in a temporary store; model_dir installs that model (a folder holding the pinned files,
+    as `semantic install --from` takes) into it, and config picks a variant (CONFIGS)."""
     fixture=json.loads(Path(fixture_path).expanduser().read_text(encoding='utf-8-sig'))
     if fixture.get('notes'):
-        if semantic_mode:raise ValueError('--semantic needs a real store: synthetic fixtures run in a temporary store with no model')
-        with tempfile.TemporaryDirectory(prefix='living-memory-eval-') as directory:
-            store=Path(directory)/'store'
-            cwd,domain,keys=_build(fixture,store)
-            return evaluate(fixture,store,cwd,domain,keys)
+        if semantic_mode:raise ValueError('--semantic needs a real store: synthetic fixtures run in a temporary store with no model (use --model-dir)')
+        from core import semantic,vectors
+        wants=CONFIGS[config]['semantic'] if config else bool(model_dir)
+        if wants and not model_dir:raise ValueError(f'config {config} needs --model-dir')
+        restore=configure(config) if config else (lambda:None)
+        try:
+            with tempfile.TemporaryDirectory(prefix='living-memory-eval-',ignore_cleanup_errors=True) as directory:
+                store=Path(directory)/'store'
+                cwd,domain,keys=_build(fixture,store);index={}
+                if wants:
+                    semantic.install(store,Path(model_dir).name,model_dir)
+                    started=time.perf_counter();semantic.rebuild_all(store,units=True);index['build_s']=round(time.perf_counter()-started,2)
+                index.update(vectors.status(domain,store))
+                try:
+                    report=evaluate(fixture,store,cwd,domain,keys)
+                    return {**report,'config':config,'index':index}
+                finally:semantic._unload()   # Windows cannot delete a mapped model file
+        finally:restore()
     from core.storage import resolve_root
     from core import semantic
     store=resolve_root(root)[0]
@@ -201,10 +340,31 @@ def run(fixture_path,root=None,semantic_mode=None):
     finally:
         semantic.USE_SEMANTIC=default;semantic.rebuild_all(store)
 
+def _units_table(report):
+    lines=[]
+    if report.get('config'):lines.append(f"Config {report['config']}; index {json.dumps(report.get('index'))}")
+    u=report.get('units')
+    if u:
+        lines+=[f"Units: {u['cases']} cases ({u['positive']} positive, {u['negative']} negative)",
+                f"  recall@1/3/5     {u['recall@1']} / {u['recall@3']} / {u['recall@5']}   MRR {u['mrr']}",
+                f"  injected hit     {u['hit']}   false injection {u['false_injection']}",
+                f"  answered         {u['answered_in_context']} in the hook's text, {u['answered']} with one follow-up read",
+                f"  polarity errors  {u['polarity_errors']}   forbidden injected {u['forbid_violations']}",
+                f"  chars            {u['injected_chars']} injected + {u['read_chars']} read; ~{u['tokens_per_answered']} tokens per answered case (chars/4)",
+                f"  latency          p50 {u['p50_ms']} ms, p95 {u['p95_ms']} ms (prompt-time retrieval, in process)"]
+        lines+=[f"  {k:<11} {v['hit']}/{v['cases']} injected, {v['answered_in_context']} answered in the hook's text" for k,v in u['by_kind'].items()]
+        for title,rows in (('Unit misses',u['misses']),('Unit false injections',u['false_injections'])):
+            if rows:lines+=[title+':']+[f'  - {json.dumps(row,ensure_ascii=False)}' for row in rows]
+    s=report.get('sessions')
+    if s:
+        lines+=[f"Sessions: {s['steps']} steps; correct {s['correct']}; {s['injected_chars']} chars injected, {s['redundant_chars']} of them repeated"]
+        if s['wrong']:lines+=['Session steps wrong:']+[f'  - {json.dumps(row,ensure_ascii=False)}' for row in s['wrong']]
+    return lines
+
 def _table(report):
     r,s,g,lp,cm,src=report['retrieval'],report['session'],report['signals'],report['long_prompts'],report['commands'],report['sources']
     qz,im=report['quiz'],report['interim']
-    lines=[f"Retrieval: {r['cases']} cases ({r['positive']} positive, {r['negative']} negative)",
+    lines=_units_table(report)+[f"Retrieval: {r['cases']} cases ({r['positive']} positive, {r['negative']} negative)",
            f"  hit@3            {r['hit@3']}   (target >= 0.8)",
            f"  false injection  {r['false_injection']}   (target <= 0.1)",
            f"  forbid hits      {len(r['forbid_violations'])}",
@@ -241,11 +401,13 @@ def main(argv=None):
     parser.add_argument('--fixture',required=True);parser.add_argument('--root');parser.add_argument('--json',action='store_true')
     parser.add_argument('--strength',choices=['on','off'],help='Override core.usage.USE_STRENGTH for this run, to compare orderings')
     parser.add_argument('--semantic',choices=['on','off'],help='Override core.semantic.USE_SEMANTIC (on needs `semantic install` in the store); indexes are rebuilt to match and restored afterwards')
+    parser.add_argument('--config',choices=sorted(CONFIGS),help='Retrieval variant for a synthetic fixture: A lexical, B Python note-level, C native note-level, P Python units, D native units, E D plus the injection controller')
+    parser.add_argument('--model-dir',help='Folder with the pinned model files, installed into the temporary store of a synthetic fixture')
     args=parser.parse_args(argv)
     if args.strength:
         from core import usage
         usage.USE_STRENGTH=args.strength=='on'
-    report=run(args.fixture,args.root,args.semantic)
+    report=run(args.fixture,args.root,args.semantic,args.config,args.model_dir)
     print(json.dumps(report,indent=2,ensure_ascii=False) if args.json else _table(report))
 
 if __name__=='__main__':main()
