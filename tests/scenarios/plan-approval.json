@@ -1,0 +1,123 @@
+{
+ "name": "plan-approval",
+ "description": "Approving a plan is a decision: an accepted ExitPlanMode in the transcript (Claude and Codex) or a prompt that leaves plan mode (every harness) holds the turn once with the decision reminder; a plan turn itself raises nothing, and a decision the prompt already carried is not raised twice.",
+ "transcript": [
+  {
+   "type": "user",
+   "timestamp": "2026-11-14T10:00:00Z",
+   "message": {
+    "role": "user",
+    "content": "plan the billing move"
+   }
+  },
+  {
+   "type": "assistant",
+   "timestamp": "2026-11-14T10:00:00Z",
+   "message": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "tool_use",
+      "id": "p",
+      "name": "ExitPlanMode",
+      "input": {
+       "plan": "# Move billing to invoices\n\n1. Rename the worker."
+      }
+     }
+    ]
+   }
+  },
+  {
+   "type": "user",
+   "timestamp": "2026-11-14T10:00:00Z",
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "tool_result",
+      "tool_use_id": "p",
+      "content": "User has approved your plan.",
+      "is_error": false
+     }
+    ]
+   }
+  }
+ ],
+ "steps": [
+  {
+   "hook": "session-start",
+   "payload": {
+    "transcript_path": "{transcript}"
+   }
+  },
+  {
+   "hook": "user-prompt",
+   "payload": {
+    "prompt": "plan the billing move",
+    "transcript_path": "{transcript}"
+   }
+  },
+  {
+   "hook": "stop",
+   "expect": {
+    "reminder": "decision",
+    "reminder_contains": [
+     "The user made a decision",
+     "--type decision"
+    ]
+   },
+   "expect_by_harness": {
+    "copilot": {
+     "stop_reason": "no_change",
+     "reminder": null,
+     "reminder_contains": []
+    },
+    "factory": {
+     "stop_reason": "no_change",
+     "reminder": null,
+     "reminder_contains": []
+    }
+   }
+  },
+  {
+   "hook": "user-prompt",
+   "payload": {
+    "prompt": "plan the billing move",
+    "permission_mode": "plan",
+    "transcript_path": "{transcript}"
+   },
+   "expect": {
+    "detail": {
+     "signal": null
+    }
+   }
+  },
+  {
+   "hook": "stop",
+   "payload": {
+    "permission_mode": "plan"
+   },
+   "expect": {
+    "stop_reason": "no_change",
+    "reminder": null
+   }
+  },
+  {
+   "hook": "user-prompt",
+   "payload": {
+    "prompt": "go ahead",
+    "permission_mode": "default",
+    "transcript_path": "{transcript}"
+   }
+  },
+  {
+   "hook": "stop",
+   "expect": {
+    "reminder": "decision",
+    "reminder_contains": [
+     "The user made a decision"
+    ]
+   }
+  }
+ ]
+}

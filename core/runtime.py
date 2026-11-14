@@ -897,12 +897,14 @@ def _record_last_session(root,domain,session,state):
         if {k:previous.get(k) for k in row}!=row:atomic_write(path,canonical_json({**row,'ended':now()}))
     except (OSError,ValueError):pass
 
-def _record_ledger(root,domain,session,state,cwd):
-    """One row per changed session in the store's ledger/ (see activity.record_session); the row's signature stays in session state."""
+def _record_ledger(root,domain,session,state,cwd,turns=()):
+    """One row per changed session in the store's ledger/ (see activity.record_session); the row's signature stays in session state.
+    A receipt (a capture or "nothing durable") on any of the session's turns is remembered in state and marks the row (`r`)."""
     try:
         from .activity import record_session
-        sig=record_session(root,domain,session_hash(session),state,cwd)
-        if sig:_update(root,session,lambda s:s.update(ledger_sig=sig))
+        receipted=bool(state.get('receipted')) or any(capture_status(session,t,root) for t in turns)
+        sig=record_session(root,domain,session_hash(session),{**state,'receipted':receipted},cwd)
+        if sig or receipted!=bool(state.get('receipted')):_update(root,session,lambda s:s.update(**({'ledger_sig':sig} if sig else {}),**({'receipted':True} if receipted else {})))
     except Exception as exc:
         from .logs import swallowed
         swallowed('runtime.record_ledger',exc,root)
@@ -1516,6 +1518,9 @@ def _process(harness,event,payload,root=None,info=None):
             text=payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or payload.get('transformedPrompt') or ''
             raised,hashed=signals_seen(root,domain) if domain else (None,None)
             kinds=[] if planning else signals_of(text,raised);signal,source=kinds[0] if kinds else (None,None)
+            # Leaving plan mode is the user approving a plan: a decision even when the prompt says nothing durable (UX-C4).
+            mode=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()
+            approved=bool(mode) and mode!='plan' and state.get('last_mode')=='plan' and not signal
             statements=dict(kinds)   # held for this hook only, to search the notes a statement may change
             # Only the kind and a salted hash of the statement are kept, never the prompt text; the hash settles at Stop.
             shash=hashed(source) if signal and hashed else None
@@ -1529,6 +1534,9 @@ def _process(harness,event,payload,root=None,info=None):
                     s['turn_started']=time.time()  # the turn's first prompt: shell edits are found by mtime
                     s['heads']=heads  # ...and a shell commit by HEAD moving
                 s['turn']=turn;s['open_turns']=(list(s.get('open_turns',[]))+[turn])[-20:]
+                if mode:s['last_mode']=mode
+                # No statement to hash: any receipt settles it at Stop. A decision the prompt itself carried is not raised twice.
+                if approved:s['signal']='decision';s['signal_hash']=None;s['signal_hashes']=[];s.pop('signal_words',None)
                 if signal:
                     s['signal']=signal;s['signal_hash']=shash;s['signal_hashes']=shashes
                     # Hashes of the statement's words, under a per-session salt, so Stop can check a note covers it.
@@ -1880,8 +1888,8 @@ def _process(harness,event,payload,root=None,info=None):
     elif event=='stop':
         if session=='unknown':detail['reason']='unknown_session';return {}
         _record_last_session(root,domain,session,state)
-        _record_ledger(root,domain,session,state,cwd)
         turns=list(dict.fromkeys(list(state.get('open_turns',[]))+([turn] if turn else [])))
+        _record_ledger(root,domain,session,state,cwd,turns)
         def close(s):
             for key in TURN_STATE:s.pop(key,None)
             if left or s.get('docs_left'):s['docs_left']=left
@@ -1890,7 +1898,7 @@ def _process(harness,event,payload,root=None,info=None):
         for value in state.get('signal_hashes') or [state.get('signal_hash')]:settle_signal(root,domain,value)
         # Plan mode cannot save anything, so a repo explored there is reminded about at the next Stop outside plan mode.
         planning=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()=='plan'
-        try:pending=stop_pending(root,bindings,state,session,turns,domain,cwd,planning)
+        try:pending=stop_pending(root,bindings,state,session,turns,domain,cwd,planning,harness)
         except Exception as exc:
             from .logs import swallowed
             swallowed('runtime.stop_pending',exc,root);pending=[]
@@ -2002,7 +2010,7 @@ TURN_STATE=('open_turns','mutating','signal','signal_hash','signal_hashes','sign
 MAP_KINDS=('unmapped','grown','stale')
 BRIEF_KINDS=('unbriefed','brief')
 # Kinds that name their own reminder in the usage diary; the map kinds report as 'explored' or 'grown'.
-STOP_KINDS=frozenset(BLOCKING_SIGNALS|{'doc','follow','stale'}|set(BRIEF_KINDS))
+STOP_KINDS=frozenset(BLOCKING_SIGNALS|{'doc','follow','stale','fix'}|set(BRIEF_KINDS))
 STOP_TEXT_CAP=700
 STOP_DOCS=2
 STOP_NOTES=2
@@ -2011,7 +2019,7 @@ CHANGE_GUARD_COMMITS=3;CHANGE_GUARD_FILES=30   # more than this changed under a 
 FOLLOW_BATCH_FILES=30
 BOILERPLATE_HEADINGS={'context','decision','decisions','consequences','status','background','summary','overview','alternatives','options','notes','rationale','changelog','unreleased'}
 
-def stop_pending(root,bindings,state,session,turns,domain=None,cwd=None,planning=False):
+def stop_pending(root,bindings,state,session,turns,domain=None,cwd=None,planning=False,harness=None):
     """[(kind, data)] the Stop reminder may raise, most important first. Kinds: remember, decision, directive (the
     user's own statement); doc (a decision document changed this turn); follow (a file a note is about was edited);
     unbriefed, brief (the project has no brief, or a decision this turn may have outdated it); unmapped, grown (a
@@ -2025,6 +2033,20 @@ def stop_pending(root,bindings,state,session,turns,domain=None,cwd=None,planning
     receipted=bool(receipts);dismissed=any(r.get('outcome')=='nothing_durable' or r.get('dismissed') for r in receipts)
     saved=[ref for r in receipts for ref in r.get('notes',[])]
     if signal in BLOCKING_SIGNALS and not (dismissed or (covers_signal(root,saved,state) if state.get('signal_words') else receipted)):pending.append((signal,{'files':bool(state.get('mutating'))}))
+    # What the turn's tool calls and their results show (core/recall.turn_tools): an approved plan or an answered
+    # question is a decision (UX-C4); a command that failed, then passed after an edit, may carry a root cause (UX-C3).
+    if domain and not planning and not receipted and state.get('transcript') and (harness or state.get('harness')) in RECALL_HARNESSES:
+        try:
+            from .recall import turn_tools
+            tools=turn_tools(state['transcript'])
+            if signal!='decision':
+                chosen=approved_decision(tools)
+                if chosen:pending.append(('decision',{'files':bool(state.get('mutating')),'plan':chosen}))
+            key=verified_fix(tools) if state.get('mutating') else None
+            if key:pending.append(('fix',{'command':key}))
+        except Exception as exc:
+            from .logs import swallowed
+            swallowed('runtime.turn_tools',exc,root)
     if (state.get('mutating') or state.get('docs_left')) and domain and not dismissed:
         memo=[]
         def changed():   # the shell-changed files, asked of git once for both reminders
@@ -2046,6 +2068,52 @@ def stop_pending(root,bindings,state,session,turns,domain=None,cwd=None,planning
     # Housekeeping (maps, a brief) is for sessions that change something: a read-only Q&A session is not asked.
     if not planning and not receipted and state.get('edited'):pending+=[(kind,(key,data)) for key,kind,data in explore_pending(root,bindings,state,domain,cwd)]
     return pending
+
+EDIT_TOOLS={'edit','write','multiedit','notebookedit','apply_patch'}
+MEMORY_COMMANDS={'alm','living_memory.py'}
+LEADING_CD=re.compile(r'^cd\s+(?:"[^"]*"|\'[^\']*\'|[^\s;&]+)\s*(?:&&|;)\s*')
+ENV_ASSIGN=re.compile(r'^[A-Za-z_]\w*=\S*\s+')
+
+def command_key(text):
+    """A shell command's identity for "the same command": whitespace collapsed, leading `cd X &&` or `cd X;` and env
+    assignments dropped, then the first two words that are not options (`py -3.15 -m unittest -v` is `py unittest`)."""
+    text=' '.join(str(text).split())
+    while True:
+        short=ENV_ASSIGN.sub('',LEADING_CD.sub('',text,1),1)
+        if short==text:break
+        text=short
+    return ' '.join([w for w in text.split() if not w.startswith('-')][:2])
+
+def verified_fix(tools):
+    """The command key of a shell command that failed, then (after an edit) passed, in one turn's tool calls; else None.
+    Memory commands and results with no exit code are ignored."""
+    from .recall import _command_text
+    failed=set();ready=set()
+    for tool in tools:
+        name=str(tool.get('name','')).lower()
+        if name in EDIT_TOOLS:ready|=failed;continue
+        if name not in SHELL_TOOLS or tool.get('ok') is None:continue
+        args=tool.get('input') or {}
+        text=_command_text(args.get('command',args.get('cmd')))
+        key=command_key(text)
+        if not key or key.split()[0] in MEMORY_COMMANDS or 'living_memory.py' in text:continue
+        if not tool['ok']:failed.add(key);ready.discard(key)
+        elif key in ready:return key
+    return None
+
+def approved_decision(tools):
+    """What the user approved in this turn, else None: the first heading of an ExitPlanMode plan the user accepted, or the
+    question and answer of an AskUserQuestion. A rejected plan is an error result and arms nothing."""
+    for tool in tools:
+        name=str(tool.get('name','')).lower();args=tool.get('input') or {}
+        if tool.get('ok') is not True:continue
+        if name=='exitplanmode':
+            plan=str(args.get('plan') or '')
+            return next((l.lstrip('# ').strip() for l in plan.splitlines() if l.lstrip().startswith('#')),'')[:120] or 'approved plan'
+        if name=='askuserquestion':
+            asked=args.get('questions');first=asked[0] if isinstance(asked,list) and asked and isinstance(asked[0],dict) else {}
+            return (str(first.get('question') or 'question')[:100]+' -> '+' '.join(str(tool.get('text') or '').split())[:100]).strip()
+    return None
 
 def _norm_path(path):return re.sub(r'^(?:\./)+','',str(path).strip().replace('\\','/')).casefold()
 
@@ -2206,6 +2274,9 @@ def _stop_part(kind,data,session):
         said,hint=SIGNAL_TEXT[kind]
         return (f"The user {said}{' (files changed too)' if data.get('files') else ''}. "
                 f"Durable: update its note or CMD capture --session {session} {hint} --title '...' --summary '...'.")
+    if kind=='fix':
+        return (f"A command failed and then passed after an edit (`{data['command']}`). If the cause was not obvious, "
+                f"capture a bug or knowledge note with Cause and Fix: CMD capture --session {session} --type bug --title '...' --summary '...' --section Cause '...' --section Fix '...'.")
     if kind=='doc':
         text=(f"You changed {data['path']}. Record its load-bearing decision as a concise note pointing to it "
               f"(CMD capture --session {session} --type decision --title '...' --summary '...' --link '{data['path']}')")

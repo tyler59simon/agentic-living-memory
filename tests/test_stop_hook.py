@@ -326,6 +326,114 @@ class ReminderSettlesTheTurn(StopFixture):
         self.assertEqual(runtime.process('claude', 'stop', {**self.payload, 'stop_hook_active': True}, self.root), {})
 
 
+def claude_line(kind, content, **extra):
+    return {'type': kind, 'timestamp': '2026-11-08T10:00:00Z', 'message': {'role': kind, 'content': content}, **extra}
+
+
+def use(call_id, name, **tool_input):
+    return claude_line('assistant', [{'type': 'tool_use', 'id': call_id, 'name': name, 'input': tool_input}])
+
+
+def result(call_id, text='ok', error=False):
+    return claude_line('user', [{'type': 'tool_result', 'tool_use_id': call_id, 'content': text, 'is_error': error}])
+
+
+def bash(call_id, command, error=False):
+    return [use(call_id, 'Bash', command=command), result(call_id, 'FAILED' if error else 'passed', error)]
+
+
+EDIT = [use('e1', 'Edit', file_path='src/app.py'), result('e1')]
+
+
+class TurnTools(StopFixture):
+    """What the turn's tool calls and their results show at Stop (core/recall.turn_tools): UX-C3 and UX-C4."""
+    def setUp(self):
+        super().setUp()
+        self.transcript = self.base / 'transcript.jsonl'
+        self.payload['transcript_path'] = str(self.transcript)
+        self.edit = {'tool_name': 'Edit', 'tool_input': {'file_path': self.cwd + '/x.py'}}
+
+    def write(self, *entries):
+        lines = [claude_line('user', 'make the tests pass')] + [e for group in entries for e in (group if isinstance(group, list) else [group])]
+        self.transcript.write_text(''.join(json.dumps(e) + '\n' for e in lines), encoding='utf-8')
+
+    def stop(self, *tools, harness='claude', **extra):
+        self.payload.update(extra)
+        return self.turn(*tools, harness=harness).get('continue_reason', '')
+
+    def diary_kinds(self):
+        from core import usage
+        return [r['k'] for r in usage.events(self.root) if r['e'] == 'reminder']
+
+    def test_fail_edit_pass_raises_a_fix_reminder_naming_the_command(self):
+        self.write(bash('a', 'cd tests && pytest -q tests/test_a.py', True), EDIT, bash('b', 'pytest tests/test_a.py'))
+        text = self.stop(self.edit)
+        self.assertIn('A command failed and then passed after an edit (`pytest tests/test_a.py`)', text)
+        self.assertIn('Cause and Fix', text)
+        self.assertEqual(self.diary_kinds(), ['fix'])
+
+    def test_nothing_without_an_edit_a_pass_or_the_same_command(self):
+        for case, entries in {'no edit': [bash('a', 'pytest', True), bash('b', 'pytest')],
+                              'other command': [bash('a', 'pytest', True), EDIT, bash('b', 'ruff check')],
+                              'still failing': [bash('a', 'pytest', True), EDIT, bash('b', 'pytest', True)],
+                              'edit before the failure': [EDIT, bash('a', 'pytest', True), bash('b', 'pytest')],
+                              'memory command': [bash('a', 'alm search x', True), EDIT, bash('b', 'alm search x')]}.items():
+            with self.subTest(case=case):
+                self.write(*entries)
+                self.assertEqual(self.stop(self.edit), '')
+
+    def test_a_receipt_settles_it(self):
+        from core.capture import finalize
+        self.write(bash('a', 'pytest', True), EDIT, bash('b', 'pytest'))
+        self.payload.update(turn_id='t1')
+        runtime.process('claude', 'user-prompt', self.payload, self.root)
+        runtime.process('claude', 'pre-tool-use', {**self.payload, **self.edit}, self.root)
+        finalize('session', 't1', [], self.root)
+        self.assertEqual(runtime.process('claude', 'stop', self.payload, self.root), {})
+
+    def test_stop_in_plan_mode_raises_nothing(self):
+        self.write(bash('a', 'pytest', True), EDIT, bash('b', 'pytest'), use('p', 'ExitPlanMode', plan='# Plan'), result('p'))
+        self.assertEqual(self.stop(self.edit, permission_mode='plan'), '')
+
+    def test_a_codex_rollout_behaves_the_same(self):
+        def call(call_id, command):
+            return {'type': 'response_item', 'payload': {'type': 'function_call', 'name': 'shell', 'call_id': call_id, 'arguments': json.dumps({'command': ['bash', '-lc', command]})}}
+
+        def out(call_id, code):
+            return {'type': 'response_item', 'payload': {'type': 'function_call_output', 'call_id': call_id, 'output': json.dumps({'output': 'x', 'metadata': {'exit_code': code}})}}
+        patched = {'type': 'response_item', 'payload': {'type': 'custom_tool_call', 'name': 'apply_patch', 'call_id': 'p', 'input': '*** Begin Patch'}}
+        rows = [{'type': 'response_item', 'payload': {'type': 'message', 'role': 'user', 'content': [{'type': 'input_text', 'text': 'fix it'}]}},
+                call('a', 'cargo test -p core'), out('a', 101), patched, call('b', 'cargo test -p core'), out('b', 0)]
+        self.transcript.write_text(''.join(json.dumps(e) + '\n' for e in rows), encoding='utf-8')
+        self.assertIn('(`cargo test`)', self.stop({'tool_name': 'apply_patch', 'tool_input': {'input': '*** Update File: x.py'}}, harness='codex'))
+
+    def test_an_approved_plan_arms_a_decision_and_a_rejected_one_does_not(self):
+        plan = use('p', 'ExitPlanMode', plan='# Move billing to invoices\n\nSteps')
+        self.write(plan, result('p', 'User has approved your plan'))
+        self.assertIn('The user made a decision', self.stop())
+        self.assertEqual(self.diary_kinds(), ['decision'])
+        self.write(plan, result('p', "The user doesn't want to proceed", True))
+        self.assertEqual(self.stop(), '')
+
+    def test_an_answered_question_arms_a_decision(self):
+        self.write(use('q', 'AskUserQuestion', questions=[{'question': 'Which store?'}]), result('q', 'Which store? -> sqlite'))
+        self.assertIn('The user made a decision', self.stop())
+
+    def test_a_prompt_decision_is_not_raised_twice(self):
+        self.write(use('p', 'ExitPlanMode', plan='# Plan'), result('p'))
+        self.assertEqual(self.stop(prompt='We decided to use sqlite').count('The user made a decision'), 1)
+
+    def test_leaving_plan_mode_arms_a_decision_for_any_harness(self):
+        for harness in ('claude', 'codex', 'copilot'):
+            with self.subTest(harness=harness):
+                self.payload.update(prompt='plan the parser refactor', permission_mode='plan', session_id=harness)
+                self.assertEqual(self.turn(harness=harness), {})
+                self.payload.update(prompt='go ahead', permission_mode='default')
+                self.assertIn('The user made a decision', self.turn(harness=harness)['continue_reason'])
+                self.payload.update(prompt='and continue')
+                self.assertEqual(self.turn(harness=harness), {})   # raised once
+
+
 if __name__ == '__main__':
     import unittest
     unittest.main()

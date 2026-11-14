@@ -1,0 +1,182 @@
+{
+ "name": "verified-fix",
+ "description": "A shell command that failed and then passed after an edit, in one turn, adds a fix reminder naming the command (read from the harness transcript, so Claude and Codex only); a receipt settles it, and a turn without the edit or the pass raises nothing.",
+ "harnesses": [
+  "claude",
+  "codex"
+ ],
+ "transcript": [
+  {
+   "type": "user",
+   "timestamp": "2026-11-14T10:00:00Z",
+   "message": {
+    "role": "user",
+    "content": "make the parser tests pass"
+   }
+  },
+  {
+   "type": "assistant",
+   "timestamp": "2026-11-14T10:00:00Z",
+   "message": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "tool_use",
+      "id": "a",
+      "name": "Bash",
+      "input": {
+       "command": "cd tests && pytest tests/test_parser.py -q"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "type": "user",
+   "timestamp": "2026-11-14T10:00:00Z",
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "tool_result",
+      "tool_use_id": "a",
+      "content": "1 failed",
+      "is_error": true
+     }
+    ]
+   }
+  },
+  {
+   "type": "assistant",
+   "timestamp": "2026-11-14T10:00:00Z",
+   "message": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "tool_use",
+      "id": "e",
+      "name": "Edit",
+      "input": {
+       "file_path": "src/parser.py"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "type": "user",
+   "timestamp": "2026-11-14T10:00:00Z",
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "tool_result",
+      "tool_use_id": "e",
+      "content": "edited",
+      "is_error": false
+     }
+    ]
+   }
+  },
+  {
+   "type": "assistant",
+   "timestamp": "2026-11-14T10:00:00Z",
+   "message": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "tool_use",
+      "id": "b",
+      "name": "Bash",
+      "input": {
+       "command": "pytest tests/test_parser.py"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "type": "user",
+   "timestamp": "2026-11-14T10:00:00Z",
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "tool_result",
+      "tool_use_id": "b",
+      "content": "12 passed",
+      "is_error": false
+     }
+    ]
+   }
+  }
+ ],
+ "steps": [
+  {
+   "hook": "session-start",
+   "payload": {
+    "transcript_path": "{transcript}"
+   }
+  },
+  {
+   "hook": "user-prompt",
+   "payload": {
+    "prompt": "make the parser tests pass",
+    "transcript_path": "{transcript}"
+   }
+  },
+  {
+   "hook": "pre-tool-use",
+   "payload": {
+    "tool_name": "Edit",
+    "tool_input": {
+     "file_path": "{project}/src/app.py"
+    }
+   }
+  },
+  {
+   "hook": "stop",
+   "expect": {
+    "reminder": "fix",
+    "reminder_contains": [
+     "A command failed and then passed after an edit (`pytest tests/test_parser.py`)",
+     "Cause and Fix",
+     "Nothing durable: CMD capture-finalize --session {session}"
+    ]
+   }
+  },
+  {
+   "hook": "user-prompt",
+   "payload": {
+    "prompt": "make the parser tests pass",
+    "transcript_path": "{transcript}"
+   }
+  },
+  {
+   "hook": "pre-tool-use",
+   "payload": {
+    "tool_name": "Edit",
+    "tool_input": {
+     "file_path": "{project}/src/app.py"
+    }
+   }
+  },
+  {
+   "cli": [
+    "capture-finalize",
+    "--session",
+    "{session}"
+   ],
+   "expect": {
+    "exit": 0
+   }
+  },
+  {
+   "hook": "stop",
+   "expect": {
+    "stop_reason": "receipt",
+    "reminder": null
+   }
+  }
+ ]
+}

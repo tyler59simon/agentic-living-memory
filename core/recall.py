@@ -97,6 +97,80 @@ def records(path,scope='before'):
     if scope=='before' and cut is not None:found=found[:cut]
     return found,cut is not None
 
+TURN_TAIL=4_000_000   # bytes read from the end of a transcript: a turn is never longer, and a long session's file can be huge
+EXIT_CODE=re.compile(r'"exit_code"\s*:\s*(-?\d+)|\bExit code:\s*(-?\d+)|\bexited with code\s+(-?\d+)',re.I)
+
+def _command_text(value):
+    """The command of a tool input as one string: a string, or an argv list (`bash -lc CMD` yields CMD)."""
+    if isinstance(value,list):
+        parts=[str(p) for p in value]
+        return parts[-1] if len(parts)>=3 and parts[1] in {'-c','-lc','-Command','/c'} else ' '.join(parts)
+    return value if isinstance(value,str) else ''
+
+def _tool_args(value):
+    if isinstance(value,str):
+        try:value=json.loads(value)
+        except ValueError:return {'input':value}
+    return value if isinstance(value,dict) else {}
+
+def _exit_ok(text):
+    """True or False from the exit code a Codex shell result reports; None when it reports none."""
+    codes=[int(next(g for g in m.groups() if g is not None)) for m in EXIT_CODE.finditer(text)]
+    return codes[0]==0 if codes else None
+
+def _turn_prompt(entry):
+    """Whether a transcript line is a real user prompt (not a tool result, harness-injected text or a compaction summary)."""
+    if 'payload' in entry and entry.get('type')=='response_item':
+        item=entry.get('payload') or {}
+        return item.get('type')=='message' and item.get('role')=='user' and bool(_clean(_blocks_text(item.get('content'))))
+    if entry.get('type')!='user' or entry.get('isSidechain') or entry.get('isMeta') or entry.get('isCompactSummary'):return False
+    content=(entry.get('message') or {}).get('content') if isinstance(entry.get('message'),dict) else None
+    if isinstance(content,str):return bool(_clean(content))
+    return any(isinstance(b,dict) and b.get('type')=='text' and _clean(b.get('text','')) for b in content or [] if isinstance(content,list))
+
+def turn_tools(path):
+    """[{name, input, ok, text}] for the tool calls of the current turn (after the last real user prompt), each paired with its
+    result by id: Claude `tool_use_id`, Codex `call_id`. ok is False for an error result (Claude `is_error`, a nonzero Codex exit
+    code), True otherwise, and None when a Codex result reports no exit code or a call has no result yet. text is the result's
+    text. Only the last TURN_TAIL bytes are read. Harnesses without a reader (Copilot, Factory) give []. Never raises."""
+    try:
+        with Path(path).open('rb') as handle:
+            handle.seek(0,2);size=handle.tell();handle.seek(max(0,size-TURN_TAIL));data=handle.read()
+        lines=data.decode('utf-8',errors='replace').splitlines()
+        if size>TURN_TAIL:lines=lines[1:]   # the first line is cut
+        tools=[];by_id={}
+        for line in lines:
+            try:entry=json.loads(line)
+            except ValueError:continue
+            if not isinstance(entry,dict):continue
+            if _turn_prompt(entry):tools=[];by_id={};continue
+            if entry.get('isSidechain'):continue
+            payload=entry.get('payload') if entry.get('type')=='response_item' else None
+            if isinstance(payload,dict):
+                kind=payload.get('type');call=payload.get('call_id')
+                if kind in {'function_call','custom_tool_call'}:
+                    args=_tool_args(payload.get('arguments') if kind=='function_call' else payload.get('input'))
+                    tool={'name':str(payload.get('name') or ''),'input':args,'ok':None,'text':''}
+                    tools.append(tool)
+                    if call:by_id[call]=tool
+                elif kind in {'function_call_output','custom_tool_call_output'} and call in by_id:
+                    text=_blocks_text(payload.get('output')) or str(payload.get('output') or '')
+                    by_id[call].update(ok=_exit_ok(text),text=text[:TEXT_MAX])
+                continue
+            message=entry.get('message') if isinstance(entry.get('message'),dict) else {}
+            content=message.get('content')
+            for block in content if isinstance(content,list) else []:
+                if not isinstance(block,dict):continue
+                if entry.get('type')=='assistant' and block.get('type')=='tool_use':
+                    tool={'name':str(block.get('name') or ''),'input':block.get('input') if isinstance(block.get('input'),dict) else {},'ok':None,'text':''}
+                    tools.append(tool);by_id[block.get('id')]=tool
+                elif entry.get('type')=='user' and block.get('type')=='tool_result' and block.get('tool_use_id') in by_id:
+                    by_id[block['tool_use_id']].update(ok=not block.get('is_error'),text=_blocks_text(block.get('content'))[:TEXT_MAX])
+        return tools
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('recall.turn_tools',exc);return []
+
 def _probe(term):
     """A substring every token stemming to `term` contains (stem folds 'ies' to 'y')."""
     return term[:-1] if term.endswith('y') and len(term)>3 else term
