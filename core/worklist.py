@@ -49,11 +49,12 @@ def _map_currency(note,root,bindings,cache,working_tree=False):
     from .maps import repo_of,fingerprint,working_tree_changes
     from .common import head_oid
     repo=repo_of(note,note['domain'],bindings)
-    if repo is None or not repo.is_dir():return {'state':'unavailable','changed':[],'working_tree':[]}
     row=cache.get(_ref(note));entry=row['e'] if row else None
-    if row and row.get('f') and Path(row['f']).is_dir():repo=Path(row['f'])   # the checkout the finding was computed in (a clone or worktree of the note's repo), not necessarily the one the note was captured in
+    if entry and entry.get('fp')!=fingerprint(note):entry=None   # the note changed since (a repointed map): its row and that row's checkout describe something else
+    if entry and row.get('f') and Path(row['f']).is_dir():repo=Path(row['f'])   # the checkout the finding was computed in (a clone or worktree of the note's repo), even when the original one is gone
+    if repo is None or not repo.is_dir():return {'state':'unavailable','changed':[],'working_tree':[]}
     head=head_oid(repo)
-    if not (entry and head and entry.get('fp')==fingerprint(note) and entry.get('head')==head and not entry.get('failed')):entry=None
+    if not (entry and head and entry.get('head')==head and not entry.get('failed')):entry=None
     changed=list(entry.get('changed') or []) if entry else [];tree=[]
     if working_tree:
         found=working_tree_changes(note,repo,bindings)

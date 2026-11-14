@@ -231,6 +231,31 @@ class Maps(StoreFixture):
         from unittest.mock import patch
         with patch('core.maps.subprocess.run',side_effect=AssertionError('git must not run')):worklist(self.root,['demo'],kinds=['stale'])
 
+    def test_a_finding_cached_from_a_clone_survives_the_original_checkout_being_removed(self):
+        import shutil,os,stat
+        from core.maps import find_map
+        self.captured_map();clone=self.base/'clone';git(self.base,'clone','-q',str(self.app),str(clone));clone=clone.resolve()
+        bindings=runtime.load_bindings(self.root);hit=find_map(self.app,self.root,bindings)
+        runtime.note_currency(hit,clone,self.root,bindings,{},'s2')   # a hook ran in the clone
+        shutil.rmtree(self.app,onerror=lambda f,p,e:(os.chmod(p,stat.S_IWRITE),f(p)))
+        items=worklist(self.root,['demo'],kinds=['stale'])['items']
+        self.assertEqual([r['ref'] for r in items],[self.ref]);self.assertEqual(items[0]['currency']['state'],'changed')
+
+    def test_a_repointed_map_does_not_scan_the_checkout_of_its_old_cache_row(self):
+        from unittest.mock import patch
+        from core import maps
+        from core.maps import find_map
+        self.captured_map();clone=self.base/'clone';git(self.base,'clone','-q',str(self.app),str(clone));clone=clone.resolve()
+        bindings=runtime.load_bindings(self.root);hit=find_map(self.app,self.root,bindings)
+        runtime.note_currency(hit,clone,self.root,bindings,{},'s2')   # the cache row names the clone
+        other=self.base/'project'/'other';other.mkdir();git(other,'init','-q');other=other.resolve()
+        commit(other,{'pom.xml':'<v>1</v>'},LONG_AGO,'initial')
+        change(self.id,'demo','update',self.root,files=[str(other)])   # the map is about another repo now
+        scanned=[];real=maps.working_tree_changes
+        def recording(note,repo,*a,**k):scanned.append(Path(repo).resolve());return real(note,repo,*a,**k)
+        with patch('core.maps.working_tree_changes',side_effect=recording):worklist(self.root,['demo'],kinds=['stale'],working_tree=True)
+        self.assertEqual(scanned,[other])
+
     def test_review_computes_the_working_tree_once_per_map_and_the_row_matches_its_reason(self):
         from unittest.mock import patch
         from core import maps
