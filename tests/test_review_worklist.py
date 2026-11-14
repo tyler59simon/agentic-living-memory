@@ -176,7 +176,7 @@ class Maps(StoreFixture):
             rows=worklist(self.root,['demo'],kinds=['stale'])['items']
         self.assertEqual([r['ref'] for r in rows],['demo:'+made['id']]);self.assertIn('STALE: pom.xml changed since',rows[0]['reason'])
         confirm(made['id'],'demo',self.root);self.assertEqual(worklist(self.root,['demo'],kinds=['stale'])['items'],[])   # a new revision: the cached entry no longer applies
-    def captured_map(self):
+    def captured_map(self):
         (self.root/'tag_taxonomy.json').write_text(json.dumps({'tags':['subject/project','concern/architecture','concern/knowledge']}))
         app=self.base/'project'/'app';app.mkdir(parents=True);git(app,'init','-q');git(app,'symbolic-ref','HEAD','refs/heads/main');self.app=app.resolve()
         commit(self.app,{'pom.xml':'<v>1</v>','src/Money.java':'long cents;'},LONG_AGO,'initial')
