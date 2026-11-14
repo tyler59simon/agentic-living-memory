@@ -12,7 +12,7 @@ SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 # Tools that cannot change files; anything else marks the turn as mutating.
 READ_TOOLS={'read','read_file','glob','grep','search','view_image','view','ls','list','webfetch','websearch','web_fetch','web_search','todowrite','task','agent','toolsearch','askuserquestion','exitplanmode','enterplanmode'}
 SHELL_TOOLS={'bash','powershell','shell','run_shell_command','exec_command','local_shell','execute'}
-ALLOWED_SUBCOMMANDS={'ask','sources','source-sync','ingest-scan','search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','promote-plan','projects','systems','changes','views','resolve','reopen','restore','learn','log'}
+ALLOWED_SUBCOMMANDS={'ask','sources','source-sync','ingest-scan','search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','promote-plan','projects','systems','changes','views','resolve','reopen','restore','learn','log','maintenance'}
 # Subagents are read-only: these are denied for them even though the main agent gets them auto-allowed.
 MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm','resolve','reopen','restore'}
 GLOBAL_OPTIONS={'--root','--domain','--cwd','--actor'}
@@ -237,6 +237,14 @@ def views_write(text,grammar):
         action=next((w for w in rest if not w.startswith('-')),'list')
         if action in {'add','remove','published'}:return True
         if action=='render' and (_option_values(rest,('--out',)) or 'json' not in _option_values(rest,('--format',))):return True
+    return False
+
+def maintenance_write(text,grammar):
+    """True when a `maintenance` command runs or changes maintenance: run, enable or disable (status, preview and history only read)."""
+    for words in _parsed(text,grammar) or []:
+        index=0
+        while index<len(words) and words[index]!='maintenance':index+=2 if words[index] in GLOBAL_OPTIONS else 1
+        if {'run','enable','disable'}&set(words[index+1:]):return True   # any word, so an option value before the action cannot hide it
     return False
 
 def auto_allowed(text,grammar,root,cwd,scratch=None):
@@ -1569,6 +1577,23 @@ def _process(harness,event,payload,root=None,info=None):
             except Exception as exc:
                 from .logs import swallowed
                 swallowed('runtime.views_hint',exc,root)
+        # Automatic maintenance (core/maintenance.py): the latest run's summary or a blocked notice, then a detached worker when one is due.
+        if not _subagent(payload):
+            try:
+                from . import maintenance
+                lines,told_run,told_blocked=maintenance.session_lines(root,state.get('maintenance_told'),state.get('maintenance_blocked'))
+                if lines:
+                    prefix+='\n'.join(lines)+'\n'
+                    if session!='unknown':_update(root,session,lambda s:s.update(maintenance_told=told_run,maintenance_blocked=told_blocked))
+            except Exception as exc:
+                from .logs import swallowed
+                swallowed('runtime.maintenance_lines',exc,root)
+        try:
+            from . import maintenance
+            detail['maintenance']=maintenance.schedule(root,subagent=_subagent(payload),plan=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()=='plan',compact=source=='compact')
+        except Exception as exc:
+            from .logs import swallowed
+            swallowed('runtime.maintenance_schedule',exc,root)
         # Prompts and tool hints read the index without checking it: bring a stale one (older schema, notes edited outside the scripts) up to date now.
         try:
             from .search import refresh_stale
@@ -1771,7 +1796,8 @@ def _process(harness,event,payload,root=None,info=None):
             # Turning learning on or off is the user's call, so it keeps the host's normal prompt.
             learn_settings=(entity,action)==('config','set')
         writes_view=subcommand=='views' and views_write(text,grammar)
-        if (subcommand in MUTATING_SUBCOMMANDS or learn_write or writes_view) and _subagent(payload):
+        writes_maintenance=subcommand=='maintenance' and maintenance_write(text,grammar)
+        if (subcommand in MUTATING_SUBCOMMANDS or learn_write or writes_view or writes_maintenance) and _subagent(payload):
             detail['decision']='deny:subagent'
             result['deny']='Living Memory: subagents are read-only. Return the proposed note to the main agent instead of running '+subcommand+'.'
             return result

@@ -5,7 +5,12 @@
 journaled note change sets, one decision at a time, each with a deterministic operation id. Provider handling lives in maintenance_agent."""
 from __future__ import annotations
 import json
+import os
 import re
+import subprocess
+import sys
+import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from . import maintenance_agent as agent
@@ -49,7 +54,12 @@ def _completed(note):
 
 
 def permitted(note, kinds=(), pair_same=False, has_successor=False):
-    """The actions the policy table (spec 2.1) allows for this note as it is now."""
+    """The actions the policy table (spec 2.1) allows for this note as it is now. Usage alone (a noisy row with no other signal) never retires."""
+    out = _permitted(note, kinds, pair_same, has_successor)
+    return [a for a in out if a not in ('archive', 'supersede')] if kinds and set(kinds) <= {'noisy'} else out
+
+
+def _permitted(note, kinds, pair_same, has_successor):
     from .note_format import ACTION_TYPES
     t = _type(note)
     out = ['keep', 'defer']
@@ -541,9 +551,11 @@ def _skipped(reason, when=None):
     return {'ok': True, 'status': 'skipped', 'skip_reason': reason, 'next_eligible_at': when}
 
 
-def run(root, dry_run=False, adapter=None, now=None):
+def run(root, dry_run=False, adapter=None, now=None, allow_disabled=False, domains=None):
     """One synchronous bounded review: worker lock, recovery, eligibility, candidates, reservation, packet, one provider call, then the
-    decisions (not for a dry run). Returns counts shaped like the spec's `last_run`; a routine skip is a successful no-op."""
+    decisions (not for a dry run). Returns counts shaped like the spec's `last_run`; a routine skip is a successful no-op.
+    A manual dry run may pass `allow_disabled` (with `domains` when none are configured): it runs as if enabled, every limit still applies,
+    and the config file is not touched."""
     root = Path(root).resolve()
     clock = _clock(now)
     start = clock()
@@ -554,6 +566,11 @@ def run(root, dry_run=False, adapter=None, now=None):
                 cfg = ms.config(root)
             except ValueError:
                 return _skipped('disabled')
+            override = allow_disabled and dry_run and not cfg['enabled']
+            if override:
+                if not (cfg['domains'] or domains):
+                    return _skipped('disabled')
+                cfg = ms.validate(dict(cfg, enabled=True, domains=cfg['domains'] or list(domains)), root, allow_global=True)
             verdict = ms.eligibility(root, start, cfg)
             if not verdict['eligible']:
                 return _skipped(verdict['skip_reason'], verdict['next_eligible_at'])
@@ -565,7 +582,7 @@ def run(root, dry_run=False, adapter=None, now=None):
             selected = [c for c in selected if c['ref'] not in dropped]
             if not selected:
                 return _skipped('no_candidates')
-            record = ms.reserve(root, cfg, len(selected), start, selected=[{'ref': c['ref'], 'revision': c['revision']} for c in selected])
+            record = ms.reserve(root, cfg, len(selected), start, selected=[{'ref': c['ref'], 'revision': c['revision']} for c in selected], allow_disabled=override)
             selected = selected[:record['reserved_notes']]
             cursor = next_cursor(cfg, selected)
             if cursor:
@@ -623,3 +640,272 @@ def run(root, dry_run=False, adapter=None, now=None):
     except ms.MaintenanceSkip as exc:
         return _skipped(exc.reason)
 
+
+# ---- commands: status, preview, enable, disable, history
+
+def _recent(root, limit=None):
+    """Run records, newest first, at most `limit` (all when None). Day folders are read newest first, so a small limit stays cheap."""
+    base = Path(root) / ms.RUNS
+    out = []
+    try:
+        folders = sorted((f for f in base.iterdir() if f.is_dir()), reverse=True) if base.exists() else []
+        for folder in folders:
+            try:
+                datetime.strptime(folder.name, '%Y-%m-%d')
+            except ValueError:
+                continue
+            out += sorted((ms._read_run(p, folder.name) for p in folder.glob('*.json')), key=lambda r: ms._parse(r['attempted_at']), reverse=True)
+            if limit and len(out) >= limit:
+                break
+    except OSError as exc:
+        raise ms.Unavailable('damaged runs directory') from exc
+    return out[:limit] if limit else out
+
+
+def _summary(run):
+    out = {'id': run['id'], 'status': run['state'], 'day': run['day'], 'attempted_at': run['attempted_at'], 'finished_at': run.get('finished_at'),
+           'reason_code': run.get('reason_code'), 'model': run.get('model'), 'reviewed': 0 if run.get('released') else len(run['selected']),
+           'charged_usd': ms.format_usd(run['charged_micro']), 'cost_complete': run.get('cost_complete', True)}
+    return {**out, **_counts(list(run['decisions'].values()))}
+
+
+def status(root, now=None):
+    """The spec's status shape. Reads configuration, checkpoint and run records; no model call and no candidate scan."""
+    now, errors = ms._aware(now), []
+    try:
+        cfg = ms.config(root)
+    except ValueError as exc:
+        cfg = ms.validate(ms.DEFAULTS)
+        errors.append(f'config_invalid: {exc}')
+    verdict = ms.eligibility(root, now, cfg)
+    acc, last = None, None
+    try:
+        acc = ms.accounting(root, now)[0]
+        last = next(iter(_recent(root, 1)), None)
+    except ms.Unavailable as exc:
+        errors.append(f'accounting_unavailable: {exc}')
+    return {'ok': True, 'enabled': cfg['enabled'], 'domains': cfg['domains'], 'policy_version': cfg['policy_version'], 'config_revision': ms.config_revision(cfg),
+            'limits': {k: cfg[k] for k in ('model', 'max_notes_per_day', 'timeout_seconds', 'daily_budget_usd', 'min_interval_seconds')}, 'enabled_at': cfg['enabled_at'],
+            'accounting': {'day': acc['day'], 'reviewed': acc['reviewed'], 'reserved_notes': acc['reserved_notes'], 'reserved_usd': ms.format_usd(acc['reserved_micro']),
+                           'charged_usd': ms.format_usd(acc['charged_micro']), 'cost_complete': acc['cost_complete']} if acc else None,
+            'blocked': acc['blocked'] if acc else None, 'running': ms.running(root), 'eligible': verdict['eligible'], 'next_eligible_at': verdict['next_eligible_at'],
+            'skip_reason': verdict['skip_reason'], 'last_run': _summary(last) if last else None, 'errors': errors}
+
+
+def preview(root, limit=10, now=None, domains=None):
+    """The next batch as it would be chosen, with the policy's action limits and a trial packet. No reservation, usage event or model call.
+    Uses the configured domains, or `domains` when none are configured (so a store can be inspected before it is enabled)."""
+    now = ms._aware(now)
+    cfg = ms.config(root)
+    cfg = dict(cfg, domains=cfg['domains'] or list(domains or []))
+    if not cfg['domains']:
+        raise ValueError('No maintenance domains: enable one, or name --domain D')
+    try:
+        st = ms.state(root, now)
+    except ms.Unavailable as exc:
+        raise ValueError(f'accounting_unavailable: {exc}') from exc
+    selected = candidates(root, cfg, st, now, max(1, min(int(limit), 50)))
+    text, manifest = packet(root, selected, '')
+    rows = []
+    for c in selected:
+        ref = c['ref']
+        rows.append({'ref': ref, 'title': c['title'], 'type': c['type'], 'level': c['level'], 'kinds': c['kinds'], 'permitted': c['permitted'],
+                     'protected': None if 'archive' in c['permitted'] else refusal(c['note'], 'archive'), 'bytes': len(c['note'].get('body', '').encode('utf-8')),
+                     'in_packet': ref in manifest['candidates']})
+    return {'ok': True, 'domains': cfg['domains'], 'candidates': rows, 'too_large': sorted(manifest['deferred']), 'dropped': manifest['dropped'],
+            'estimated_packet_bytes': len(text.encode('utf-8'))}
+
+
+def _config_write(root, new, revision):
+    from .common import global_domains
+    return ms.set_config(root, new, revision, allow_global=bool(set(new['domains']) & set(global_domains(root))))
+
+
+def enable(root, domains, allow_global=False, settings=None, now=None):
+    """Authorize maintenance: the named domains join the configured ones, `settings` replace the matching settings, accounting is untouched."""
+    from .common import global_domains
+    cfg = ms.config(root)
+    named = [d for d in domains if d in set(global_domains(root))]
+    if named and not allow_global:
+        raise ValueError(f'{named[0]} is a global domain; name it explicitly with --domain to include it')
+    new = {**cfg, **(settings or {}), 'domains': list(dict.fromkeys([*cfg['domains'], *domains])), 'enabled': True}
+    if not new['domains']:
+        raise ValueError('Name a domain with --domain D, or use --all-domains')
+    if not cfg['enabled'] or cfg['enabled_at'] is None:
+        new['enabled_at'] = ms._iso(ms._aware(now))
+    if new != cfg:
+        _config_write(root, new, ms.config_revision(cfg))
+    return {**status(root, now), 'changed': new != cfg}
+
+
+def disable(root, now=None):
+    cfg = ms.config(root)
+    new = {**cfg, 'enabled': False}
+    if new != cfg:
+        _config_write(root, new, ms.config_revision(cfg))
+    return {**status(root, now), 'changed': new != cfg}
+
+
+def _run_path(root, run_id):
+    if not isinstance(run_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', run_id):
+        raise ValueError('Invalid run id')
+    found = sorted((Path(root) / ms.RUNS).glob(f'*/{run_id}.json'))
+    if not found:
+        raise ValueError(f'Unknown run: {run_id}')
+    return found[0]
+
+
+def history(root, limit=10, run_id=None):
+    """Run summaries, newest first; with `run_id`, that run's per-candidate decisions, and for a retired note the reason it was given."""
+    from . import notes
+    try:
+        if run_id is None:
+            return {'ok': True, 'runs': [_summary(r) for r in _recent(root, max(1, min(int(limit), 200)))]}
+        run = ms._read_run(_run_path(root, run_id))
+    except ms.Unavailable as exc:
+        raise ValueError(f'accounting_unavailable: {exc}') from exc
+    rows = []
+    for ref, d in run['decisions'].items():
+        row = {'ref': ref, 'action': d.get('action'), 'result': d.get('result'), 'reason_code': d.get('reason_code'), 'operation_id': d.get('operation_id')}
+        if d.get('result') == 'applied' and d.get('action') in ('resolve', 'archive', 'supersede'):
+            domain, _, note_id = ref.partition(':')
+            try:
+                retirement = notes.find_note(note_id, domain, root)[1].get('last_retirement') or {}
+            except ValueError:
+                retirement = {}
+            if retirement.get('operation_id') == d.get('operation_id'):
+                row.update(rule=retirement.get('rule'), reason=retirement.get('reason'))
+        rows.append(row)
+    return {'ok': True, 'run': _summary(run), 'selected': [s.get('ref') for s in run['selected']], 'decisions': rows}
+
+
+def doctor_warnings(root):
+    """What `doctor` reports about maintenance (the provider is probed only when it is enabled)."""
+    out = []
+    try:
+        cfg = ms.config(root)
+    except ValueError as exc:
+        return [f'maintenance.json is malformed ({exc}); maintenance stays off until it is fixed']
+    if cfg['policy_version'] != ms.POLICY_VERSION:
+        out.append(f"maintenance.json has policy_version {cfg['policy_version']}, which this version does not know; maintenance does not run")
+    try:
+        acc = ms.accounting(root)[0]
+        open_runs = [r['id'] for r in _recent(root) if r['state'] in ('reserved', 'running', 'applying')]
+        if open_runs and not ms.running(root):
+            out.append(f"{len(open_runs)} maintenance run(s) never finished and no worker is running ({', '.join(open_runs[:3])}); the next run settles them")
+        if acc['blocked']:
+            out.append(f"maintenance is blocked ({acc['blocked']['reason']}); change the budget with maintenance enable to clear it")
+    except ms.Unavailable as exc:
+        out.append(f'accounting_unavailable: maintenance cannot read its run records ({exc}), so it will not run')
+    if cfg['enabled']:
+        found = agent.provider(cfg)
+        if not found['ok']:
+            out.append(f"the maintenance reviewer is unavailable ({found['reason_code']}{': ' + found['detail'] if found.get('detail') else ''})")
+    return out
+
+
+# ---- scheduling and the session summary
+
+SPAWN_COOLDOWN = 600
+
+
+def _spawn(root):
+    """Start `maintenance run --scheduled` detached, as sources.spawn does for source-sync."""
+    script = Path(__file__).resolve().parents[1] / 'living_memory.py'
+    argv = [sys.executable, str(script), '--root', str(root), 'maintenance', 'run', '--scheduled']
+    options = {'stdin': subprocess.DEVNULL, 'stdout': subprocess.DEVNULL, 'stderr': subprocess.DEVNULL, 'close_fds': True, 'cwd': tempfile.gettempdir()}   # not the store: a running process would block moving it
+    if os.name == 'nt':
+        flags = 0x00000008 | 0x00000200   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, and out of the host's job object when it allows (CREATE_BREAKAWAY_FROM_JOB)
+        try:
+            subprocess.Popen(argv, creationflags=flags | 0x01000000, **options)
+        except OSError:
+            subprocess.Popen(argv, creationflags=flags, **options)
+    else:
+        subprocess.Popen(argv, start_new_session=True, **options)
+
+
+def schedule(root, *, subagent=False, plan=False, compact=False, now=None):
+    """The SessionStart check: start a detached worker when maintenance is due. Returns 'spawned' or the reason nothing started. Never raises and
+    never waits. It reads only the config, the checkpoint and recent run records (no notes, git or provider); the worker rechecks everything."""
+    from .logs import swallowed
+    try:
+        from .runtime import headless
+        if subagent:
+            return 'subagent'
+        if headless():
+            return 'headless'
+        if plan:
+            return 'plan_mode'
+        if compact:
+            return 'compact'
+        if os.environ.get('LIVING_MEMORY_NO_BACKGROUND'):
+            return 'background_disabled'
+        if os.environ.get('LIVING_MEMORY_MAINTENANCE_CHILD'):
+            return 'maintenance_child'
+        cfg = ms.config(root)
+        if not cfg['enabled']:
+            return 'disabled'
+        verdict = ms.eligibility(root, now, cfg)
+        if not verdict['eligible']:
+            return verdict['skip_reason']
+        if ms.running(root):
+            return 'already_running'
+        marker = Path(root) / 'hooks' / 'maintenance.spawned'
+        try:
+            if time.time() - float(marker.read_text()) < SPAWN_COOLDOWN:
+                return 'cooldown'
+        except (OSError, ValueError):
+            pass
+        _spawn(root)
+        from .common import atomic_write
+        atomic_write(marker, str(time.time()))
+        return 'spawned'
+    except Exception as exc:
+        swallowed('maintenance.schedule', exc, root)
+        return 'error'
+
+
+def session_lines(root, told_run=None, told_blocked=None):
+    """(lines, run id told, blocked reason told) for the SessionStart prefix: the latest completed run's summary once per run, and one line
+    when maintenance is enabled but blocked. Nothing unless maintenance is enabled."""
+    try:
+        cfg = ms.config(root)
+    except ValueError:
+        return [], told_run, told_blocked
+    if not cfg['enabled']:
+        return [], told_run, told_blocked
+    lines, reason, latest = [], None, None
+    try:
+        recent = _recent(root, 20)
+        latest = next((r for r in recent if r['state'] == 'completed'), None)
+        acc = ms.accounting(root)[0]
+        if acc['blocked']:
+            reason = acc['blocked']['reason']
+        elif recent and recent[0]['state'] == 'failed' and recent[0].get('reason_code') in ('provider_unavailable', 'provider_unsupported'):
+            reason = recent[0]['reason_code']
+    except ms.Unavailable:
+        reason = 'accounting_unavailable'
+    if latest and latest['id'] != told_run:
+        c = _counts(list(latest['decisions'].values()))
+        lines.append(f"Memory maintenance: checked {len(latest['selected'])}, updated {c['updated']}, retired {c['archived'] + c['superseded'] + c['resolved']}, deferred {c['deferred']}. "
+                     'maintenance history shows reasons; restore REF brings archived notes back.')
+        told_run = latest['id']
+    if reason and not told_blocked:
+        lines.append(f'Memory maintenance is blocked: {reason}. maintenance status shows details; notes are not changed until it clears.')
+        told_blocked = reason
+    return lines, told_run, told_blocked
+
+
+def log_run(root, result, scheduled=False):
+    """One metadata-only operational log line for a `maintenance run`: ids, counts and codes, never a packet or prompt."""
+    from . import logs
+    model = cost_complete = None
+    if result.get('id'):
+        try:
+            record = ms._read_run(_run_path(root, result['id']))
+            model, cost_complete = record.get('model'), record.get('cost_complete')
+        except (ValueError, ms.Unavailable):
+            pass
+    logs.write('info', 'internal', 'maintenance.run', root, run_id=result.get('id'), status=result.get('status'), skip_reason=result.get('skip_reason'),
+               reason_code=result.get('reason_code'), scheduled=scheduled, counts={k: result[k] for k in COUNT_KEYS if k in result} or None,
+               reviewed=result.get('reviewed'), model=model, cost_complete=cost_complete, usage_micro=result.get('usage_micro'))

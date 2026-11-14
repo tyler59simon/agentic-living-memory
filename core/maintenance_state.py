@@ -322,12 +322,16 @@ def _commit(root, run, acc, expected_run, expected_state, op=None):
     return transaction(root, changes, 'maintenance_run', expected=expected, operation_id=op)
 
 
-def reserve(root, cfg, n_candidates, now=None, selected=None):
-    """Durably reserve notes and money for one launch, or raise MaintenanceSkip(reason). Re-checks under the store lock."""
+def reserve(root, cfg, n_candidates, now=None, selected=None, allow_disabled=False):
+    """Durably reserve notes and money for one launch, or raise MaintenanceSkip(reason). Re-checks under the store lock.
+    `allow_disabled` is for a manual dry run: the stored config may be disabled, and `cfg` is it with enabled and domains overridden."""
     with store_lock(root):
         cfg = validate(cfg)
         revision = config_revision(cfg)
-        if revision != config_revision(config(root)):
+        stored = config(root)
+        if allow_disabled and not stored['enabled']:
+            stored = dict(stored, enabled=True, domains=cfg['domains'])
+        if revision != config_revision(stored):
             raise MaintenanceSkip('config_changed')
         verdict = eligibility(root, now, cfg)
         if not verdict['eligible']:

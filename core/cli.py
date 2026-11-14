@@ -152,6 +152,9 @@ def doctor(root,cwd,explicit=None,domain=None):
             if kind=='global_domains' and canonical==GLOBAL:missing=False
             if missing:warnings.append(f"search_scope.{kind} names '{name}', which has no domain folder; {effect}")
     from .backup import staleness_warning
+    from .maintenance import doctor_warnings
+    try:warnings+=['maintenance: '+w for w in doctor_warnings(root)]
+    except Exception as exc:warnings.append(f'maintenance: cannot be checked ({type(exc).__name__})')
     from .projects import listing
     try:warnings+=['projects: '+w for w in listing(root)['warnings']]
     except ValueError as exc:warnings.append(f'projects.json: {exc}')
@@ -242,7 +245,7 @@ def _sectioned(args,body='',note_type=None):
 
 # source-sync writes only the derived knowledge-base index (as search --rebuild does the notes' one), so subagents and viewers may run it
 # (not for a remote source, which it would pull from the network: sources.sync refuses that for them).
-READ_ONLY={'search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','ask','sources','source-sync','ingest-scan','changes','views','log'}
+READ_ONLY={'search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','ask','sources','source-sync','ingest-scan','changes','views','log','maintenance'}
 # Viewer: a human-facing app browsing the store. Read-only, and its reads are not usage evidence for the diary.
 VIEWER=READ_ONLY|{'taxonomy','review','diff','inspect-plan'}
 SERVE_API=2
@@ -453,6 +456,13 @@ def serve(root,cwd,commands):
         elif isinstance(failure,dict) and 'error' in failure:failure=failure['error']
         reply({'id':ident,'exit_code':code,'result':decode(out.getvalue()),'error':failure if code else None})
 
+def _maintenance_hint(root):
+    """The `review` hint's sentence about automatic maintenance, only while it is enabled."""
+    from . import maintenance_state as ms
+    try:on=ms.config(root)['enabled']
+    except ValueError:on=False
+    return 'Automatic maintenance is on for this store: within its policy it archives, resolves and supersedes notes without a plan and records why (maintenance history); restore REF undoes an archive. ' if on else ''
+
 def build_parser():
     parser=argparse.ArgumentParser(description=__doc__)
     def common(p,suppress=False):
@@ -508,6 +518,12 @@ def build_parser():
     p=sub('note-type-plan')
     p=sub('baseline-plan')
     p=sub('rebuild');p.add_argument('name',nargs='?')
+    p=sub('maintenance');p.add_argument('action',choices=['status','preview','run','enable','disable','history'])
+    p.add_argument('--limit',type=int,help='preview, history: at most this many rows (default 10)');p.add_argument('--run',help='history: one run by ID, with its per-note decisions')
+    p.add_argument('--dry-run',action='store_true',help='run: call the model and validate its decisions, but change no notes (still uses the daily allowance; works while disabled)')
+    p.add_argument('--all-domains',action='store_true',help='enable: every configured non-global domain');p.add_argument('--model',help='enable: model alias (default sonnet)')
+    p.add_argument('--max-notes-per-day',type=int,help='enable: notes reviewed per day (default 10)');p.add_argument('--timeout-seconds',type=int,help='enable: run time limit (default 300)')
+    p.add_argument('--daily-budget-usd',help='enable: spending limit per day as a decimal string (default "1.00")');p.add_argument('--scheduled',action='store_true',help=argparse.SUPPRESS)
     p=sub('semantic');p.add_argument('action',choices=['status','install','remove','rebuild','native']);p.add_argument('value',nargs='?',choices=['on','off'],help='native: on or off');p.add_argument('--model',help='Model to install (default: the recommended one)');p.add_argument('--from',dest='source',type=Path,help='Folder already holding the model files, for an offline install; hashes are still verified')
     p=sub('validate');p.add_argument('name',nargs='?')
     p=sub('query');p.add_argument('sql')
@@ -602,6 +618,8 @@ def main(argv=None):
         if args.actor=='viewer' and cmd not in VIEWER and not learning_read:raise ValueError('Viewers are read-only; run changes as --actor main')
         if cmd=='views' and (args.action or 'list')!='list' and args.actor in {'subagent','viewer'} and not (args.action=='render' and args.format=='json' and not args.out):
             raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' are read-only: views list and render --format json (no --out) are allowed; run the rest as --actor main')
+        if cmd=='maintenance' and args.action not in {'status','preview','history'} and args.actor in {'subagent','viewer'}:
+            raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' are read-only: maintenance status, preview and history are allowed; run the rest as --actor main')
         if cmd=='serve':return serve(root,cwd,set(subs.choices)-{'serve','setup'})
         if cmd=='bind':
             from .init_domain import init_domain
@@ -788,7 +806,7 @@ def main(argv=None):
             elif domain:domains=[domain]
             else:raise ValueError('unbound_project')
             result=note_links(root,domains,args.status)
-        elif cmd=='version':result={'ok':True,'api':SERVE_API,'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'learning':1,'restore':1,'pin':1}}
+        elif cmd=='version':result={'ok':True,'api':SERVE_API,'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'learning':1,'restore':1,'pin':1,'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']}}}
         elif cmd=='learn':
             from .learning import dispatch,flag_payload
             payload={}
@@ -857,7 +875,7 @@ def main(argv=None):
             # Read-only for every actor: the worklist writes no usage rows, so a viewer's browsing is no evidence either.
             found=worklist(root,domains,args.kind or None,max(1,min(100,args.limit)),args.tag,working_tree=True)
             result={'ok':True,'domain':None if args.all_domains else domain,'due':found['total'],'stale_digests':found['counts'].get('stale',0),'kinds':list(KINDS),'counts':found['counts'],'notes':found['items'],
-                    'hint':'Each note lists why (kinds, reason) and an action. Still true -> confirm REF; changed -> update REF; replaced -> supersede REF --by NEW; finished -> resolve REF. A STALE note: read its files, then update REF (or confirm REF if it still holds). '
+                    'hint':_maintenance_hint(root)+'Each note lists why (kinds, reason) and an action. Still true -> confirm REF; changed -> update REF; replaced -> supersede REF --by NEW; finished -> resolve REF. A STALE note: read its files, then update REF (or confirm REF if it still holds). '
                            'For a duplicate (pair) or an obsolete note, propose plans for archive or merge; the user applies them. Stale notes come first, never-confirmed notes nobody has read lately lead the due ones.'}
         elif cmd=='open':
             from .notes import open_work,short_ref
@@ -1021,6 +1039,30 @@ def main(argv=None):
             if not d:raise ValueError('unbound_project')
             from .validate import reconcile,validate_domain
             result=reconcile(d,root) if cmd=='rebuild' else {'issues':validate_domain(d,root)}
+        elif cmd=='maintenance':
+            from . import maintenance
+            a=args.action;flags=('limit','run','dry_run','scheduled','all_domains','model','max_notes_per_day','timeout_seconds','daily_budget_usd')
+            takes={'preview':{'limit'},'history':{'limit','run'},'run':{'dry_run','scheduled'},'enable':{'all_domains','model','max_notes_per_day','timeout_seconds','daily_budget_usd'}}.get(a,set())
+            extra=[k for k in flags if getattr(args,k) not in (None,False) and k not in takes]
+            if extra:raise ValueError(f"maintenance {a} does not take "+', '.join('--'+k.replace('_','-') for k in extra))
+            limit=10 if args.limit is None else args.limit
+            if a=='status':result=maintenance.status(root)
+            elif a=='preview':result=maintenance.preview(root,limit,domains=[domain] if domain else None)
+            elif a=='history':result=maintenance.history(root,limit,args.run)
+            elif a=='run':
+                result=maintenance.run(root,args.dry_run,allow_disabled=args.dry_run,domains=[domain] if domain else None)
+                maintenance.log_run(root,result,args.scheduled)
+            elif a=='disable':result=maintenance.disable(root)
+            else:
+                settings={k:getattr(args,k) for k in ('model','max_notes_per_day','timeout_seconds','daily_budget_usd') if getattr(args,k) is not None}
+                names=[]
+                if args.all_domains:
+                    from .common import global_domains
+                    skip=set(global_domains(root));names=[d['name'] for d in list_domains(root)['domains'] if d['bound'] and d['name'] not in skip and (root/'domains'/d['name']/'notes').is_dir()]
+                if args.domain or not args.all_domains:
+                    if not domain:raise ValueError('unbound_project')
+                    names.append(domain)
+                result=maintenance.enable(root,list(dict.fromkeys(names)),bool(args.domain),settings)
         elif cmd=='semantic':
             from . import semantic
             if args.value and args.action!='native':raise ValueError('on/off applies to semantic native only')

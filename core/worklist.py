@@ -180,6 +180,12 @@ def _acts(note):
         return bool(items) and all(done for done,_ in items)
     return False
 
+def _maintenance(note,kinds,same,has_pair):
+    """What automatic maintenance may do with this row's note, and why it may not retire it."""
+    from .maintenance import permitted,refusal
+    allowed=permitted(note,kinds,same,has_pair)
+    return {'permitted':allowed,'protected':None if 'archive' in allowed else refusal(note,'archive')}
+
 def _action(kinds,note,pair):
     """What a person or agent does first for a note: its first kind decides."""
     first=kinds[0]
@@ -232,7 +238,7 @@ def worklist(root,domains,kinds=None,limit=100,tags=None,cheap=False,notes=None,
         pair=extra.get('pair');kinds_=[k for k in KINDS if k in row['kinds']]
         items.append({'ref':ref,'title':n['title'],'type':n.get('type'),'updated':str(n.get('updated',''))[:10],'review_by':n.get('review_by'),
                       'confirmed':last_confirmed(n),'pinned':n.get('pinned') is True,'revision':n['revision'],'domain':n['domain'],'kinds':kinds_,'reason':'; '.join(row['reasons']),
-                      'action':_action(kinds_,n,dict(pair,same=same) if pair else None),**extra})
+                      'action':_action(kinds_,n,dict(pair,same=same) if pair else None),'maintenance':_maintenance(n,kinds_,same,pair is not None),**extra})
     counts={k:sum(1 for r in found.values() if k in r['kinds']) for k in wanted}
     total=len(items);items=items[:max(1,limit)]
     if not cheap:
