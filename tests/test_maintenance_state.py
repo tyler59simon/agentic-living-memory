@@ -175,6 +175,13 @@ class CheckpointLoss(Base):
         for bad in ('./_global','../demo','demo/..',str(self.root/'domains/demo')):
             with self.subTest(bad=bad),self.assertRaises(ValueError):ms.set_config(self.root,{'domains':[bad]})
 
+class MergeRestore(Base):
+    def test_a_structurally_invalid_current_record_gives_way_to_the_snapshot(self):
+        run=self.reserve();ms.launch(self.root,run,T0);ms.finish(self.root,run,10,'completed',T0)
+        rel=f"maintenance/runs/{run['day']}/{run['id']}.json";good=(self.root/rel).read_text()
+        out=ms.merge_restore({rel:json.dumps({'id':run['id']})},{rel:good})
+        self.assertEqual(out[rel],good)
+
 class Concurrency(Base):
     def test_two_reserves_make_one_run(self):
         out=[];gate=threading.Barrier(2)

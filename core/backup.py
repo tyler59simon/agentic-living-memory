@@ -194,9 +194,13 @@ def restore_plan(root,source):
         else:changes[rel]=text
     for rel in current:
         if rel not in wanted and rel not in skipped and rel not in TOP_LEVEL:changes[rel]=None
-    if snapshot_maint:
+    current_maint={}
+    for rel in _maintenance_files(root):
+        try:current_maint[rel]=(root/rel).read_bytes().decode('utf-8-sig')
+        except (OSError,UnicodeDecodeError):pass   # unreadable: treated as missing, so a healthy snapshot copy can replace it
+    # Also with an older snapshot that has no maintenance files: an enabled store must come back disabled.
+    if snapshot_maint or current_maint:
         from .maintenance_state import merge_restore
-        current_maint={rel:(root/rel).read_text(encoding='utf-8') for rel in _maintenance_files(root)}
         for rel,text in merge_restore(current_maint,snapshot_maint).items():
             if current_maint.get(rel)==text:unchanged+=1
             else:changes[rel]=text

@@ -9,7 +9,7 @@ A model reviews a small batch of candidate notes and recommends one action for e
 Maintenance does not:
 
 - delete any note. Retired notes move to `archive/` (or are resolved or superseded) and can be brought back.
-- touch preference or policy notes, learned procedures, or pinned notes.
+- touch preference or policy notes or learned procedures, or retire a pinned note (a pinned note can still be confirmed or get a factual update).
 - retire maps, briefs or runbooks. These can be kept, deferred, confirmed or updated.
 - merge, retag, remap, change the taxonomy or edit configuration. Those still need an approved plan.
 - retire a note only because it is noisy (retrieved often but never used). Usage, age and review dates are signals, never proof.
@@ -25,7 +25,7 @@ maintenance disable
 maintenance status
 ```
 
-`enable` adds the pinned session domain (or, with `--all-domains`, every configured non-global domain) to the configured domains and sets `enabled_at`. A global domain is included only when it is named explicitly with `--domain`. The settings flags replace the matching defaults and leave the day's accounting alone. `disable` keeps the domains, settings and accounting, so disabling and re-enabling never creates a new allowance.
+`enable` adds the session's domain (`--domain`, or, with `--all-domains`, every configured non-global domain) to the configured domains and sets `enabled_at`. A global domain is included only when it is named explicitly with `--domain`. The settings flags replace the matching defaults and leave the day's accounting alone. `disable` keeps the domains, settings and accounting, so disabling and re-enabling never creates a new allowance.
 
 ## Limits and defaults
 
@@ -42,7 +42,7 @@ A run reserves its notes and money before the model starts, and an unknown cost 
 
 ## What is sent to the model
 
-One packet on standard input to a single `claude -p` call: for each candidate its ref, revision, title, type, tags, dates, the full note body (up to 24 KB), the review signals, the actions the policy allows, a few short excerpts (up to four, 1200 characters each) from the files and sources the note cites, and any active successor note it might be superseded by. The packet is redacted (credentials are replaced) and is capped at 128 KB; a note too large for it is deferred.
+One packet on standard input to a single `claude -p` call: for each candidate its ref, revision, title, type, tags, dates, the full note body (up to 24 KB), the review signals, the actions the policy allows, a few short excerpts (up to four, 1200 characters each) from the files and sources the note cites, and any active successor note it might be superseded by. The packet is redacted (credentials are replaced) and is capped at 128 KB. A note over 24 KB is deferred; notes that do not fit in the packet are left for a later run and cost no allowance.
 
 Not sent: file contents beyond those excerpts, the repository tree, environment variables, other notes, and session history. The call runs with no tools, no MCP servers, no hooks and no session, in a fresh temporary directory, so the model cannot read files or run commands; it can only return a structured answer. Text inside notes that tries to give the model orders is treated as data. The packet is deleted after the run; run records keep metadata, refs, hashes and short reasons, not note bodies or prompts.
 
@@ -70,7 +70,7 @@ A missing, unreadable or unavailable file or source is not proof that a note is 
 - `maintenance history [--limit N]` lists runs, newest first. `maintenance history --run ID` shows each candidate's action, result, reason code and operation id.
 - A retired note carries `last_retirement`: when, the action, the actor (`maintenance`), the successor if any, and the model's rule, reason, run id, operation id and evidence references. `read REF` shows it, and it stays after a restore until the next retirement replaces it.
 - `restore REF` returns an archived note to `notes/`, pinned so maintenance cannot retire it again at once. Resolved and superseded notes use `reopen` and their successor.
-- Each retirement is an ordinary journaled operation, so `log` shows it with actor `maintenance` and `undo OPERATION` reverses it.
+- Each change is an ordinary journaled operation, so `log` lists it. `restore REF` brings back an archived note; `undo OPERATION` reverses an update when no later edit conflicts.
 
 ## Session start
 
@@ -78,7 +78,7 @@ When a run has finished that the session has not been told about, SessionStart a
 
 ## Permissions
 
-The main agent may run `maintenance run`, `enable` and `disable` without a prompt; the user has authorized those by deciding to use the feature, and `enable` is the user's explicit act. Subagents and viewers may only read: `status`, `preview` and `history`. This is the one exception to the rule that archiving needs an approved plan; everything else (merge, delete, retag, taxonomy, remap) is unchanged.
+The main agent may run `maintenance run`, `enable` and `disable` without a permission prompt (the user chose this on 2026-11-14); the interval and daily limits still apply to every run. Subagents and viewers may only read: `status`, `preview` and `history`. This is the one exception to the rule that archiving needs an approved plan; everything else (merge, delete, retag, taxonomy, remap) is unchanged.
 
 ## Discovery by other tools
 

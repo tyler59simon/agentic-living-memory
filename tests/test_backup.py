@@ -230,6 +230,23 @@ class MaintenanceFiles(StoreFixture):
         self.restore(final)
         self.assertEqual(json.loads((self.root / rel).read_text())['state'], 'completed')
 
+    def test_an_older_snapshot_without_maintenance_files_still_disables_it(self):
+        import shutil
+        shutil.rmtree(self.root / 'maintenance', ignore_errors=True)
+        (self.root / 'maintenance.json').unlink()
+        source = snap.backup(self.root)['backup']
+        self.ms.set_config(self.root, self.cfg)
+        self.restore(source)
+        self.assertFalse(self.ms.config(self.root)['enabled'])
+
+    def test_an_undecodable_current_file_does_not_block_the_restore(self):
+        run = self.finish_run(self.T)
+        rel = f"maintenance/runs/{run['day']}/{run['id']}.json"
+        source = snap.backup(self.root)['backup']
+        (self.root / rel).write_bytes(bytes([0xff, 0xfe]) + b' not utf-8')
+        self.restore(source)
+        self.assertEqual(json.loads((self.root / rel).read_text())['id'], run['id'])
+
     def test_a_restore_with_only_equal_maintenance_files_is_unchanged(self):
         self.finish_run(self.T)
         self.ms.set_config(self.root, dict(self.cfg, enabled=False))

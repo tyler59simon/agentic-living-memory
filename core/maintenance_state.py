@@ -620,7 +620,10 @@ def merge_restore(current, snapshot):
             continue
         if snap_run['id'] != m[2]:
             continue
-        have = _json(current.get(rel)) if rel in current else None
+        try:
+            have = _check_run(_json(current[rel]), m[1]) if rel in current else None
+        except (TypeError, ValueError):
+            have = None
         # An unreadable current record has no accounting worth keeping, so the snapshot copy replaces it.
         out[rel] = current[rel] if have is not None and not (have.get('state') in NONTERMINAL and snap_run['state'] not in NONTERMINAL) else text
     return out

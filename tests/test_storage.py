@@ -302,6 +302,26 @@ class MaintenanceRelocation(StorageBase):
         self.assertTrue(self.ms.config(self.root)['enabled'])   # the retired source is untouched
         self.assertEqual(self.apply(plan)['status'], 'committed')
 
+    def test_a_bom_prefixed_enabled_config_is_disabled_at_the_destination(self):
+        path = self.root / 'maintenance.json'
+        path.write_bytes(bytes([0xef, 0xbb, 0xbf]) + path.read_bytes())
+        self.assertTrue(self.ms.config(self.root)['enabled'])
+        plan = storage.relocation_plan(self.root, self.base / 'new shared store')
+        self.apply(plan)
+        self.assertFalse(self.ms.config(Path(plan['destination']))['enabled'])
+
+    def test_the_destination_config_must_be_the_source_one_disabled(self):
+        from core.repository import canonical_json
+        dest = self.base / 'dest-check'
+        (dest).mkdir()
+        planned = storage._hash(self.root / 'maintenance.json')
+        (dest / 'maintenance.json').write_text(canonical_json(dict(self.cfg, enabled=False)))
+        self.assertTrue(storage._maintenance_matches(self.root, dest, planned))
+        (dest / 'maintenance.json').write_text(canonical_json(dict(self.cfg, enabled=False, daily_budget_usd='9.00')))
+        self.assertFalse(storage._maintenance_matches(self.root, dest, planned))
+        (dest / 'maintenance.json').write_text('{broken')
+        self.assertFalse(storage._maintenance_matches(self.root, dest, planned))
+
     def test_an_unfinished_run_refuses_the_relocation_plan(self):
         self.ms.reserve(self.root, self.cfg, 3, self.T)
         with self.assertRaisesRegex(ValueError, 'maintenance'):

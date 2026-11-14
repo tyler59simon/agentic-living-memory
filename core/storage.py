@@ -202,20 +202,41 @@ def _disable_maintenance(destination):
     """The destination never inherits enabled maintenance: paid work starts only after an explicit `maintenance enable` there."""
     from . import maintenance_state as ms
     from .repository import canonical_json
+    from .repository import read_json
     path = destination / MAINTENANCE_CONFIG
     if path.is_file():
         try:
-            cfg = ms.validate(json.loads(path.read_text(encoding='utf-8')))
-        except (OSError, ValueError):
-            return  # a malformed configuration already reads as disabled
+            cfg = ms.validate(read_json(path))   # read_json accepts a BOM, as ms.config does
+        except ValueError:
+            return  # a malformed configuration already reads as disabled; _maintenance_matches then requires an exact copy
         if cfg['enabled']:
             atomic_write(path, canonical_json({**cfg, 'enabled': False}))
 
 
-def _same_files(actual, planned):
-    """Manifests match, except that the destination's maintenance.json is deliberately rewritten disabled."""
+def _maintenance_matches(source, destination, planned_hash):
+    """The destination's maintenance.json is the approved source configuration with only `enabled` set to false, or an exact copy
+    when the source's is not a valid configuration."""
+    from . import maintenance_state as ms
+    from .repository import read_json
+    src, dest = source / MAINTENANCE_CONFIG, destination / MAINTENANCE_CONFIG
+    if planned_hash is None:
+        return not dest.exists()
+    if not src.is_file() or _hash(src) != planned_hash or not dest.is_file():
+        return False
+    try:
+        want = {**ms.validate(read_json(src)), 'enabled': False}
+    except ValueError:
+        return _hash(dest) == planned_hash
+    try:
+        return ms.validate(read_json(dest)) == want
+    except ValueError:
+        return False
+
+
+def _same_files(actual, planned, source, destination):
+    """Manifests match; the destination's maintenance.json must be the source configuration, disabled."""
     skip = lambda m: {k: v for k, v in m.items() if k != MAINTENANCE_CONFIG}
-    return skip(actual) == skip(planned)
+    return skip(actual) == skip(planned) and (MAINTENANCE_CONFIG in actual) == (MAINTENANCE_CONFIG in planned) and         _maintenance_matches(source, destination, planned.get(MAINTENANCE_CONFIG))
 
 
 def apply_relocation(identity, expected):
@@ -259,7 +280,7 @@ def apply_relocation(identity, expected):
                 for rel, expected_hash in plan['files'].items():
                     dest = destination / rel
                     if dest.exists():
-                        if _hash(dest) != expected_hash and rel != MAINTENANCE_CONFIG:
+                        if _hash(dest) != expected_hash and not (rel == MAINTENANCE_CONFIG and _maintenance_matches(source, destination, expected_hash)):
                             raise ValueError(f'Destination conflict: {rel}')
                         continue
                     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -272,7 +293,7 @@ def apply_relocation(identity, expected):
                         for name in ('notes', 'archive'):
                             (destination / 'domains' / domain.name / name).mkdir(parents=True, exist_ok=True)
                 _disable_maintenance(destination)
-                if not _same_files(_manifest(destination), plan['files']):
+                if not _same_files(_manifest(destination), plan['files'], source, destination):
                     raise ValueError('Destination verification failed; shared location unchanged')
                 validate_store(destination)
                 for log in (source / 'logs').glob('*') if (source / 'logs').is_dir() else []:
@@ -292,7 +313,10 @@ def apply_relocation(identity, expected):
                 _write(journal_path, journal)
             for rel, expected_hash in plan['files'].items():
                 # Catalogs are regenerated; all other durable bytes must still match.
-                if _hash(destination / rel) != expected_hash and rel != MAINTENANCE_CONFIG:
+                if rel == MAINTENANCE_CONFIG:
+                    if not _maintenance_matches(source, destination, expected_hash):
+                        raise ValueError(f'Destination verification failed: {rel}')
+                elif _hash(destination / rel) != expected_hash:
                     raise ValueError(f'Destination verification failed: {rel}')
             # The retired marker is durable before publishing the new pointer.
             marker = {'destination': str(destination), 'plan_id': identity}
