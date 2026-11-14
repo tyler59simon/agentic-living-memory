@@ -214,4 +214,57 @@ class Protection(Base):
         for p in ('maintenance.json','maintenance/state.json','maintenance/runs/2026-03-10/x.json'):
             self.assertEqual(protected_rule(str(self.root/p),str(self.base),self.root),'config',p)
 
+class RestoreMerge(Base):
+    """ms.merge_restore on its own: what a snapshot restore writes for the maintenance files."""
+    def files(self):
+        out={'maintenance.json':(self.root/'maintenance.json').read_text(encoding='utf-8')}
+        for rel in ('maintenance/state.json',*[p.relative_to(self.root).as_posix() for p in self.runs()]):
+            if (self.root/rel).is_file():out[rel]=(self.root/rel).read_text(encoding='utf-8')
+        return out
+    def finished(self,at=T0,n=3):
+        run=self.reserve(at,n);ms.launch(self.root,run,at);return ms.finish(self.root,run,250000,'completed',at)
+    def test_config_is_the_current_one_but_disabled(self):
+        snap=self.files();self.change(model='haiku',max_notes_per_day=4)
+        cfg=json.loads(ms.merge_restore(self.files(),snap)['maintenance.json'])
+        self.assertEqual((cfg['enabled'],cfg['model'],cfg['max_notes_per_day']),(False,'haiku',4))
+    def test_config_comes_from_the_snapshot_when_the_store_has_none(self):
+        cfg=json.loads(ms.merge_restore({},self.files())['maintenance.json'])
+        self.assertEqual((cfg['enabled'],cfg['domains']),(False,['demo']))
+    def test_a_malformed_current_config_falls_back_to_the_snapshot_and_nothing_enables(self):
+        self.assertFalse(json.loads(ms.merge_restore({'maintenance.json':'{nope'},self.files())['maintenance.json'])['enabled'])
+        self.assertNotIn('maintenance.json',ms.merge_restore({'maintenance.json':'{nope'},{'maintenance.json':'{nope'}))
+    def test_an_older_snapshot_never_lowers_the_days_figures(self):
+        self.finished(T0,n=2);snap=self.files()
+        run=self.reserve(T0+3*H,3,self.change(min_interval_seconds=1));ms.launch(self.root,run,T0+3*H);ms.finish(self.root,run,100000,'completed',T0+3*H)
+        ms.set_retry(self.root,'demo:a','r1','f1','kept',T0+4*H);current=self.files()
+        merged=json.loads(ms.merge_restore(current,snap)['maintenance/state.json']);now=json.loads(current['maintenance/state.json'])
+        for k in ('reviewed','charged_micro','reserved_notes','reserved_micro','last_attempt_at','last_run'):self.assertEqual(merged[k],now[k],k)
+        self.assertIn('demo:a',merged['retry'])
+    def test_higher_snapshot_counters_survive_and_a_block_or_hold_is_kept_from_either_side(self):
+        self.finished(T0,n=2)
+        current=self.files();state=json.loads(current['maintenance/state.json'])
+        hold={'demo:z':{'revision':'r','fingerprint':'f','retry_after':'2026-04-01T00:00:00+00:00','result':'kept'}}
+        snap=dict(current,**{'maintenance/state.json':json.dumps(dict(state,reviewed=9,charged_micro=900000,blocked={'reason':'provider_budget','config_revision':'x'},retry=hold))})
+        merged=json.loads(ms.merge_restore(current,snap)['maintenance/state.json'])
+        self.assertEqual((merged['reviewed'],merged['charged_micro']),(9,900000));self.assertEqual(merged['blocked']['reason'],'provider_budget');self.assertIn('demo:z',merged['retry'])
+    def test_a_later_retry_hold_wins_and_the_later_day_leads(self):
+        self.finished(T0,n=2);ms.set_retry(self.root,'demo:a','r1','f1','kept',T0);current=self.files();state=json.loads(current['maintenance/state.json'])
+        old=dict(state,day='2026-03-09',reviewed=10,last_attempt_at='2026-03-09T01:00:00+00:00',retry={'demo:a':dict(state['retry']['demo:a'],retry_after='2030-01-01T00:00:00+00:00')})
+        merged=json.loads(ms.merge_restore(current,{'maintenance/state.json':json.dumps(old)})['maintenance/state.json'])
+        self.assertEqual((merged['day'],merged['reviewed']),(state['day'],state['reviewed']));self.assertEqual(merged['retry']['demo:a']['retry_after'],'2030-01-01T00:00:00+00:00')
+        self.assertEqual(merged['last_attempt_at'],state['last_attempt_at'])
+    def test_run_records_are_add_only_and_a_terminal_record_wins(self):
+        run=self.reserve(T0,3);rel=f"maintenance/runs/{run['day']}/{run['id']}.json";reserved=self.files()
+        ms.launch(self.root,run,T0);ms.finish(self.root,run,100,'completed',T0);final=self.files()
+        self.assertEqual(json.loads(ms.merge_restore(final,reserved)[rel])['state'],'completed')    # current terminal, snapshot not
+        self.assertEqual(json.loads(ms.merge_restore(reserved,final)[rel])['state'],'completed')    # current not terminal, snapshot is
+        self.assertIn(rel,ms.merge_restore({k:v for k,v in final.items() if k!=rel},final))         # added when missing
+        self.assertNotIn(rel,ms.merge_restore(final,{'maintenance.json':final['maintenance.json']}))  # a current-only run is never touched
+    def test_invalid_snapshot_records_are_ignored(self):
+        bad={'maintenance/runs/2026-03-10/x.json':'{"id":"x"}','maintenance/runs/2026-03-10/y.json':'nope','maintenance/state.json':'[1]'}
+        self.assertEqual(ms.merge_restore({},bad),{})
+    def test_active_runs_lists_only_unfinished_records(self):
+        self.assertEqual(ms.active_runs(self.root),[]);run=self.reserve();self.assertEqual(ms.active_runs(self.root),[run['id']])
+        ms.launch(self.root,run,T0);ms.finish(self.root,run,0,'completed',T0);self.assertEqual(ms.active_runs(self.root),[])
+
 if __name__=='__main__':unittest.main()

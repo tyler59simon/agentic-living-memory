@@ -514,6 +514,10 @@ def _canvas_edges(active):
             if target in ids and target!=n['id'] and (n['id'],target) not in found:found[(n['id'],target)]=label
     return [{'id':hashlib.sha256((a+b).encode()).hexdigest()[:16],'fromNode':a,'toNode':b,'label':label} for (a,b),label in sorted(found.items())]
 
+STALE_TEXT=('Notes that need a look, by kind. Changed evidence (stale): a cited file or source no longer matches what the note recorded. Unchecked evidence: files the note cites have not been compared yet, so `review` or the next session check settles it. '
+            'Passed review date (due): the review date has passed, or nothing changed in a long time ({days} days; 30-90 for status, plan, bug and risk notes). Also an unconfirmed belief (interim), a content check (warned) and retrieved but never used (noisy). '
+            'Pinned notes are marked and automatic maintenance never retires them. Retired notes leave this list and appear under Archive; `restore REF` brings one back. Run `review` for duplicates.\n\n')
+
 def build_overlay(domain,vault,root=None,trigger=None):
     root=Path(root or memory_root()).resolve();vault=Path(vault).resolve()
     try:sync_result=sync(domain,vault,root,trigger)
@@ -526,11 +530,16 @@ def build_overlay(domain,vault,root=None,trigger=None):
     from .worklist import worklist
     by_ref={f"{domain}:{n['id']}":n for n in active}
     stale=worklist(root,[domain],cheap=True,limit=len(active) or 1,notes=[dict(n,domain=domain) for n in active])['items']
+    try:
+        from .maintenance_state import config as maintenance_config
+        on=maintenance_config(root)['enabled']
+    except ValueError:on=False
+    maintenance_line='Automatic maintenance is on: `maintenance history` shows what it archived and why.\n\n' if on else ''
     pages={'Home':'# Living Memory\n\n'+f'Domain: {domain}\n\nActive: {len(active)}; retired: {len(notes)-len(active)}; due for review: {len(stale)}\n\n'
                   +'\n'.join(f'- [[{DASH}/{p}|{p}]]' for p in ('Domain Overview','Timeline','Stale Notes','Taxonomy','Archive'))+f'\n- [[{DASH}/Sync Status - {domain}|Sync Status]]\n- [[{CANVAS}/{domain}.canvas|Canvas]]',
            'Taxonomy':'# Taxonomy\n\n'+'\n'.join(f"- {t}" for t in sorted({t for n in notes for t in n.get('tags',[])})),
-           'Stale Notes':'# Stale Notes\n\n'+(f'Notes that need a look, by kind: a changed file (stale), a review date that has passed or no change in a long time ({STALE_DAYS} days; 30-90 for status, plan, bug and risk notes), an unconfirmed belief (interim), a content check (warned), retrieved but never used (noisy). Run `review` for duplicates.\n\n'
-                         +'\n'.join(f"- {link(by_ref[r['ref']])} — {', '.join(r['kinds'])}: {r['reason']}" for r in stale) if stale else '_Nothing needs review._'),
+           'Stale Notes':'# Stale Notes\n\n'+(STALE_TEXT.format(days=STALE_DAYS)+maintenance_line
+                         +'\n'.join(f"- {link(by_ref[r['ref']])}{' (pinned)' if r.get('pinned') else ''} — {', '.join(r['kinds'])}: {r['reason']}" for r in stale) if stale else '_Nothing needs review._'),
            'Timeline':'# Timeline\n\n'+'\n'.join(f"- {n.get('updated','')[:10]} {link(n)}" for n in sorted(notes,key=lambda n:n.get('updated',''),reverse=True)),
            'Domain Overview':'# Domain Overview\n\n'+f'Domain: {domain}\n\n'+'\n'.join('- '+link(n) for n in active),
            'Archive':'# Archive\n\n'+'\n'.join('- '+link(n) for n in notes if n.get('status')!='active')}

@@ -21,6 +21,7 @@ AUTO_MAX_NOTES=1500
 TOP_LEVEL=('bindings.json','tag_taxonomy.json','projects.json','systems.json','sources.json','changes.json','views.json','schema-version.json','learning.json')
 # ledger/ is append-only history with no other copy (journals do not hold it), so a snapshot saves it and a restore only adds to it.
 LEDGER=re.compile(r'ledger/sessions-\d{4}\.jsonl')
+MAINT=re.compile(r'maintenance\.json|maintenance/(?:state\.json|runs/\d{4}-\d{2}-\d{2}/[A-Za-z0-9_-]{1,100}\.json)')
 MEMBER=re.compile(r'domains/[A-Za-z0-9_.-]+/(?:notes|archive)/(?:[^/\\]+/)*[^/\\]+\.md')
 NAME=re.compile(r'lm-(\d{8}-\d{6})(?:-(\d+))?\.zip')
 
@@ -31,6 +32,7 @@ def canonical_files(root):
     root=Path(root)
     found=[name for name in TOP_LEVEL if (root/name).is_file()]
     if (root/'ledger').is_dir() and not (root/'ledger').is_symlink():found+=sorted(p.relative_to(root).as_posix() for p in (root/'ledger').glob('sessions-*.jsonl') if LEDGER.fullmatch(p.relative_to(root).as_posix()) and p.is_file() and not p.is_symlink())
+    found+=_maintenance_files(root)
     for domain in sorted((root/'domains').iterdir()) if (root/'domains').is_dir() else []:
         for folder in ('notes','archive'):
             base=domain/folder
@@ -44,9 +46,18 @@ def canonical_files(root):
                 if _allowed(rel):found.append(rel)
     return found
 
+def _maintenance_files(root):
+    """maintenance.json, the accounting checkpoint and the run records; never worker.lock."""
+    found=[]
+    if (root/'maintenance.json').is_file() and not (root/'maintenance.json').is_symlink():found.append('maintenance.json')
+    base=root/'maintenance'
+    if base.is_dir() and not base.is_symlink():
+        found+=sorted(rel for rel in (p.relative_to(root).as_posix() for p in base.rglob('*.json') if p.is_file() and not p.is_symlink()) if MAINT.fullmatch(rel))
+    return found
+
 def _allowed(name):
     learning=re.fullmatch(r'domains/[A-Za-z0-9_.-]+/learning/(?:tasks|attempts|evidence|candidates|procedures|versions|uses|feedback)/[a-f0-9.-]+\.json',name)
-    return (name in TOP_LEVEL or bool(MEMBER.fullmatch(name)) or bool(LEDGER.fullmatch(name)) or bool(learning)) and '..' not in name.split('/')
+    return (name in TOP_LEVEL or bool(MEMBER.fullmatch(name)) or bool(LEDGER.fullmatch(name)) or bool(MAINT.fullmatch(name)) or bool(learning)) and '..' not in name.split('/')
 
 def snapshots(root):
     """Existing snapshots, newest first: by timestamp, then by same-second sequence (lm-T.zip, lm-T-1.zip, ...)."""
@@ -167,12 +178,14 @@ def restore_plan(root,source):
     with zipfile.ZipFile(source) as archive:
         wanted={info.filename:archive.read(info).decode('utf-8') for info in archive.infolist() if info.filename not in skipped}
     for rel in wanted:confined(root,rel)
+    # Maintenance files never delete or lower what is there (merge_restore), and the restored configuration is disabled.
+    snapshot_maint={rel:wanted.pop(rel) for rel in list(wanted) if MAINT.fullmatch(rel)}
     covered={rel.split('/')[1] for rel in wanted if rel.startswith('domains/')}
     # A domain that was bound but empty at snapshot time has no note members; its saved binding still covers it.
     try:saved=read_json_bytes(wanted['bindings.json'].encode('utf-8')).get('domains',{}) if 'bindings.json' in wanted else {}
     except (ValueError,AttributeError):saved={}
     covered|={name for name in saved if isinstance(name,str) and re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9._-]*',name)}
-    current=[rel for rel in canonical_files(root) if rel in TOP_LEVEL or rel.split('/')[1] in covered]
+    current=[rel for rel in canonical_files(root) if not MAINT.fullmatch(rel) and (rel in TOP_LEVEL or rel.split('/')[1] in covered)]
     changes={};unchanged=0
     for rel,text in wanted.items():
         path=root/rel
@@ -181,6 +194,12 @@ def restore_plan(root,source):
         else:changes[rel]=text
     for rel in current:
         if rel not in wanted and rel not in skipped and rel not in TOP_LEVEL:changes[rel]=None
+    if snapshot_maint:
+        from .maintenance_state import merge_restore
+        current_maint={rel:(root/rel).read_text(encoding='utf-8') for rel in _maintenance_files(root)}
+        for rel,text in merge_restore(current_maint,snapshot_maint).items():
+            if current_maint.get(rel)==text:unchanged+=1
+            else:changes[rel]=text
     summary={'source':source.name,'write':sum(1 for v in changes.values() if v is not None),
              'delete':sum(1 for v in changes.values() if v is None),'unchanged':unchanged}
     if skipped:summary['skipped_unreadable']=sorted(skipped)

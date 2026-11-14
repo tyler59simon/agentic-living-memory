@@ -127,6 +127,9 @@ def validate_store(root):
     for journal in (root / '.operations').glob('*/journal.json'):
         if _read(journal).get('state') not in ('committed', 'rolled_back', 'abandoned'):
             raise ValueError('Pending operation recovery required before relocation')
+    from . import maintenance_state as ms
+    if ms.active_runs(root) or ((root / 'maintenance').is_dir() and ms.running(root)):
+        raise ValueError('Automatic maintenance is running or has an unfinished run; wait for it (or run maintenance status), then plan the relocation again')
 
 
 def _manifest(root):
@@ -138,7 +141,7 @@ def _manifest(root):
         if not path.is_file():
             continue
         rel = path.relative_to(root)
-        if rel.parts[0] in ('.turns', 'hooks', 'logs', '.cache', '.views', '__pycache__', 'sources-cache') or path.name in ('.store.lock', '.relocated.json'):
+        if rel.parts[0] in ('.turns', 'hooks', 'logs', '.cache', '.views', '__pycache__', 'sources-cache') or path.name in ('.store.lock', '.relocated.json') or rel.as_posix() == 'maintenance/worker.lock':
             continue
         if path.name in ('search.sqlite3', 'search.sqlite3-wal', 'search.sqlite3-shm', 'sources.sqlite3', 'vectors.sqlite3', 'vectors.sqlite3-journal') or path.name.startswith(('.sources-', '.vectors-')):
             continue
@@ -192,6 +195,29 @@ def inspect_relocation(identity):
             'changed': sorted(p for p in set(previous) & set(current) if previous[p] != current[p])}
 
 
+MAINTENANCE_CONFIG = 'maintenance.json'
+
+
+def _disable_maintenance(destination):
+    """The destination never inherits enabled maintenance: paid work starts only after an explicit `maintenance enable` there."""
+    from . import maintenance_state as ms
+    from .repository import canonical_json
+    path = destination / MAINTENANCE_CONFIG
+    if path.is_file():
+        try:
+            cfg = ms.validate(json.loads(path.read_text(encoding='utf-8')))
+        except (OSError, ValueError):
+            return  # a malformed configuration already reads as disabled
+        if cfg['enabled']:
+            atomic_write(path, canonical_json({**cfg, 'enabled': False}))
+
+
+def _same_files(actual, planned):
+    """Manifests match, except that the destination's maintenance.json is deliberately rewritten disabled."""
+    skip = lambda m: {k: v for k, v in m.items() if k != MAINTENANCE_CONFIG}
+    return skip(actual) == skip(planned)
+
+
 def apply_relocation(identity, expected):
     """Resume by rerunning the same approved command; pointer changes last."""
     from .repository import store_lock, reconcile
@@ -233,7 +259,7 @@ def apply_relocation(identity, expected):
                 for rel, expected_hash in plan['files'].items():
                     dest = destination / rel
                     if dest.exists():
-                        if _hash(dest) != expected_hash:
+                        if _hash(dest) != expected_hash and rel != MAINTENANCE_CONFIG:
                             raise ValueError(f'Destination conflict: {rel}')
                         continue
                     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -245,7 +271,8 @@ def apply_relocation(identity, expected):
                     if domain.is_dir():
                         for name in ('notes', 'archive'):
                             (destination / 'domains' / domain.name / name).mkdir(parents=True, exist_ok=True)
-                if _manifest(destination) != plan['files']:
+                _disable_maintenance(destination)
+                if not _same_files(_manifest(destination), plan['files']):
                     raise ValueError('Destination verification failed; shared location unchanged')
                 validate_store(destination)
                 for log in (source / 'logs').glob('*') if (source / 'logs').is_dir() else []:
@@ -265,7 +292,7 @@ def apply_relocation(identity, expected):
                 _write(journal_path, journal)
             for rel, expected_hash in plan['files'].items():
                 # Catalogs are regenerated; all other durable bytes must still match.
-                if _hash(destination / rel) != expected_hash:
+                if _hash(destination / rel) != expected_hash and rel != MAINTENANCE_CONFIG:
                     raise ValueError(f'Destination verification failed: {rel}')
             # The retired marker is durable before publishing the new pointer.
             marker = {'destination': str(destination), 'plan_id': identity}

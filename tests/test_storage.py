@@ -13,7 +13,7 @@ from core import storage
 from core.repository import read_json, store_lock
 
 
-class SharedStorage(StoreFixture):
+class StorageBase(StoreFixture):
     def setUp(self):
         super().setUp()
         self.config = self.base / 'user config' / 'config.json'
@@ -35,6 +35,8 @@ class SharedStorage(StoreFixture):
     def apply(self, plan):
         return storage.apply_relocation(plan['plan_id'], plan['digest'])
 
+
+class SharedStorage(StorageBase):
     def test_fresh_setup_initializes_and_repeats(self):
         target = self.base / 'new empty store'
         self.configure(target)
@@ -261,3 +263,63 @@ class SharedStorage(StoreFixture):
         result = run('doctor', '--cwd', str(self.base / 'project'))
         self.assertEqual(result['location']['selection_source'], 'shared_config')
         self.assertEqual(result['root'], str(target))
+
+
+class MaintenanceRelocation(StorageBase):
+    def setUp(self):
+        from datetime import datetime, timezone
+        super().setUp()
+        from core import maintenance_state as ms
+        self.ms, self.T = ms, datetime(2026, 3, 10, 12, 0, tzinfo=timezone.utc)
+        self.cfg = ms.validate({'enabled': True, 'domains': ['demo']})
+        ms.set_config(self.root, self.cfg)
+        self.configure()
+        self.note()
+
+    def finished_run(self):
+        run = self.ms.reserve(self.root, self.cfg, 3, self.T)
+        self.ms.launch(self.root, run, self.T)
+        return self.ms.finish(self.root, run, 1000, 'completed', self.T)
+
+    def test_the_lock_is_not_copied_and_the_records_are(self):
+        run = self.finished_run()
+        self.ms.running(self.root)
+        self.assertTrue((self.root / 'maintenance/worker.lock').exists())
+        plan = storage.relocation_plan(self.root, self.base / 'new shared store')
+        self.assertFalse([k for k in storage._manifest(self.root) if k.endswith('worker.lock')])
+        self.apply(plan)
+        dest = Path(plan['destination'])
+        self.assertFalse([k for k in storage._manifest(dest) if k.endswith('worker.lock')])
+        self.assertTrue((dest / f"maintenance/runs/{run['day']}/{run['id']}.json").is_file())
+        self.assertEqual(self.ms.accounting(dest, self.T)[0]['reviewed'], 3)
+
+    def test_the_destination_is_disabled_and_keeps_its_settings(self):
+        self.ms.set_config(self.root, dict(self.cfg, model='haiku'))
+        plan = storage.relocation_plan(self.root, self.base / 'new shared store')
+        self.apply(plan)
+        cfg = self.ms.config(Path(plan['destination']))
+        self.assertEqual((cfg['enabled'], cfg['model'], cfg['domains']), (False, 'haiku', ['demo']))
+        self.assertTrue(self.ms.config(self.root)['enabled'])   # the retired source is untouched
+        self.assertEqual(self.apply(plan)['status'], 'committed')
+
+    def test_an_unfinished_run_refuses_the_relocation_plan(self):
+        self.ms.reserve(self.root, self.cfg, 3, self.T)
+        with self.assertRaisesRegex(ValueError, 'maintenance'):
+            storage.relocation_plan(self.root, self.base / 'new shared store')
+
+    def test_a_held_worker_lock_refuses_the_relocation_plan(self):
+        with self.ms.worker_lock(self.root):
+            with self.assertRaisesRegex(ValueError, 'maintenance'):
+                storage.relocation_plan(self.root, self.base / 'new shared store')
+        storage.relocation_plan(self.root, self.base / 'new shared store')
+
+    def test_an_old_worker_is_refused_after_relocation(self):
+        from core import maintenance
+        self.apply(storage.relocation_plan(self.root, self.base / 'new shared store'))
+        with self.assertRaisesRegex(ValueError, 'Store retired'):
+            self.ms.reserve(self.root, self.cfg, 3, self.T)
+        with self.assertRaisesRegex(ValueError, 'Store retired'):
+            self.ms.set_retry(self.root, 'demo:a', 'r', 'f', 'kept', self.T)
+        with self.assertRaisesRegex(ValueError, 'Store retired'):
+            maintenance.run(self.root, dry_run=True, now=self.T)
+        self.assertEqual(list((self.root / 'maintenance').glob('runs/*/*.json')), [])

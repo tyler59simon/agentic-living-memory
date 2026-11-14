@@ -6,6 +6,7 @@ allowance in force is the element-wise maximum of it and the figures summed from
 the checkpoint (or `.cache`) never creates a new allowance. Money is integer microdollars; records hold metadata only."""
 from __future__ import annotations
 import hashlib
+import json
 import re
 import uuid
 from contextlib import ExitStack, contextmanager
@@ -28,6 +29,7 @@ TRANSITIONS = {'reserved': {'running', 'failed', 'cancelled', 'interrupted'},
                'running': {'applying', 'completed', 'dry_run', 'failed', 'cancelled', 'interrupted'},
                'applying': {'completed', 'failed', 'cancelled', 'interrupted'}}
 FINISH_STATES = {'completed', 'dry_run', 'failed', 'cancelled'}
+NONTERMINAL = ('reserved', 'running', 'applying')
 COUNTERS = ('reviewed', 'reserved_notes', 'charged_micro', 'reserved_micro')
 
 
@@ -185,10 +187,9 @@ def _run_path(run):
     return f'{RUNS}/{run["day"]}/{run["id"]}.json'
 
 
-def _checkpoint(root):
-    """The checkpoint, or None when it is missing or malformed (it is then rebuilt from the run records)."""
+def _check_state(value):
+    """A well-formed checkpoint dict with every field present, or None."""
     try:
-        value = read_json(Path(root) / STATE)
         if not isinstance(value, dict) or not isinstance(value.get('day'), str) or not isinstance(value.get('retry'), dict) or not isinstance(value.get('cost_complete'), bool):
             return None
         date.fromisoformat(value['day'])
@@ -197,6 +198,14 @@ def _checkpoint(root):
         if value.get('last_attempt_at') is not None:
             _parse(value['last_attempt_at'])
         return {**_blank(value['day']), **value}
+    except (ValueError, TypeError):
+        return None
+
+
+def _checkpoint(root):
+    """The checkpoint, or None when it is missing or malformed (it is then rebuilt from the run records)."""
+    try:
+        return _check_state(read_json(Path(root) / STATE))
     except (ValueError, TypeError):
         return None
 
@@ -529,3 +538,89 @@ def set_cursor(root, domain, now=None):
         before = _file_digest(root, STATE)
         acc['domain_cursor'] = domain
         return transaction(root, {STATE: canonical_json(acc)}, 'maintenance_run', expected={STATE: before})
+
+
+# ---- snapshot restore and relocation
+
+def active_runs(root):
+    """IDs of run records that are still reserved, running or applying (a relocation must not move these)."""
+    base = Path(root) / RUNS
+    found = []
+    for path in sorted(base.glob('*/*.json')) if base.is_dir() else []:
+        try:
+            run = read_json(path)
+        except (ValueError, OSError):
+            continue
+        if isinstance(run, dict) and run.get('state') in NONTERMINAL:
+            found.append(str(run.get('id') or path.stem))
+    return found
+
+
+def _json(text):
+    try:
+        value = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _later(a, b):
+    return a if b is None or (a is not None and _parse(a) >= _parse(b)) else b
+
+
+def _merge_state(cur, snap):
+    """Element-wise maximum of two checkpoints: it never lowers a counter, moves the last attempt back or drops a block or hold."""
+    if cur is None or snap is None:
+        return cur or snap
+    newer, older = (cur, snap) if cur['day'] >= snap['day'] else (snap, cur)
+    out = dict(newer)
+    if cur['day'] == snap['day']:
+        for k in COUNTERS:
+            out[k] = max(cur[k], snap[k])
+        out['cost_complete'] = cur['cost_complete'] and snap['cost_complete']
+    last = _later(cur['last_attempt_at'], snap['last_attempt_at'])
+    source = cur if last == cur['last_attempt_at'] else snap
+    for k in ('last_attempt_at', 'last_attempt_config_revision', 'last_run', 'last_failure'):
+        out[k] = source[k]
+    out['blocked'] = cur['blocked'] or snap['blocked']
+    out['domain_cursor'] = cur['domain_cursor'] or snap['domain_cursor']
+    retry = dict(snap['retry'])
+    for ref, entry in cur['retry'].items():
+        theirs = retry.get(ref)
+        retry[ref] = entry if not theirs or _parse(entry['retry_after']) >= _parse(theirs['retry_after']) else theirs
+    out['retry'] = retry
+    return out
+
+
+def merge_restore(current, snapshot):
+    """Maintenance files a snapshot restore should write ({path: text}), given the current and snapshot files ({path: text}).
+    The configuration is the current one (else the snapshot's) with `enabled: false`, so a restore never starts paid work. The
+    checkpoint is the element-wise maximum. Run records are add-only: a current record stays unless it is not final and the
+    snapshot's copy is. A restore therefore never lowers a consumed allowance."""
+    out = {}
+    for text in (current.get(CONFIG), snapshot.get(CONFIG)):
+        try:
+            cfg = validate(json.loads(text)) if text is not None else None
+        except (TypeError, ValueError):
+            continue
+        if cfg is not None:
+            out[CONFIG] = canonical_json({**cfg, 'enabled': False})
+            break
+    parts = [_check_state(_json(t)) for t in (current.get(STATE), snapshot.get(STATE))]
+    merged = _merge_state(*parts)
+    if merged is not None:
+        out[STATE] = canonical_json(merged)
+    for rel, text in snapshot.items():
+        m = re.fullmatch(RUNS + r'/(\d{4}-\d{2}-\d{2})/([A-Za-z0-9_-]{1,100})\.json', rel)
+        if not m:
+            continue
+        try:
+            snap_run = _check_run(_json(text), m[1])
+        except ValueError:
+            continue
+        if snap_run['id'] != m[2]:
+            continue
+        have = _json(current.get(rel)) if rel in current else None
+        # An unreadable current record has no accounting worth keeping, so the snapshot copy replaces it.
+        out[rel] = current[rel] if have is not None and not (have.get('state') in NONTERMINAL and snap_run['state'] not in NONTERMINAL) else text
+    return out

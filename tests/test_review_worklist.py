@@ -157,6 +157,22 @@ class Surfaces(Base):
         self.assertIn('Old status',page);self.assertIn('due: review date 2020-01-01 has passed',page);self.assertNotIn('Fine note',page)
         self.assertIn('due for review: 1',(vault/'Dashboards'/'Home.md').read_text(encoding='utf-8'))
 
+    def stale_page(self):
+        from core.sync import build_overlay
+        vault=self.base/'vault';build_overlay('demo',vault,self.root)
+        return (vault/'Dashboards'/'Stale Notes.md').read_text(encoding='utf-8')
+
+    def test_obsidian_stale_page_explains_each_kind_marks_pins_and_names_maintenance_history_only_when_enabled(self):
+        from core import maintenance_state as ms
+        self.cap('Old status','Green.',type='status',review_by='2020-01-01',pinned=True);self.cap('Other old status','Green too.',type='status',review_by='2020-01-01')
+        page=self.stale_page()
+        for text in ('Changed evidence','Unchecked evidence','Passed review date','Retired notes','`restore REF`'):self.assertIn(text,page)
+        rows={l for l in page.splitlines() if l.startswith('- ')}
+        self.assertEqual(sorted('(pinned)' in l for l in rows),[False,True],page);self.assertNotIn('(pinned)',[l for l in rows if 'Other old status' in l][0])
+        self.assertNotIn('maintenance history',page)
+        ms.set_config(self.root,{'enabled':True,'domains':['demo']});self.assertIn('`maintenance history`',self.stale_page())
+        ms.set_config(self.root,{'enabled':False,'domains':['demo']});self.assertNotIn('`maintenance history`',self.stale_page())
+
 @unittest.skipUnless(GIT,'git is not installed')
 class Maps(StoreFixture):
     def test_a_map_whose_cached_currency_lists_changed_files_is_stale_without_running_git(self):

@@ -105,6 +105,24 @@ class Bundles(StoreFixture):
                 z.writestr(n, data)
         return self.cli(self.other, 'import-plan', str(target))
 
+    def test_pin_and_retirement_data_survive_and_no_maintenance_config_travels(self):
+        from core import maintenance_state as ms
+        ms.set_config(self.root, {'enabled': True, 'domains': ['demo']})
+        code, result = self.cli(self.root, 'update', 'demo:' + self.b['id'], '--pin')
+        self.assertEqual(code, 0, result)
+        bundle, _ = self.export('pins.zip', '--all')
+        with zipfile.ZipFile(bundle) as z:
+            self.assertFalse([n for n in z.namelist() if 'maintenance' in n], z.namelist())
+        code, plan = self.cli(self.other, 'import-plan', str(bundle))
+        self.assertEqual(code, 0, plan)
+        apply(self.other, plan['plan_id'], plan['digest'])
+        mine = {n['id']: n for n in inventory('demo', self.root, retired=True)}
+        theirs = {n['id']: n for n in inventory('demo', self.other, retired=True)}
+        self.assertIs(theirs[self.b['id']]['pinned'], True)
+        self.assertEqual(theirs[self.old['id']]['last_retirement'], mine[self.old['id']]['last_retirement'])
+        self.assertEqual(theirs[self.old['id']]['last_retirement']['action'], 'supersede')
+        self.assertFalse((self.other / 'maintenance.json').exists() or (self.other / 'maintenance').exists())
+
     def test_rejects_traversal_unknown_members_and_tampering(self):
         code, result = self.tampered('trav.zip', lambda m: m.update({'notes/../../bindings.md': b'x'}))
         self.assertEqual(code, 2)

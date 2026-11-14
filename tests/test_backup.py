@@ -154,6 +154,89 @@ class Backups(StoreFixture):
         self.assertTrue(second.endswith('lm-20260102-030405-1.zip'), second)
 
 
+class MaintenanceFiles(StoreFixture):
+    def setUp(self):
+        from datetime import datetime, timedelta, timezone
+        super().setUp()
+        from core import maintenance_state as ms
+        self.ms, self.T, self.H = ms, datetime(2026, 3, 10, 12, 0, tzinfo=timezone.utc), timedelta(hours=1)
+        self.cfg = ms.validate({'enabled': True, 'domains': ['demo']})
+        ms.set_config(self.root, self.cfg)
+        self.note()
+
+    def finish_run(self, at, notes=3, micro=250000):
+        run = self.ms.reserve(self.root, self.cfg, notes, at)
+        self.ms.launch(self.root, run, at)
+        return self.ms.finish(self.root, run, micro, 'completed', at)
+
+    def restore(self, source):
+        proposed = snap.restore_plan(self.root, source)
+        if proposed.get('status') != 'unchanged':
+            apply(self.root, proposed['plan_id'], proposed['digest'])
+        return proposed
+
+    def test_snapshot_holds_configuration_checkpoint_and_run_records_but_not_the_lock(self):
+        run = self.finish_run(self.T)
+        self.ms.running(self.root)   # creates worker.lock
+        self.assertTrue((self.root / 'maintenance/worker.lock').exists())
+        result = snap.backup(self.root)
+        names = set(zipfile.ZipFile(result['backup']).namelist())
+        self.assertTrue({'maintenance.json', 'maintenance/state.json', f"maintenance/runs/{run['day']}/{run['id']}.json"} <= names, names)
+        self.assertFalse([n for n in names if n.endswith('.lock')])
+        self.assertEqual(snap.verify(result['backup']), [])
+
+    def test_member_names_are_checked(self):
+        for name in ('maintenance/worker.lock', 'maintenance/runs/x/y.json', 'maintenance/runs/2026-03-10/a/b.json', 'maintenance/other.json', 'maintenance/runs/2026-03-10/' + 'a' * 101 + '.json'):
+            self.assertFalse(snap._allowed(name), name)
+        for name in ('maintenance.json', 'maintenance/state.json', 'maintenance/runs/2026-03-10/20260310T120000-abc_12.json'):
+            self.assertTrue(snap._allowed(name), name)
+
+    def test_restore_never_lowers_accounting_keeps_current_runs_and_disables_the_config(self):
+        self.finish_run(self.T, notes=2)
+        source = snap.backup(self.root)['backup']
+        later = self.finish_run(self.T + 25 * self.H, notes=4, micro=300000)
+        self.ms.set_config(self.root, dict(self.cfg, model='haiku'))
+        at = self.T + 26 * self.H
+        before = self.ms.accounting(self.root, at)[0]
+        self.restore(source)
+        after = self.ms.accounting(self.root, at)[0]
+        for k in ('reviewed', 'charged_micro', 'reserved_micro', 'reserved_notes', 'last_attempt_at', 'last_run'):
+            self.assertEqual(after[k], before[k], k)
+        self.assertTrue((self.root / f"maintenance/runs/{later['day']}/{later['id']}.json").is_file())
+        cfg = self.ms.config(self.root)
+        self.assertEqual((cfg['enabled'], cfg['model']), (False, 'haiku'))
+        self.assertEqual(self.ms.eligibility(self.root, self.T + 72 * self.H)['skip_reason'], 'disabled')
+
+    def test_restoring_into_a_store_without_maintenance_files_adds_them_disabled(self):
+        import shutil
+        run = self.finish_run(self.T)
+        source = snap.backup(self.root)['backup']
+        shutil.rmtree(self.root / 'maintenance')
+        (self.root / 'maintenance.json').unlink()
+        self.restore(source)
+        self.assertFalse(self.ms.config(self.root)['enabled'])
+        self.assertTrue((self.root / f"maintenance/runs/{run['day']}/{run['id']}.json").is_file())
+        self.assertEqual(self.ms.accounting(self.root, self.T)[0]['reviewed'], 3)
+
+    def test_a_terminal_snapshot_record_replaces_an_unfinished_current_one_and_not_the_reverse(self):
+        run = self.ms.reserve(self.root, self.cfg, 3, self.T)
+        rel = f"maintenance/runs/{run['day']}/{run['id']}.json"
+        reserved = snap.backup(self.root)['backup']
+        self.ms.launch(self.root, run, self.T)
+        self.ms.finish(self.root, run, 100, 'completed', self.T)
+        final = snap.backup(self.root)['backup']
+        self.restore(reserved)
+        self.assertEqual(json.loads((self.root / rel).read_text())['state'], 'completed')
+        self.restore(final)
+        self.assertEqual(json.loads((self.root / rel).read_text())['state'], 'completed')
+
+    def test_a_restore_with_only_equal_maintenance_files_is_unchanged(self):
+        self.finish_run(self.T)
+        self.ms.set_config(self.root, dict(self.cfg, enabled=False))
+        source = snap.backup(self.root)['backup']
+        self.assertEqual(snap.restore_plan(self.root, source)['status'], 'unchanged')
+
+
 if __name__ == '__main__':
     import unittest
     unittest.main()
