@@ -141,7 +141,8 @@ class ClaudeIntegrationFixes(StoreFixture):
     def test_allow_and_deny_decisions(self):
         bash=lambda command:self.run_hook('pre-tool-use',self.payload(tool_name='Bash',tool_input={'command':command}))
         self.assertIn('allow',bash(self.memory('search "cache policy"')))
-        self.assertIn('allow',bash('& '+self.memory('capture-finalize --session s1 --turn t1')))
+        self.assertIn('allow',bash(self.memory('capture-finalize --session s1 --turn t1')))
+        self.assertIn('deny',bash('& '+self.memory('capture-finalize --session s1 --turn t1')))   # Bash has no call operator
         self.assertIn('allow',bash(self.memory('capture --subject project --concern knowledge "Apply rule" "We apply X"')))
         # Plan application gets no hook decision: the host's normal permissions apply.
         self.assertEqual(bash(self.memory('apply 0123 --expected-plan-sha256 abc')),{})

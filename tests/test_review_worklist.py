@@ -38,7 +38,7 @@ class Worklist(Base):
         self.cap('Fresh decision','Fresh.',type='decision')
         rows=self.rows(kinds=['due'])
         self.assertEqual(set(rows),{self.ref(old),self.ref(decided)})
-        self.assertEqual((rows[self.ref(old)]['action'],rows[self.ref(decided)]['action']),('archive-plan','confirm'))
+        self.assertEqual((rows[self.ref(old)]['action'],rows[self.ref(decided)]['action']),('plan archive','confirm'))
         self.assertIn('2020-01-01',rows[self.ref(old)]['reason'])
 
     def test_interim_waits_for_the_days_then_lists_unconfirmed_beliefs(self):
@@ -107,7 +107,7 @@ class Worklist(Base):
         made=self.cap('Wiring task','Pending: wire the adapter.',type='status',review_by='2020-01-01')
         usage.record(self.root,'inject',[self.ref(made)]*3,'s1','prompt')
         found=worklist(self.root,['demo']);self.assertEqual(len(found['items']),1);self.assertEqual(found['total'],1)
-        self.assertEqual(found['items'][0]['kinds'],['due','warned','noisy']);self.assertEqual(found['items'][0]['action'],'archive-plan')
+        self.assertEqual(found['items'][0]['kinds'],['due','warned','noisy']);self.assertEqual(found['items'][0]['action'],'plan archive')
         self.assertEqual({k:v for k,v in found['counts'].items() if v},{'due':1,'warned':1,'noisy':1})
 
     def test_review_keeps_its_fields_and_filters_by_kind(self):
@@ -265,5 +265,21 @@ class Maps(StoreFixture):
         with patch('core.maps.working_tree_changes',side_effect=counting):row=worklist(self.root,['demo'],kinds=['stale'],working_tree=True)['items'][0]
         self.assertEqual(len(calls),1);self.assertIn('src/Money.java',row['currency']['changed']);self.assertIn('src/Money.java',row['reason'])
 
+
+class ActionsParse(unittest.TestCase):
+    SAMPLES={'confirm':'confirm demo:abc','update':'update demo:abc --body text','supersede':'supersede demo:abc --by demo:def','resolve':'resolve demo:abc',
+             'merge-plan':'merge-plan','plan archive':'plan archive demo:abc'}
+    def test_every_action_the_worklist_emits_is_a_command_the_cli_parses(self):
+        from core.cli import build_parser
+        from core.worklist import _action,KINDS
+        done_plan={'type':'plan','body':'A plan.\n\n## Action items\n- [x] Ship it'}
+        notes=({'type':'knowledge','body':'x'},{'type':'status','body':'x'},done_plan)
+        emitted={_action([kind],note,pair) for kind in KINDS for note in notes for pair in (None,{'same':True},{'same':False})}
+        self.assertEqual(emitted,set(self.SAMPLES),'a new worklist action needs a sample command here')
+        for action,sample in self.SAMPLES.items():
+            with self.subTest(action=action):
+                self.assertTrue(sample.startswith(action.split()[0]))
+                args=build_parser().parse_args(sample.split());self.assertEqual(args.command,action.split()[0])
+        self.assertEqual(build_parser().parse_args('plan archive demo:abc'.split()).action,'archive')
 
 if __name__=='__main__':unittest.main()

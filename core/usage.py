@@ -141,5 +141,5 @@ def stats(root,domains,days=30,limit=10):
             'noisy':[item(r,c) for r,c in _noisy(counts)[:limit]],
             'used':[item(r,c) for r,c in top[:limit]],
             'reminders':reminders,'signal_captures':dict(sorted(weekly.items())),
-            'hint':'noisy = retrieved for a prompt or a file at least %d times and never read, updated, confirmed or re-captured: consider a sharper title or an archive plan. '
+            'hint':'noisy = retrieved for a prompt or a file at least %d times and never read, updated, confirmed or re-captured: consider a sharper title or summary, or confirm it. '
                    'The injected snippet alone may have been enough, so treat it as a lead, not a verdict.'%NOISY_MIN}

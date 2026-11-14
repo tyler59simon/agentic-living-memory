@@ -52,7 +52,7 @@ def protocol(root,domain=None,harness='',session='SESSION'):
     current static block, only per-session data is injected; otherwise the full protocol, so the agent
     never sees zero copies or two differing copies of the rules."""
     cmd=command(root,domain)
-    dynamic=(f'CMD = {cmd}   (PowerShell: run it as & CMD ...)'
+    dynamic=(f'CMD = {cmd}   (Bash: CMD as is; PowerShell: & CMD ...)'
              f"\nTags (pick the closest; --platform/--technology optional): {_tag_summary(root)}")
     if installed(harness):
         return f'Living Memory is active for domain {domain}; follow the Living Memory section of your instructions.\n'+dynamic
@@ -1648,7 +1648,7 @@ def _process(harness,event,payload,root=None,info=None):
         detail['maps']=maps
         # A subagent's context has no CMD, so this is the whole command; PowerShell needs the call operator before a quoted path.
         if named:result['context']+=(f"\nCodebase maps for the repos this session is working in (read the one for your repo before exploring it: "
-                                     f"{command(root,domain)} read REF"+('; in PowerShell put & in front' if os.name=='nt' else '')+"): "+'; '.join(named))
+                                     f"{command(root,domain)} read REF"+('; Bash: as written, PowerShell: put & in front' if os.name=='nt' else '')+"): "+'; '.join(named))
     elif event=='pre-tool-use':
         name=str(payload.get('tool_name') or payload.get('toolName') or '').lower()
         args=payload.get('tool_input',payload.get('toolArgs',payload.get('toolArguments',{})))
@@ -1664,6 +1664,11 @@ def _process(harness,event,payload,root=None,info=None):
             return result
         text=shell_command(args) if name in SHELL_TOOLS else '';grammar=shell_grammar(name)
         subcommand=memory_subcommand(text,grammar) if text else None;detail['subcommand']=subcommand
+        # The call operator is PowerShell's: Bash would background the command. Say so, with the command that works.
+        if subcommand and grammar=='posix' and re.match(r'\s*&',text):
+            detail['decision']='deny:call-operator'
+            result['deny']='In Bash, drop the leading &: '+re.sub(r'^\s*&\s*','',text)
+            return result
         learn_write=learn_settings=False
         if subcommand=='learn':
             from .learning import is_read

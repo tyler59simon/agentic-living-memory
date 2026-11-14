@@ -184,12 +184,12 @@ def _action(kinds,note,pair):
     """What a person or agent does first for a note: its first kind decides."""
     first=kinds[0]
     if first=='duplicate':return 'supersede' if pair and pair.get('same') else 'merge-plan'
-    if first=='due':return 'resolve' if _acts(note) else 'archive-plan' if note.get('type')=='status' else 'confirm'
+    if first=='due':return 'resolve' if _acts(note) else 'plan archive' if note.get('type')=='status' else 'confirm'
     return 'update'   # stale, interim, warned and noisy (a sharper title or summary; or confirm it): never an archive
 
 def worklist(root,domains,kinds=None,limit=100,tags=None,cheap=False,notes=None,today=None,working_tree=False):
     """{'items': rows, 'counts': {kind: notes}, 'total': distinct notes} for the active notes of these domains. Each row is one note with all
-    its kinds (in KINDS order), a reason, an action (confirm, update, supersede, resolve, merge-plan, archive-plan) and for a duplicate its
+    its kinds (in KINDS order), a reason, an action (confirm, update, supersede, resolve, merge-plan, plan archive) and for a duplicate its
     `pair`. kinds limits what is computed; cheap skips the duplicate scan. notes are already loaded active notes carrying their `domain`
     (SessionStart has them); tags keeps notes with all of these tags. today is the local date the due, interim and noisy rules count from.
     Each row of a note that tracks files, digest sources or a repo carries `currency` (currency_of; not with cheap). working_tree=True
