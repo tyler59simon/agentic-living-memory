@@ -332,6 +332,14 @@ class Staleness(StoreFixture):
         self.assertNotIn('failed',entry);self.assertEqual(entry['changed'],['docs/adr/ADR-004-money.md','pom.xml']);self.assertIsNotNone(entry['count'])
         self.assertEqual([r['n'] for r in json.loads(cache.read_text(encoding='utf-8'))['entries']],[self.ref])
 
+    def test_a_retag_keeps_the_cached_finding_and_refreshes_the_session_revision(self):
+        self.capture();self.adr_changed();hit=self.hit()
+        runtime.note_currency(hit,self.app,self.root,self.bindings,{},'s1');self.assertEqual(self.state()['repos'][self.app.as_posix()]['fresh']['rev'],hit['revision'])
+        change(hit['id'],'demo','retag',self.root,tags=['subject/project','concern/decision']);again=self.hit();self.assertNotEqual(again['revision'],hit['revision'])
+        with patch('core.maps.subprocess.run',side_effect=AssertionError('git must not run')):
+            entry=runtime.note_currency(again,self.app,self.root,self.bindings,self.state(),'s1')
+        self.assertEqual(entry['rev'],again['revision']);self.assertEqual(self.state()['repos'][self.app.as_posix()]['fresh']['rev'],again['revision'])
+
     def test_the_currency_cache_keeps_the_newest_200_entries(self):
         self.capture();hit=self.hit();entry={'rev':hit['revision'],'head':head_oid(self.app),'changed':[],'count':0}
         runtime.atomic_write(self.root/'.cache'/'currency.json',json.dumps({'v':1,'entries':[{'k':'old','n':f'demo:{i}','u':'x','e':entry} for i in range(runtime.CURRENCY_CACHE_MAX)]}))

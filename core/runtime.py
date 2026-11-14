@@ -639,10 +639,11 @@ def note_currency(hit,folder,root,bindings,state,session,slot='fresh'):
         if computed and head and entry.get('head') and rev:
             try:
                 k,n,u=_currency_key(folder,hit)
-                rows=[r for r in _currency_entries(root) if (r.get('k'),r.get('n'))!=(k,n)]+[{'k':k,'n':n,'u':u,'e':entry}]
+                rows=[r for r in _currency_entries(root) if (r.get('k'),r.get('n'))!=(k,n)]+[{'k':k,'n':n,'u':u,'f':key,'e':entry}]
                 atomic_write(_currency_file(root),json.dumps({'v':1,'entries':rows[-CURRENCY_CACHE_MAX:]},separators=(',',':')))
             except (OSError,ValueError,TypeError,KeyError):pass
-        if (computed or shared) and entry.get('head') and session and session!='unknown':
+        refreshed=bool(cache) and cache.get('rev')!=entry.get('rev')   # a retag or rename: same finding, new revision (no git ran), and the Stop reminder compares revisions
+        if (computed or shared or refreshed) and entry.get('head') and session and session!='unknown':
             stored=dict(entry,ref=f"{hit['domain']}:{hit['id']}")
             def save(s):
                 repos=_repos(s);rec=dict(repos.pop(key,{}));rec[slot]=stored;repos[key]=rec

@@ -221,5 +221,24 @@ class Maps(StoreFixture):
         self.captured_map();(self.app/'src'/'Money.java').unlink()
         self.assertEqual(worklist(self.root,['demo'],kinds=['stale'],working_tree=True)['items'][0]['currency']['changed'],['pom.xml'])   # an uncommitted deletion is not counted, a committed change still is
 
+    def test_a_finding_a_hook_cached_from_another_checkout_is_not_discarded(self):
+        from core.maps import find_map
+        self.captured_map();clone=self.base/'clone';git(self.base,'clone','-q',str(self.app),str(clone));clone=clone.resolve()
+        commit(self.app,{'README.md':'moved on'},later(2))   # the note's own checkout has a new head
+        bindings=runtime.load_bindings(self.root);hit=find_map(self.app,self.root,bindings)
+        entry=runtime.note_currency(hit,clone,self.root,bindings,{},'s2');self.assertIn('pom.xml',entry['changed'])   # a hook ran in the clone
+        self.assertEqual([r['ref'] for r in worklist(self.root,['demo'],kinds=['stale'])['items']],[self.ref])
+        from unittest.mock import patch
+        with patch('core.maps.subprocess.run',side_effect=AssertionError('git must not run')):worklist(self.root,['demo'],kinds=['stale'])
+
+    def test_review_computes_the_working_tree_once_per_map_and_the_row_matches_its_reason(self):
+        from unittest.mock import patch
+        from core import maps
+        self.captured_map();(self.app/'src'/'Money.java').write_text('long cents; int extra;',encoding='utf-8');calls=[]
+        real=maps.working_tree_changes
+        def counting(*a,**k):calls.append(a);return real(*a,**k)
+        with patch('core.maps.working_tree_changes',side_effect=counting):row=worklist(self.root,['demo'],kinds=['stale'],working_tree=True)['items'][0]
+        self.assertEqual(len(calls),1);self.assertIn('src/Money.java',row['currency']['changed']);self.assertIn('src/Money.java',row['reason'])
+
 
 if __name__=='__main__':unittest.main()

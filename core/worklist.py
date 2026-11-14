@@ -50,7 +50,9 @@ def _map_currency(note,root,bindings,cache,working_tree=False):
     from .common import head_oid
     repo=repo_of(note,note['domain'],bindings)
     if repo is None or not repo.is_dir():return {'state':'unavailable','changed':[],'working_tree':[]}
-    row=cache.get(_ref(note));entry=row['e'] if row else None;head=head_oid(repo)
+    row=cache.get(_ref(note));entry=row['e'] if row else None
+    if row and row.get('f') and Path(row['f']).is_dir():repo=Path(row['f'])   # the checkout the finding was computed in (a clone or worktree of the note's repo), not necessarily the one the note was captured in
+    head=head_oid(repo)
     if not (entry and head and entry.get('fp')==fingerprint(note) and entry.get('head')==head and not entry.get('failed')):entry=None
     changed=list(entry.get('changed') or []) if entry else [];tree=[]
     if working_tree:
@@ -60,10 +62,11 @@ def _map_currency(note,root,bindings,cache,working_tree=False):
 
 STATE_ORDER=('changed','missing','unavailable','unchecked','current')
 
-def currency_of(note,root,bindings=None,cache=None,working_tree=False):
+def currency_of(note,root,bindings=None,cache=None,working_tree=False,info=None):
     """The `currency` field of a review row or `read`: {'state', 'verified_at', 'files': [{path, state}]} for a note with digest sources or
     file hashes (digests.states), {'state', 'verified_at', 'changed': [paths]} for a map or brief (the currency cache, see _map_currency).
-    state is current, changed, missing, unavailable or unchecked: the worst of its files. None for a note that tracks nothing."""
+    state is current, changed, missing, unavailable or unchecked: the worst of its files. None for a note that tracks nothing.
+    info is an already computed _map_currency of the note (the worklist computes it once per map)."""
     from .common import load_bindings
     from .digests import states
     from .note_types import KEYED_TYPES,verified_at
@@ -73,11 +76,11 @@ def currency_of(note,root,bindings=None,cache=None,working_tree=False):
         found=states(listed,note['domain'],root,bindings)
         return {'state':min(found.values(),key=STATE_ORDER.index),'verified_at':verified_at(note),'files':[{'path':p,'state':v} for p,v in found.items()]}
     if note.get('type') in KEYED_TYPES:
-        info=_map_currency(note,root,bindings,cache if cache is not None else _cache(root),working_tree)
+        info=info or _map_currency(note,root,bindings,cache if cache is not None else _cache(root),working_tree)
         return {'state':info['state'],'verified_at':verified_at(note),'changed':info['changed']}
     return None
 
-def _stale(pool,root,bindings,working_tree=False):
+def _stale(pool,root,bindings,working_tree=False,infos=None):
     """{ref: reason} for notes with a changed or missing digest source or hashed file, and maps and briefs whose cited files changed according to the currency cache (and, with working_tree, uncommitted edits)."""
     from .digests import stale_note
     from .note_types import KEYED_TYPES
@@ -90,6 +93,7 @@ def _stale(pool,root,bindings,working_tree=False):
         elif note.get('type') in KEYED_TYPES:
             if cache is None:cache=_cache(root)
             info=_map_currency(note,root,bindings,cache,working_tree)
+            if infos is not None:infos[_ref(note)]=info
             if info['changed']:found[_ref(note)]=stale_clause(note,{'changed':info['changed']},note['type'])
     return found
 
@@ -200,13 +204,13 @@ def worklist(root,domains,kinds=None,limit=100,tags=None,cheap=False,notes=None,
             try:notes+=[dict(n,domain=d) for n in inventory(d,root)]
             except (OSError,ValueError):continue
     pool=[n for n in notes if n.get('status','active')=='active' and all(t in (n.get('tags') or []) for t in tags or ())]
-    by_ref={_ref(n):n for n in pool};found={};order=[]
+    by_ref={_ref(n):n for n in pool};found={};order=[];infos={}
     def add(kind,ref,reason,**extra):
         if ref not in by_ref:return
         if ref not in found:found[ref]={'kinds':[],'reasons':[],'extra':{}};order.append(ref)
         found[ref]['kinds'].append(kind);found[ref]['reasons'].append(reason);found[ref]['extra'].update(extra)
     if 'stale' in wanted:
-        for ref,text in _stale(pool,root,load_bindings(root),working_tree).items():add('stale',ref,text,stale=text)
+        for ref,text in _stale(pool,root,load_bindings(root),working_tree,infos).items():add('stale',ref,text,stale=text)
     if 'due' in wanted:
         # One review order over the active domain first, like `review` before: its own notes lead.
         for ref,text in _due(pool,root,domains[0] if len(domains)==1 else None,today):add('due',ref,text)
@@ -233,7 +237,7 @@ def worklist(root,domains,kinds=None,limit=100,tags=None,cheap=False,notes=None,
     if not cheap:
         bindings=load_bindings(root);cache=_cache(root)
         for item in items:
-            try:info=currency_of(by_ref[item['ref']],root,bindings,cache,working_tree)
+            try:info=currency_of(by_ref[item['ref']],root,bindings,cache,working_tree,infos.get(item['ref']))
             except Exception as exc:
                 from .logs import swallowed
                 swallowed('worklist.currency',exc,root);info=None
