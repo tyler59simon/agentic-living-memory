@@ -450,11 +450,7 @@ def serve(root,cwd,commands):
         elif isinstance(failure,dict) and 'error' in failure:failure=failure['error']
         reply({'id':ident,'exit_code':code,'result':decode(out.getvalue()),'error':failure if code else None})
 
-def main(argv=None):
-    for stream in (sys.stdout,sys.stderr):
-        if hasattr(stream,'reconfigure') and (stream.encoding or '').lower().replace('-','')!='utf8':
-            try:stream.reconfigure(encoding='utf-8')
-            except (ValueError,OSError):pass
+def build_parser():
     parser=argparse.ArgumentParser(description=__doc__)
     def common(p,suppress=False):
         default=argparse.SUPPRESS if suppress else None
@@ -554,7 +550,15 @@ def main(argv=None):
     p=sub('overlay-build');p.add_argument('vault',type=Path)
     p=sub('overlay-teardown-plan');p.add_argument('vault',type=Path)
     p=sub('overlay-sync-all');p.add_argument('--primary',help='Domain whose view the shared dashboards show (built last)')
-    args=parser.parse_args(argv);cwd=args.cwd or os.getcwd()
+    parser.subs=subs   # main() reads the command names from it
+    return parser
+
+def main(argv=None):
+    for stream in (sys.stdout,sys.stderr):
+        if hasattr(stream,'reconfigure') and (stream.encoding or '').lower().replace('-','')!='utf8':
+            try:stream.reconfigure(encoding='utf-8')
+            except (ValueError,OSError):pass
+    parser=build_parser();subs=parser.subs;args=parser.parse_args(argv);cwd=args.cwd or os.getcwd()
     invocation={'start':time.perf_counter(),'argv':list(argv) if argv is not None else sys.argv[1:]}
     try:
         if args.command=='setup':
