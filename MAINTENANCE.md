@@ -1,6 +1,6 @@
 # Maintenance
 
-There are no background engines, and nothing is sent anywhere. The only usage records are a local diary and an operational log (see below). Maintenance is the notes themselves plus a few explicit commands:
+By default there are no background engines and nothing is sent anywhere; the usage records are a local diary and an operational log (see below). The one exception is automatic note maintenance, which is off until the user runs `maintenance enable` (see `NOTE_MAINTENANCE.md`): then at most one detached run a day sends redacted notes to the configured model. Otherwise maintenance is the notes themselves plus a few explicit commands:
 
 - `validate` reports notes that fail to parse and duplicate IDs. `doctor` reports those too, plus operations that never finished (with the `recover` command), journals that cannot be read, and under `hooks.wiring` whether each wired harness's hook interpreter and adapter script still exist. Run from the installed copy, it also says whether the handlers and the managed instruction block are current. A missing interpreter or script makes `ok` false and the warning gives the `integrations/setup.py HARNESS --hooks` command to run.
 - `remap-plan` moves notes between domains with stable IDs as a reviewed, undoable plan.

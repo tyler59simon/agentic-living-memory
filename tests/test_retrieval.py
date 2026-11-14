@@ -118,7 +118,7 @@ class SessionContext(StoreFixture):
         # in the command line, and a longer checkout or Python path must not decide whether this passes.
         for path in (str(self.root), sys.executable, str(runtime.SCRIPT)):
             text = text.replace(path, '')
-        self.assertLess(len(text), 5290)   # the fallback injects the whole protocol; the user-brief, review and log sentences grew it by ~250 characters, the Save rule by ~280 characters, the project-brief sentence by ~225, the ask sentence and usage line by ~120, the several-questions sentence by ~75, the writing rule and per-type sections by ~590, and the found-yourself sentence by ~220
+        self.assertLess(len(text), 5440)   # the fallback injects the whole protocol; the user-brief, review and log sentences grew it by ~250 characters, the Save rule by ~280 characters, the project-brief sentence by ~225, the ask sentence and usage line by ~120, the several-questions sentence by ~75, the writing rule and per-type sections by ~590, and the found-yourself sentence by ~220, and the maintenance exception by ~140
 
     def test_a_user_brief_keeps_the_fallback_context_inside_the_cap(self):
         for i in range(6):
