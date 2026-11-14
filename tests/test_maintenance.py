@@ -76,6 +76,14 @@ class Policy(Base):
         res=self.go((n,'keep',{}))
         self.assertEqual((res['kept'],self.get(n)['status']),(1,'active'))
         self.assertIn(self.ref(n),ms.state(self.root,self.now)['retry']);self.assertEqual(self.cands(),[])
+    def test_a_miscopied_revision_defers_only_that_note_in_a_live_run(self):
+        n=self.mk('Sprint status','Sprint 3 is over.',type='status',review_by=OLD);m=self.mk('Other status','Sprint 4 is over.',type='status',review_by=OLD)
+        res=self.go((n,'archive',{'rule':'expired_status','revision':'0'*64}),(m,'archive',{'rule':'expired_status'}))
+        self.assertEqual((res['status'],res['archived'],res['deferred']),('completed',1,1))
+        self.assertEqual([(r['ref'],r['result'],r['reason_code']) for r in res['results']],
+                         [(self.ref(n),'deferred','revision_mismatch'),(self.ref(m),'applied',None)])
+        self.assertEqual((self.get(n)['status'],self.get(m)['status']),('active','archived'))
+        self.assertNotIn(self.ref(n),ms.state(self.root,self.now)['retry'])   # no hold: asked again next run
     def test_3_completed_plan_is_resolved_even_when_not_overdue(self):
         n=self.mk('Finished migration plan',render('A plan.',actions=[],done=['Move the data']),type='plan')
         self.assertEqual([c['level'] for c in self.cands()],[2])
@@ -217,6 +225,8 @@ class Adversarial(Base):
     def test_structurally_invalid_reports_change_nothing(self):
         self.bad(mutate=lambda r:r['decisions'][0].update(ref='demo:nope'))
         self.bad(mutate=lambda r:r['decisions'][0].update(evidence_ids=['E99']))
+        self.bad(mutate=lambda r:r['decisions'][0].update(revision='0'*64,evidence_ids=['E99']))   # a miscopied revision skips no other check
+        self.bad(mutate=lambda r:r['decisions'][0].update(code='revision_mismatch'))                # only a defer may carry the validator's own mark
         self.bad(mutate=lambda r:r['decisions'][0].update(tags=['x']))
         self.bad(mutate=lambda r:r['decisions'][0].update(action='delete'))
         self.bad(mutate=lambda r:r['decisions'].append(dict(r['decisions'][0])))
@@ -227,17 +237,6 @@ class Adversarial(Base):
         self.bad(mutate=lambda r:r['decisions'][0].update(patches=[{'find':'a','replace':'b'*2001}]))
         self.bad(mutate=lambda r:r['decisions'][0].update(evidence_ids=['E1','E1']))
         self.bad(mutate=lambda r:r['decisions'][0].update(patches=[{'find':'A plain','replace':'  '}]))
-    def test_a_miscopied_revision_defers_only_that_note_without_a_hold(self):
-        from core import maintenance_agent as agent
-        wrong=self.d(self.manifest,self.n,'archive',rule='obsolete_content',revision='0'*64)
-        res=self.apply(self.run,self.manifest,[wrong,self.d(self.manifest,self.m,'keep')])
-        self.assertEqual([(r['ref'],r['result'],r['reason_code']) for r in res['results']],
-                         [(self.ref(self.n),'deferred','revision_mismatch'),(self.ref(self.m),'kept',None)])
-        self.assertEqual(self.get(self.n)['status'],'active')
-        retry=ms.state(self.root,self.now)['retry'];self.assertNotIn(self.ref(self.n),retry);self.assertIn(self.ref(self.m),retry)
-        for bad in ('short',None,7):
-            report={'version':1,'run_id':self.run['id'],'decisions':[dict(wrong,revision=bad)]}
-            self.assertEqual(agent.validate_report(report,self.run['id'],self.manifest)['decisions'][0]['action'],'defer')
     def test_omitted_candidates_become_defers(self):
         res=self.apply(self.run,self.manifest,[self.d(self.manifest,self.n,'keep')])
         self.assertEqual([(r['ref'],r['result']) for r in res['results']],[(self.ref(self.n),'kept'),(self.ref(self.m),'deferred')])
@@ -443,6 +442,7 @@ class Service(Base):
 class Gate(StoreFixture):
     """scripts/eval_maintenance.py fixture mode, with a scripted reviewer in place of the paid call."""
     def gate(self,choose):
+        import tempfile
         from unittest import mock
         from scripts import eval_maintenance as gate
         labels={}
@@ -456,7 +456,7 @@ class Gate(StoreFixture):
         def build(base):
             out=real(base);labels.update(out[2]);return out
         with mock.patch.object(gate,'build_fixture',build):
-            return gate.fixture_gate(self.base/'gate',adapter)
+            return gate.fixture_gate(tempfile.mkdtemp(dir=self.base),adapter)
     GOOD={'expired_status':{'action':'archive','rule':'expired_status'},'finished_plan':{'action':'resolve','rule':'completed_work'},
           'changed_source':{'action':'update','patches':[{'find':'30 seconds','replace':'60 seconds'}]}}
     def test_a_correct_reviewer_passes_and_every_case_is_selected(self):
@@ -465,6 +465,11 @@ class Gate(StoreFixture):
     def test_archiving_a_valuable_decision_fails_the_gate(self):
         out=self.gate(lambda label,cand:{'action':'archive','rule':'obsolete_content'} if label=='valuable_decision' else self.GOOD.get(label,{'action':'keep'}))
         self.assertFalse(out['ok']);self.assertFalse(out['checks']['no_protected_retired'])
+    def test_an_update_without_the_right_patch_is_not_useful(self):
+        for patches in ([],[{'find':'request','replace':'call'}],[{'find':'not in the body','replace':'60 seconds'}]):
+            with self.subTest(patches=patches):
+                out=self.gate(lambda label,cand:{'action':'update','patches':patches} if label=='changed_source' else self.GOOD.get(label,{'action':'keep'}))
+                self.assertFalse(out['checks']['required_cases_useful'])
     def test_a_reviewer_that_keeps_everything_fails_usefulness(self):
         out=self.gate(lambda label,cand:{'action':'keep'})
         self.assertFalse(out['ok']);self.assertFalse(out['checks']['required_cases_useful']);self.assertTrue(out['checks']['no_protected_retired'])

@@ -2,7 +2,7 @@
 
 The gate from the handoff (`alm-automatic-note-maintenance-plan.md` sections 4.7 and 5.2): one real reviewer dry run on a labelled fixture store and one on a copy of the real store, before `maintenance enable`. Reviewer: Claude Sonnet through the installed `claude` CLI, default limits (10 notes, 300 s, 1 USD). Script: `scripts/eval_maintenance.py`.
 
-Result: **passed on both stores after one fix.** Six paid runs cost 0.308 USD in all.
+Result: **passed on both stores after one fix.** Eight paid runs cost 0.418 USD in all.
 
 ## Failure found and fixed
 
@@ -10,7 +10,9 @@ The first fixture run failed with `invalid_report`: the decision for one note ca
 
 Fix (user decision, 2026-11-14): a decision whose ref is in the batch but whose revision does not match becomes a defer for that note only, with reason code `revision_mismatch` and no seven-day hold. An unknown ref, run id or evidence id still rejects the whole report.
 
-A second defect showed up while fixing it: `maintenance_agent.review()` returned the normalised report and `maintenance.run()` validated it again, so the new `code` field failed the second pass (`no unknown keys`). `review()` now validates but returns the report as the model sent it, and `run()` normalises once.
+A second defect showed up while fixing it: the report is validated three times (`maintenance_agent.review()`, `maintenance.run()` and `maintenance.apply()`), so the new `code` field failed the second pass (`no unknown keys`). The validator is now idempotent: it accepts `code` only as `revision_mismatch` on a defer and carries it through, and it runs every structural check (evidence ids, patches, rule) before turning a mismatch into a defer, so a miscopied revision never hides another contract break. The Codex review of the first fix found the `apply()` pass and the skipped checks; a live (non-dry) run test now covers both.
+
+The same review tightened the gate script: the `changed_source` case counts only when its patches apply and turn "30 seconds" into "60 seconds", and `copy` mode sets the copy's configured domains to the requested one.
 
 ## Runs
 
@@ -22,6 +24,8 @@ A second defect showed up while fixing it: `maintenance_agent.review()` returned
 | 20261114T173230-fc24d0fb | copy | invalid_report (double validation) | 0.080 |
 | 20261114T173430-ef312d77 | copy | dry_run, every check passed (one `revision_mismatch` defer) | 0.081 |
 | 20261114T173500-1f300511 | fixture | dry_run, every check passed | 0.034 |
+| 20261114T175729-27edd149 | fixture | dry_run, every check passed (after the Codex fixes) | 0.032 |
+| 20261114T175752-953d18cb | copy | dry_run, every check passed (after the Codex fixes): 9 defer, 1 update | 0.078 |
 
 ## Fixture decisions (final run)
 
@@ -45,4 +49,5 @@ Ten candidates, all stale code and doc digests. Decisions: 8 keep, 1 update, 1 d
 ## Open points
 
 - A model that miscopies hashes this often wastes part of each batch. If `revision_mismatch` defers stay frequent in live runs, a short revision token in the packet would remove most of them.
-- The copied-store batch had only keeps and one update, so the first live runs on sandbox are the first real test of archive and supersede on real notes. Check `maintenance history` after each and use `restore REF` for a wrong archive.
+- The copied store's first ten candidates are all stale code and doc digests. With excerpts of at most 1200 characters the reviewer cannot confirm a whole digest, so it keeps or defers them (two runs: 8 keep, then 9 defer), and each defer holds that note for seven days. The first live days on sandbox will therefore make few changes until those digests are worked through.
+- The copied-store batch had only keeps, defers and one update, so the first live runs on sandbox are the first real test of archive and supersede on real notes. Check `maintenance history` after each and use `restore REF` for a wrong archive.

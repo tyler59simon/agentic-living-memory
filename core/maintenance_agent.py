@@ -97,7 +97,7 @@ def validate_report(report, run_id, manifest):
     evidence = manifest['evidence']
     seen, out = set(), []
     for item in report['decisions']:
-        if not isinstance(item, dict) or set(item) - {'ref', 'revision', 'action', 'rule', 'reason', 'evidence_ids', 'successor', 'patches'} or not {'ref', 'revision', 'action', 'reason'} <= set(item):
+        if not isinstance(item, dict) or set(item) - {'ref', 'revision', 'action', 'rule', 'reason', 'evidence_ids', 'successor', 'patches', 'code'} or not {'ref', 'revision', 'action', 'reason'} <= set(item):
             got = sorted(map(str, item))[:12] if isinstance(item, dict) else type(item).__name__
             raise ReportError(f'each decision needs ref, revision, action and reason, and no unknown keys (got {got})')
         ref = _text(item['ref'], 'ref', 300)
@@ -106,11 +106,6 @@ def validate_report(report, run_id, manifest):
         seen.add(ref)
         if ref not in known:
             raise ReportError(f'{ref} is not in the batch')
-        if item['revision'] != known[ref]['revision']:
-            # A miscopied 64-character hash costs that one note its decision, not the whole paid report. No hold, so it is asked again.
-            out.append({'ref': ref, 'revision': known[ref]['revision'], 'action': 'defer', 'rule': None, 'code': 'revision_mismatch',
-                        'reason': 'The reviewer copied a different revision for this note, so its decision was not used.', 'evidence_ids': [], 'successor': None, 'patches': []})
-            continue
         if item['action'] not in ACTIONS:
             raise ReportError(f'unsupported action for {ref}')
         rule = item.get('rule')
@@ -133,7 +128,16 @@ def validate_report(report, run_id, manifest):
             if not isinstance(patch, dict) or set(patch) != {'find', 'replace'}:
                 raise ReportError(f'each patch of {ref} is {{find, replace}}')
             clean.append({'find': _text(patch['find'], 'find', FIND_MAX), 'replace': _text(patch['replace'], 'replace', REPLACE_MAX)})
-        out.append({'ref': ref, 'revision': item['revision'], 'action': item['action'], 'rule': rule, 'reason': _text(item['reason'], 'reason', REASON_MAX),
+        reason = _text(item['reason'], 'reason', REASON_MAX)
+        # `code` is only ever this function's own mark, so normalising twice (run, then apply) gives the same report.
+        if 'code' in item and (item['code'] != 'revision_mismatch' or item['action'] != 'defer'):
+            raise ReportError(f'unsupported code for {ref}')
+        if item['revision'] != known[ref]['revision'] or 'code' in item:
+            # A miscopied 64-character hash costs that one note its decision, not the whole paid report. No hold, so it is asked again.
+            out.append({'ref': ref, 'revision': known[ref]['revision'], 'action': 'defer', 'rule': None, 'code': 'revision_mismatch',
+                        'reason': 'The reviewer copied a different revision for this note, so its decision was not used.', 'evidence_ids': [], 'successor': None, 'patches': []})
+            continue
+        out.append({'ref': ref, 'revision': item['revision'], 'action': item['action'], 'rule': rule, 'reason': reason,
                     'evidence_ids': list(ids), 'successor': successor, 'patches': clean})
     for ref, cand in known.items():
         if ref not in seen:
@@ -347,10 +351,7 @@ def review(request, executable=None):
     if reason:
         return {**result, 'ok': False, 'reason_code': reason}
     try:
-        # Checked here so a broken report fails early, but returned as the model sent it: run() normalises once (normalising twice is not
-        # idempotent, since a revision_mismatch defer carries a code the model may not send).
-        validate_report(report, request['run']['id'], request['manifest'])
-        return {**result, 'ok': True, 'report': report}
+        return {**result, 'ok': True, 'report': validate_report(report, request['run']['id'], request['manifest'])}
     except ReportError as exc:
         return {**result, 'ok': False, 'reason_code': 'invalid_report', 'detail': str(exc)}
 

@@ -26,7 +26,9 @@ def note_hashes(root):return hashes(root,('domains/*/notes/*.md','domains/*/arch
 # ---- fixture
 
 # Each case: (label, title, body, capture options, acceptable actions, required). A required case must get one of its acceptable actions;
-# every other case must at least not be retired unless retirement is acceptable for it.
+# every other case must at least not be retired unless retirement is acceptable for it. An update of a case in PATCHED must also apply
+# cleanly (each find occurs once) and leave the body with the first text and without the second.
+PATCHED={'changed_source':('60 seconds','30 seconds')}
 def cases():
     from core.note_format import render
     deploy='Deploys run from the main branch after the test suite passes on the build server and a reviewer approves the change in the tracker.'
@@ -58,17 +60,25 @@ def build_fixture(base):
     (project/'src/config.py').write_text('TIMEOUT = 30\n')
     (project/'src/client.py').write_text('def get(url):\n    return retry(url)\n')
     (project/'src/legacy.py').write_text('def import_csv(path):\n    pass\n')
-    labels={}
+    labels,bodies={},{}
     for label,title,body,kw,accept,required in cases():
         note=capture(title,body,TAGS,'demo',root,allow_similar=True,**kw)
         labels[f"demo:{note['id']}"]={'label':label,'accept':sorted(accept),'required':required}
+        bodies[f"demo:{note['id']}"]=body
     # After capture: the timeout changed and the legacy module was deleted.
     (project/'src/config.py').write_text('TIMEOUT = 60\n')
     (project/'src/legacy.py').unlink()
     ms.set_config(root,ms.validate({'enabled':False,'domains':['demo']}))
-    return root,project,labels
+    return root,project,labels,bodies
 
-def score(labels,result,permitted,status):
+def patched(body,patches):
+    """The body after the patches, or None when one does not apply (each find must occur exactly once, as the executor requires)."""
+    for p in patches or []:
+        if body.count(p['find'])!=1:return None
+        body=body.replace(p['find'],p['replace'])
+    return body
+
+def score(labels,result,permitted,status,bodies=None):
     """The gate checks of handoff section 4.7 over one dry-run result. Returns (checks, rows)."""
     decisions={d['ref']:d for d in result.get('decisions') or []}
     rows,checks=[],{}
@@ -79,6 +89,9 @@ def score(labels,result,permitted,status):
              'successor':d.get('successor') if d else None,'patches':d.get('patches') if d else None,'reason':d.get('reason') if d else None,
              'permitted':permitted.get(ref)}
         row['acceptable']=action in info['accept'] if action else not info['required']
+        if action=='update' and info['label'] in PATCHED:
+            want,gone=PATCHED[info['label']];after=patched((bodies or {}).get(ref,''),row['patches']) if row['patches'] else None
+            row['acceptable']=after is not None and want in after and gone not in after
         rows.append(row)
     retired=[r for r in rows if r['action'] in RETIRE]
     checks['status_dry_run']=result.get('status')=='dry_run'
@@ -96,12 +109,12 @@ def score(labels,result,permitted,status):
 
 def fixture_gate(base,adapter=None):
     """Build the fixture under `base`, dry run it once (the real reviewer unless `adapter` is given) and score it."""
-    root,project,labels=build_fixture(Path(base))
+    root,project,labels,bodies=build_fixture(Path(base))
     preview=maintenance.preview(root,domains=['demo'])
     permitted={c['ref']:c['permitted'] for c in preview['candidates']}
     before,src_before=note_hashes(root),hashes(project,('src/*',))
     result=maintenance.run(root,dry_run=True,adapter=adapter,allow_disabled=True,domains=['demo'])
-    checks,rows=score(labels,result,permitted,maintenance.status(root))
+    checks,rows=score(labels,result,permitted,maintenance.status(root),bodies)
     checks['notes_and_config_unchanged']=note_hashes(root)==before
     checks['sources_unchanged']=hashes(project,('src/*',))==src_before
     checks['every_case_selected']=set(labels)<=set(permitted)
@@ -121,6 +134,8 @@ def run_copy(args):
         root=Path(folder)/'store';shutil.copytree(source,root,ignore=COPY_IGNORE)
         # The copy carries each domain's sync-state.json with the real vault's path; never sync it from the copy.
         for state in root.glob('domains/*/sync-state.json'):state.unlink()
+        # Review exactly the requested domain, whatever the real store has configured (a configured list would win over the fallback).
+        ms.set_config(root,ms.validate(dict(ms.config(root),enabled=False,domains=[args.domain]),root,allow_global=True))
         source_maint=hashes(source,('maintenance.json','maintenance/**/*'))
         before=note_hashes(root)
         preview=maintenance.preview(root,domains=[args.domain])
