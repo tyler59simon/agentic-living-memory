@@ -196,6 +196,12 @@ class Ledger(Log):
         row=self.work_ledger()
         self.assertEqual(row['p'],['paystream']);self.assertEqual([r['title'] for r in self.rows('--event','session','--project','paystream')],[self.rows('--event','session')[0]['title']])
 
+    def test_a_receipt_without_a_saved_note_marks_the_row(self):
+        self.hook('session-start');self.hook('user-prompt');self.edit('a.py')
+        state=json.loads(runtime._pointer(self.root,'one').read_text());finalize('one',state['turn'],[],self.root)
+        self.hook('stop');row=self.lines()[-1];self.assertEqual((row['n'],row['r']),([],1))
+        self.hook('user-prompt');self.hook('stop');self.assertEqual(len(self.lines()),1)   # remembered: no second row
+
     def test_a_quiet_session_and_a_failing_ledger_leave_the_stop_alone(self):
         self.hook('user-prompt');self.hook('stop');self.assertFalse((self.root/'ledger').exists())
         self.edit('a.py')

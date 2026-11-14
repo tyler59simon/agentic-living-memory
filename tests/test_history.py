@@ -98,8 +98,16 @@ class History(Base):
         self.assertEqual(activity._actor('op1','undo:abc',retired('plan'),before),'undo')
         self.assertEqual(activity._actor('op1','update',('demo',{'status':'archived','last_retirement':{'actor':'plan'}}),retired('plan')),'command')   # no transition: an ordinary edit
 
-    def test_version_advertises_history_2(self):
-        self.assertEqual(self.ok('version')['capabilities']['history'],2)
+    def test_version_advertises_history_3(self):
+        self.assertEqual(self.ok('version')['capabilities']['history'],3)
+
+    def test_bare_history_rows_carry_a_summary_and_an_actor(self):
+        a,_=self.story();rows=self.ok('history')
+        self.assertTrue(rows and all(isinstance(r['summary'],str) and r['summary'] and isinstance(r['actor'],str) for r in rows))
+        by_op={r['operation_id']:r for r in rows};note=self.ok('history','--note','demo:'+a['id'])
+        for r in note:self.assertEqual((by_op[r['operation_id']]['summary'],by_op[r['operation_id']]['actor']),(r['summary'],r['actor']))
+        self.assertIn('maintenance',{r['actor'] for r in rows})
+        self.assertEqual([k for k in rows[0]],['operation_id','kind','state','created','files','summary','actor'])
 
     def test_a_version_2_cache_is_replaced(self):
         a=self.mk('Old cache note','Body one.');cache=self.root/'.cache'/'activity.json';cache.parent.mkdir(exist_ok=True)

@@ -84,10 +84,13 @@ def history(root,note_id=None,limit=20):
     if note_id:
         from .activity import note_history   # only operations that changed the note itself, from the activity cache
         return note_history(root,note_id,limit)
+    from .activity import _entries,operation_label
+    entries=_entries(root)
     for path in (root/'.operations').glob('*/journal.json'):
         try:
             value=read_json(path)
-            row={'operation_id':value['id'],'kind':value['kind'],'state':value['state'],'created':value['created'],'files':[e['path'] for e in value['effects']]}
+            summary,actor=operation_label(entries.get(value['id']),value['id'],str(value['kind']))
+            row={'operation_id':value['id'],'kind':value['kind'],'state':value['state'],'created':value['created'],'files':[e['path'] for e in value['effects']],'summary':summary,'actor':actor}
         except (ValueError,KeyError,TypeError):continue  # doctor reports unreadable journals by ID
         rows.append(row)
     return sorted(rows,key=lambda r:r['created'],reverse=True)[:limit]

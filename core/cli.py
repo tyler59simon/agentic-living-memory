@@ -828,7 +828,7 @@ def main(argv=None):
             elif domain:domains=[domain]
             else:raise ValueError('unbound_project')
             result=note_links(root,domains,args.status)
-        elif cmd=='version':result={'ok':True,'api':SERVE_API,'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'learning':1,'restore':1,'pin':1,'history':2,'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']}}}
+        elif cmd=='version':result={'ok':True,'api':SERVE_API,'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'learning':1,'restore':1,'pin':1,'history':3,'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']}}}
         elif cmd=='learn':
             from .learning import dispatch,flag_payload
             payload={}

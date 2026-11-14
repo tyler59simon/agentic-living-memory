@@ -114,6 +114,20 @@ def noisy(rows,domains):
     """[(ref, counts)] of the notes in `domains` that were retrieved at least NOISY_MIN times and never read, updated or confirmed, most shown first."""
     return _noisy(_tally(rows,domains)[0])
 
+def capture_coverage(root,domains,days=30,today=None):
+    """{days, mutating, covered, ratio}: of the sessions in `domains` whose last ledger row falls in the window and changed
+    files (f > 0), how many saved a note (n) or got a receipt (r). ratio is None with no such session. PROV-1 (a read-only
+    PowerShell command counted as an edit) inflates `mutating`."""
+    from .activity import last_session_rows,_instant
+    now=datetime.now(timezone.utc) if today is None else today;mutating=covered=0
+    for row in last_session_rows(root).values():
+        try:
+            if row.get('d') not in domains or _instant(row['t'])<now-timedelta(days=days):continue
+        except (ValueError,TypeError):continue
+        if type(row.get('f')) is int and row['f']>0:
+            mutating+=1;covered+=bool(row.get('n') or row.get('r'))
+    return {'days':days,'mutating':mutating,'covered':covered,'ratio':round(covered/mutating,2) if mutating else None}
+
 def stats(root,domains,days=30,limit=10):
     """Per-note counts for notes in `domains`, the noisy (shown, never used) and the most used notes,
     reminders by kind and captures made on turns that carried a durable signal, per ISO week."""
@@ -141,6 +155,6 @@ def stats(root,domains,days=30,limit=10):
             'notes':len(counts),
             'noisy':[item(r,c) for r,c in _noisy(counts)[:limit]],
             'used':[item(r,c) for r,c in top[:limit]],
-            'reminders':reminders,'signal_captures':dict(sorted(weekly.items())),
+            'reminders':reminders,'signal_captures':dict(sorted(weekly.items())),'capture_coverage':capture_coverage(root,domains,days),
             'hint':'noisy = retrieved for a prompt or a file at least %d times and never read, updated, confirmed or re-captured: consider a sharper title or summary, or confirm it. '
                    'The injected snippet alone may have been enough, so treat it as a lead, not a verdict.'%NOISY_MIN}

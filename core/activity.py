@@ -232,6 +232,14 @@ def note_history(root,note_id,limit=20):
         if row:rows.append({'operation_id':op,'kind':entry['kind'],'state':'committed','created':entry['created'],'files':entry.get('files',[]),'event':row['event'],'title':row['title'],'summary':row.get('summary'),'actor':row.get('actor')})
     return sorted(rows,key=lambda r:r['created'],reverse=True)[:max(1,limit)]
 
+def operation_label(entry,op,kind):
+    """(summary, actor) of one whole operation for a bare history row: its first row's, with a note count when it changed several;
+    an operation with no row (unfinished, bookkeeping) is its kind, made by whoever its ID and kind say."""
+    rows=entry.get('rows') if entry else None
+    if not rows:return _short(kind),_actor(op,kind,None,None)
+    first=rows[0];text=first.get('summary') or first.get('event') or kind
+    return _short(text if len(rows)==1 else f"{len(rows)} changes: {text}"),first.get('actor') or 'command'
+
 def markdown(rows):
     """A dated list a person can read, one line per history row: - 2026-11-14 18:25 archived (maintenance): summary."""
     return '\n'.join(f"- {str(r['created'])[:16].replace('T',' ')} {r.get('event') or r['kind']}"+(f" ({r['actor']})" if r.get('actor') else '')+(f": {r['summary']}" if r.get('summary') else '') for r in rows)
@@ -250,20 +258,20 @@ def _slugs(root,cwd,state,domain=None):
     return sorted({p['slug'] for p in (projects.match_path(x,entries) for x in paths) if p})
 
 def record_session(root,domain,session,state,cwd=None):
-    """Append this session's row to ledger/sessions-YYYY.jsonl: {t, s, h, d, p, n, f} (time, session hash, harness, domain, project
-    slugs, refs saved, files changed), no text. A quiet session has no row, and a row is written only when it differs from the
+    """Append this session's row to ledger/sessions-YYYY.jsonl: {t, s, h, d, p, n, f, r?} (time, session hash, harness, domain, project
+    slugs, refs saved, files changed, and r: 1 when a turn had a receipt but nothing was saved, such as "nothing durable"), no text. A quiet session has no row, and a row is written only when it differs from the
     session's last one (state['ledger_sig']). Returns the new signature when a row was appended, else None."""
     saved=list(dict.fromkeys(state.get('saved') or []));files=len(state.get('touched_session') or [])
     if not saved and not files:return None
-    row={'s':session,'h':state.get('harness') or 'unknown','d':domain,'p':_slugs(root,cwd,state,domain),'n':saved,'f':files}
+    row={'s':session,'h':state.get('harness') or 'unknown','d':domain,'p':_slugs(root,cwd,state,domain),'n':saved,'f':files,**({'r':1} if state.get('receipted') and not saved else {})}
     sig=digest(canonical_json(row).encode())[:12]
     if sig==state.get('ledger_sig'):return None
     stamp=now();path=_ledger_dir(root)/f'sessions-{stamp[:4]}.jsonl';path.parent.mkdir(parents=True,exist_ok=True)
     with path.open('ab') as handle:handle.write((json.dumps({'t':stamp,**row},ensure_ascii=False,separators=(',',':'))+'\n').encode('utf-8'))
     return sig
 
-def session_rows(root):
-    """One row per session (its last ledger row), shaped like the journal rows."""
+def last_session_rows(root):
+    """{session hash: its last raw ledger row}."""
     last={}
     for path in sorted(_ledger_dir(root).glob('sessions-*.jsonl')):
         try:lines=path.read_text(encoding='utf-8').splitlines()
@@ -272,8 +280,12 @@ def session_rows(root):
             try:row=json.loads(line)
             except ValueError:continue
             if isinstance(row,dict) and isinstance(row.get('s'),str) and isinstance(row.get('t'),str):last[row['s']]=row
+    return last
+
+def session_rows(root):
+    """One row per session (its last ledger row), shaped like the journal rows."""
     rows=[]
-    for sid,r in last.items():
+    for sid,r in last_session_rows(root).items():
         notes=[n for n in r.get('n') or [] if isinstance(n,str)];files=r.get('f') if type(r.get('f')) is int else 0;harness=str(r.get('h') or 'unknown')
         rows.append(_row(None,r['t'],'session',sid,f"{harness}: {len(notes)} note(s) saved, {files} file(s) changed",'session',r.get('d'),[p for p in r.get('p') or [] if isinstance(p,str)],harness=harness,notes=notes,files=files))
     return rows

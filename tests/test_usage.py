@@ -119,6 +119,45 @@ class Diary(StoreFixture):
         self.assertIn('stats', runtime.ALLOWED_SUBCOMMANDS)
         self.assertNotIn('stats', runtime.MUTATING_SUBCOMMANDS)
 
+class CaptureCoverage(StoreFixture):
+    """usage.capture_coverage and the SessionStart line (UX-C5)."""
+    def ledger(self, rows):
+        from datetime import datetime, timedelta, timezone
+        path = self.root / 'ledger' / f'sessions-{datetime.now(timezone.utc):%Y}.jsonl'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lines = []
+        for i, (days_ago, files, notes, receipt) in enumerate(rows):
+            when = (datetime.now(timezone.utc) - timedelta(days=days_ago)).strftime('%Y-%m-%dT%H:%M:%SZ')
+            lines.append({'t': when, 's': f's{i}', 'h': 'claude', 'd': 'demo', 'p': [], 'n': notes, 'f': files, **({'r': 1} if receipt else {})})
+        path.write_text(''.join(json.dumps(r) + '\n' for r in lines), encoding='utf-8')
+
+    def start(self, session='s1'):
+        return runtime.process('claude', 'session-start', {'cwd': str(self.base / 'project'), 'session_id': session}, self.root).get('context', '')
+
+    def test_counts_only_sessions_that_changed_files_in_the_window(self):
+        self.ledger([(1, 2, [], False), (2, 1, ['demo:a'], False), (3, 4, [], True), (4, 0, ['demo:b'], False), (40, 3, [], False)])
+        self.assertEqual(usage.capture_coverage(self.root, ['demo'], 30), {'days': 30, 'mutating': 3, 'covered': 2, 'ratio': 0.67})
+        self.assertEqual(usage.capture_coverage(self.root, ['other'], 30), {'days': 30, 'mutating': 0, 'covered': 0, 'ratio': None})
+
+    def test_stats_reports_it(self):
+        self.ledger([(1, 2, [], False)])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            main(['--root', str(self.root), '--domain', 'demo', 'stats'])
+        self.assertEqual(json.loads(out.getvalue())['capture_coverage'], {'days': 30, 'mutating': 1, 'covered': 0, 'ratio': 0.0})
+
+    def test_session_start_says_so_from_five_sessions_and_only_once_a_day(self):
+        self.ledger([(1, 1, [], False)] * 4)
+        self.assertNotIn('Capture coverage', self.start())   # four sessions: below the minimum
+        self.ledger([(1, 1, [], False)] * 4 + [(1, 1, ['demo:a'], False)])
+        line = 'Capture coverage: 1 of 5 sessions that changed files in the last 14 days left a note or receipt.'
+        self.assertIn(line, self.start('s1'))
+        self.assertNotIn('Capture coverage', self.start('s2'))   # told today already
+
+    def test_a_ratio_of_thirty_percent_or_more_stays_quiet(self):
+        self.ledger([(1, 1, [], True)] * 2 + [(1, 1, [], False)] * 4)
+        self.assertNotIn('Capture coverage', self.start())
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -201,7 +201,7 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
         try:notes.extend(dict(n,domain=domain) for n in inventory(domain,root))
         except (OSError,ValueError):continue
     project,here=_project_context(cwd,active,root,bindings)
-    tail=_resolved_line(resolved)+_finished_line(notes)+_review_line(active,root,[n for n in notes if n['domain']==active])+_problem_line(active,root)+_backup_line(root)
+    tail=_resolved_line(resolved)+_finished_line(notes)+_review_line(active,root,[n for n in notes if n['domain']==active])+_coverage_line(active,root,session)+_problem_line(active,root)+_backup_line(root)
     last=_last_session_line(active,root,session,notes)
     notes=_collapse([n for n in notes if n.get('id') and n.get('title')])
     from . import usage
@@ -309,6 +309,31 @@ def _review_line(domain,root,notes=None,shown=2):
     listed='; '.join(f"{short_ref(*r['ref'].split(':',1))} {_title(r['title'])[:REVIEW_TITLE]}" for r in found['items'])
     line=f"{found['total']} note(s) due for review ({kinds}; `review` lists all): {listed}"
     return [line if len(line)<=REVIEW_LINE_MAX else line[:REVIEW_LINE_MAX-1]+'…']
+
+COVERAGE_DAYS=14
+COVERAGE_MIN_SESSIONS=5
+COVERAGE_MAX_RATIO=0.30
+
+def _coverage_line(domain,root,session):
+    """One line when few of the recent sessions that changed files left a note or receipt (usage.capture_coverage over COVERAGE_DAYS):
+    at least COVERAGE_MIN_SESSIONS of them and a ratio under COVERAGE_MAX_RATIO. Told at most once a day (a date in .cache/coverage-told),
+    and only to a session hook (`session` given). Fails open."""
+    if not session:return []
+    from datetime import datetime,timezone
+    today=datetime.now(timezone.utc).strftime('%Y-%m-%d');marker=root/'.cache'/'coverage-told'
+    try:
+        if marker.read_text(encoding='utf-8').strip()==today:return []
+    except OSError:pass
+    try:
+        from .usage import capture_coverage
+        found=capture_coverage(root,[domain],COVERAGE_DAYS)
+        if found['mutating']<COVERAGE_MIN_SESSIONS or found['ratio']>=COVERAGE_MAX_RATIO:return []
+        from .common import atomic_write
+        atomic_write(marker,today+'\n')
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('session_start.coverage_line',exc,root);return []
+    return [f"Capture coverage: {found['covered']} of {found['mutating']} sessions that changed files in the last {COVERAGE_DAYS} days left a note or receipt."]
 
 RESOLVED_SHOWN=3
 RESOLVED_TITLE=40
