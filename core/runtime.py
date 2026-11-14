@@ -449,6 +449,46 @@ def _prune_journals(root):
         from .logs import swallowed
         swallowed('runtime.prune_journals',exc,root);return None
 
+AUTO_RESOLVE_DAYS=3
+
+def auto_resolve(root,domain,bindings,session=None):
+    """Resolve the active domain's finished work: each active plan, bug or risk note whose Action Items are all done and that nobody has touched
+    for AUTO_RESOLVE_DAYS days. At most once a day per domain (hooks/last-auto-resolve.json, like _prune_journals), never in a headless run,
+    and off with `"auto_resolve": false` at the top level of bindings.json. Each resolve is the journaled, undoable `resolve` change (`reopen REF`
+    brings the note back) and is recorded as use. Returns [(short ref, title)] for the notes resolved; fails open: []."""
+    try:
+        from datetime import datetime,timedelta,timezone
+        if bindings.get('auto_resolve',True) is False or headless():return []
+        marker=root/'hooks'/'last-auto-resolve.json'
+        marks=read_json(marker,{});marks=marks if isinstance(marks,dict) else {}
+        try:age=(datetime.now(timezone.utc)-datetime.fromisoformat(marks[domain])).total_seconds()
+        except (KeyError,TypeError,ValueError):age=None
+        if age is not None and age<24*3600:return []
+        atomic_write(marker,canonical_json({**marks,domain:now()}))
+        from .note_format import action_items,ACTION_TYPES
+        from .notes import change,short_ref
+        from .repository import inventory
+        from .usage import record
+        cutoff=datetime.now(timezone.utc)-timedelta(days=AUTO_RESOLVE_DAYS);done=[]
+        for note in inventory(domain,root):
+            if note.get('type') not in ACTION_TYPES or not note.get('id') or not note.get('title'):continue
+            items=action_items(note.get('body',''))
+            if not items or not all(d for d,_ in items):continue
+            try:
+                stamp=datetime.fromisoformat(str(note.get('updated') or note.get('created') or ''))
+                if stamp.tzinfo is None:stamp=stamp.replace(tzinfo=timezone.utc)
+            except ValueError:continue
+            if stamp>cutoff:continue
+            try:change(note['id'],domain,'resolve',root,expected_revision=note.get('revision'))
+            except (OSError,ValueError,TimeoutError) as exc:   # one stale or locked note must not stop the rest
+                from .logs import swallowed
+                swallowed('runtime.auto_resolve',exc,root);continue
+            record(root,'resolve',[f"{domain}:{note['id']}"],session,'auto-resolve');done.append((short_ref(domain,note['id']),note['title']))
+        return done
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('runtime.auto_resolve',exc,root);return []
+
 def _subagent(payload):
     """Claude Code marks hooks that fire inside a subagent with agent_id. Subagents are read-only
     by protocol and share the parent session_id, so their tool calls must not arm the parent's reminder."""
@@ -1530,7 +1570,8 @@ def _process(harness,event,payload,root=None,info=None):
             from .logs import swallowed
             swallowed('runtime.refresh_stale',exc,root)
         from .briefs import brief_folder
-        text,shown,indexed=build_context(cwd,root,max(MIN_BUDGET,BUDGET-len(prefix)),session=session,trace=detail,
+        resolved=[] if _subagent(payload) else auto_resolve(root,domain,bindings,session);detail['auto_resolved']=len(resolved)
+        text,shown,indexed=build_context(cwd,root,max(MIN_BUDGET,BUDGET-len(prefix)),session=session,trace=detail,resolved=resolved,
                                          currency=lambda hit:note_currency(hit,brief_folder(hit,cwd,bindings),root,bindings,state,session,'fresh_brief'))
         detail.update(shown=list(shown),indexed=indexed)
         if session!='unknown':

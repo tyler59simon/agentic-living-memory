@@ -71,6 +71,21 @@ class SessionIndex(StoreFixture):
         self.assertLess(text.index('Webcam conclusion'), text.index('Plugin tests: 155'))
         self.assertLess(text.index('Plugin tests: 155'), text.index('Plugin tests: 144'))
 
+    def test_the_auto_resolved_line_is_short_and_goes_with_the_tail_when_the_budget_is_tight(self):
+        self.many(10)
+        resolved = [(f'demo:{i:08x}', f'Finished plan number {i} with a rather long descriptive title ' * 3) for i in range(12)]
+        text = session_start.build_context(str(self.base / 'project'), self.root, 100000, resolved=resolved)[0]
+        line = next(l for l in text.splitlines() if l.startswith('Auto-resolved'))
+        self.assertTrue(line.startswith('Auto-resolved 12 finished note(s): '), line)
+        self.assertEqual(line.count('(reopen demo:'), 4)   # three named, then the rest by ref
+        self.assertIn(' and 9 more (reopen demo:00000003, ', line)
+        self.assertLess(len(line), 450)
+        tight = session_start.build_context(str(self.base / 'project'), self.root, 400, resolved=resolved)[0]
+        self.assertLessEqual(len(tight), 400)
+        self.assertNotIn('Auto-resolved', tight)   # the tail is the first thing to go, after the index and open work
+        one = session_start.build_context(str(self.base / 'project'), self.root, 100000, resolved=[('demo:0000000a', 'Finished plan')])[0]
+        self.assertIn('Auto-resolved 1 finished note(s): Finished plan (reopen demo:0000000a)', one)
+
     def test_budget_degrades_cheapest_first(self):
         capture('Prefer small commits', 'Keep commits small. ' * 20, TAGS, 'demo', self.root, type='preference')
         self.many(60)
