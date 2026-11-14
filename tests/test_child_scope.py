@@ -56,7 +56,7 @@ class ChildScope(StoreFixture):
         b = self.bindings
         self.assertEqual(runtime.child_path('pkg/src/a.py', 'demo', 'pkg', b), 'src/a.py')
         self.assertIsNone(runtime.child_path('core/a.py', 'demo', 'pkg', b))
-        self.assertIsNone(runtime.child_path('pkg', 'demo', 'pkg', b))
+        self.assertEqual(runtime.child_path('pkg', 'demo', 'pkg', b), '')   # the child's root: every file it names (hooks skip '')
         self.assertEqual(runtime.child_path((self.child / 'src' / 'a.py').resolve().as_posix(), 'demo', 'pkg', b), 'src/a.py')
 
     def test_file_hints_find_a_child_note_by_its_own_relative_path(self):
