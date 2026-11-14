@@ -379,6 +379,12 @@ def _free(run, acc, notes=True):
         acc['reserved_notes'] = max(0, acc['reserved_notes'] - run['reserved_notes'])
 
 
+def _failed(acc, run, at, reason):
+    # Only the latest attempt's failure is kept: releasing an older reservation must not replace or invent it.
+    if acc['last_run'] in (None, run['id']):
+        acc['last_failure'] = {'at': at, 'reason_code': reason, 'run_id': run['id']}
+
+
 def launch(root, run, now=None):
     def apply(new, acc, at):
         acc['reserved_notes'] = max(0, acc['reserved_notes'] - new['reserved_notes'])
@@ -396,7 +402,7 @@ def release(root, run, reason, now=None):
     def apply(new, acc, at):
         _free(new, acc)
         new.update(released=True, reason_code=reason, finished_at=at)
-        acc['last_failure'] = {'at': at, 'reason_code': reason, 'run_id': new['id']}
+        _failed(acc, new, at, reason)
     return _move(root, run, 'failed', now, apply)
 
 
@@ -450,7 +456,7 @@ def recover_runs(root, now=None):
                 new.update(finished_at=at, reason_code='interrupted')
                 if was_reserved:
                     new['released'] = True
-                    acc['last_failure'] = {'at': at, 'reason_code': 'interrupted', 'run_id': new['id']}
+                    _failed(acc, new, at, 'interrupted')
                 else:
                     new.update(charged_micro=new['reserved_micro'], cost_complete=False)
                     acc['charged_micro'] += new['reserved_micro']

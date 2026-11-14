@@ -152,6 +152,11 @@ class CheckpointLoss(Base):
         self.reserve(d1,cfg=cfg);new=self.reserve(d2,cfg=cfg);ms.launch(self.root,new,d2);ms.finish(self.root,new,10,'completed',d2)
         self.assertEqual(len(ms.recover_runs(self.root,d2+H)),1)
         self.change(model='haiku');self.assertEqual(self.code(d2+H+H/2),'interval')
+    def test_releasing_an_older_run_keeps_the_latest_failure(self):
+        cfg=self.change(min_interval_seconds=7200);d1=datetime(2026,3,10,23,0,tzinfo=timezone.utc);d2=d1+2*H
+        self.reserve(d1,cfg=cfg);new=self.reserve(d2,cfg=cfg);ms.release(self.root,new,'adapter_missing',d2)
+        ms.recover_runs(self.root,d2+H/2)
+        self.change(model='haiku');self.assertTrue(ms.eligibility(self.root,d2+H)['eligible'])
     def test_domain_names_are_plain(self):
         (self.root/'domains/_global').mkdir(parents=True)
         for bad in ('./_global','../demo','demo/..',str(self.root/'domains/demo')):
