@@ -101,6 +101,16 @@ class Provenance(StoreFixture):
         code,result=self.cli('--domain','demo','search','--file','core/cli.py','--filter','type=bug')
         self.assertEqual(code,2);self.assertIn('--filter needs a query',result['error']['message'])
         self.assertFalse((self.root/'domains'/'missing').exists())
+    def test_file_search_all_scope_includes_global_domains_and_children(self):
+        from core.init_domain import init_domain
+        from core.notes import capture,ensure_global
+        ensure_global(self.root);ours=capture('Global file note','Body.',['subject/project','concern/architecture'],'_global',self.root,files=['core/cli.py'])
+        child=self.base/'project'/'pkg';child.mkdir(parents=True);init_domain('pkg',[str(child)],self.root)
+        kid=capture('Child file note','Body.',['subject/project','concern/architecture'],'pkg',self.root,files=['core/cli.py'])
+        code,result=self.cli('--domain','demo','search','--file','core/cli.py','--scope','all')
+        self.assertEqual(code,0,result);self.assertEqual({h['id'] for h in result['results']},{ours['id'],kid['id']});self.assertIn('_global',result['domains'])
+        code,result=self.cli('--domain','demo','search','--file','pkg/core/cli.py')   # relative to the session domain; the child names it core/cli.py
+        self.assertEqual(code,0,result);self.assertEqual([h['id'] for h in result['results']],[kid['id']])
     def test_mentions_need_a_path_token(self):
         self.assertTrue(mentions_file('see core\\cli.py.','core/cli.py'))
         self.assertFalse(mentions_file('see core/cli.pyc','core/cli.py'))

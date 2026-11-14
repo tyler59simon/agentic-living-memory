@@ -107,6 +107,18 @@ class Delivery(StoreFixture):
         self.assertFalse(search('cache')['fallback']);self.assertTrue(search('orbital')['fallback'])
         self.assertEqual(search('orbital','all')['results'][0]['sourceScope'],'foreign')
         self.assertEqual(search('orbital','active')['results'],[])
+    def test_parent_and_child_hits_are_labelled(self):
+        from core.init_domain import init_domain
+        from core.notes import capture
+        (self.base/'project'/'pkg').mkdir(parents=True);init_domain('pkg',[str(self.base/'project'/'pkg')],self.root)
+        init_domain('sub',[str(self.base/'project'/'pkg'/'sub')],self.root)
+        parent=self.note('Orbital parent','Orbital mechanics, parent');kid=capture('Orbital child','Orbital mechanics, child',['subject/project','concern/architecture'],'pkg',self.root)
+        script=Path(__file__).resolve().parents[1]/'living_memory.py'
+        def search(domain):
+            result=subprocess.run([sys.executable,str(script),'search','orbital mechanics','--root',str(self.root),'--domain',domain],text=True,capture_output=True)
+            self.assertEqual(result.returncode,0,result.stderr);return {h['title']:h['sourceScope'] for h in json.loads(result.stdout)['results']}
+        self.assertEqual(search('demo'),{'Orbital parent':'active','Orbital child':'child'})
+        self.assertEqual(search('pkg'),{'Orbital parent':'parent','Orbital child':'active'})
     def test_filtered_dirty_search_requires_rebuild(self):
         from core.search import search_domain
         a=self.note();path=Path(a['path']);path.write_text(path.read_text().replace('rebuildable','newkeyword'))

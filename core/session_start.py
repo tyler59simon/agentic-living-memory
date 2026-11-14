@@ -74,13 +74,13 @@ def _cost(note):
     return max(50,round(len(note.get('body',''))/4/50)*50)
 
 def _scope(active,root,bindings):
-    from .runtime import parent_domains
+    from .runtime import scope_domains
     scope=bindings.get("search_scope",{}) if isinstance(bindings.get("search_scope",{}),dict) else {}
     globals_=[]
     for name in scope.get("global_domains",["_global"]):
         try:globals_.append(canonical_domain(name,root))
         except ValueError:continue
-    return list(dict.fromkeys([active]+parent_domains(active,bindings)+globals_))
+    return list(dict.fromkeys([active]+scope_domains(active,bindings)+globals_))
 
 OPEN_NOTES=3
 OPEN_BUGS=2
@@ -151,12 +151,12 @@ def _user_brief(root):
         swallowed('session_start.user_brief',exc,root);return None
 
 def _open_lines(active,root,bindings,project=None):
-    """(header line, lines, how many lines are notes with open action items) for the active, parent and global domains: those notes
+    """(header line, lines, how many lines are notes with open action items) for the active, parent, child and global domains: those notes
     first (the current project's first, stable; the count in the header does not change), then bugs with no recorded root cause."""
-    from .runtime import parent_domains
+    from .runtime import scope_domains
     from .notes import open_work,unresolved_bugs
     from .common import global_domains
-    domains=list(dict.fromkeys([active]+parent_domains(active,bindings)+global_domains(root)))
+    domains=list(dict.fromkeys([active]+scope_domains(active,bindings)+global_domains(root)))
     # A bug recorded as a pitfall (a gotcha) is listed as one; the rest are open until someone writes down why.
     found=open_work(domains,root);bugs=[(d,n) for d,n in unresolved_bugs(domains,root) if not is_gotcha(n)]
     if not found and not bugs:return None,[],0

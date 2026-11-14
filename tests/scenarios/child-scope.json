@@ -1,0 +1,18 @@
+{
+ "name": "child-scope",
+ "description": "A session at a project's root sees notes of a domain bound to a folder inside it: prompts, file hints (the child names files relative to its own folder) and the CLI search label.",
+ "harnesses": ["claude", "codex"],
+ "domains": {"demo": "project", "pkg": "project/pkg"},
+ "notes": [
+  {"key": "webcam", "domain": "pkg", "title": "Webcam diagnosis", "body": "The webcam driver is the inbox one."},
+  {"key": "parser", "domain": "pkg", "title": "Parser error handling", "body": "Errors are collected and reported together.", "files": ["src/parser.py"]}
+ ],
+ "steps": [
+  {"hook": "session-start"},
+  {"hook": "user-prompt", "payload": {"prompt": "how is the webcam diagnosis going"}, "expect": {"inject": ["@webcam"], "path": "injected"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/pkg/src/parser.py"}}, "expect": {"hints": ["@parser"], "mutation": "tracked"}},
+  {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/src/parser.py"}}, "expect": {"hints": [], "mutation": "tracked"}},
+  {"cli": ["search", "webcam diagnosis"], "expect": {"exit": 0, "result_contains": ["\"sourceScope\":\"child\""]}},
+  {"hook": "stop", "expect": {"stop_reason": "reminded:follow"}}
+ ]
+}
