@@ -199,7 +199,7 @@ def remap(root,mappings):
                 raise ValueError('Target domain is unregistered')
             target=confined(root,Path('domains')/after['domain']/('notes' if note['status']=='active' else 'archive')/path.name)
             if target.exists():raise ValueError('Remap filename collision')
-            note['domain']=after['domain'];note['updated']=now()
+            keep_baseline(note);note['domain']=after['domain'];note['updated']=now()   # a move vouches for nothing
             changes[path.relative_to(root).as_posix()]=None;changes[target.relative_to(root).as_posix()]=serialize(note)
             domains.update((before['domain'],after['domain']))
         return plan(root,changes,'reference_remap',domains,{'mappings':mappings,'files':len(changes)})
