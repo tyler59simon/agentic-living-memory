@@ -117,6 +117,84 @@ class FileCurrency(Base):
         self.assertEqual(search.file_notes('src/a.py',['demo'],self.root,ensure_fresh=False)[0]['file_hashes'],[{'path':'src/a.py','sha256':sha(A)}])
         self.assertEqual(search.search_domain('retry limit config','demo',root=self.root)[0]['file_hashes'][0]['path'],'src/a.py')
 
+class Freshness(Base):
+    """MAINT-1A: only a body rewrite, an explicit confirm or a files change speaks for the files; a missing file keeps its hash; `checked` is the baseline."""
+    def legacy(self,made):
+        """Strip `checked` like a note written before the field: its baseline is `updated`."""
+        path,note=find_note(made['id'],'demo',self.root);note.pop('checked',None);Path(path).write_text(notes.serialize(note),encoding='utf-8');return self.note_of(made)
+
+    def test_f1_a_rename_of_a_stale_note_stays_stale_and_keeps_its_hash(self):
+        made=self.cap('Retry limit',['src/a.py'],body='The retry limit is 3.');put(self.project/'src'/'a.py','retry = 9\n')
+        change(made['id'],'demo','rename',self.root,title='Retry cap')
+        note=self.note_of(made);self.assertEqual(self.hashes(made),{'src/a.py':sha(A)})
+        self.assertEqual(digests.stale_note(note,self.root),'STALE: src/a.py changed since this note')
+
+    def test_f1_title_and_type_only_edits_keep_every_hash(self):
+        made=self.cap('Retry limit',['src/a.py']);put(self.project/'src'/'a.py','retry = 9\n')
+        change(made['id'],'demo','update',self.root,type='runbook');self.assertEqual(self.hashes(made),{'src/a.py':sha(A)})
+        change(made['id'],'demo','update',self.root,title='Retry cap',context='why');self.assertEqual(self.hashes(made),{'src/a.py':sha(A)})
+        change(made['id'],'demo','update',self.root,commands=['make test']);self.assertEqual(self.hashes(made),{'src/a.py':sha(A)})
+
+    def test_a_type_change_starts_hashes_only_for_files_without_one(self):
+        made=self.cap('Retry limit',['src/a.py'],type='decision');change(made['id'],'demo','update',self.root,files=['src/a.py','src/b.py'])
+        put(self.project/'src'/'a.py','retry = 9\n')
+        change(made['id'],'demo','update',self.root,type='knowledge');self.assertEqual(self.hashes(made),{'src/a.py':sha('retry = 9\n'),'src/b.py':sha(B)})
+        made=self.cap('Retry cap',['src/a.py','src/b.py']);put(self.project/'src'/'b.py','timeout = 1\n')
+        change(made['id'],'demo','update',self.root,type='runbook')
+        self.assertEqual(self.hashes(made)['src/b.py'],sha(B))   # still the old hash: a type change does not vouch
+
+    def test_a_cosmetic_edit_to_a_legacy_note_keeps_its_baseline_in_checked(self):
+        made=self.cap('Retry limit',['src/a.py']);before=self.legacy(made)['updated']
+        change(made['id'],'demo','rename',self.root,title='Retry cap');note=self.note_of(made)
+        self.assertEqual(note['checked'],before);self.assertGreater(note['updated'],before)
+        change(made['id'],'demo','update',self.root,body='The retry limit is 4 now.');note=self.note_of(made)
+        self.assertEqual(note['checked'],note['updated'])   # a body rewrite is the author's word for the facts
+
+    def test_verified_at_is_checked_else_updated_else_created(self):
+        from core.note_types import verified_at
+        self.assertEqual(verified_at({'checked':'2026-01-02T00:00:00+00:00','updated':'2026-02-01T00:00:00+00:00'}),'2026-01-02T00:00:00+00:00')
+        self.assertEqual(verified_at({'updated':'2026-02-01T00:00:00+00:00','created':'2026-01-01T00:00:00+00:00'}),'2026-02-01T00:00:00+00:00')
+        self.assertEqual(verified_at({'created':'2026-01-01T00:00:00+00:00'}),'2026-01-01T00:00:00+00:00');self.assertEqual(verified_at({}),'')
+
+    def test_f2_confirm_after_the_file_was_deleted_keeps_the_hash_and_reports_it_missing(self):
+        made=self.cap('Retry limit',['src/a.py']);(self.project/'src'/'a.py').unlink()
+        confirm(made['id'],'demo',self.root);note=self.note_of(made)
+        self.assertEqual(self.hashes(made),{'src/a.py':sha(A)});self.assertEqual(digests.stale_note(note,self.root),'STALE: src/a.py is missing')
+        self.assertEqual(digests.states(note['file_hashes'],'demo',self.root),{'src/a.py':'missing'})
+
+    def test_a_body_update_after_a_deletion_keeps_the_hash_and_new_files_get_one(self):
+        made=self.cap('Retry limit',['src/a.py','src/b.py']);(self.project/'src'/'a.py').unlink();put(self.project/'src'/'b.py','timeout = 1\n')
+        change(made['id'],'demo','update',self.root,body='The timeout moved.',files=['src/a.py','src/b.py','src/c.py'])
+        self.assertEqual(self.hashes(made),{'src/a.py':sha(A),'src/b.py':sha('timeout = 1\n'),'src/c.py':sha('c\n')})
+
+    def test_removing_a_file_from_the_list_drops_only_its_hash(self):
+        made=self.cap('Retry limit',['src/a.py','src/b.py']);(self.project/'src'/'a.py').unlink()
+        change(made['id'],'demo','update',self.root,files=['src/b.py']);self.assertEqual(self.hashes(made),{'src/b.py':sha(B)})
+
+    def test_source_states_current_changed_missing_unavailable_unchecked(self):
+        outside=self.base/'outside.txt';put(outside,'x\n');path=str(outside).replace(os.sep,'/')
+        listed=[{'path':'src/a.py','sha256':sha(A)},{'path':'src/b.py','sha256':sha('other')},{'path':'src/gone.py','sha256':sha('g')},{'path':path,'sha256':sha('x\n')},{'path':'src/c.py','sha256':''}]
+        outside.unlink()
+        self.assertEqual(digests.states(listed,'demo',self.root),{'src/a.py':'current','src/b.py':'changed','src/gone.py':'missing',path:'unavailable','src/c.py':'unchecked'})
+        self.assertEqual(digests.changed(listed[:3],'demo',self.root),['src/b.py','src/gone.py'])   # `changed` keeps its meaning: a missing file counts
+
+    def test_a_missing_file_has_its_own_wording_and_notes_carry_a_currency_field(self):
+        from core.worklist import currency_of
+        made=self.cap('Retry limit',['src/a.py','src/b.py']);put(self.project/'src'/'a.py','retry = 5\n');(self.project/'src'/'b.py').unlink()
+        note=self.note_of(made);self.assertEqual(digests.stale_note(note,self.root),'STALE: src/a.py changed since this note; src/b.py is missing')
+        info=currency_of(note,self.root);self.assertEqual(info['state'],'changed');self.assertEqual(info['files'],[{'path':'src/a.py','state':'changed'},{'path':'src/b.py','state':'missing'}])
+
+    def test_the_cli_read_has_a_currency_field(self):
+        import contextlib,io,json
+        from core.cli import main
+        made=self.cap('Retry limit',['src/a.py']);out=io.StringIO()
+        with contextlib.redirect_stdout(out):main(['--root',str(self.root),'--domain','demo','read',made['id']])
+        self.assertEqual(json.loads(out.getvalue())['currency']['state'],'current')
+
+    def test_a_checkbox_does_not_write_checked(self):
+        bug=self.cap('Retry bug',['src/a.py'],type='bug',body=BUG_BODY);self.legacy(bug)
+        check_action(bug['id'],'demo',self.root,item='Fix the loop');self.assertNotIn('checked',self.note_of(bug))
+
 class BatchedFollow(Base):
     """C5: one batch lookup for files no hint looked up and for files a shell or git changed; the pull guard; one sentence for many notes."""
     def state(self,**extra):return {'mutating':True,'shell':True,**extra}

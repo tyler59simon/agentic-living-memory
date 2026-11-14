@@ -127,6 +127,18 @@ class Worklist(Base):
         after=sorted((self.root/'.turns').glob('usage-*')) if (self.root/'.turns').exists() else []
         self.assertEqual(before,after);self.assertEqual([r for r in usage.events(self.root) if r['e'] in {'read','inject','update'}],[])
 
+    def test_f5_a_supplied_future_date_makes_notes_due_by_that_date(self):
+        made=self.cap('Wiring status','Green.',type='status',review_by=(date.today()+timedelta(days=3)).isoformat());aged=self.cap('Aged fact','Old but fine.')
+        self.assertNotIn(self.ref(made),self.rows());later_day=date.today()+timedelta(days=10)
+        rows=self.rows(today=later_day);self.assertIn(self.ref(made),rows);self.assertEqual(rows[self.ref(made)]['kinds'],['due'])
+        self.assertNotIn(self.ref(aged),rows);self.assertIn(self.ref(aged),self.rows(today=date.today()+timedelta(days=500)))
+
+    def test_a_row_carries_currency_for_a_note_with_hashed_files(self):
+        made=self.cap('Retry limit','The retry limit is read from the config.',files=['src/a.py']);(self.project/'src'/'a.py').write_text('retry = 5\n',encoding='utf-8')
+        row=self.rows()[self.ref(made)];self.assertEqual(row['currency']['state'],'changed');self.assertEqual(row['currency']['files'],[{'path':'src/a.py','state':'changed'}])
+        (self.project/'src'/'a.py').unlink();change(made['id'],'demo','update',self.root,body='The retry limit moved to the config service.')
+        confirm(made['id'],'demo',self.root);row=self.rows()[self.ref(made)];self.assertEqual(row['currency']['state'],'missing');self.assertIn('is missing',row['reason'])
+
 class Surfaces(Base):
     def test_session_start_line_has_counts_by_kind_two_refs_and_fits_260_characters(self):
         from core.session_start import _review_line,render_context
@@ -164,5 +176,46 @@ class Maps(StoreFixture):
             rows=worklist(self.root,['demo'],kinds=['stale'])['items']
         self.assertEqual([r['ref'] for r in rows],['demo:'+made['id']]);self.assertIn('STALE: pom.xml changed since',rows[0]['reason'])
         confirm(made['id'],'demo',self.root);self.assertEqual(worklist(self.root,['demo'],kinds=['stale'])['items'],[])   # a new revision: the cached entry no longer applies
+    def captured_map(self):
+        (self.root/'tag_taxonomy.json').write_text(json.dumps({'tags':['subject/project','concern/architecture','concern/knowledge']}))
+        app=self.base/'project'/'app';app.mkdir(parents=True);git(app,'init','-q');git(app,'symbolic-ref','HEAD','refs/heads/main');self.app=app.resolve()
+        commit(self.app,{'pom.xml':'<v>1</v>','src/Money.java':'long cents;'},LONG_AGO,'initial')
+        out=io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code=main(['--root',str(self.root),'--domain','demo','capture','--type','map','--file',str(self.app),'--title','app map','--summary','A money service.','--detail','**Layout:** src/Money.java is the money type.'])
+        made=json.loads(out.getvalue());self.assertEqual(code,0,made);self.ref='demo:'+made['id'];self.id=made['id']
+        commit(self.app,{'pom.xml':'<v>2</v>'},later());runtime.process('claude','session-start',{'cwd':str(self.app),'session_id':'s1'},self.root)   # caches the stale finding
+
+    def test_f3_a_tag_edit_keeps_the_cached_stale_finding_of_a_map(self):
+        self.captured_map()
+        self.assertEqual([r['ref'] for r in worklist(self.root,['demo'],kinds=['stale'])['items']],[self.ref])
+        change(self.id,'demo','retag',self.root,tags=['subject/project','concern/knowledge'])
+        rows=worklist(self.root,['demo'],kinds=['stale'])['items'];self.assertEqual([r['ref'] for r in rows],[self.ref]);self.assertIn('pom.xml',rows[0]['reason'])
+        change(self.id,'demo','rename',self.root,title='app map v2')   # a title edit keeps it too
+        self.assertEqual([r['ref'] for r in worklist(self.root,['demo'],kinds=['stale'])['items']],[self.ref])
+
+    def test_a_body_edit_or_a_new_head_makes_the_cached_finding_unusable_and_unchecked(self):
+        self.captured_map();change(self.id,'demo','update',self.root,body=find_note(self.id,'demo',self.root)[1]['body']+'\n\nExtra line.')
+        self.assertEqual(worklist(self.root,['demo'],kinds=['stale'])['items'],[])
+        row={r['ref']:r for r in worklist(self.root,['demo'],kinds=['due'],today=date.today()+timedelta(days=400))['items']}[self.ref]
+        self.assertEqual(row['currency']['state'],'unchecked')
+
+    def test_a_different_head_makes_the_cached_row_unusable(self):
+        self.captured_map();commit(self.app,{'README.md':'x'},later(2))
+        self.assertEqual(worklist(self.root,['demo'],kinds=['stale'])['items'],[])
+        row={r['ref']:r for r in worklist(self.root,['demo'],kinds=['due'],today=date.today()+timedelta(days=400))['items']}[self.ref]
+        self.assertEqual(row['currency']['state'],'unchecked')
+
+    def test_an_uncommitted_edit_to_a_cited_file_shows_on_the_explicit_review_path_only(self):
+        self.captured_map();(self.app/'src'/'Money.java').write_text('long cents; int extra;',encoding='utf-8')
+        self.assertNotIn('Money.java',worklist(self.root,['demo'],kinds=['stale'])['items'][0]['reason'])   # the cached finding names pom.xml only
+        rows=worklist(self.root,['demo'],kinds=['stale'],working_tree=True)['items'];self.assertEqual([r['ref'] for r in rows],[self.ref])
+        self.assertIn('src/Money.java',rows[0]['reason']);self.assertIn('src/Money.java',rows[0]['currency']['changed'])
+
+    def test_the_hook_paths_never_look_at_the_working_tree(self):
+        self.captured_map();(self.app/'src'/'Money.java').write_text('long cents; int extra;',encoding='utf-8')
+        from unittest.mock import patch
+        with patch('core.maps.subprocess.run',side_effect=AssertionError('git must not run')):worklist(self.root,['demo'],cheap=True)
+
 
 if __name__=='__main__':unittest.main()
