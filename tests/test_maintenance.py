@@ -216,7 +216,6 @@ class Adversarial(Base):
         self.assertEqual([self.get(x)['status'] for x in (self.n,self.m)],['active','active']);self.assertEqual(self.read_run(self.run['id'])['decisions'],{})
     def test_structurally_invalid_reports_change_nothing(self):
         self.bad(mutate=lambda r:r['decisions'][0].update(ref='demo:nope'))
-        self.bad(mutate=lambda r:r['decisions'][0].update(revision='0'*64))
         self.bad(mutate=lambda r:r['decisions'][0].update(evidence_ids=['E99']))
         self.bad(mutate=lambda r:r['decisions'][0].update(tags=['x']))
         self.bad(mutate=lambda r:r['decisions'][0].update(action='delete'))
@@ -228,6 +227,17 @@ class Adversarial(Base):
         self.bad(mutate=lambda r:r['decisions'][0].update(patches=[{'find':'a','replace':'b'*2001}]))
         self.bad(mutate=lambda r:r['decisions'][0].update(evidence_ids=['E1','E1']))
         self.bad(mutate=lambda r:r['decisions'][0].update(patches=[{'find':'A plain','replace':'  '}]))
+    def test_a_miscopied_revision_defers_only_that_note_without_a_hold(self):
+        from core import maintenance_agent as agent
+        wrong=self.d(self.manifest,self.n,'archive',rule='obsolete_content',revision='0'*64)
+        res=self.apply(self.run,self.manifest,[wrong,self.d(self.manifest,self.m,'keep')])
+        self.assertEqual([(r['ref'],r['result'],r['reason_code']) for r in res['results']],
+                         [(self.ref(self.n),'deferred','revision_mismatch'),(self.ref(self.m),'kept',None)])
+        self.assertEqual(self.get(self.n)['status'],'active')
+        retry=ms.state(self.root,self.now)['retry'];self.assertNotIn(self.ref(self.n),retry);self.assertIn(self.ref(self.m),retry)
+        for bad in ('short',None,7):
+            report={'version':1,'run_id':self.run['id'],'decisions':[dict(wrong,revision=bad)]}
+            self.assertEqual(agent.validate_report(report,self.run['id'],self.manifest)['decisions'][0]['action'],'defer')
     def test_omitted_candidates_become_defers(self):
         res=self.apply(self.run,self.manifest,[self.d(self.manifest,self.n,'keep')])
         self.assertEqual([(r['ref'],r['result']) for r in res['results']],[(self.ref(self.n),'kept'),(self.ref(self.m),'deferred')])
@@ -429,5 +439,34 @@ class Service(Base):
         self.mk('Sprint status','Done.',type='status',review_by=OLD)
         self.go()
         self.assertEqual(ms.state(self.root,self.now)['domain_cursor'],'other')
+
+class Gate(StoreFixture):
+    """scripts/eval_maintenance.py fixture mode, with a scripted reviewer in place of the paid call."""
+    def gate(self,choose):
+        from unittest import mock
+        from scripts import eval_maintenance as gate
+        labels={}
+        def adapter(req):
+            decisions=[]
+            for ref,cand in req['manifest']['candidates'].items():
+                d=choose(labels[ref]['label'],cand)
+                if d:decisions.append({'ref':ref,'revision':cand['revision'],'reason':'Scripted.','evidence_ids':cand['evidence_ids'][:1],**d})
+            return {'ok':True,'report':{'version':1,'run_id':req['run']['id'],'decisions':decisions},'usage_micro':1234,'stderr':''}
+        real=gate.build_fixture
+        def build(base):
+            out=real(base);labels.update(out[2]);return out
+        with mock.patch.object(gate,'build_fixture',build):
+            return gate.fixture_gate(self.base/'gate',adapter)
+    GOOD={'expired_status':{'action':'archive','rule':'expired_status'},'finished_plan':{'action':'resolve','rule':'completed_work'},
+          'changed_source':{'action':'update','patches':[{'find':'30 seconds','replace':'60 seconds'}]}}
+    def test_a_correct_reviewer_passes_and_every_case_is_selected(self):
+        out=self.gate(lambda label,cand:self.GOOD.get(label,{'action':'keep'}))
+        self.assertTrue(out['ok'],out['checks']);self.assertEqual(out['cost_usd'],'0.001234')
+    def test_archiving_a_valuable_decision_fails_the_gate(self):
+        out=self.gate(lambda label,cand:{'action':'archive','rule':'obsolete_content'} if label=='valuable_decision' else self.GOOD.get(label,{'action':'keep'}))
+        self.assertFalse(out['ok']);self.assertFalse(out['checks']['no_protected_retired'])
+    def test_a_reviewer_that_keeps_everything_fails_usefulness(self):
+        out=self.gate(lambda label,cand:{'action':'keep'})
+        self.assertFalse(out['ok']);self.assertFalse(out['checks']['required_cases_useful']);self.assertTrue(out['checks']['no_protected_retired'])
 
 if __name__=='__main__':unittest.main()

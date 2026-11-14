@@ -28,7 +28,6 @@ BATCH_MAX = 10   # decisions per report, so at most this many candidates per run
 REPLACE_MAX = 2000
 FIND_MAX = 4000
 EVIDENCE_MAX = 8
-SHA = re.compile(r'[0-9a-f]{64}')
 EVIDENCE_ID = re.compile(r'E[0-9]{1,5}')
 
 POLICY = """You are the read-only maintenance reviewer for a store of project memory notes. You have no tools: you cannot read files, search or run commands. You receive one JSON packet on stdin and answer with one JSON object that follows the supplied schema, and nothing else.
@@ -83,7 +82,8 @@ def _text(value, name, limit, empty=False):
 
 
 def validate_report(report, run_id, manifest):
-    """The report normalised: every candidate of the batch has exactly one decision (an omitted one becomes a defer). Raises ReportError
+    """The report normalised: every candidate of the batch has exactly one decision (an omitted one, or one with a miscopied revision, becomes
+    a defer; the latter carries code revision_mismatch). Raises ReportError
     for anything structurally wrong; whether an action is allowed for a note is the executor's judgement, not this function's."""
     if not isinstance(report, dict) or set(report) - {'version', 'run_id', 'decisions'} or not {'version', 'run_id', 'decisions'} <= set(report):
         raise ReportError('the report needs exactly version, run_id and decisions')
@@ -98,13 +98,19 @@ def validate_report(report, run_id, manifest):
     seen, out = set(), []
     for item in report['decisions']:
         if not isinstance(item, dict) or set(item) - {'ref', 'revision', 'action', 'rule', 'reason', 'evidence_ids', 'successor', 'patches'} or not {'ref', 'revision', 'action', 'reason'} <= set(item):
-            raise ReportError('each decision needs ref, revision, action and reason, and no unknown keys')
+            got = sorted(map(str, item))[:12] if isinstance(item, dict) else type(item).__name__
+            raise ReportError(f'each decision needs ref, revision, action and reason, and no unknown keys (got {got})')
         ref = _text(item['ref'], 'ref', 300)
         if ref in seen:
             raise ReportError(f'{ref} appears twice')
         seen.add(ref)
-        if ref not in known or item['revision'] != known[ref]['revision'] or not isinstance(item['revision'], str) or not SHA.fullmatch(item['revision']):
-            raise ReportError(f'{ref} with this revision is not in the batch')
+        if ref not in known:
+            raise ReportError(f'{ref} is not in the batch')
+        if item['revision'] != known[ref]['revision']:
+            # A miscopied 64-character hash costs that one note its decision, not the whole paid report. No hold, so it is asked again.
+            out.append({'ref': ref, 'revision': known[ref]['revision'], 'action': 'defer', 'rule': None, 'code': 'revision_mismatch',
+                        'reason': 'The reviewer copied a different revision for this note, so its decision was not used.', 'evidence_ids': [], 'successor': None, 'patches': []})
+            continue
         if item['action'] not in ACTIONS:
             raise ReportError(f'unsupported action for {ref}')
         rule = item.get('rule')
@@ -341,7 +347,10 @@ def review(request, executable=None):
     if reason:
         return {**result, 'ok': False, 'reason_code': reason}
     try:
-        return {**result, 'ok': True, 'report': validate_report(report, request['run']['id'], request['manifest'])}
+        # Checked here so a broken report fails early, but returned as the model sent it: run() normalises once (normalising twice is not
+        # idempotent, since a revision_mismatch defer carries a code the model may not send).
+        validate_report(report, request['run']['id'], request['manifest'])
+        return {**result, 'ok': True, 'report': report}
     except ReportError as exc:
         return {**result, 'ok': False, 'reason_code': 'invalid_report', 'detail': str(exc)}
 

@@ -54,6 +54,7 @@ Not sent: file contents beyond those excerpts, the repository tree, environment 
 - Knowledge, decision, context and research notes: archived only when current evidence shows the content is obsolete; superseded when an active successor covers all its useful content. An old decision that still explains a current constraint stays.
 - Any note: may be confirmed when the evidence covers every fact and every tracked file, or updated with at most five exact-text patches. Action items, the important block, links, the title, type, tags, files and pin are never changed by a patch.
 - Every archive, supersede, confirm and update must cite evidence from the packet.
+- A report that breaks the output contract (unknown ref, run id or evidence id, bad patch shape) applies nothing. One exception: a decision whose ref is in the batch but whose revision is miscopied is deferred for that note only (`revision_mismatch`), with no seven-day hold, and the rest of the report still counts.
 
 ## Unavailable sources
 

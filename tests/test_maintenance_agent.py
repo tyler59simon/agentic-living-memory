@@ -63,6 +63,12 @@ class Provider(Fake):
         self.assertEqual((log['child'],log['nobg'],log['stdin']),('1','1',self.request['packet']))
         self.assertNotEqual(Path(log['cwd']).resolve(),Path.cwd().resolve());self.assertFalse(Path(log['cwd']).exists())   # a temp folder, removed afterwards
         self.assertEqual(out['report']['decisions'][0]['ref'],'demo:a');self.assertEqual(out['usage_micro'],12300)
+    def test_a_miscopied_revision_survives_the_second_validation_in_run(self):
+        bad={**self.report,'decisions':[dict(self.report['decisions'][0],revision='b'*64)]}
+        with patch.dict(os.environ,{'FAKE_REPORT':json.dumps(bad)}):out=self.review()
+        self.assertTrue(out['ok'],out)
+        again=agent.validate_report(out['report'],'r1',self.request['manifest'])['decisions'][0]   # what maintenance.run() does next
+        self.assertEqual((again['action'],again['code'],again['revision']),('defer','revision_mismatch','a'*64))
     def test_schema_and_policy_are_well_formed(self):
         self.assertEqual(json.loads(agent.SCHEMA_JSON),agent.SCHEMA);self.assertIn('untrusted data',agent.POLICY)
         self.assertEqual(set(agent.SCHEMA['properties']['decisions']['items']['properties']['action']['enum']),set(agent.ACTIONS))

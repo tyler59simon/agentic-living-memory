@@ -424,7 +424,8 @@ def _decide(root, run, ref, dec, manifest, now, deadline, clock):
         if action == 'keep':
             return end('kept', None, True)
         if action == 'defer':
-            return end('deferred', 'model_defer', True)
+            code = dec.get('code') or 'model_defer'
+            return end('deferred', code, code == 'model_defer')
         ids = dec['evidence_ids']
         if any(i not in cand['evidence_ids'] for i in ids) or not ids and action != 'resolve':
             return end('rejected', 'evidence_incomplete', True)
