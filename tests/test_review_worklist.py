@@ -221,7 +221,7 @@ class Maps(StoreFixture):
         self.captured_map();(self.app/'src'/'Money.java').unlink()
         self.assertEqual(worklist(self.root,['demo'],kinds=['stale'],working_tree=True)['items'][0]['currency']['changed'],['pom.xml'])   # an uncommitted deletion is not counted, a committed change still is
 
-    def test_a_finding_a_hook_cached_from_another_checkout_is_not_discarded(self):
+    def test_a_finding_a_hook_cached_from_another_checkout_is_not_discarded(self):
         from core.maps import find_map
         self.captured_map();clone=self.base/'clone';git(self.base,'clone','-q',str(self.app),str(clone));clone=clone.resolve()
         commit(self.app,{'README.md':'moved on'},later(2))   # the note's own checkout has a new head
