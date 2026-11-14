@@ -1,6 +1,7 @@
 """Separate reviewed plans for configuration upgrades and note-type normalization."""
 from pathlib import Path
 from .common import memory_root
+from .note_types import keep_baseline
 from .repository import read_json,canonical_json,inventory,FACETS
 from .governance import plan
 
@@ -87,7 +88,7 @@ def note_type_plan(root=None):
             validate(note,note['domain'],root)
             text=serialize(note)
             if target==path and text==path.read_bytes().decode('utf-8'):continue
-            note['updated']=now();old=path.relative_to(root).as_posix();new=target.relative_to(root).as_posix()
+            keep_baseline(note);note['updated']=now();old=path.relative_to(root).as_posix();new=target.relative_to(root).as_posix()
             if old!=new:changes[old]=None
             changes[new]=serialize(note);domains.add(note['domain'])
             updates.append({'id':note['id'],'domain':note['domain'],'type':note['type'],'status':note['status'],'before':old,'after':new})

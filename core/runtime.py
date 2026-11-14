@@ -622,17 +622,18 @@ def note_currency(hit,folder,root,bindings,state,session,slot='fresh'):
     """maps.currency for a map or brief about to be shown: what its cited files did since it was written. The entry is kept in the
     session's repo state (state['repos'][folder][slot], 'fresh' for a map, 'fresh_brief' for a brief) and reused while the note and
     HEAD are the same, so repeated pointers run no git; a stale one is what the Stop reminder asks about. Every computed entry is also
-    kept in the store's .cache/currency.json (200 entries, keyed by repo identity or path, note and its updated date, valid for the
-    HEAD and note revision it was computed at), so a new session with the same HEAD runs no git either. {} when anything fails."""
+    kept in the store's .cache/currency.json (200 entries, keyed by repo identity or path, note and its verification baseline, valid for the
+    HEAD and the note fingerprint (maps.fingerprint: baseline, body, files, repo; not tags) it was computed at), so a new session with the same HEAD runs no git either. {} when anything fails."""
     try:
         from .maps import currency
         if folder is None:return {}
         key=Path(folder).as_posix();cache=(_repos(state).get(key) or {}).get(slot);cache=cache if isinstance(cache,dict) else None
-        head=head_oid(folder);rev=str(hit.get('revision') or '');shared=None
-        if cache and (cache.get('rev'),cache.get('head'))!=(rev,head):cache=None
+        from .maps import fingerprint
+        head=head_oid(folder);rev=str(hit.get('revision') or '');fp=fingerprint(hit);shared=None
+        if cache and (cache.get('fp'),cache.get('head'))!=(fp,head):cache=None
         if head and rev and not cache:
             k,n,u=_currency_key(folder,hit)
-            shared=next((r['e'] for r in reversed(_currency_entries(root)) if (r.get('k'),r.get('n'),r.get('u'))==(k,n,u) and r['e'].get('rev')==rev and r['e'].get('head')==head),None)
+            shared=next((r['e'] for r in reversed(_currency_entries(root)) if (r.get('k'),r.get('n'),r.get('u'))==(k,n,u) and r['e'].get('fp')==fp and r['e'].get('head')==head),None)
         entry,computed=currency(hit,Path(folder),bindings,cache or shared)
         if entry.get('failed'):return entry   # git could not tell: neither the shared cache nor the session keeps it, so the next call retries
         if computed and head and entry.get('head') and rev:

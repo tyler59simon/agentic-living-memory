@@ -211,23 +211,53 @@ def cited_paths(hit,changed,repo=None,bindings=None):
     return [p for p in changed if cites(p)]
 
 def last_current(hit):
-    """When a map or brief was last known current: the later of `updated` (written) and `checked` (confirmed still true). Both are ISO timestamps."""
-    return max(str(hit.get('updated') or ''),str(hit.get('checked') or ''))
+    """When a map or brief was last known current: its verification baseline (note_types.verified_at), an ISO timestamp."""
+    from .note_types import verified_at
+    return verified_at(hit)
+
+def fingerprint(hit):
+    """What a cached currency finding depends on: the verification baseline, the body (cited paths), the `files` and the repo identity.
+    Tags, a pin, a snooze or a title do not change it, so those edits keep a cached finding; the git head is compared separately."""
+    import hashlib
+    files=hit.get('files')
+    if isinstance(files,str):
+        try:files=json.loads(files)
+        except ValueError:files=[files]
+    text=json.dumps([last_current(hit),str(hit.get('body') or ''),files or [],hit.get('repo') or ''],ensure_ascii=False,separators=(',',':'))
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]
 
 def currency(hit,repo,bindings=None,cache=None):
-    """(entry, computed): entry is {'rev': note revision, 'head': HEAD oid, 'changed': cited paths changed since the note was
-    written, 'count': commits since} for the note, reused from `cache` (an earlier entry) while the note and HEAD are the same, so
-    no git runs. HEAD comes from the .git files; without one nothing is cached. 'failed': True is added when git could not tell
+    """(entry, computed): entry is {'rev': note revision, 'fp': fingerprint of what the finding depends on, 'head': HEAD oid, 'changed': cited
+    paths changed since the note was verified, 'count': commits since} for the note, reused from `cache` (an earlier entry) while the
+    fingerprint and HEAD are the same (a tag edit keeps it), so no git runs. HEAD comes from the .git files; without one nothing is cached. 'failed': True is added when git could not tell
     (a timeout or error): that entry is not a result to keep."""
-    head=head_oid(repo);rev=str(hit.get('revision') or '')
-    if cache and head and rev and cache.get('rev')==rev and cache.get('head')==head:return cache,False
+    head=head_oid(repo);rev=str(hit.get('revision') or '');fp=fingerprint(hit)
+    if cache and head and cache.get('fp')==fp and cache.get('head')==head and not cache.get('failed'):return (cache if cache.get('rev')==rev else dict(cache,rev=rev)),False
     updated=last_current(hit)
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(1) as pool:   # the commit count does not wait for the diff: process starts dominate on Windows
         count=pool.submit(commits_since,repo,updated);changed=_changed(repo,updated);count=count.result()
-        entry={'rev':rev,'head':head,'changed':cited_paths(hit,changed or [],repo,bindings),'count':count}
+        entry={'rev':rev,'fp':fp,'head':head,'changed':cited_paths(hit,changed or [],repo,bindings),'count':count}
         if changed is None or count is None:entry['failed']=True
         return entry,True
+
+def working_tree_changes(hit,repo,bindings=None,timeout=2):
+    """The cited paths with tracked uncommitted changes (staged or not, deleted files included) that are newer than the note's
+    verification: one bounded `git diff HEAD`. Untracked files are not looked at. None when git cannot tell. Only the explicit review
+    path calls this; hooks never do."""
+    try:
+        out=_git(repo,'diff','--name-only','--no-renames','--relative','HEAD',timeout=timeout)
+        if out is None:return None
+        from datetime import datetime
+        try:since=datetime.fromisoformat(last_current(hit)).timestamp()
+        except ValueError:since=None
+        found=[]
+        for path in cited_paths(hit,[l.strip() for l in out.splitlines() if l.strip()][:MAX_CHANGED],repo,bindings):
+            try:newer=since is None or (Path(repo)/path).stat().st_mtime>since
+            except OSError:newer=True   # gone from the working tree
+            if newer:found.append(path)
+        return found
+    except (OSError,ValueError,subprocess.SubprocessError):return None
 
 def stale_clause(hit,entry,what='map'):
     """`STALE: a, b and N more changed since 2026-11-10 — check and update this map`, '' when nothing the note cites changed."""

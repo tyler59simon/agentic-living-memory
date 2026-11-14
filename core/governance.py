@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib,json,uuid
 from pathlib import Path
 from .common import atomic_write,memory_root
+from .note_types import keep_baseline
 from .repository import canonical_json,confined,digest,read_json,transaction,recover,store_lock,reconcile,now
 
 def plan(root, changes, kind, domains=(), summary=None, guards=None):
@@ -143,7 +144,7 @@ def merge_plan(root,payload):
             if referring['id']==target['id'] or Path(referring['path']).resolve() in moves:continue
             new=rewrite_type_links(referring['body'],Path(referring['path']),targets)
             if new!=referring['body']:
-                referring['body']=new;referring['updated']=now()
+                keep_baseline(referring);referring['body']=new;referring['updated']=now()
                 changes[Path(referring['path']).relative_to(root).as_posix()]=serialize(referring)
         return plan(root,changes,'merge',[domain],{'target':payload['target'],'sources':sources,'files':len(changes)})
 

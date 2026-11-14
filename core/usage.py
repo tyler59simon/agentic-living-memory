@@ -38,9 +38,9 @@ def record(root,event,refs=(None,),session=None,kind=None,levels=None):
         from .logs import swallowed
         swallowed('usage.record',exc,root)
 
-def events(root,days=30):
-    """Diary rows from the last `days` days, oldest first; unreadable lines are skipped."""
-    cutoff=(datetime.now(timezone.utc)-timedelta(days=days)).date();rows=[]
+def events(root,days=30,today=None):
+    """Diary rows from the last `days` days before `today` (a date; default: now), oldest first; unreadable lines are skipped."""
+    cutoff=((datetime.now(timezone.utc).date() if today is None else today)-timedelta(days=days));rows=[]
     for path in sorted((Path(root)/'.turns').glob('usage-*.jsonl')):
         try:
             if datetime.strptime(path.stem[6:],'%Y-%m-%d').date()<cutoff:continue
@@ -90,9 +90,9 @@ def strength_map(root,domains,today=None):
             ref=f"{domain}:{note['id']}";found[ref]=strength(note,uses.get(ref,()),today)
     return found
 
-def used_refs(root,days=30):
+def used_refs(root,days=30,today=None):
     """Refs the diary saw read or used in the window."""
-    return {row['ref'] for row in events(root,days) if row['e'] in USE and isinstance(row.get('ref'),str)}
+    return {row['ref'] for row in events(root,days,today) if row['e'] in USE and isinstance(row.get('ref'),str)}
 
 def _tally(rows,domains):
     """({ref: counts per event}, sessions with injections) for the notes of these domains."""

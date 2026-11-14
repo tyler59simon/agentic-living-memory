@@ -15,7 +15,7 @@ from pathlib import Path
 from .common import memory_root,atomic_write,load_bindings
 from .repository import inventory,parse,parse_text,validate,serialize,store_lock,read_json,canonical_json,transaction,digest,confined,now,reconcile,clean_files,clean_commands
 from .governance import plan
-from .note_types import normalize,NOTE_TYPES,STALE_DAYS
+from .note_types import normalize,NOTE_TYPES,STALE_DAYS,keep_baseline
 from .notes import slug
 
 NOTES='Domains';ARCHIVE='Archive';DASH='Dashboards';CANVAS='Canvas';TEMPLATES='Templates';META='.living-memory'
@@ -144,7 +144,7 @@ def _canonical_changes(note,updated,domain,root):
             if referring['id']==note['id']:continue
             old=referring['body'];new=rewrite_type_links(old,Path(referring['path']),{src.resolve():target})
             if new!=old:
-                referring['body']=new;referring['updated']=now();rel=Path(referring['path']).relative_to(root).as_posix()
+                keep_baseline(referring);referring['body']=new;referring['updated']=now();rel=Path(referring['path']).relative_to(root).as_posix()
                 changes[rel]=serialize(referring);expected[rel]=referring['revision']
     changes[f'domains/{domain}/.derived-dirty']='dirty\n'
     return target,changes,expected

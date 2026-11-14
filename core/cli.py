@@ -724,6 +724,13 @@ def main(argv=None):
             from .digests import stale_note
             stale=stale_note(note,root)   # a digest's source file, or a hashed file the note lists, changed since it was written
             if stale:result['stale']=stale
+            from .worklist import currency_of
+            try:
+                info=currency_of(note,root)   # per-file source states (a map's: the cached finding, no git)
+                if info:result['currency']=info
+            except Exception as exc:
+                from .logs import swallowed
+                swallowed('cli.read.currency',exc,root)
             if args.section:
                 # One section, as the prompt hook's evidence lines name it: "Why", or a path like "Notes > Deeper detail".
                 # The text comes from the note as served (an approved learned runbook's approved body, not an unreviewed edit of
@@ -824,7 +831,7 @@ def main(argv=None):
             elif domain:domains=[domain]
             else:raise ValueError('unbound_project')
             # Read-only for every actor: the worklist writes no usage rows, so a viewer's browsing is no evidence either.
-            found=worklist(root,domains,args.kind or None,max(1,min(100,args.limit)),args.tag)
+            found=worklist(root,domains,args.kind or None,max(1,min(100,args.limit)),args.tag,working_tree=True)
             result={'ok':True,'domain':None if args.all_domains else domain,'due':found['total'],'stale_digests':found['counts'].get('stale',0),'kinds':list(KINDS),'counts':found['counts'],'notes':found['items'],
                     'hint':'Each note lists why (kinds, reason) and an action. Still true -> confirm REF; changed -> update REF; replaced -> supersede REF --by NEW; finished -> resolve REF. A STALE note: read its files, then update REF (or confirm REF if it still holds). '
                            'For a duplicate (pair) or an obsolete note, propose plans for archive or merge; the user applies them. Stale notes come first, never-confirmed notes nobody has read lately lead the due ones.'}
