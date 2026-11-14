@@ -276,6 +276,12 @@ def _midnight(eff):
     return datetime(eff.year, eff.month, eff.day, tzinfo=timezone.utc) + timedelta(days=1)
 
 
+def active_block(acc, cfg):
+    """The provider block while it applies: a change to the configuration (for example a new budget) lifts it."""
+    block = acc.get('blocked')
+    return block if block and block.get('config_revision') == config_revision(cfg) else None
+
+
 def eligibility(root, now=None, cfg=None):
     """{eligible, skip_reason, next_eligible_at}; the reason is one of the spec's codes."""
     def no(reason, when=None):
@@ -293,7 +299,7 @@ def eligibility(root, now=None, cfg=None):
     except Unavailable:
         return no('accounting_unavailable')
     revision = config_revision(cfg)
-    if acc['blocked'] and acc['blocked'].get('config_revision') == revision:
+    if active_block(acc, cfg):
         return no('provider_budget')
     if acc['last_attempt_at']:
         due = _parse(acc['last_attempt_at']) + timedelta(seconds=cfg['min_interval_seconds'])
@@ -436,8 +442,10 @@ def decision_changes(root, run, ref, result):
     action = result['action']
     op = operation_id(run['id'], ref, action)
     stored = _current(root, run)
-    new = dict(stored, decisions={**stored['decisions'], ref: {'action': action, 'result': result.get('result'), 'operation_id': op,
-                                                                'reason_code': result.get('reason_code')}})
+    entry = {'action': action, 'result': result.get('result'), 'operation_id': op, 'reason_code': result.get('reason_code')}
+    # The model's rule and reason (bounded, already redacted) stay with the decision, so history keeps them after a later retirement.
+    entry.update({k: result[k] if k == 'rule' else str(result[k])[:500] for k in ('rule', 'reason') if result.get(k)})
+    new = dict(stored, decisions={**stored['decisions'], ref: entry})
     path = _run_path(new)
     return {path: canonical_json(new)}, {path: _file_digest(root, path)}, op, new
 

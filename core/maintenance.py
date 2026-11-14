@@ -321,16 +321,16 @@ def packet(root, cands, run_id):
 
 # ---- executor
 
-def _decision_record(root, run, ref, action, result, code):
-    changes, expected, op, _ = ms.decision_changes(root, run, ref, {'action': action, 'result': result, 'reason_code': code})
+def _decision_record(root, run, ref, action, result, code, rule=None, reason=None):
+    changes, expected, op, _ = ms.decision_changes(root, run, ref, {'action': action, 'result': result, 'reason_code': code, 'rule': rule, 'reason': reason})
     transaction(root, changes, 'maintenance_decision', expected=expected, operation_id=op)
 
 
-def _close(root, run, ref, action, result, code, info, now, hold=False):
+def _close(root, run, ref, action, result, code, info, now, hold=False, rule=None, reason=None):
     """Record a decision that changes no note, with a retry hold when asked (the same revision and evidence are not reviewed again for 7 days)."""
     out = {'ref': ref, 'action': action, 'result': result, 'reason_code': code}
     try:
-        _decision_record(root, run, ref, action, result, code)
+        _decision_record(root, run, ref, action, result, code, rule, reason)
         if hold and info:
             ms.set_retry(root, ref, info['revision'], info['fingerprint'], code or result, now)
     except (OSError, ValueError, TimeoutError, ms.Unavailable):
@@ -398,7 +398,7 @@ def _decide(root, run, ref, dec, manifest, now, deadline, clock):
     cand, action = manifest['candidates'][ref], dec['action']
 
     def end(result, code=None, hold=False):
-        return _close(root, run, ref, action, result, code, cand, now, hold)
+        return _close(root, run, ref, action, result, code, cand, now, hold, dec.get('rule'), redact(dec.get('reason') or '')[0])
     if deadline is not None and clock() >= deadline:
         return end('skipped', 'timeout')
     domain, _, note_id = ref.partition(':')
@@ -477,7 +477,8 @@ def _decide(root, run, ref, dec, manifest, now, deadline, clock):
                     values = {'body': _patched(note['body'], dec['patches'])}
                 except ValueError:
                     return end('rejected', 'invalid_report', True)
-            rchanges, rexpected, op, _ = ms.decision_changes(root, run, ref, {'action': action, 'result': 'applied', 'reason_code': None})
+            rchanges, rexpected, op, _ = ms.decision_changes(root, run, ref, {'action': action, 'result': 'applied', 'reason_code': None, 'rule': rule,
+                                                                         'reason': redact(dec['reason'])[0][:agent.REASON_MAX]})
             marks = []
             for ev in evidence:
                 if ev['kind'] == 'note':
@@ -688,7 +689,7 @@ def status(root, now=None):
             'limits': {k: cfg[k] for k in ('model', 'max_notes_per_day', 'timeout_seconds', 'daily_budget_usd', 'min_interval_seconds')}, 'enabled_at': cfg['enabled_at'],
             'accounting': {'day': acc['day'], 'reviewed': acc['reviewed'], 'reserved_notes': acc['reserved_notes'], 'reserved_usd': ms.format_usd(acc['reserved_micro']),
                            'charged_usd': ms.format_usd(acc['charged_micro']), 'cost_complete': acc['cost_complete']} if acc else None,
-            'blocked': acc['blocked'] if acc else None, 'running': ms.running(root), 'eligible': verdict['eligible'], 'next_eligible_at': verdict['next_eligible_at'],
+            'blocked': ms.active_block(acc, cfg) if acc else None, 'running': ms.running(root), 'eligible': verdict['eligible'], 'next_eligible_at': verdict['next_eligible_at'],
             'skip_reason': verdict['skip_reason'], 'last_run': _summary(last) if last else None, 'errors': errors}
 
 
@@ -766,8 +767,9 @@ def history(root, limit=10, run_id=None):
         raise ValueError(f'accounting_unavailable: {exc}') from exc
     rows = []
     for ref, d in run['decisions'].items():
-        row = {'ref': ref, 'action': d.get('action'), 'result': d.get('result'), 'reason_code': d.get('reason_code'), 'operation_id': d.get('operation_id')}
-        if d.get('result') == 'applied' and d.get('action') in ('resolve', 'archive', 'supersede'):
+        row = {'ref': ref, 'action': d.get('action'), 'result': d.get('result'), 'reason_code': d.get('reason_code'), 'operation_id': d.get('operation_id'),
+               'rule': d.get('rule'), 'reason': d.get('reason')}
+        if not d.get('reason') and d.get('result') == 'applied' and d.get('action') in ('resolve', 'archive', 'supersede'):
             domain, _, note_id = ref.partition(':')
             try:
                 retirement = notes.find_note(note_id, domain, root)[1].get('last_retirement') or {}
@@ -793,7 +795,7 @@ def doctor_warnings(root):
         open_runs = [r['id'] for r in _recent(root) if r['state'] in ('reserved', 'running', 'applying')]
         if open_runs and not ms.running(root):
             out.append(f"{len(open_runs)} maintenance run(s) never finished and no worker is running ({', '.join(open_runs[:3])}); the next run settles them")
-        if acc['blocked']:
+        if ms.active_block(acc, cfg):
             out.append(f"maintenance is blocked ({acc['blocked']['reason']}); change the budget with maintenance enable to clear it")
     except ms.Unavailable as exc:
         out.append(f'accounting_unavailable: maintenance cannot read its run records ({exc}), so it will not run')
@@ -879,7 +881,7 @@ def session_lines(root, told_run=None, told_blocked=None):
         recent = _recent(root, 20)
         latest = next((r for r in recent if r['state'] == 'completed'), None)
         acc = ms.accounting(root)[0]
-        if acc['blocked']:
+        if ms.active_block(acc, cfg):
             reason = acc['blocked']['reason']
         elif recent and recent[0]['state'] == 'failed' and recent[0].get('reason_code') in ('provider_unavailable', 'provider_unsupported'):
             reason = recent[0]['reason_code']

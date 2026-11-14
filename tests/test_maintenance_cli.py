@@ -242,7 +242,7 @@ class Commands(Base):
         detail = self.ok('maintenance', 'history', '--run', second['id'])
         rows = {d['ref']: d for d in detail['decisions']}
         self.assertEqual((rows[self.ref(a)]['result'], rows[self.ref(a)]['rule'], rows[self.ref(a)]['reason']), ('applied', 'expired_status', 'Because the evidence says so.'))
-        self.assertNotIn('reason', rows[self.ref(b)])
+        self.assertEqual((rows[self.ref(b)]['result'], rows[self.ref(b)]['reason']), ('kept', 'Because the evidence says so.'))
         self.assertEqual(detail['run']['archived'], 1)
         code, result = self.cli('maintenance', 'history', '--run', '../x')
         self.assertEqual(code, 2)
@@ -505,6 +505,29 @@ class Summary(Base):
         self.assertIn(blocked, text)
         self.assertNotIn(blocked, self.start('s1'))
         self.assertIn(blocked, self.start('s2'))
+
+    def test_a_budget_change_lifts_the_blocked_line(self):
+        self.status_note()
+        self.enable_config()
+        maintenance.run(self.root, adapter=fake(lambda ref, c: KEEP, usage_micro=5_000_000))
+        self.assertIn('Memory maintenance is blocked: provider_budget.', self.start('s1'))
+        self.ok('maintenance', 'enable', '--daily-budget-usd', '2.00')
+        self.assertNotIn('Memory maintenance is blocked', self.start('s2'))
+        self.assertIsNone(self.ok('maintenance', 'status')['blocked'])
+        with patch.object(maintenance_agent, 'provider', return_value={'ok': True, 'argv': ['claude']}):
+            self.assertFalse([w for w in maintenance.doctor_warnings(self.root) if 'blocked' in w])
+
+    def test_history_keeps_the_reason_after_a_later_retirement(self):
+        from core.note_format import render
+        plan = self.mk('Finished plan', render('Ship it.', actions=[], done=['Step one']), type='plan')
+        self.enable_config()
+        run = maintenance.run(self.root, adapter=fake(lambda ref, c: {'action': 'resolve', 'rule': 'completed_work'}))
+        self.assertEqual(run['resolved'], 1)
+        notes.change(plan['id'], 'demo', 'reopen', self.root)
+        notes.change(plan['id'], 'demo', 'resolve', self.root)
+        self.assertEqual(self.get(plan)['last_retirement']['actor'], 'agent')
+        row = self.ok('maintenance', 'history', '--run', run['id'])['decisions'][0]
+        self.assertEqual((row['rule'], row['reason']), ('completed_work', 'Because the evidence says so.'))
 
     def test_an_unavailable_provider_is_a_blocked_line(self):
         self.status_note()
