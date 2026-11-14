@@ -470,6 +470,13 @@ class Gate(StoreFixture):
             with self.subTest(patches=patches):
                 out=self.gate(lambda label,cand:{'action':'update','patches':patches} if label=='changed_source' else self.GOOD.get(label,{'action':'keep'}))
                 self.assertFalse(out['checks']['required_cases_useful'])
+    def test_patches_are_scored_as_the_executor_applies_them(self):
+        two=[{'find':'30 seconds','replace':'60 seconds per request'},{'find':'Requests retry','replace':'Calls retry'}]   # both found in the original body
+        out=self.gate(lambda label,cand:{'action':'update','patches':two} if label=='changed_source' else self.GOOD.get(label,{'action':'keep'}))
+        self.assertTrue(out['checks']['required_cases_useful'],out['cases'])
+        chained=[{'find':'30 seconds','replace':'60 seconds'},{'find':'60 seconds','replace':'60 seconds flat'}]           # targets inserted text: refused live
+        out=self.gate(lambda label,cand:{'action':'update','patches':chained} if label=='changed_source' else self.GOOD.get(label,{'action':'keep'}))
+        self.assertFalse(out['checks']['required_cases_useful'])
     def test_a_reviewer_that_keeps_everything_fails_usefulness(self):
         out=self.gate(lambda label,cand:{'action':'keep'})
         self.assertFalse(out['ok']);self.assertFalse(out['checks']['required_cases_useful']);self.assertTrue(out['checks']['no_protected_retired'])

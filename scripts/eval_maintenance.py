@@ -72,11 +72,9 @@ def build_fixture(base):
     return root,project,labels,bodies
 
 def patched(body,patches):
-    """The body after the patches, or None when one does not apply (each find must occur exactly once, as the executor requires)."""
-    for p in patches or []:
-        if body.count(p['find'])!=1:return None
-        body=body.replace(p['find'],p['replace'])
-    return body
+    """The body after the patches as the executor would apply them, or None when it would refuse them."""
+    try:return maintenance._patched(body,patches)
+    except ValueError:return None
 
 def score(labels,result,permitted,status,bodies=None):
     """The gate checks of handoff section 4.7 over one dry-run result. Returns (checks, rows)."""
@@ -135,7 +133,7 @@ def run_copy(args):
         # The copy carries each domain's sync-state.json with the real vault's path; never sync it from the copy.
         for state in root.glob('domains/*/sync-state.json'):state.unlink()
         # Review exactly the requested domain, whatever the real store has configured (a configured list would win over the fallback).
-        ms.set_config(root,ms.validate(dict(ms.config(root),enabled=False,domains=[args.domain]),root,allow_global=True))
+        ms.set_config(root,ms.validate(dict(ms.config(root),enabled=False,domains=[args.domain]),root,allow_global=True),allow_global=True)
         source_maint=hashes(source,('maintenance.json','maintenance/**/*'))
         before=note_hashes(root)
         preview=maintenance.preview(root,domains=[args.domain])
