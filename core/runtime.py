@@ -1437,6 +1437,7 @@ def scoped_file_hits(paths,domain,bindings,root,per_file):
 def process(harness,event,payload,root=None):
     """No store-wide lock: hooks must not serialize every session's tool calls.
     Writes below are atomic files; search and capture take the store lock themselves."""
+    if os.environ.get('LIVING_MEMORY_MAINTENANCE_CHILD')=='1':return {}   # the maintenance reviewer's own process: no hook may reach the store
     from . import repository
     from .storage import resolve_root
     root=resolve_root(root)[0]
