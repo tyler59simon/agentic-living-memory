@@ -66,6 +66,9 @@ class OpenWork(StoreFixture):
         self.start('sub',agent_id='a1');self.assertEqual(self.status(n),'active')
         self.assertFalse((self.root/'hooks/last-auto-resolve.json').exists())   # none of those used up the day
         self.assertIn('Auto-resolved 1',self.start('main'));self.assertEqual(self.status(n),'resolved')
+    def test_a_pinned_note_is_not_auto_resolved(self):
+        n=self.plan('Pinned finished plan',[],done=['Ship it'],pinned=True);self.age(n,5)
+        self.assertNotIn('Auto-resolved',self.start());self.assertEqual(self.status(n),'active')
     def test_only_the_active_domain_is_resolved(self):
         from core.init_domain import init_domain
         from core.notes import capture

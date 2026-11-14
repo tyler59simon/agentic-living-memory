@@ -185,6 +185,14 @@ class Governance(StoreFixture):
         self.assertIn(f'run recover {op} or recover {op} --abandon', result['warnings'][0])
         self.assertNotIn('recovered', result)
 
+    def test_a_damaged_pending_journal_is_a_warning_and_does_not_block_writes(self):
+        n = self.note()
+        op = self.crash_once(n, 2)
+        (self.root / '.operations' / op / 'journal.json').write_text('{not json', encoding='utf-8')
+        result = repo.transaction(self.root, {'x.txt': 'x'}, 'test')
+        self.assertTrue(result['ok'])
+        self.assertIn(f'operation {op} could not be rolled forward', result['warnings'][0])
+
     def test_recover_refuses_to_reverse_a_final_state(self):
         repo.transaction(self.root, {'a.txt': 'a'}, 'test', operation_id='done')
         with self.assertRaisesRegex(ValueError, 'is committed; plan its reversal with undo done'):

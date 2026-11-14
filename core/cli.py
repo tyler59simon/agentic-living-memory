@@ -646,7 +646,7 @@ def main(argv=None):
                 # The session is the exception: the private-text check, the origin and the receipt depend on it.
                 beside=[('--title',args.title),('--tag',args.tag),('--tags',args.tags),('--prefix',args.prefix),('--type',args.type),('--context',args.context),
                         ('--idempotency-key',args.idempotency_key),('--allow-similar',args.allow_similar),('--supersedes',args.supersedes),('--drop-links',args.drop_links),
-                        ('--review-by',args.review_by),('--file',args.file),('--files',args.files),('--command',args.shell_command),('--source',args.source)]+[('--'+f,getattr(args,f)) for f in CAPTURE_FACETS]
+                        ('--review-by',args.review_by),('--file',args.file),('--files',args.files),('--command',args.shell_command),('--source',args.source),('--pin',args.pin)]+[('--'+f,getattr(args,f)) for f in CAPTURE_FACETS]
                 ignored=[flag for flag,given in beside if given]
                 if ignored:raise ValueError('A JSON payload carries its own fields; put these in the payload instead of passing '+', '.join(ignored))
                 if args.turn and not args.session:raise ValueError('--turn needs --session')

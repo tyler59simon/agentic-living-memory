@@ -471,7 +471,7 @@ def auto_resolve(root,domain,bindings,session=None):
         from .usage import record
         cutoff=datetime.now(timezone.utc)-timedelta(days=AUTO_RESOLVE_DAYS);done=[]
         for note in inventory(domain,root):
-            if note.get('type') not in ACTION_TYPES or not note.get('id') or not note.get('title'):continue
+            if note.get('type') not in ACTION_TYPES or not note.get('id') or not note.get('title') or note.get('pinned') is True:continue   # a pin blocks automatic retirement
             items=action_items(note.get('body',''))
             if not items or not all(d for d,_ in items):continue
             try:

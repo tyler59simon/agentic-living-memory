@@ -294,6 +294,25 @@ class Pin(StoreFixture):
         self.assertIs(self.get(a)['pinned'], False)
         self.assertIn("pinned must be true or false", (self.vault / 'Dashboards/Sync Status - demo.md').read_text(encoding='utf-8'))
 
+    def test_a_pin_only_vault_edit_keeps_updated(self):
+        a = self.note('Plain fact', 'Nothing special.')
+        build_overlay('demo', self.vault, self.root)
+        before = self.get(a)
+        copy = self.vault / 'Domains/demo' / Path(a['path']).name
+        text = copy.read_text(encoding='utf-8')
+        copy.write_text(text.replace('title: ', 'pinned: true\ntitle: ', 1), encoding='utf-8')
+        build_overlay('demo', self.vault, self.root)
+        after = self.get(a)
+        self.assertIs(after['pinned'], True)
+        self.assertEqual((after['updated'], after.get('checked')), (before['updated'], before.get('checked')))
+
+    def test_pin_beside_a_capture_payload_is_refused(self):
+        payload = self.base / 'note.json'
+        payload.write_text(json.dumps({'title': 'Payload fact', 'body': 'From a file.', 'tags': ['subject/project', 'concern/architecture']}), encoding='utf-8')
+        code, result = self.cli('capture', '--payload-file', str(payload), '--pin')
+        self.assertNotEqual(code, 0)
+        self.assertIn('--pin', str(result))
+
     def test_the_log_shows_pinned_and_unpinned(self):
         a = self.note('Plain fact', 'Nothing special.')
         self.ok('update', 'demo:' + a['id'], '--pin')

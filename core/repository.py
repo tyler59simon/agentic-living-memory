@@ -744,11 +744,11 @@ def roll_forward_pending(root):
     results = []
     for marker in sorted(Path(root).glob(f".operations/*/{PENDING}")):
         operation_id = marker.parent.name
-        journal = read_json(marker.with_name("journal.json"))
-        if not journal or journal.get("state") in {"rolled_back", "abandoned"}:
-            retry_sharing(marker.unlink)  # no journal: nothing else was written; a reversed journal has nothing to finish
-            continue
         try:
+            journal = read_json(marker.with_name("journal.json"))  # a damaged journal is reported below, not raised: it must not block every write
+            if not journal or journal.get("state") in {"rolled_back", "abandoned"}:
+                retry_sharing(marker.unlink)  # no journal: nothing else was written; a reversed journal has nothing to finish
+                continue
             results.append(recover(root, operation_id, "forward"))
         except ValueError as exc:
             results.append({"ok": False, "operation_id": operation_id, "error": str(exc)})
