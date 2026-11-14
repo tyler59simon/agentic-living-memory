@@ -69,7 +69,14 @@ def _actions(o,n):
 def _body_change(o,n,skip_actions):
     """The changed section headings and the lines added and removed in them; the Action items section is left out when its checkbox changes are reported on their own."""
     from .note_format import parts
-    old={h or k:(k,t) for k,h,t in parts(o.get('body') or '')};new={h or k:(k,t) for k,h,t in parts(n.get('body') or '')}
+    def labelled(body):
+        out={}
+        for k,h,t in parts(body):
+            base=label=h or k or 'text';i=2
+            while label in out:label=f'{base} ({i})';i+=1
+            out[label]=(k,t)
+        return out
+    old,new=labelled(o.get('body') or ''),labelled(n.get('body') or '')
     labels=[];plus=minus=0
     for label in [*old,*[x for x in new if x not in old]]:
         a,b=old.get(label,('',''))[1],new.get(label,('',''))[1]
@@ -116,12 +123,19 @@ def _actor(op,kind,old,new):
     """Who made the change: maintenance, auto_resolve, obsidian, undo, plan, agent:HARNESS (a capture with an origin) or command."""
     n=new[1] if new else {};r=n.get('last_retirement') if isinstance(n.get('last_retirement'),dict) else {}
     if str(op).startswith('m-'):return 'maintenance'
-    if r.get('actor')=='auto_resolve' and n.get('status') in RETIRED and (old[1].get('status','active') if old else None)!=n.get('status'):return 'auto_resolve'
-    if kind.startswith('overlay_'):return 'obsidian'
     if kind.startswith('undo:'):return 'undo'
+    if kind.startswith('overlay_'):return 'obsidian'
+    # A retirement records who asked for it: agent (a direct command), plan, vault (an approved Obsidian change), auto_resolve or maintenance.
+    if r.get('actor') and n.get('status') in RETIRED and (old[1].get('status','active') if old else None)!=n.get('status'):
+        return {'agent':'command','vault':'obsidian'}.get(str(r['actor']),str(r['actor']))
     if kind in PLAN_KINDS or kind.startswith(PLAN_PREFIXES):return 'plan'
     if kind.startswith('capture') and n.get('origin'):return 'agent:'+str(n['origin']).partition(':')[0]
     return 'command'
+
+def _unlinked(body):
+    """The body with Markdown link targets blanked: equal before and after when an edit only rewrote paths (migration.rewrite_type_links)."""
+    body=re.sub(r'(!?\[[^\]\n]*\]\()[^)\n]*\)',r'\1)',body or '')
+    return re.sub(r'(?m)^( {0,3}\[[^\]\r\n]+\]:)[^\r\n]*$',r'\1',body)
 
 def _note_rows(op,kind,created,effects):
     slots={}
@@ -140,7 +154,7 @@ def _note_rows(op,kind,created,effects):
         if event=='updated' and lifecycle and kind!='merge' and slot.get('before') and slot.get('after'):
             o,n=slot['before'][1],slot['after'][1]
             # A referring note whose links were rewritten because another note moved: the same move, not an edit of its own.
-            if all(o.get(k)==n.get(k) for k in CONTENT if k!='body'):continue
+            if all(o.get(k)==n.get(k) for k in CONTENT if k!='body') and _unlinked(o.get('body'))==_unlinked(n.get('body')):continue
         domain,note=slot.get('after') or slot['before']
         rows.append(_row(op,created,event,f"{domain}:{note_id}",note.get('title'),note.get('type'),domain,[str(t)[8:] for t in note.get('tags') or [] if str(t).startswith('project/')],summary=_summary(kind,event,slot.get('before'),slot.get('after')),actor=_actor(op,kind,slot.get('before'),slot.get('after'))))
     return rows

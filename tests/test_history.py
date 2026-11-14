@@ -71,6 +71,33 @@ class History(Base):
         old=self.ok('history','--note','demo:'+a['id'])[0];self.assertEqual((old['event'],old['summary']),('superseded','superseded by '+b['id'][:8]))
         self.assertEqual(activity._summary('capture','created',None,('demo',{'type':'knowledge','body':'x'*500}))[-3:],'...');self.assertEqual(len(activity._summary('capture','created',None,('demo',{'type':'knowledge','body':'x'*500}))),200)
 
+    def test_an_edit_of_unheaded_text_after_a_callout_is_summarized(self):
+        # parts() returns (None, None, text) for a paragraph after the Important callout; it needs a string label.
+        o={'body':'Summary.\n\n> **Important:** careful.\n\nLoose paragraph.'};n={'body':'Summary.\n\n> **Important:** careful.\n\nLoose paragraph, edited.'}
+        self.assertEqual(activity._summary('update','updated',('demo',o),('demo',n)),'text +1/-1 lines')
+
+    def test_carried_content_in_a_lifecycle_operation_stays_in_the_other_note_history(self):
+        import base64
+        from pathlib import Path
+        from core.repository import parse_text,serialize
+        a=self.mk('Retired one','Body one.');b=self.mk('Successor','See [Retired one](./KNOWLEDGE%20-%20retired-one.md).')
+        enc=lambda note:base64.b64encode(serialize(note).encode('utf-8')).decode('ascii')
+        read=lambda n:parse_text(Path(n['path']).read_text(encoding='utf-8'),n['path'])
+        old_a,old_b=read(a),read(b);new_a={**old_a,'status':'superseded','superseded_by':'demo:'+b['id']}
+        def rows(body):
+            effects=[{'path':'domains/demo/notes/a.md','before':enc(old_a),'after':enc(new_a)},{'path':'domains/demo/notes/b.md','before':enc(old_b),'after':enc({**old_b,'body':body})}]
+            return {r['ref'].rpartition(':')[2]:r['event'] for r in activity._note_rows('op1','supersede','2026-11-14T00:00:00+00:00',effects)}
+        self.assertEqual(rows(old_b['body'].replace('./KNOWLEDGE%20-%20retired-one.md','../archive/KNOWLEDGE%20-%20retired-one.md')),{a['id']:'superseded'})   # a path rewrite only
+        self.assertEqual(rows(old_b['body']+'\n\n## Links\n\n- [Carried](https://example.com)'),{a['id']:'superseded',b['id']:'updated'})
+
+    def test_a_retirement_names_the_actor_it_recorded(self):
+        before=('demo',{'status':'active'});retired=lambda who:('demo',{'status':'archived','last_retirement':{'actor':who}})
+        for who,want in (('plan','plan'),('vault','obsidian'),('agent','command'),('auto_resolve','auto_resolve')):
+            self.assertEqual(activity._actor('op1','archive',before,retired(who)),want,who)
+        self.assertEqual(activity._actor('m-1','archive',before,retired('maintenance')),'maintenance')
+        self.assertEqual(activity._actor('op1','undo:abc',retired('plan'),before),'undo')
+        self.assertEqual(activity._actor('op1','update',('demo',{'status':'archived','last_retirement':{'actor':'plan'}}),retired('plan')),'command')   # no transition: an ordinary edit
+
     def test_version_advertises_history_2(self):
         self.assertEqual(self.ok('version')['capabilities']['history'],2)
 

@@ -35,6 +35,15 @@ class Recap(Base):
     def test_maintenance_section(self):
         m=self.recap()['maintenance'];self.assertEqual((m['runs'],m['retired']),(1,1));self.assertEqual(m['charged_usd'],'0.001')
         n=m['retired_notes'][0];self.assertEqual((n['title'],n['action'],n['rule']),('Sprint status','archive','expired_status'));self.assertTrue(n['reason'])
+    def test_maintenance_counts_only_runs_that_reviewed_this_scope(self):
+        from core import maintenance
+        real=maintenance._recent(self.root);other={**real[0],'id':'other-run','charged_micro':5000000,
+            'selected':[{**s,'ref':'other:'+s['ref'].partition(':')[2]} for s in real[0]['selected']],
+            'decisions':{'other:'+r.partition(':')[2]:d for r,d in real[0]['decisions'].items()}}
+        with patch('core.maintenance._recent',return_value=[other,*real]):m=self.recap()['maintenance']
+        self.assertEqual((m['runs'],m['retired'],m['charged_usd']),(1,1,'0.001'));self.assertEqual(m['reviewed'],len(real[0]['selected']))
+        with patch('core.maintenance._recent',return_value=[other]):m=self.recap()['maintenance']
+        self.assertEqual((m['runs'],m['reviewed'],m['retired']),(0,0,0))
     def test_open_work_and_review(self):
         r=self.recap();self.assertEqual((r['open_work']['notes'],r['open_work']['items']),(1,2))
         self.assertEqual((r['open_work']['top'][0]['title'],r['open_work']['top'][0]['open']),('Rollout plan',2))

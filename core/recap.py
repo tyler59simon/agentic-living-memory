@@ -30,12 +30,17 @@ def _maintenance(root,domains,low,high):
     out={'runs':0,'reviewed':0,'kept':0,'deferred':0,'updated':0,'confirmed':0,'retired':0,'charged_usd':'0.00','retired_notes':[]}
     try:runs=[r for r in maintenance._recent(root) if low<=ms._parse(r['attempted_at'])<=high]
     except (OSError,ValueError,KeyError,ms.Unavailable):return out
-    micro=0;wanted=set(domains)
+    micro=0;wanted=set(domains);inside=lambda ref:str(ref).partition(':')[0] in wanted
     for run in runs:
-        s=maintenance._summary(run);micro+=run['charged_micro'];out['runs']+=1
-        for k in ('reviewed','kept','deferred','updated','confirmed'):out[k]+=s[k]
-        for ref,d in run['decisions'].items():
-            if d.get('result')=='applied' and d.get('action') in ('archive','supersede','resolve') and ref.partition(':')[0] in wanted:
+        # Only this scope's notes count; a run that reviewed none of them is left out. Its charge cannot be split by domain, so charged_usd is the whole run's.
+        selected=[s for s in run['selected'] if inside(s.get('ref'))]
+        if not selected:continue
+        decisions={ref:d for ref,d in run['decisions'].items() if inside(ref)}
+        s=maintenance._counts(list(decisions.values()));micro+=run['charged_micro'];out['runs']+=1
+        out['reviewed']+=0 if run.get('released') else len(selected)
+        for k in ('kept','deferred','updated','confirmed'):out[k]+=s[k]
+        for ref,d in decisions.items():
+            if d.get('result')=='applied' and d.get('action') in ('archive','supersede','resolve'):
                 out['retired_notes'].append({'ref':ref,'action':d['action'],'rule':d.get('rule'),'reason':d.get('reason')})
     out['retired']=len(out['retired_notes']);out['charged_usd']=ms.format_usd(micro)
     titles=_titles(root,domains) if out['retired_notes'] else {}
@@ -60,7 +65,7 @@ def _markdown(since,until,counts,changes,maint,sessions,work,review):
     lines+=['','## Maintenance','']
     if not maint['runs']:lines.append('No maintenance runs.')
     else:
-        lines.append(f"{maint['runs']} run(s) reviewed {maint['reviewed']} note(s): {maint['updated']} updated, {maint['confirmed']} confirmed, {maint['retired']} retired, {maint['kept']} kept, {maint['deferred']} deferred. Charged {maint['charged_usd']} USD.")
+        lines.append(f"{maint['runs']} run(s) reviewed {maint['reviewed']} note(s): {maint['updated']} updated, {maint['confirmed']} confirmed, {maint['retired']} retired, {maint['kept']} kept, {maint['deferred']} deferred. Charged {maint['charged_usd']} USD for these runs (every domain they covered).")
         lines+=[f"- {r['title'] or r['ref']} ({r['action']}): "+': '.join(str(r[k]) for k in ('rule','reason') if r.get(k)) for r in maint['retired_notes'][:MAX_LISTED]]+_more(maint['retired_notes'])
     lines+=['','## Sessions','']
     lines.append(f"{sessions['count']} session(s) ("+', '.join(f'{h} {n}' for h,n in sessions['by_harness'].items())+f"), {sessions['notes_saved']} note(s) saved." if sessions['count'] else 'No sessions.')
