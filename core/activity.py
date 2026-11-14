@@ -10,12 +10,12 @@ from datetime import datetime,timedelta,timezone
 from pathlib import Path
 from .repository import BOOKKEEPING_KINDS,FINAL_STATES,_TAIL_STATE,canonical_json,digest,now,parse_text,read_json
 
-CACHE_VERSION=1
+CACHE_VERSION=2
 NOTE_PATH=re.compile(r'domains/([^/]+)/(?:notes|archive)/.+\.md')
 CONTENT=('title','body','type','tags','context','files','commands','sources')
 STATUS_EVENT={'superseded':'superseded','resolved':'resolved','archived':'archived','active':'reopened'}
-LIFECYCLE={'created','superseded','resolved','archived','deleted','promoted'}
-EVENTS=('created','updated','confirmed','superseded','resolved','archived','reopened','deleted','promoted','moved','undone','stage','closed','session')
+LIFECYCLE={'created','superseded','resolved','archived','restored','deleted','promoted'}
+EVENTS=('created','updated','confirmed','superseded','resolved','archived','reopened','restored','pinned','unpinned','deleted','promoted','moved','undone','stage','closed','session')
 CHANGE_FIELDS=('title','repo','branch','system','element')
 
 def _cache_file(root):return Path(root)/'.cache'/'activity.json'
@@ -43,9 +43,10 @@ def _event(kind,old,new):
     if new is None:return 'deleted'
     (old_domain,o),(new_domain,n)=old,new
     was,became=o.get('status','active'),n.get('status','active')
-    if was!=became:return STATUS_EVENT.get(became,'updated')
+    if was!=became:return 'restored' if (was,became)==('archived','active') else STATUS_EVENT.get(became,'updated')
     if old_domain!=new_domain:return 'promoted' if 'promote' in kind else 'moved'
     if any(o.get(k)!=n.get(k) for k in CONTENT):return 'updated'
+    if bool(o.get('pinned'))!=bool(n.get('pinned')):return 'pinned' if n.get('pinned') else 'unpinned'
     if o.get('confirmed')!=n.get('confirmed') or o.get('checked')!=n.get('checked'):return 'confirmed'
     return None
 

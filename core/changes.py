@@ -73,7 +73,7 @@ def _registry(entries):return canonical_json({'version':1,'changes':sorted(entri
 def change_plan(root,action,payload):
     """A reviewed plan creating, updating or closing one change (kinds change_create, change_update, change_close)."""
     from .governance import plan
-    from .notes import build_note,_change_set
+    from .notes import build_note,_change_set,touched_domains
     root=Path(root).resolve()
     if action not in FIELDS:raise ValueError('change-plan action must be create, update or close')
     if not isinstance(payload,dict):raise ValueError('Payload must be a JSON object')
@@ -131,7 +131,7 @@ def change_plan(root,action,payload):
         # Closing resolves the brief and reopening reopens it, in this same plan; a brief already there is left alone.
         found=_brief(entry.get('brief'),root) if live!=(current.get('status')=='active') else None
         if found and found[2].get('type')=='plan' and found[2].get('status')==('resolved' if live else 'active'):
-            moved='reopen' if live else 'resolve';files.update(_change_set(found[1],found[0],moved,root)[0]);domains=[found[0]]
+            moved='reopen' if live else 'resolve';files.update(_change_set(found[1],found[0],moved,root,actor='plan')[0]);domains=sorted({found[0],*touched_domains(files)})
         files['changes.json']=_registry([c for c in entries if c['id']!=number]+[entry])
         return plan(root,files,'change_'+action,domains,{'id':number,'display':display(number),'title':entry['title'],'fields':sorted(values),'brief_action':moved,'files':len(files)})
 

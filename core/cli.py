@@ -100,6 +100,8 @@ def _redact(values):
             if isinstance(command,str):values['commands'][i],kinds=redact(command);found+=[{'kind':k,'field':'commands'} for k in kinds]
     return found
 
+PIN_HELP='Protect the note from automatic retirement (archive, resolve, supersede by maintenance); it still allows manual archive, resolve and supersede, factual updates and review reminders'
+
 def _receipt(args,domain,note_id,root,event=None):
     """Updating or superseding is a memory decision for the turn, like a capture; the diary notes it as use."""
     if event:
@@ -260,6 +262,7 @@ def list_notes(root,domains,status,types,tags,offset,limit,summary=False):
             if any(t not in (n.get('tags') or []) for t in tags):continue
             rows.append({'ref':f"{d}:{n['id']}",'id':n['id'],'domain':d,'title':n.get('title'),'type':n.get('type'),'status':n.get('status','active'),
                          'tags':n.get('tags') or [],'created':str(n.get('created') or ''),'updated':str(n.get('updated') or ''),'revision':n['revision'],'path':_relative(root,n['path'])})
+            if isinstance(n.get('last_retirement'),dict):rows[-1]['last_retirement']={k:n['last_retirement'].get(k) for k in ('action','at','actor','reason')}
             if summary:rows[-1].update(_summary_fields(n))
     rows.sort(key=lambda r:(r['updated'],r['id']),reverse=True)
     return {'ok':True,'domains':domains,'total':len(rows),'offset':offset,'notes':rows[offset:offset+limit]}
@@ -268,7 +271,7 @@ def _summary_fields(note):
     """list --with-summary: the summary as plain text (300 characters at most), the files, and action item counts for plan, bug and risk notes."""
     from .note_format import sections,plain,action_items,ACTION_TYPES
     body=note.get('body') or '';text=sections(body).get('summary') or ''
-    out={'summary':plain(text)[:300],'files':list(note.get('files') or [])}
+    out={'summary':plain(text)[:300],'files':list(note.get('files') or []),'pinned':note.get('pinned') is True}
     if note.get('type') in ACTION_TYPES:items=action_items(body);out['actions']={'open':sum(1 for d,_ in items if not d),'done':sum(1 for d,_ in items if d)}
     return out
 
@@ -462,13 +465,14 @@ def build_parser():
     p=sub('setup');p.add_argument('--location',type=Path);p.add_argument('--non-interactive',action='store_true');p.add_argument('--source',type=Path);p.add_argument('--apply-plan');p.add_argument('--inspect-plan');p.add_argument('--expected-plan-sha256')
     p=sub('bind');p.add_argument('name');p.add_argument('prefix',nargs='+')
     p=sub('unbind');p.add_argument('name',help='A bound domain with no notes left (move them with remap-plan first)')
-    p=sub('capture');p.add_argument('items',nargs='*');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='');p.add_argument('--prefix',help='Compatibility assertion only; must equal the uppercase type');p.add_argument('--type',choices=NOTE_TYPES,help='Note type (default: knowledge)');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help="REF of a note this one replaces; it is retired in the same transaction, and its links and files are carried over (see --drop-links)");p.add_argument('--drop-links',action='store_true',help='With --supersedes: do not carry the links and files of the replaced note over');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk/map/runbook/brief notes get a default')
+    p=sub('capture');p.add_argument('items',nargs='*');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='');p.add_argument('--prefix',help='Compatibility assertion only; must equal the uppercase type');p.add_argument('--type',choices=NOTE_TYPES,help='Note type (default: knowledge)');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help="REF of a note this one replaces; it is retired in the same transaction, and its links and files are carried over (see --drop-links)");p.add_argument('--drop-links',action='store_true',help='With --supersedes: do not carry the links and files of the replaced note over');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk/map/runbook/brief notes get a default');p.add_argument('--pin',action='store_true',help=PIN_HELP)
     for facet in CAPTURE_FACETS:p.add_argument('--'+facet,action='append',default=[])
     p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
     sections_args(p);_file_flags(p)
     p=sub('search');p.add_argument('query',nargs='?',default='');p.add_argument('--file',help='Notes about this file or folder: listed in their files property, or named in the body');p.add_argument('--scope',choices=['active','fallback','all'],default='fallback');p.add_argument('--limit',type=int,default=5);p.add_argument('--filter',action='append',default=[]);p.add_argument('--rebuild',action='store_true');p.add_argument('--sources',action='store_true',help='Source excerpts from the project knowledge base only');p.add_argument('--explain',action='store_true',help='Add why each note was found: backend, scores, gate and the section the prompt hook would deliver')
     p=sub('read');p.add_argument('reference');p.add_argument('--max-chars',type=int,default=16000);p.add_argument('--metadata-only',action='store_true');p.add_argument('--section',help='Only this section, by heading (as search evidence and prompt lines name it)')
     p=sub('update');p.add_argument('reference');p.add_argument('--title');p.add_argument('--body');p.add_argument('--body-file',type=Path);p.add_argument('--tag',action='append');p.add_argument('--type',choices=NOTE_TYPES);p.add_argument('--context');p.add_argument('--review-by');p.add_argument('--expected-revision');p.add_argument('--payload-file',type=Path);p.add_argument('--session');p.add_argument('--turn')
+    pins=p.add_mutually_exclusive_group();pins.add_argument('--pin',dest='pin',action='store_const',const=True,help=PIN_HELP);pins.add_argument('--unpin',dest='pin',action='store_const',const=False,help='Remove retirement protection (a pin change never counts as checking the note)')
     for facet in FACET_FLAGS:p.add_argument('--'+facet,action='append')
     p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
     sections_args(p,update=True);_file_flags(p)
@@ -483,9 +487,10 @@ def build_parser():
     p=sub('import-plan');p.add_argument('file',type=Path)
     p=sub('confirm');p.add_argument('reference');p.add_argument('--session');p.add_argument('--turn')
     for name in ('resolve','reopen'):p=sub(name);p.add_argument('reference',help='A plan, bug or risk note');p.add_argument('--session');p.add_argument('--turn')
+    p=sub('restore');p.add_argument('reference',help='An archived note: it returns to notes/, pinned, with its id, body and verification baseline kept (a resolved note uses reopen, a superseded one is read through its successor)');p.add_argument('--expected-revision');p.add_argument('--session');p.add_argument('--turn')
     p=sub('stats');p.add_argument('--days',type=int,default=30,help='Window, at most 30 (the diary keeps 30 days)');p.add_argument('--limit',type=int,default=10)
     p=sub('logs');p.add_argument('--level',choices=['debug','info','warning','error'],default='info',help='Lowest level shown');p.add_argument('--kind',choices=['hook','command','internal']);p.add_argument('--event',help='Hook event, command name or internal call site');p.add_argument('--days',type=int,default=1,help='Window, at most 30 (logs keep 30 days)');p.add_argument('--limit',type=int,default=50)
-    p=sub('plan');p.add_argument('action',choices=['update','rename','retag','resolve','reopen','archive','supersede','delete']);p.add_argument('reference');p.add_argument('--payload-file',type=Path)
+    p=sub('plan');p.add_argument('action',choices=['update','rename','retag','resolve','reopen','restore','archive','supersede','delete']);p.add_argument('reference');p.add_argument('--payload-file',type=Path)
     p=sub('apply');p.add_argument('plan_id');p.add_argument('--expected-plan-sha256',required=True)
     p=sub('inspect-plan');p.add_argument('plan_id');p.add_argument('--full',action='store_true',help='Show every diff in full instead of cutting each at 16000 characters')
     # A reviewed plan replacing the bodies of several notes (a prose rewrite); titles never change.
@@ -627,6 +632,7 @@ def main(argv=None):
                 if args.allow_similar:data['allow_similar']=True
                 if args.supersedes:data['supersedes']=args.supersedes
                 if args.drop_links:data['drop_links']=True
+                if args.pin:data['pinned']=True
                 if args.review_by:data['review_by']=args.review_by
                 files,_=_file_args(args,domain,root)
                 if files:data['files']=files
@@ -782,7 +788,7 @@ def main(argv=None):
             elif domain:domains=[domain]
             else:raise ValueError('unbound_project')
             result=note_links(root,domains,args.status)
-        elif cmd=='version':result={'ok':True,'api':SERVE_API,'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'learning':1}}
+        elif cmd=='version':result={'ok':True,'api':SERVE_API,'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'learning':1,'restore':1,'pin':1}}
         elif cmd=='learn':
             from .learning import dispatch,flag_payload
             payload={}
@@ -800,7 +806,7 @@ def main(argv=None):
         elif cmd=='update':
             from .notes import change
             d,n=_reference(args.reference,domain,root)
-            values=_payload(args) if args.payload_file or not any(getattr(args,k) is not None for k in ('title','body','body_file','tag','type','context','review_by','file','files','shell_command','source','subject','concern','platform','technology')+SECTION_ARGS+AMEND_ARGS) else {}
+            values=_payload(args) if args.payload_file or not any(getattr(args,k) is not None for k in ('title','body','body_file','tag','type','context','review_by','pin','file','files','shell_command','source','subject','concern','platform','technology')+SECTION_ARGS+AMEND_ARGS) else {}
             if args.title is not None:values['title']=args.title
             if args.body is not None:values['body']=args.body
             if args.body_file:values['body']=args.body_file.read_text(encoding='utf-8-sig')
@@ -816,6 +822,7 @@ def main(argv=None):
                 if tags:values['tags']=tags
                 for key in ('type','context','review_by'):
                     if getattr(args,key) is not None:values[key]=getattr(args,key)
+                if args.pin is not None:values['pinned']=args.pin
                 revision=values.pop('expected_revision',None) or args.expected_revision
                 if args.shell_command:values['commands']=list(find_note(n,d,root)[1].get('commands') or [])+args.shell_command
                 redacted=_redact(values) if args.redact else []
@@ -828,6 +835,7 @@ def main(argv=None):
                     from .digests import describe
                     new=[describe(root,d,v,cwd) for v in args.source]   # the file's hash now; a path already listed takes the new hash
                     values['sources']=[s for s in find_note(n,d,root)[1].get('sources') or [] if s['path'] not in {x['path'] for x in new}]+new
+                if 'actor' in values:raise ValueError('Cannot update: actor')
                 result=change(n,d,'update',root,revision,**values)
             if replaced:result['replaced']=replaced
             if redacted:result['redacted']=redacted
@@ -918,6 +926,13 @@ def main(argv=None):
             result=change(n,d,cmd,root);result.pop('path',None)
             if cmd=='resolve':result['hint']=f'Resolved notes leave session context and search. `reopen {short_ref(d,n)}` brings it back.'
             _receipt(args,d,n,root,cmd)
+        elif cmd=='restore':
+            # Forward restoration of an archived note: one journaled, undoable step, like reopen.
+            from .notes import change
+            d,n=_reference(args.reference,domain,root)
+            result=change(n,d,'restore',root,args.expected_revision);result.pop('path',None)
+            result['hint']='The note is active and pinned, so automatic maintenance will not retire it until `update REF --unpin`.'
+            _receipt(args,d,n,root,'restore')
         elif cmd=='stats':
             from .usage import stats
             from .runtime import parent_domains
@@ -927,6 +942,7 @@ def main(argv=None):
         elif cmd=='plan':
             from .notes import change
             d,n=_reference(args.reference,domain,root);values=_payload(args) if args.payload_file or args.action in {'update','rename','retag','supersede'} else {}
+            if 'actor' in values:raise ValueError('Cannot plan with an actor field: the controller records who acts')
             result=change(n,d,args.action,root,plan_only=True,**values)
         elif cmd=='apply':
             from .governance import apply

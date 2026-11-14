@@ -99,7 +99,7 @@ def is_managed(vault):
     vault=Path(vault)
     return (vault/VAULT_ID).exists() or (vault/COPIES).exists() or (vault/LEGACY_COPIES).exists()
 
-EDITABLE=('title','tags','type','context','review_by','files','commands')
+EDITABLE=('title','tags','type','context','review_by','files','commands','pinned')
 LIFECYCLE={'archived':'archive','resolved':'resolve'}
 DONE={'archive':'Archived','resolve':'Resolved','delete':'Deleted'}
 APPROVAL_LINE=re.compile(r'^\s*[-*]\s*\[[xX]\].*<!--\s*lm:([a-f0-9]{32})\s*-->')
@@ -334,7 +334,7 @@ def sync(domain,vault,root=None,trigger=None):
                         canonical_target,new_text,new_hash=src,source_text,source_hash
                     if wanted!=note.get('status'):
                         from .notes import change
-                        proposed=change(note_id,domain,LIFECYCLE[wanted],root,plan_only=True)
+                        proposed=change(note_id,domain,LIFECYCLE[wanted],root,plan_only=True,actor='vault')
                         plans.append(proposed);pending=True;staged+=1
                         entry={'overlay':old_rel,'overlay_hash':overlay_hash,'canonical_hash':new_hash,'pending_hash':overlay_hash,
                                'pending_plan':proposed['plan_id'],'pending_action':LIFECYCLE[wanted].capitalize()}

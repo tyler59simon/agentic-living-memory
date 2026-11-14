@@ -251,7 +251,7 @@ def parse_text(raw, path=""):
 
 # Frontmatter order: the properties a person reads first, then bookkeeping.
 FRONT_KEYS = ("title", "type", "status", "tags", "context", "files", "commands", "sources")
-SYSTEM_KEYS = ("id", "domain", "created", "updated", "review_by", "confirmed", "supersedes", "superseded_by", "schema_version", "capture_key", "origin", "repo", "file_hashes", "checked")
+SYSTEM_KEYS = ("id", "domain", "created", "updated", "review_by", "confirmed", "supersedes", "superseded_by", "schema_version", "capture_key", "origin", "repo", "file_hashes", "checked", "pinned", "last_retirement")
 MAX_FILES = 30
 
 
@@ -301,6 +301,39 @@ def check_sources(value, limit=MAX_SOURCES, name="sources"):
         if (not isinstance(item, dict) or set(item) != {"path", "sha256"} or not isinstance(item["path"], str) or not item["path"].strip()
                 or len(item["path"]) > 300 or "\n" in item["path"] or not isinstance(item["sha256"], str) or not SHA256.fullmatch(item["sha256"])):
             raise ValueError(f"{name} entries are {{path (text of at most 300 characters), sha256 (64 hex digits)}}")
+
+
+RETIREMENT_ACTIONS = ("archive", "supersede", "resolve")
+RETIREMENT_ACTORS = ("agent", "plan", "vault", "auto_resolve", "maintenance")
+
+
+def check_retirement(value):
+    """The system-managed `last_retirement` object: the most recent retirement of the note, kept after a restore."""
+    if not isinstance(value, dict) or value.get("version") != 1 or type(value.get("version")) is not int:
+        raise ValueError("last_retirement must be an object with version 1")
+    if value.get("action") not in RETIREMENT_ACTIONS or value.get("actor") not in RETIREMENT_ACTORS:
+        raise ValueError(f"last_retirement action is one of {', '.join(RETIREMENT_ACTIONS)} and actor one of {', '.join(RETIREMENT_ACTORS)}")
+    known = {"version", "at", "action", "actor", "rule", "reason", "run_id", "operation_id", "successor", "evidence", "restored_at", "restored_by"}
+    if set(value) - known:
+        raise ValueError("last_retirement has unknown fields: " + ", ".join(sorted(set(value) - known)))
+    for key in ("at", "restored_at"):
+        if key == "at" or value.get(key) is not None:
+            try:
+                datetime.fromisoformat(value[key])
+            except (KeyError, TypeError, ValueError):
+                raise ValueError(f"last_retirement {key} must be an ISO timestamp") from None
+    for key in ("rule", "run_id", "operation_id", "successor", "restored_by"):
+        if value.get(key) is not None and (not isinstance(value[key], str) or len(value[key]) > 200):
+            raise ValueError(f"last_retirement {key} must be text of at most 200 characters")
+    if value.get("reason") is not None and (not isinstance(value["reason"], str) or len(value["reason"]) > 500):
+        raise ValueError("last_retirement reason must be text of at most 500 characters")
+    evidence = value.get("evidence") or []
+    if not isinstance(evidence, list) or len(evidence) > 8:
+        raise ValueError("last_retirement evidence is a list of at most 8 entries")
+    for item in evidence:
+        shape = {"note": ("ref", "revision"), "file": ("path", "sha256")}.get(item.get("kind") if isinstance(item, dict) else None)
+        if not shape or set(item) != {"kind", *shape} or not isinstance(item[shape[0]], str) or not item[shape[0]].strip() or len(item[shape[0]]) > 300 or not isinstance(item[shape[1]], str) or not SHA256.fullmatch(item[shape[1]]):
+            raise ValueError("last_retirement evidence entries are {kind note, ref, revision} or {kind file, path, sha256} with a 64-digit hash")
 
 
 def clean_sources(value):
@@ -464,6 +497,10 @@ def validate(note, domain, root=None, new=False, extra_tags=()):
             datetime.fromisoformat(note["checked"])
         except (TypeError, ValueError):
             raise ValueError("checked must be an ISO timestamp") from None
+    if "pinned" in note and not isinstance(note["pinned"], bool):
+        raise ValueError("pinned must be true or false")
+    if "last_retirement" in note:
+        check_retirement(note["last_retirement"])
     if "repo" in note and not isinstance(note["repo"], str):
         raise ValueError("repo must be text (the git identity of the folder a map or brief is about)")
     if "commands" in note:
@@ -489,7 +526,7 @@ def validate(note, domain, root=None, new=False, extra_tags=()):
         raise ValueError("Unknown tags require an approved taxonomy plan: " + ", ".join(sorted(set(tags) - set(known))))
     if new and not known:
         raise ValueError("Initialize the controlled taxonomy before capturing notes")
-    found = find_secret("\n".join([str(note.get(k) or "") for k in ("title", "body", "context")] + [c for c in note.get("commands") or [] if isinstance(c, str)]))
+    found = find_secret("\n".join([str(note.get(k) or "") for k in ("title", "body", "context")] + [c for c in note.get("commands") or [] if isinstance(c, str)] + [str((note.get("last_retirement") or {}).get("reason") or "")]))
     if found:
         raise ValueError(f"Potential credential detected ({found[0]} at character {found[1]}); remove it, replace it with a placeholder such as <REDACTED>, or pass --redact")
     if note.get("status") == "superseded" and not note.get("superseded_by"):

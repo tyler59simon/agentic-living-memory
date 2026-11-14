@@ -10,7 +10,8 @@ from .note_format import format_body,without_actions,summary_text,ACTION_TYPES
 from .digests import stale_note
 
 # Fields an agent may change directly (journaled and undoable, no plan) with `update`.
-UPDATABLE=('title','body','tags','type','context','review_by','files','commands','sources')
+UPDATABLE=('title','body','tags','type','context','review_by','files','commands','sources','pinned')
+LINK_UPDATE_MAX=100   # notes whose links one move may rewrite; a larger move needs its own reviewed operation
 
 def slug(value):return re.sub(r'[^a-z0-9]+','-',value.casefold()).strip('-')[:64] or 'note'
 def taxonomy(root):
@@ -68,13 +69,24 @@ def resolve_ref(value,domain=None,root=None,search_domains=()):
     if len(titled)>1:raise ValueError('ambiguous_ref: several notes have this title: '+', '.join(f'{d}:{n["id"]}' for d,n in titled[:10]))
     if not titled:raise ValueError(f'No note with ID, ID prefix or exact title {value!r}')
     return titled[0][0],titled[0][1]['id']
+
+def touched_domains(changes):
+    """The domains whose files a change set writes, in path order."""
+    return sorted({parts[1] for parts in (rel.split('/') for rel in changes) if len(parts)>2 and parts[0]=='domains'})
+
+def retirement_record(action,actor,successor=None):
+    """The `last_retirement` object a lifecycle change leaves on the note; only the controller writes it."""
+    record={'version':1,'at':now(),'action':action,'actor':actor}
+    if successor:record['successor']=successor
+    return record
+
 def _commit(domain,changes,kind,root,expected=None):
     return _commit_many([domain],changes,kind,root,expected)
 
 def _commit_many(domains,changes,kind,root,expected=None):
     """One journaled transaction across domains (a promotion moves a note between two), then each
     domain's derived state."""
-    domains=list(dict.fromkeys(domains));changes=dict(changes)
+    changes=dict(changes);domains=list(dict.fromkeys([*domains,*touched_domains(changes)]))   # a link rewrite can reach into another domain
     for domain in domains:changes[f'domains/{domain}/.derived-dirty']='dirty\n'
     receipt=transaction(root,changes,kind,expected)
     for domain in domains:
@@ -355,7 +367,7 @@ def _set_identity(note,files,domain,root,moved=True):
     if identity:note['repo']=identity
     elif moved or (folder is not None and folder.is_dir()):note.pop('repo',None)
 
-def build_note(title,body,tags,domain,root,note_type='knowledge',context='',key=None,review_by=None,supersedes=(),files=None,origin=None,note_id=None,extra_tags=(),commands=None,sources=None):
+def build_note(title,body,tags,domain,root,note_type='knowledge',context='',key=None,review_by=None,supersedes=(),files=None,origin=None,note_id=None,extra_tags=(),commands=None,sources=None,pinned=False):
     """(path, note, file text) for a new active note, validated like every capture. Writes nothing; capture and
     ingest-plan both create notes through it."""
     stamp=now()
@@ -369,6 +381,7 @@ def build_note(title,body,tags,domain,root,note_type='knowledge',context='',key=
     if commands:note['commands']=commands
     sources=clean_sources(sources)
     if sources:note['sources']=sources
+    if pinned:note['pinned']=pinned   # retirement protection; validate refuses anything but a bool
     _set_file_hashes(note,domain,root)
     if origin:note['origin']=str(origin)
     if note_type in KEYED_TYPES:_set_identity(note,files,domain,root)
@@ -561,7 +574,7 @@ def capture(title,body,tags,domain,root=None,**metadata):
                 raise ValueError(f"possible_duplicate conflict: similar to {ref} \"{match['title']}\" in another project. If it holds for both "
                                  f"projects, run `promote-plan {ref}` and then update it; pass allow_similar only for a genuinely distinct note")
             absorbed=(other,match)   # 'supersede': the new global note replaces the project one
-        review_by=metadata.pop('review_by',None);context=metadata.pop('context','');files=metadata.pop('files',None);origin=metadata.pop('origin',None);commands=metadata.pop('commands',None);sources=metadata.pop('sources',None)
+        review_by=metadata.pop('review_by',None);context=metadata.pop('context','');files=metadata.pop('files',None);origin=metadata.pop('origin',None);commands=metadata.pop('commands',None);sources=metadata.pop('sources',None);pinned=metadata.pop('pinned',False)
         if metadata:raise ValueError('Unsupported capture metadata: '+', '.join(metadata))
         carried=carried_files=[]
         if supersedes and not drop_links:
@@ -572,7 +585,7 @@ def capture(title,body,tags,domain,root=None,**metadata):
             conflict=capture_conflict(clean_files(files),domain,root,read_json(root/'bindings.json',{}),set(supersedes),selected_type)
             if conflict:raise ValueError(conflict)
         replaces=supersedes+([absorbed[1]['id']] if absorbed else [])
-        path,note,text=build_note(title,body,tags,domain,root,selected_type,context=context,key=key,review_by=review_by,supersedes=replaces,files=files,origin=origin,commands=commands,sources=sources)
+        path,note,text=build_note(title,body,tags,domain,root,selected_type,context=context,key=key,review_by=review_by,supersedes=replaces,files=files,origin=origin,commands=commands,sources=sources,pinned=pinned)
         changes={path.relative_to(root).as_posix():text};expected={}
         for old in supersedes:
             # The new note and the retirement of what it replaces commit together.
@@ -603,12 +616,13 @@ def capture(title,body,tags,domain,root=None,**metadata):
         if user:result['user_brief']=user
         return result
 
-def _change_set(note_id,domain,action,root,expected_revision=None,successor=None,pending=None,carried=None,rehash=True,**values):
+def _change_set(note_id,domain,action,root,expected_revision=None,successor=None,pending=None,carried=None,rehash=True,actor='agent',**values):
     """Files to write for one note action, with the revisions they must still have. `pending` holds the
     changes of earlier steps in the same transaction (rel path -> text, or None when removed); files are
     read through it, so steps build on each other instead of overwriting one another. A standalone supersede carries the replaced
     note's links and files into its successor (unless values has drop_links); `carried`, when a dict, receives what moved.
-    `rehash=False` (check, rewrite-plan) leaves the recorded file hashes alone: those edits do not re-read the files."""
+    `rehash=False` (check, rewrite-plan) leaves the recorded file hashes alone: those edits do not re-read the files.
+    `actor` (agent, plan, vault, auto_resolve) is recorded in the `last_retirement` of a retired note and as `restored_by` of a restored one."""
     pending=pending or {}
     path,note=find_note(note_id,domain,root)
     if note.get('learning_procedure'):
@@ -649,6 +663,7 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
             # Only a body rewrite vouches for the files as they are now (a deleted file keeps its last hash). A files or type change keeps the hash
             # of every file still listed and starts one only for a file without a hash; a title edit does not come here at all.
             _set_file_hashes(note,domain,root,{h['path']:h['sha256'] for h in note.get('file_hashes') or []},fresh='body' in values)
+        if 'pinned' in values:note['pinned']=values['pinned']   # validate refuses anything but a bool
         if 'review_by' in values:
             review=_review_date(values['review_by'])
             if review:note['review_by']=review
@@ -683,7 +698,21 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
         if action=='resolve' and (note['type'] not in ACTION_TYPES or note.get('status')!='active'):raise ValueError('Only active plan, bug and risk notes may be resolved')
         if action=='reopen' and (note['type'] not in ACTION_TYPES or note.get('status')!='resolved'):raise ValueError('Only resolved plan, bug and risk notes may be reopened')
         note['status']='resolved' if action=='resolve' else 'active'
+        if action=='resolve':note['last_retirement']=retirement_record('resolve',actor)
         folder=root/'domains'/domain/('archive' if action=='resolve' else 'notes')
+    elif action=='restore':
+        # Forward restoration of an archived note: pinned, so automatic maintenance cannot retire it again at once.
+        status=note.get('status','active')
+        if status=='resolved':raise ValueError(f'Use reopen {short_ref(domain,note_id)} for a resolved note')
+        if status=='superseded':raise ValueError(f"Superseded by {domain}:{note.get('superseded_by')}; read it, or capture a replacement")
+        if status!='archived':raise ValueError('Only archived notes can be restored')
+        note['status']='active';note['pinned']=True
+        if isinstance(note.get('last_retirement'),dict):note['last_retirement']={**note['last_retirement'],'restored_at':now(),'restored_by':actor}
+        if note['type'] in KEYED_TYPES:
+            from .maps import capture_conflict
+            conflict=capture_conflict(clean_files(note.get('files')),domain,root,read_json(root/'bindings.json',{}),{note['id']},note['type'])
+            if conflict:raise ValueError(conflict)
+        folder=root/'domains'/domain/'notes'
     elif action in {'archive','supersede'}:
         note['status']='superseded' if action=='supersede' else 'archived'
         if action=='supersede':
@@ -691,12 +720,13 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
             if ':' in successor_id:successor_id=successor_id.split(':',1)[1]
             if successor_id==note_id:raise ValueError('Cannot supersede a note with itself')
             note['superseded_by']=successor_id
+        note['last_retirement']=retirement_record(action,actor,f'{domain}:{successor_id}' if action=='supersede' else None)
         folder=root/'domains'/domain/'archive'
     elif action!='delete':raise ValueError('Unknown note action')
     target=path if action=='delete' else folder/f"{note['prefix']} - {slug(note['title'])}-{note_id[:8]}.md"
     # `updated` means the content changed; it drives recency and review age. A tag-, snooze- or files-only edit
     # (triage, backfill) must not reorder recency lists or reset the review clock; confirm never bumps it either.
-    if action!='confirm' and not (action=='update' and set(values)<={'tags','review_by','files','commands','sources'}):
+    if action!='confirm' and not (action=='update' and set(values)<={'tags','review_by','files','commands','sources','pinned'}):
         verifying=action=='update' and 'body' in values and rehash   # a checkbox tick or a prose rewrite (rehash=False) says nothing about the facts
         if action!='delete' and not verifying:keep_baseline(note)   # `updated` moves; what was checked does not
         note['updated']=now()
@@ -722,16 +752,24 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
         keep_baseline(successor_note);successor_note['updated']=now()
         changes[successor_path.relative_to(root).as_posix()]=serialize(successor_note)
         expected[successor_path.relative_to(root).as_posix()]=successor_note['revision']
-    if target!=path:
-        from .migration import rewrite_type_links
-        moved={}
-        if any(text is None for text in pending.values()):
-            from .repository import parse_text
-            for rel,text in pending.items():
-                if text is not None:
-                    parsed=parse_text(text,root/rel)
-                    if parsed and parsed.get('id'):moved.setdefault(parsed['id'],rel)
-        for referring in inventory(domain,root,retired=True):
+    if target!=path:_move_links(root,domain,note_id,path,target,changes,expected,pending)
+    return changes,expected,target
+
+def _move_links(root,domain,note_id,path,target,changes,expected,pending):
+    """The notes that link to a note moving from `path` to `target` (between notes/ and archive/) get their relative links rewritten against their
+    current text, in this domain and in every other domain folder. Archive, resolve, reopen and restore all come here. Edits go into `changes`,
+    and the revision of each note read from disk into `expected`. More than LINK_UPDATE_MAX rewrites is refused before anything is written."""
+    from .migration import rewrite_type_links
+    moved={};rewritten=0
+    if any(text is None for text in pending.values()):
+        from .repository import parse_text
+        for rel,text in pending.items():
+            if text is not None:
+                parsed=parse_text(text,root/rel)
+                if parsed and parsed.get('id'):moved.setdefault(parsed['id'],rel)
+    others=sorted(p.name for p in (root/'domains').iterdir() if p.is_dir() and p.name!=domain) if (root/'domains').is_dir() else []
+    for d in [domain,*others]:
+        for referring in inventory(d,root,retired=True):
             if referring['id']==note_id:continue
             rel=Path(referring['path']).relative_to(root).as_posix();original=rel
             if rel in pending and pending[rel] is None:
@@ -741,10 +779,11 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
             current=parse_changed(changes.get(rel,pending.get(rel)),referring)
             old=current['body'];new=rewrite_type_links(old,Path(referring['path']),{path.resolve():target})
             if new!=old:
+                rewritten+=1
+                if rewritten>LINK_UPDATE_MAX:raise ValueError(f'too_many_link_updates: more than {LINK_UPDATE_MAX} notes link to this one; move it through a reviewed operation of its own')
                 keep_baseline(current);current['body']=new;current['updated']=now()
                 changes[rel]=serialize(current)
                 if rel==original:expected[rel]=referring['revision']
-    return changes,expected,target
 
 def parse_changed(pending_text,note):
     """A note as this change set will leave it (an earlier step may already have edited it)."""
@@ -752,7 +791,7 @@ def parse_changed(pending_text,note):
     from .repository import parse_text
     return {**parse_text(pending_text,note['path']),'path':note['path']}
 
-def change(note_id,domain,action,root=None,expected_revision=None,plan_only=False,rehash=True,**values):
+def change(note_id,domain,action,root=None,expected_revision=None,plan_only=False,rehash=True,actor=None,**values):
     root=Path(root or memory_root()).resolve()
     domain=canonical_domain(domain,root)
     with store_lock(root):
@@ -765,10 +804,11 @@ def change(note_id,domain,action,root=None,expected_revision=None,plan_only=Fals
             from .learning import stage_edit
             return stage_edit(root,domain,current,values,preview=plan_only)
         carried={}
-        changes,expected,target=_change_set(note_id,domain,action,root,expected_revision,carried=carried,rehash=rehash,**values)
+        actor=actor or ('plan' if plan_only else 'agent')
+        changes,expected,target=_change_set(note_id,domain,action,root,expected_revision,carried=carried,rehash=rehash,actor=actor,**values)
         if plan_only:
             from .governance import plan
-            return plan(root,changes,action,[domain],{'id':note_id,'action':action,'files':len(changes)})
+            return plan(root,changes,action,[domain,*touched_domains(changes)],{'id':note_id,'action':action,'files':len(changes)})
         result=_commit(domain,changes,action,root,expected);result.update(id=note_id,path=str(target),status=action,**carried)
         if action=='update' and ('body' in values or 'title' in values):
             from .repository import parse

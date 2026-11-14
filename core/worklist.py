@@ -231,7 +231,7 @@ def worklist(root,domains,kinds=None,limit=100,tags=None,cheap=False,notes=None,
         n=by_ref[ref];row=found[ref];extra=dict(row['extra']);same=extra.pop('_same',False)
         pair=extra.get('pair');kinds_=[k for k in KINDS if k in row['kinds']]
         items.append({'ref':ref,'title':n['title'],'type':n.get('type'),'updated':str(n.get('updated',''))[:10],'review_by':n.get('review_by'),
-                      'confirmed':last_confirmed(n),'revision':n['revision'],'domain':n['domain'],'kinds':kinds_,'reason':'; '.join(row['reasons']),
+                      'confirmed':last_confirmed(n),'pinned':n.get('pinned') is True,'revision':n['revision'],'domain':n['domain'],'kinds':kinds_,'reason':'; '.join(row['reasons']),
                       'action':_action(kinds_,n,dict(pair,same=same) if pair else None),**extra})
     counts={k:sum(1 for r in found.values() if k in r['kinds']) for k in wanted}
     total=len(items);items=items[:max(1,limit)]

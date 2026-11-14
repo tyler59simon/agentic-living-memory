@@ -109,7 +109,7 @@ def inspect_plan(root,identity,full=False):
     return {'ok':True,'plan_id':identity,'digest':value['digest'],'kind':value['kind'],'summary':value['summary'],'effects':effects}
 
 def merge_plan(root,payload):
-    from .notes import find_note
+    from .notes import find_note,retirement_record
     from .repository import serialize,validate,inventory
     from .migration import rewrite_type_links
     root=Path(root).resolve();domain,target_id=payload['target'].split(':',1);sources=payload['sources']
@@ -135,7 +135,7 @@ def merge_plan(root,payload):
         for path,archived,note in moves.values():
             # Moving to archive/: the note's own relative links, and links between moved sources, still resolve.
             note['body']=rewrite_type_links(note['body'],archived,targets,moved_from=path)
-            note.update(status='superseded',superseded_by=target['id'],updated=now());validate(note,domain,root)
+            note.update(status='superseded',superseded_by=target['id'],updated=now(),last_retirement=retirement_record('supersede','plan',f"{domain}:{target['id']}"));validate(note,domain,root)
             changes[path.relative_to(root).as_posix()]=None;changes[archived.relative_to(root).as_posix()]=serialize(note)
         target['body']=rewrite_type_links(target['body'],target_path,targets)
         target['supersedes']=sorted(set(target.get('supersedes',[])+merged));validate(target,domain,root)
