@@ -56,6 +56,16 @@ class AutoAllow(Cli):
         payload = {'cwd': str(project), 'session_id': 'allow', 'tool_name': tool, 'tool_input': {'command': command}, **extra}
         return runtime.process('claude', 'pre-tool-use', payload, self.root)
 
+    def test_bash_call_operator_is_denied_with_the_corrected_command(self):
+        plain = self.cmd('search x')
+        for command in ('& ' + plain, '&' + plain):
+            with self.subTest(command=command):
+                denied = self.decision('Bash', command).get('deny', '')
+                self.assertIn('In Bash, drop the leading &: ' + plain, denied)
+                self.assertIn('allow', self.decision('Bash', plain))
+        self.assertIn('allow', self.decision('PowerShell', '& ' + plain))
+        self.assertNotIn('deny', self.decision('Bash', 'echo & ' + plain))
+
     def test_bash_backslash_quote_cannot_hide_a_second_command(self):
         hidden = self.cmd("search x\\' ; rm -rf ~ ; echo \\'")
         self.assertIsNone(runtime.memory_subcommand(hidden, 'posix'))
