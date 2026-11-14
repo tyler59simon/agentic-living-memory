@@ -52,7 +52,7 @@ def protocol(root,domain=None,harness='',session='SESSION'):
     current static block, only per-session data is injected; otherwise the full protocol, so the agent
     never sees zero copies or two differing copies of the rules."""
     cmd=command(root,domain)
-    dynamic=(f'CMD = {cmd}   (Bash: run CMD as written; PowerShell: & CMD ...)'
+    dynamic=(f'CMD = {cmd}   (Bash: CMD as is; PowerShell: & CMD ...)'
              f"\nTags (pick the closest; --platform/--technology optional): {_tag_summary(root)}")
     if installed(harness):
         return f'Living Memory is active for domain {domain}; follow the Living Memory section of your instructions.\n'+dynamic
