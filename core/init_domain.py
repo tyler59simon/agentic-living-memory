@@ -19,6 +19,23 @@ def init_domain(name,prefixes,root=None):
         directory=root/'domains'/name;(directory/'notes').mkdir(parents=True,exist_ok=True);(directory/'archive').mkdir(exist_ok=True)
         reconcile(name,root);return directory
 
+def unbind_domain(name,root=None):
+    """Drop a domain's folder bindings (a journaled change to bindings.json). Refused for a global domain, an unknown name, and while notes or archived notes remain:
+    move them first (remap-plan), so no note is orphaned. The domain's folders stay on disk."""
+    from .common import global_domains
+    from .repository import _note_files
+    root=Path(root or memory_root()).resolve();name=safe_domain(name)
+    with store_lock(root):
+        settings=read_json(root/'bindings.json',{})
+        if not isinstance(settings,dict) or not isinstance(settings.get('domains',{}),dict):raise ValueError('Invalid bindings preserved')
+        domains=settings.get('domains',{})
+        if name in global_domains(root):raise ValueError(f'{name} is a global domain; global domains are not bound to folders')
+        if name not in domains:raise ValueError(f'{name} is not a bound domain')
+        held=sum(len(_note_files(root,d)) for d in (root/'domains'/name/'notes',root/'domains'/name/'archive') if d.is_dir())
+        if held:raise ValueError(f'{name} still holds {held} note(s) (notes and archive): move them with remap-plan first, then unbind')
+        del domains[name];transaction(root,{'bindings.json':canonical_json(settings)},'unbind_domain')
+        return name
+
 def main(argv=None):
     p=argparse.ArgumentParser();p.add_argument('name');p.add_argument('prefix',nargs='+');p.add_argument('--root',type=Path,default=memory_root());a=p.parse_args(argv);print(init_domain(a.name,a.prefix,a.root));return 0
 if __name__=='__main__':raise SystemExit(main())
