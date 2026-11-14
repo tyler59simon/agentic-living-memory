@@ -90,7 +90,7 @@ MANUAL = {
                'Roll it forward: CMD recover OPERATION_ID --direction forward',
                'Run CMD doctor again and confirm no unfinished operation remains'],
         done_when=["The operation's files hold their intended content", 'doctor lists no unfinished operations'],
-        fallback='If forward recovery fails, roll back with --direction backward and report it; never edit journal files.'),
+        fallback='If forward recovery fails, report it and, for an unfinished operation, roll back with --direction backward; never edit journal files.'),
     'restore': dict(
         title='Restore a deleted note from a backup', body='Bring back a deleted canonical note from a backup through a reviewed plan.',
         use_when=['A canonical note was deleted or damaged and a backup containing it exists'],

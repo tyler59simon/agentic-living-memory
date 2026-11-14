@@ -137,3 +137,70 @@ class Integrity(StoreFixture):
 if __name__ == '__main__':
     import unittest
     unittest.main()
+
+
+class Governance(StoreFixture):
+    def crash_once(self, n, calls):
+        real, state = repo._write, {'calls': 0}
+
+        def crash(path, data):
+            state['calls'] += 1
+            if state['calls'] == calls:
+                raise KeyboardInterrupt
+            return real(path, data)
+        with patch.object(repo, '_write', crash), self.assertRaises(KeyboardInterrupt):
+            change(n['id'], 'demo', 'rename', self.root, title='Renamed cache')
+        return next((self.root / '.operations').glob('*/pending')).parent.name
+
+    def test_marker_is_written_before_the_journal_and_a_failed_journal_write_leaves_a_clearable_marker(self):
+        real = repo.atomic_write
+
+        def failing(path, data, *a, **k):
+            if Path(path).name == 'journal.json':
+                raise OSError('journal write failed')
+            return real(path, data, *a, **k)
+        with patch('core.repository.atomic_write', failing), self.assertRaises(OSError):
+            self.note('Never journaled', 'No journal exists for this note.')
+        marker = next((self.root / '.operations').glob('*/pending'))
+        self.assertFalse(marker.with_name('journal.json').exists())
+        self.note('Next write', 'The next write clears the orphan marker.')
+        self.assertFalse(marker.exists())
+        self.assertEqual(validate_domain('demo', self.root), [])
+
+    def test_transaction_reports_rolled_forward_operations(self):
+        n = self.note()
+        op = self.crash_once(n, 3)
+        result = repo.transaction(self.root, {'x.txt': 'x'}, 'test')
+        self.assertEqual(result['recovered'], [op])
+        self.assertNotIn('warnings', result)
+
+    def test_transaction_warns_about_a_pending_operation_it_cannot_roll_forward(self):
+        n = self.note()
+        op = self.crash_once(n, 2)
+        Path(n['path']).write_text(Path(n['path']).read_text(encoding='utf-8') + '\nUser edit.\n', encoding='utf-8')
+        result = repo.transaction(self.root, {'x.txt': 'x'}, 'test')
+        self.assertTrue(result['ok'])
+        self.assertEqual(len(result['warnings']), 1)
+        self.assertIn(f'operation {op} could not be rolled forward', result['warnings'][0])
+        self.assertIn(f'run recover {op} or recover {op} --abandon', result['warnings'][0])
+        self.assertNotIn('recovered', result)
+
+    def test_recover_refuses_to_reverse_a_final_state(self):
+        repo.transaction(self.root, {'a.txt': 'a'}, 'test', operation_id='done')
+        with self.assertRaisesRegex(ValueError, 'is committed; plan its reversal with undo done'):
+            repo.recover(self.root, 'done', 'backward')
+        self.assertEqual((self.root / 'a.txt').read_text(), 'a')
+        self.assertTrue(repo.recover(self.root, 'done', 'forward')['idempotent'])
+        real, state = repo._write, {'n': 0}
+
+        def crash(path, data):
+            state['n'] += 1
+            if state['n'] == 1:
+                raise KeyboardInterrupt
+            return real(path, data)
+        with patch.object(repo, '_write', crash), self.assertRaises(KeyboardInterrupt):
+            repo.transaction(self.root, {'b.txt': 'b'}, 'test', operation_id='half')
+        repo.recover(self.root, 'half', 'backward')
+        with self.assertRaisesRegex(ValueError, 'Operation half was rolled back'):
+            repo.recover(self.root, 'half', 'forward')
+        self.assertTrue(repo.recover(self.root, 'half', 'backward')['idempotent'])

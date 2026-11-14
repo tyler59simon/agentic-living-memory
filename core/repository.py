@@ -567,7 +567,7 @@ def transaction(root, changes, kind, expected=None, operation_id=None, skip_unch
             if requested != {e["path"]: e["after_hash"] for e in journal["effects"]}:
                 raise ValueError("Idempotency payload differs")
             return recover(root, operation_id, "forward")
-        roll_forward_pending(root)
+        rolled = roll_forward_pending(root)
         effects = []
         for rel, content in sorted(changes.items()):
             path = confined(root, rel)
@@ -582,12 +582,20 @@ def transaction(root, changes, kind, expected=None, operation_id=None, skip_unch
         if skip_unchanged and not effects:
             return {"ok": True, "operation_id": None, "state": "unchanged", "kind": kind}
         journal = {"schema": 1, "id": operation_id, "kind": kind, "created": now(), "state": "prepared", "effects": effects}
-        atomic_write(journal_path, canonical_json(journal))
+        # Marker first: a crash between the two writes leaves a marker with no journal, which roll_forward_pending clears.
         atomic_write(journal_path.with_name(PENDING), "pending\n")
+        atomic_write(journal_path, canonical_json(journal))
         for old, new in renames:
             # Same file, new spelling: the content is untouched, so an interruption here loses nothing.
             retry_sharing(lambda: os.rename(root / old, root / new))
-        return recover(root, operation_id, "forward")
+        result = recover(root, operation_id, "forward")
+        done = [r["operation_id"] for r in rolled if r["ok"] and not r.get("idempotent")]
+        warnings = [f"operation {r['operation_id']} could not be rolled forward: {r['error']}; run recover {r['operation_id']} or recover {r['operation_id']} --abandon" for r in rolled if not r["ok"]]
+        if done:
+            result["recovered"] = done
+        if warnings:
+            result["warnings"] = warnings
+        return result
 
 
 PENDING = "pending"
@@ -699,6 +707,10 @@ def roll_forward_pending(root):
     results = []
     for marker in sorted(Path(root).glob(f".operations/*/{PENDING}")):
         operation_id = marker.parent.name
+        journal = read_json(marker.with_name("journal.json"))
+        if not journal or journal.get("state") in {"rolled_back", "abandoned"}:
+            retry_sharing(marker.unlink)  # no journal: nothing else was written; a reversed journal has nothing to finish
+            continue
         try:
             results.append(recover(root, operation_id, "forward"))
         except ValueError as exc:
@@ -746,6 +758,10 @@ def recover(root, operation_id, direction="forward"):
             return {"ok": True, "operation_id": operation_id, "state": final_state, "idempotent": True}
         if journal["state"] == "abandoned":
             raise ValueError("Operation was abandoned")
+        if journal["state"] == "committed":
+            raise ValueError(f"Operation {operation_id} is committed; plan its reversal with undo {operation_id}")
+        if journal["state"] == "rolled_back":
+            raise ValueError(f"Operation {operation_id} was rolled back")
         # Validate ALL resources before changing ANY resource.
         for effect in journal["effects"]:
             path = confined(root, effect["path"])

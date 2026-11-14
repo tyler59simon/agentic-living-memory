@@ -6,6 +6,7 @@ from core import backup,runtime
 from core.capture import finalize
 from core.init_domain import init_domain
 from core.notes import capture
+from core import repository as repo
 from core.repository import canonical_json,recover
 
 TAGS=['subject/project','concern/architecture']
@@ -97,9 +98,18 @@ class Cache(Log):
         self.assertEqual(len(self.rows()),1);ops=self.cache();self.assertEqual((ops['sync01']['rows'],ops['back01']['rows']),([],[]))
 
     def test_a_recovered_journal_is_read_again_so_the_log_follows_it_both_ways(self):
-        self.note('Cache policy','Body one.');op=self.rows()[0]['op'];self.assertEqual(len(self.rows()),1);self.assertEqual(self.cache()[op]['rows'][0]['event'],'created')   # cached
-        recover(self.root,op,'backward');self.assertEqual(self.rows(),[])
-        recover(self.root,op,'forward');self.assertEqual([r['event'] for r in self.rows()],['created'])
+        n=self.note('Cache policy','Body one.');self.assertEqual(len(self.rows()),1)
+        real=repo._write
+        def interrupted(title):
+            state={'n':0}
+            def crash(path,data):
+                state['n']+=1
+                if state['n']==2:raise KeyboardInterrupt   # dies after the first file, so the operation stays unfinished
+                return real(path,data)
+            with patch.object(repo,'_write',crash),self.assertRaises(KeyboardInterrupt):capture(title,'Body two.',TAGS,'demo',self.root,supersedes='demo:'+n['id'])
+            return next((self.root/'.operations').glob('*/pending')).parent.name
+        op=interrupted('Cache policy two');recover(self.root,op,'backward');self.assertEqual([r['event'] for r in self.rows()],['created'])
+        op=interrupted('Cache policy three');recover(self.root,op,'forward');self.assertEqual([r['event'] for r in self.rows()],['superseded','created','created'])
 
     def test_first_run_is_slower_than_later_runs(self):
         init_domain('bulk',[str(self.base/'bulk')],self.root)

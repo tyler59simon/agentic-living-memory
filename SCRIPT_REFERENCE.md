@@ -21,7 +21,7 @@ Use `python living_memory.py COMMAND --help` for exact arguments. Common options
 | End-turn receipt | capture-finalize --session SESSION [--turn TURN] [--note DOMAIN:ID] |
 | Reviewed mutation | plan update|rename|retag|resolve|reopen|archive|supersede|delete REF [--payload-file FILE] |
 | Review/apply | inspect-plan ID [--full] (`--full`: every diff whole, not cut at 16000 characters); apply ID --expected-plan-sha256 HASH |
-| History/recovery | history; diff OPERATION; undo OPERATION; recover OPERATION --direction forward|backward |
+| History/recovery | history; diff OPERATION; undo OPERATION; recover OPERATION --direction forward|backward (backward only for unfinished operations; committed ones use undo) |
 | Snapshots | backup [--keep 7] (result may carry `unreadable`, `retained` and `warning`); restore-plan FILE (then inspect-plan and apply) |
 | Bulk governance | merge-plan, retag-plan, taxonomy-plan, remap-plan |
 | Prose rewrite | rewrite-plan [--payload-file FILE]: one reviewed plan that replaces the bodies of up to 50 notes, from a JSON list of `{"ref", "revision", "body"}`. A stale revision, a title, a map or brief, or a learned runbook is refused; `updated` and `review_by` are kept, and `sources` and `file_hashes` are not re-hashed (nor by `check`). Result: `plan_id`, `digest`, `notes` (each with any `quality_warnings`) and `unchanged`. See [WRITING.md](WRITING.md#rewriting-a-note). |
