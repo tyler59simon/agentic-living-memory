@@ -504,6 +504,7 @@ def main(argv=None):
     p=sub('restore-plan');p.add_argument('file',type=Path)
     p=sub('migration-plan')
     p=sub('note-type-plan')
+    p=sub('baseline-plan')
     p=sub('rebuild');p.add_argument('name',nargs='?')
     p=sub('semantic');p.add_argument('action',choices=['status','install','remove','rebuild','native']);p.add_argument('value',nargs='?',choices=['on','off'],help='native: on or off');p.add_argument('--model',help='Model to install (default: the recommended one)');p.add_argument('--from',dest='source',type=Path,help='Folder already holding the model files, for an offline install; hashes are still verified')
     p=sub('validate');p.add_argument('name',nargs='?')
@@ -978,6 +979,9 @@ def main(argv=None):
         elif cmd=='migration-plan':
             from .migration import migration_plan
             result=migration_plan(root)
+        elif cmd=='baseline-plan':
+            from .migration import baseline_plan
+            result=baseline_plan(root)
         elif cmd=='note-type-plan':
             from .migration import note_type_plan
             result=note_type_plan(root)

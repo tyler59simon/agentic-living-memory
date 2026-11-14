@@ -323,7 +323,9 @@ def sync(domain,vault,root=None,trigger=None):
                             proposal=stage_edit(root,domain,note,dict(title=updated['title'],body=updated['body']))
                         updated=dict(note)
                     if serialize({**updated,'updated':''})!=serialize({**normalize(note),'updated':''}):
+                        keep_baseline(updated) if updated['body']==note['body'] else None   # a cosmetic vault edit keeps the verification baseline
                         updated['updated']=now()
+                        if updated['body']!=note['body'] and updated.get('checked'):updated['checked']=updated['updated']   # a body edited in the vault is the author's word for the facts
                         canonical_target,changes,expected=_canonical_changes(note,updated,domain,root)
                         receipt=transaction(root,changes,'overlay_auto_update',expected);wrote_canonical=True
                         log('Edited',note_id,updated['title'],receipt.get('operation_id'))

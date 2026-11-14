@@ -191,9 +191,41 @@ class Freshness(Base):
         with contextlib.redirect_stdout(out):main(['--root',str(self.root),'--domain','demo','read',made['id']])
         self.assertEqual(json.loads(out.getvalue())['currency']['state'],'current')
 
-    def test_a_checkbox_does_not_write_checked(self):
+    def test_a_checkbox_keeps_the_old_baseline_in_checked(self):
         bug=self.cap('Retry bug',['src/a.py'],type='bug',body=BUG_BODY);self.legacy(bug)
-        check_action(bug['id'],'demo',self.root,item='Fix the loop');self.assertNotIn('checked',self.note_of(bug))
+        before=self.note_of(bug)['updated'];check_action(bug['id'],'demo',self.root,item='Fix the loop');self.assertEqual(self.note_of(bug)['checked'],before)   # the old baseline, not the tick's time
+
+    def test_check_and_a_rewrite_plan_do_not_advance_an_existing_checked(self):
+        bug=self.cap('Retry bug',['src/a.py'],type='bug',body=BUG_BODY);confirm(bug['id'],'demo',self.root);checked=self.note_of(bug)['checked']
+        check_action(bug['id'],'demo',self.root,item='Fix the loop');note=self.note_of(bug);self.assertEqual(note['checked'],checked);self.assertGreater(note['updated'],checked)
+        plan=rewrite_plan([{'ref':f"demo:{bug['id']}",'revision':note['revision'],'body':'Retries stop after one attempt.\n\n## Action Items\n\n- [x] Fix the loop\n'}],'demo',self.root)
+        from core.governance import apply
+        apply(self.root,plan['plan_id'],plan['digest']);after=self.note_of(bug)
+        self.assertEqual((after['checked'],after['updated']),(checked,note['updated']))   # neither a prose rewrite nor a tick confirms the note
+
+    def test_a_merge_body_and_a_vault_body_edit_advance_checked_but_a_vault_title_edit_does_not(self):
+        from core.governance import apply,merge_plan
+        from core.sync import build_overlay
+        target=self.cap('Retry limit',['src/a.py']);source=self.cap('Retry old',['src/b.py'],body='Different words about backoff entirely.');confirm(target['id'],'demo',self.root)
+        before=self.note_of(target)
+        vault=self.base/'vault';build_overlay('demo',vault,self.root);copy=vault/'Domains/demo'/Path(before['path']).name
+        copy.write_text(copy.read_text(encoding='utf-8').replace('title: "Retry limit"','title: "Retry cap"',1),encoding='utf-8')
+        build_overlay('demo',vault,self.root);note=self.note_of(target);self.assertEqual(note['title'],'Retry cap');self.assertEqual(note['checked'],before['checked'])
+        copy=vault/'Domains/demo'/Path(note['path']).name;copy.write_text(copy.read_text(encoding='utf-8').replace('read from the config','read from the settings'),encoding='utf-8')
+        build_overlay('demo',vault,self.root);note=self.note_of(target);self.assertIn('settings',note['body']);self.assertEqual(note['checked'],note['updated'])
+        proposal=merge_plan(self.root,{'target':'demo:'+target['id'],'sources':['demo:'+source['id']],'body':'Merged retry facts.'});apply(self.root,proposal['plan_id'],proposal['digest'])
+        note=self.note_of(target);self.assertEqual(note['checked'],note['updated'])
+
+    def test_baseline_plan_keeps_the_old_effective_baseline_of_existing_notes(self):
+        from core.governance import apply
+        from core.migration import baseline_plan
+        made=self.cap('Retry limit',['src/a.py']);confirm(made['id'],'demo',self.root)
+        path,note=find_note(made['id'],'demo',self.root);old=note['checked'];note['updated']='2999-01-01T00:00:00+00:00';Path(path).write_text(notes.serialize(note),encoding='utf-8')   # a body update of the old code: updated moved, checked did not
+        plain=self.cap('Plain fact',[],body='Nothing tracked here.')
+        proposal=baseline_plan(self.root);self.assertEqual([u['id'] for u in proposal['summary']['updates']],[made['id']])
+        apply(self.root,proposal['plan_id'],proposal['digest']);after=self.note_of(made)
+        self.assertEqual((after['checked'],after['updated']),('2999-01-01T00:00:00+00:00','2999-01-01T00:00:00+00:00'));self.assertNotEqual(after['checked'],old)
+        self.assertEqual(baseline_plan(self.root)['summary']['notes'],0)
 
 class BatchedFollow(Base):
     """C5: one batch lookup for files no hint looked up and for files a shell or git changed; the pull guard; one sentence for many notes."""

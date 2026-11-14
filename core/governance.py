@@ -118,7 +118,8 @@ def merge_plan(root,payload):
         target_path,target=find_note(target_id,domain,root)
         if target.get('learning_procedure'):raise ValueError('Learned procedure changes require candidate review')
         if target.get('status')!='active':raise ValueError('Merge target must be active')
-        target['body']=payload['body'].strip();target['updated']=now();changes={};merged=[];moves={}
+        keep_baseline(target);target['body']=payload['body'].strip();target['updated']=now();changes={};merged=[];moves={}
+        if target.get('checked'):target['checked']=target['updated']   # the approved merged body is the author's word for the facts as of now
         for ref in sources:
             source_domain,identity=ref.split(':',1)
             if source_domain!=domain:raise ValueError('Merge sources must be distinct notes in the target domain')

@@ -242,7 +242,7 @@ def currency(hit,repo,bindings=None,cache=None):
         return entry,True
 
 def working_tree_changes(hit,repo,bindings=None,timeout=2):
-    """The cited paths with tracked uncommitted changes (staged or not, deleted files included) that are newer than the note's
+    """The cited paths with tracked uncommitted changes (staged or not; a deletion not yet committed is not counted) that are newer than the note's
     verification: one bounded `git diff HEAD`. Untracked files are not looked at. None when git cannot tell. Only the explicit review
     path calls this; hooks never do."""
     try:
@@ -254,7 +254,7 @@ def working_tree_changes(hit,repo,bindings=None,timeout=2):
         found=[]
         for path in cited_paths(hit,[l.strip() for l in out.splitlines() if l.strip()][:MAX_CHANGED],repo,bindings):
             try:newer=since is None or (Path(repo)/path).stat().st_mtime>since
-            except OSError:newer=True   # gone from the working tree
+            except OSError:continue   # deleted in the working tree: no timestamp to compare, and a verified deletion would stay stale until committed
             if newer:found.append(path)
         return found
     except (OSError,ValueError,subprocess.SubprocessError):return None

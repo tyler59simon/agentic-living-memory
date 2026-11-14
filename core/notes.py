@@ -697,9 +697,10 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
     # `updated` means the content changed; it drives recency and review age. A tag-, snooze- or files-only edit
     # (triage, backfill) must not reorder recency lists or reset the review clock; confirm never bumps it either.
     if action!='confirm' and not (action=='update' and set(values)<={'tags','review_by','files','commands','sources'}):
-        if action!='delete' and not (action=='update' and 'body' in values):keep_baseline(note)   # `updated` moves; what was checked does not
+        verifying=action=='update' and 'body' in values and rehash   # a checkbox tick or a prose rewrite (rehash=False) says nothing about the facts
+        if action!='delete' and not verifying:keep_baseline(note)   # `updated` moves; what was checked does not
         note['updated']=now()
-        if action=='update' and 'body' in values and note.get('checked'):note['checked']=note['updated']   # a body rewrite is the author's word for the facts as of now
+        if verifying and note.get('checked'):note['checked']=note['updated']   # a body rewrite is the author's word for the facts as of now
     note['path']=str(target)
     if target.parent!=path.parent and action!='delete':
         # Moving between notes/ and archive/: the note's own relative links must still reach their files.
@@ -810,6 +811,8 @@ def rewrite_plan(items,domain=None,root=None):
             rel=path.relative_to(root).as_posix()
             after=parse_changed(step[rel],note)
             after['updated']=note.get('updated')
+            if note.get('checked'):after['checked']=note['checked']
+            else:after.pop('checked',None)
             if note.get('review_by'):after['review_by']=note['review_by']
             else:after.pop('review_by',None)
             text=serialize(after)

@@ -217,5 +217,9 @@ class Maps(StoreFixture):
         from unittest.mock import patch
         with patch('core.maps.subprocess.run',side_effect=AssertionError('git must not run')):worklist(self.root,['demo'],cheap=True)
 
+    def test_a_cited_file_deleted_in_the_working_tree_stays_quiet_once_the_note_is_verified(self):
+        self.captured_map();(self.app/'src'/'Money.java').unlink()
+        self.assertEqual(worklist(self.root,['demo'],kinds=['stale'],working_tree=True)['items'][0]['currency']['changed'],['pom.xml'])   # an uncommitted deletion is not counted, a committed change still is
+
 
 if __name__=='__main__':unittest.main()
