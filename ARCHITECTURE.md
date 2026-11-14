@@ -8,6 +8,8 @@
 
 `core/maintenance_state.py` holds the configuration (`maintenance.json`), per-run records (`maintenance/runs/`) and the accounting checkpoint (`maintenance/state.json`) for automatic note maintenance. The allowance in force is the element-wise maximum of the checkpoint and the figures summed from the run records, so deleting a checkpoint or `.cache` never grants a new allowance. Money is integer microdollars. Nothing calls it from the CLI or hooks yet, and it runs no model work.
 
+`core/maintenance.py` selects candidates (spec priority order, round-robin over enabled domains, retry holds, no preference, policy or learned-procedure notes), builds the redacted evidence packet with its private manifest (a free preview: no model call, no usage events, no allowance), and holds the executor `apply`, the only automatic writer: each decision is re-checked against the current note, pin, action items, config and source hashes, then committed as one journaled transaction with a deterministic operation id. `run` ties these to the allowance accounting. `core/maintenance_agent.py` is the provider adapter: one tool-less `claude -p` call (no MCP, hooks or session, packet on stdin, fresh temp directory, process tree killed on timeout or overflow) and strict validation of the structured report. `runtime.process` does nothing when `LIVING_MEMORY_MAINTENANCE_CHILD=1`. The CLI, hook scheduling, backup and doctor integration are not wired yet.
+
 The local system follows a Bootstrap → Resolve → Read → Evaluate → Persist flow, with the adaptations and limits documented below.
 
 ```mermaid
