@@ -13,7 +13,7 @@ from contextlib import ExitStack, contextmanager
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_CEILING
 from pathlib import Path
-from .common import file_lock, global_domains, safe_domain
+from .common import file_lock, global_domains, parse_iso, safe_domain
 from .repository import canonical_json, digest, read_json, roll_forward_pending, store_lock, transaction
 
 CONFIG = 'maintenance.json'
@@ -58,7 +58,7 @@ def _iso(dt):
 
 
 def _parse(value):
-    dt = datetime.fromisoformat(value)
+    dt = parse_iso(value)
     return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
 
 

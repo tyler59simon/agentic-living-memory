@@ -1,5 +1,7 @@
 """The note type is the source of truth for human-readable prefixes and review horizons."""
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta, timezone
+
+from .common import parse_iso
 
 NOTE_TYPES = ('knowledge', 'decision', 'preference', 'context', 'status', 'bug', 'plan', 'risk', 'research', 'policy', 'map', 'runbook', 'brief')
 # One active note per folder, keyed by the first `files` entry (core/maps.py): a repo's codebase map, a project folder's brief.
@@ -72,7 +74,7 @@ def keep_baseline(note):
 def effective_date(note):
     """When the note was last known true: its last content change or confirmation, whichever is later."""
     try:
-        updated = datetime.fromisoformat(str(note.get('updated') or note.get('created') or '').replace('Z', '+00:00'))
+        updated = parse_iso(str(note.get('updated') or note.get('created') or ''))
     except ValueError:
         updated = None
     if updated is not None and updated.tzinfo is None:

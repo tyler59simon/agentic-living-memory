@@ -1,0 +1,36 @@
+# Runs the full unittest suite on every supported Python (3.10 to 3.15) on Windows, Linux and macOS.
+# Manual only (Actions > Python versions > Run workflow, or `gh workflow run python-versions.yml --ref BRANCH`):
+# one job takes about 20 minutes, and jobs run in parallel.
+name: Python versions
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        python: ['3.10', '3.11', '3.12', '3.13', '3.14', '3.15']
+    env:
+      GIT_AUTHOR_NAME: ci
+      GIT_AUTHOR_EMAIL: ci@example.invalid
+      GIT_COMMITTER_NAME: ci
+      GIT_COMMITTER_EMAIL: ci@example.invalid
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+          allow-prereleases: true
+      - name: Check SQLite FTS5
+        run: python -c "import sqlite3, sys; sqlite3.connect(':memory:').execute('CREATE VIRTUAL TABLE t USING fts5(x)'); print(sys.version, sqlite3.sqlite_version)"
+      - name: Unit tests
+        run: python -m unittest discover -s tests

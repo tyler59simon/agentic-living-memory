@@ -6,8 +6,9 @@ derived, incremental cache (.cache/activity.json, keyed by operation ID): a dele
 journal that is not final yet is not cached; an entry also keeps its journal's mtime and size, so a journal that recovery rewrote is read again. The ledger is the only canonical part: append-only, never pruned, no text."""
 from __future__ import annotations
 import base64,difflib,json,os,re
-from datetime import datetime,timedelta,timezone
+from datetime import timedelta,timezone
 from pathlib import Path
+from .common import parse_iso
 from .repository import BOOKKEEPING_KINDS,FINAL_STATES,_TAIL_STATE,canonical_json,digest,now,parse_text,read_json
 
 CACHE_VERSION=3
@@ -279,7 +280,7 @@ def session_rows(root):
 
 def _instant(value):
     """The aware datetime of an ISO date or time (naive counts as UTC, as the store writes UTC); ValueError when it is neither."""
-    moment=datetime.fromisoformat(value[:-1]+'+00:00' if value.endswith('Z') else value)
+    moment=parse_iso(value)
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 def _bound(value,name,end=False):

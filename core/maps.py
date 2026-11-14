@@ -7,7 +7,7 @@ child domain (a repo bound on its own under the session's folder) is still found
 from __future__ import annotations
 import json,os,re,sqlite3,subprocess
 from pathlib import Path
-from .common import domain_prefixes,git_root,resolve_domain,memory_root,repo_identity,repo_label,head_oid,global_domains
+from .common import domain_prefixes,git_root,resolve_domain,memory_root,repo_identity,repo_label,head_oid,global_domains,parse_iso
 
 MAP_BUDGET=3000  # the body, marker included; the header line is extra
 MAX_MAPS=2
@@ -249,7 +249,7 @@ def working_tree_changes(hit,repo,bindings=None,timeout=2):
         out=_git(repo,'diff','--name-only','--no-renames','--relative','HEAD',timeout=timeout)
         if out is None:return None
         from datetime import datetime
-        try:since=datetime.fromisoformat(last_current(hit)).timestamp()
+        try:since=parse_iso(last_current(hit)).timestamp()
         except ValueError:since=None
         found=[]
         for path in cited_paths(hit,[l.strip() for l in out.splitlines() if l.strip()][:MAX_CHANGED],repo,bindings):

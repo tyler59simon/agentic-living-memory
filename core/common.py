@@ -209,6 +209,13 @@ def file_lock(path: Path, timeout: float=10.0):
                     fcntl.flock(f.fileno(),fcntl.LOCK_UN)
         finally: f.close()
 
+def parse_iso(value):
+    """datetime.fromisoformat that also takes a trailing Z on Python 3.10 (3.11+ accepts it natively), so a
+    timestamp is valid or invalid the same way on every supported Python. Non-strings raise TypeError as before."""
+    from datetime import datetime
+    if isinstance(value,str) and value.endswith('Z'):value=value[:-1]+'+00:00'
+    return datetime.fromisoformat(value)
+
 RETRY_ATTEMPTS=10
 
 def retry_sharing(operation):

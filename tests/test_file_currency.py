@@ -1,10 +1,12 @@
 """C2: `file_hashes` on knowledge-type notes that list files, `checked` on confirm, and check / rewrite-plan leaving both alone."""
 import hashlib,os,shutil,subprocess,time,unittest
 from pathlib import Path
+from datetime import datetime,timezone
 from test_core import StoreFixture
 from unittest.mock import patch
 from core import digests,notes,runtime,search
 from core.notes import capture,change,check_action,confirm,find_note,rewrite_plan
+from core.common import parse_iso
 from core.repository import validate
 
 TAGS=['subject/project','concern/architecture']
@@ -111,6 +113,10 @@ class FileCurrency(Base):
         note=dict(self.note_of(self.cap('Retry limit',['src/a.py'])))
         for bad in ({'file_hashes':'x'},{'file_hashes':[{'path':'a','sha256':'zz'}]},{'file_hashes':[{'path':'a','sha256':'0'*64}]*31},{'checked':'yesterday'},{'checked':5}):
             with self.assertRaises(ValueError,msg=bad):validate({**note,**bad},'demo',self.root)
+
+    def test_a_utc_z_timestamp_is_valid_on_every_python(self):   # datetime.fromisoformat takes a trailing Z only from 3.11
+        note=dict(self.note_of(self.cap('Retry limit',['src/a.py'])));validate({**note,'checked':'2026-11-14T10:00:00Z'},'demo',self.root)
+        self.assertEqual(parse_iso('2026-11-14T10:00:00Z'),datetime(2026,11,14,10,tzinfo=timezone.utc))
 
     def test_the_index_carries_file_hashes_and_search_reports_them(self):
         self.cap('Retry limit',['src/a.py']);search.rebuild_index('demo',self.root)
