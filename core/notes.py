@@ -74,21 +74,22 @@ def touched_domains(changes):
     """The domains whose files a change set writes, in path order."""
     return sorted({parts[1] for parts in (rel.split('/') for rel in changes) if len(parts)>2 and parts[0]=='domains'})
 
-def retirement_record(action,actor,successor=None):
+def retirement_record(action,actor,successor=None,rule=None,reason=None,evidence=None,run_id=None,operation_id=None):
     """The `last_retirement` object a lifecycle change leaves on the note; only the controller writes it."""
     record={'version':1,'at':now(),'action':action,'actor':actor}
-    if successor:record['successor']=successor
+    for key,value in (('rule',rule),('reason',reason),('run_id',run_id),('operation_id',operation_id),('successor',successor),('evidence',evidence)):
+        if value:record[key]=value
     return record
 
 def _commit(domain,changes,kind,root,expected=None):
     return _commit_many([domain],changes,kind,root,expected)
 
-def _commit_many(domains,changes,kind,root,expected=None):
+def _commit_many(domains,changes,kind,root,expected=None,operation_id=None):
     """One journaled transaction across domains (a promotion moves a note between two), then each
     domain's derived state."""
     changes=dict(changes);domains=list(dict.fromkeys([*domains,*touched_domains(changes)]))   # a link rewrite can reach into another domain
     for domain in domains:changes[f'domains/{domain}/.derived-dirty']='dirty\n'
-    receipt=transaction(root,changes,kind,expected)
+    receipt=transaction(root,changes,kind,expected,operation_id)
     for domain in domains:
         try:reconcile(domain,root)
         except Exception as exc:
@@ -616,13 +617,14 @@ def capture(title,body,tags,domain,root=None,**metadata):
         if user:result['user_brief']=user
         return result
 
-def _change_set(note_id,domain,action,root,expected_revision=None,successor=None,pending=None,carried=None,rehash=True,actor='agent',**values):
+def _change_set(note_id,domain,action,root,expected_revision=None,successor=None,pending=None,carried=None,rehash=True,actor='agent',retirement=None,**values):
     """Files to write for one note action, with the revisions they must still have. `pending` holds the
     changes of earlier steps in the same transaction (rel path -> text, or None when removed); files are
     read through it, so steps build on each other instead of overwriting one another. A standalone supersede carries the replaced
     note's links and files into its successor (unless values has drop_links); `carried`, when a dict, receives what moved.
     `rehash=False` (check, rewrite-plan) leaves the recorded file hashes alone: those edits do not re-read the files.
-    `actor` (agent, plan, vault, auto_resolve) is recorded in the `last_retirement` of a retired note and as `restored_by` of a restored one."""
+    `retirement` (maintenance only: rule, reason, evidence, run_id, operation_id) adds its fields to that record.
+    `actor` (agent, plan, vault, auto_resolve, maintenance) is recorded in the `last_retirement` of a retired note and as `restored_by` of a restored one."""
     pending=pending or {}
     path,note=find_note(note_id,domain,root)
     if note.get('learning_procedure'):
@@ -698,7 +700,7 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
         if action=='resolve' and (note['type'] not in ACTION_TYPES or note.get('status')!='active'):raise ValueError('Only active plan, bug and risk notes may be resolved')
         if action=='reopen' and (note['type'] not in ACTION_TYPES or note.get('status')!='resolved'):raise ValueError('Only resolved plan, bug and risk notes may be reopened')
         note['status']='resolved' if action=='resolve' else 'active'
-        if action=='resolve':note['last_retirement']=retirement_record('resolve',actor)
+        if action=='resolve':note['last_retirement']=retirement_record('resolve',actor,**(retirement or {}))
         folder=root/'domains'/domain/('archive' if action=='resolve' else 'notes')
     elif action=='restore':
         # Forward restoration of an archived note: pinned, so automatic maintenance cannot retire it again at once.
@@ -720,7 +722,7 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
             if ':' in successor_id:successor_id=successor_id.split(':',1)[1]
             if successor_id==note_id:raise ValueError('Cannot supersede a note with itself')
             note['superseded_by']=successor_id
-        note['last_retirement']=retirement_record(action,actor,f'{domain}:{successor_id}' if action=='supersede' else None)
+        note['last_retirement']=retirement_record(action,actor,f'{domain}:{successor_id}' if action=='supersede' else None,**(retirement or {}))
         folder=root/'domains'/domain/'archive'
     elif action!='delete':raise ValueError('Unknown note action')
     target=path if action=='delete' else folder/f"{note['prefix']} - {slug(note['title'])}-{note_id[:8]}.md"

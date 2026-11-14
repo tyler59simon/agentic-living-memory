@@ -508,3 +508,12 @@ def set_retry(root, ref, revision, fingerprint, result, now=None, days=RETRY_DAY
         acc['retry'] = {k: v for k, v in acc['retry'].items() if _parse(v['retry_after']) > now}
         acc['retry'][ref] = {'revision': revision, 'fingerprint': fingerprint, 'retry_after': _iso(now + timedelta(days=days)), 'result': result}
         return transaction(root, {STATE: canonical_json(acc)}, 'maintenance_run', expected={STATE: before})
+
+
+def set_cursor(root, domain, now=None):
+    """Where the next run starts its round-robin over the enabled domains."""
+    with store_lock(root):
+        acc, _ = accounting(root, now)
+        before = _file_digest(root, STATE)
+        acc['domain_cursor'] = domain
+        return transaction(root, {STATE: canonical_json(acc)}, 'maintenance_run', expected={STATE: before})
