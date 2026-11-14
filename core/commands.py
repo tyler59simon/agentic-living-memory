@@ -22,7 +22,7 @@ SHELL_LANGS=frozenset('sh bash shell powershell pwsh cmd console zsh bat batch'.
 WRAPPERS=frozenset('cmd bash sh zsh dash ksh powershell pwsh wsl'.split())
 EXTENSIONS=('.cmd','.bat','.exe','.sh','.ps1','.com')
 PREFIXES=frozenset('sudo time nohup exec command'.split())
-NEVER={'living_memory'}   # the memory script itself: runtime already classifies it
+NEVER={'living_memory','alm'}   # the memory script itself and its launcher: runtime already classifies them
 _TOKEN=re.compile(r'''(?:[^\s"']|"[^"]*"|'[^']*')+''')
 _ENV=re.compile(r'[A-Za-z_]\w*=')
 _WORD=re.compile(r'[A-Za-z][\w:.-]*')

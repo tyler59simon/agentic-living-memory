@@ -20,5 +20,11 @@ def main():
         stop=run('hooks/codex_hooks.py',['stop'],event)
         guard=run('hooks/codex_hooks.py',['pre-tool-use'],{**event,'tool_name':'Write','tool_input':{'path':str(root/'domains/demo/notes/unsafe.md')}})
         checks={'session_context':'additionalContext' in session.get('hookSpecificOutput',{}),'prompt_context':'additionalContext' in prompt.get('hookSpecificOutput',{}),'capture_retrieved':hits['results'][0]['id']==note['id'],'approved_edit_and_undo':cli(['read','demo:'+note['id']])['body']==read['body'],'capture_completion_no_block':'decision' not in stop,'raw_write_denied':guard.get('hookSpecificOutput',{}).get('permissionDecision')=='deny','doctor':cli(['doctor'])['ok']}
-        print(json.dumps({'ok':all(checks.values()),'checks':checks,'data':'isolated temporary store; removed on exit','host':'real installed Python hook processes, not a live model turn'}));return 0 if all(checks.values()) else 1
+        # The `alm` launcher, when the first one on PATH is this install's: absent is information, not a failure.
+        sys.path.insert(0,str(package));from core.launcher import active
+        launcher='absent'
+        if active(package/'living_memory.py'):
+            ran=subprocess.run(['alm','--json','version'],text=True,capture_output=True,env=env,cwd=project,timeout=30)
+            checks['launcher']=ran.returncode==0 and json.loads(ran.stdout or '{}').get('ok') is True;launcher='ok' if checks['launcher'] else 'failed: '+(ran.stderr or ran.stdout)[:200]
+        print(json.dumps({'ok':all(checks.values()),'checks':checks,'launcher':launcher,'data':'isolated temporary store; removed on exit','host':'real installed Python hook processes, not a live model turn'}));return 0 if all(checks.values()) else 1
 if __name__=='__main__':raise SystemExit(main())

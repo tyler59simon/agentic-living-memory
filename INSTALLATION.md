@@ -12,10 +12,22 @@ Then run `py -3.15 install.py`. It installs the package into a per-user folder t
 
 Its plans, journals and ownership record sit beside `app/` in that folder. The plan's summary lists `next_steps`: one `integrations/setup.py HARNESS --hooks` command, run from the installed copy, for each harness found on the machine (Claude Code, Codex, Copilot, Factory). Each generates a plan to review and apply (see INTEGRATION.md). The interpreter that runs setup is the one the hooks use. Then:
 1. Review native hook trust and restart the harness.
-2. Bind a project with `py -3.15 living_memory.py bind my-project C:/Projects/MyProject`.
-3. Run `py -3.15 living_memory.py doctor --cwd C:/Projects/MyProject`.
+2. Bind a project with `alm bind my-project C:/Projects/MyProject` (open a new terminal first; see [The `alm` command](#the-alm-command)).
+3. Run `alm doctor --cwd C:/Projects/MyProject`.
 
 Updating or uninstalling a harness preserves the shared pointer and data.
+
+## The `alm` command
+
+`install.py` also installs a launcher named `alm`, so you can type `alm search 'cache'` instead of the interpreter and script paths. For a new user the whole sequence is: clone the repository, run `py -3.15 install.py --plan`, review the plan, apply it with `--apply-plan ID --expected-plan-sha256 DIGEST`, open a new terminal, then run `alm doctor`.
+
+- **Where:** `~/.local/bin/alm.exe` on Windows, `~/.local/bin/alm` (an sh script) elsewhere. The plan summary lists it under `launcher` (`create`, `replace`, `keep`, `remove` or `none`, with the reason).
+- **Windows build:** `alm.exe` is built at install time from pip's bundled launcher stub (`pip/_vendor/distlib/t64.exe`, or the arm64 or 32-bit variant) plus the interpreter path and a zip holding the entry point, the same layout as `pip.exe`. It needs pip: if there is no stub the plan says `none` and suggests `py -m ensurepip`. No `.cmd` or `.ps1` is written, because `cmd.exe` would expand `%VAR%` text inside note arguments and `.ps1` runs into execution policy. After writing it the installer runs `alm --help`; if that fails (for example Smart App Control blocks the exe) the launcher is removed and a warning says so.
+- **PATH:** when `~/.local/bin` is not on your PATH the plan includes a `path_change`, which you approve with the plan. On Windows it appends the folder to the user `Path` value under `HKCU\Environment` (keeping its value type) and broadcasts the change. Elsewhere it appends `export PATH="$HOME/.local/bin:$PATH"  # agentic-living-memory` to `~/.zprofile` (zsh), `~/.bash_profile` if it exists else `~/.profile` (bash), or `~/.profile`. Apply refuses as stale if that registry value or file changed after the plan. Open a new terminal, and restart running agent sessions, to see it.
+- **Ownership:** every launcher carries the marker `# agentic-living-memory launcher`. Install and uninstall replace or remove only a file with that marker. A foreign `alm`, or a symlink, is left alone and reported as `none`.
+- **Agents:** while this install's launcher is the first `alm` on PATH, hooks give agents `CMD = alm --json --domain NAME` and auto-allow bare `alm` read/search/capture commands as they do the full form. If another `alm` shadows it, a `.cmd` or `.ps1` sits beside it, or it was built for a different interpreter or script, agents keep the full quoted command and the host's normal permission prompt applies. Install and hooks must use the same Python for this to match.
+- **Uninstall:** `install.py --uninstall-plan` removes our launcher but leaves the PATH entry, since other programs may use the folder. `undo` does not touch the launcher.
+- **Limits:** in a terminal without ConPTY (Git Bash under mintty) stdout is a pipe, so a person there gets JSON; Windows Terminal and the PowerShell console get text. A shell alias or function named `alm` is invisible to the hook.
 
 ## Upgrading from a CODEX_HOME install
 

@@ -408,6 +408,13 @@ def _ask(root,domain,query,limit):
     if each:result['questions']=each
     return result
 
+def _emit(result,args):
+    """Text for a person at a terminal, else compact JSON (agents, apps, pipes, --json)."""
+    if not args.json and sys.stdout.isatty():
+        from .render import render
+        print(render(result))
+    else:print(json.dumps(result,ensure_ascii=False,separators=(',',':')))
+
 def error_code(message):
     """stale, conflict or invalid, from the message's own wording: the text before any quoted value or ': detail',
     so a note title, tag or path inside the message cannot change the code."""
@@ -441,7 +448,7 @@ def serve(root,cwd,commands):
         out=io.StringIO();error=io.StringIO();sys.stdin=io.StringIO(stdin)
         try:
             with contextlib.redirect_stdout(out),contextlib.redirect_stderr(error):
-                try:code=main(['--root',str(root),'--cwd',str(cwd)]+argv)
+                try:code=main(['--json','--root',str(root),'--cwd',str(cwd)]+argv)
                 except SystemExit as exc:code=exc.code if isinstance(exc.code,int) else 2
         except Exception as exc:  # one failing request must not end the session
             from .logs import swallowed
@@ -463,15 +470,29 @@ def _maintenance_hint(root):
     except ValueError:on=False
     return 'Automatic maintenance is on for this store: within its policy it archives, resolves and supersedes notes without a plan and records why (maintenance history); restore REF undoes an archive. ' if on else ''
 
+HELP={'setup':'Choose or move the shared memory folder','bind':'Bind a domain to project folders','unbind':'Remove a domain binding','capture':'Save a note','search':'Find notes','read':'Show one note',
+ 'update':'Change a note','supersede':'Retire a note in favour of another','review':'Notes that are due, stale or duplicated','open':'Open plans, bugs, risks and action items','check':'Tick an action item',
+ 'timeline':'Notes around a date or note','ingest-plan':'Plan importing Claude auto-memory files','export':'Write notes to a zip file','import-plan':'Plan importing an exported zip','confirm':'Mark a note still true',
+ 'resolve':'Finish a plan, bug or risk','reopen':'Reopen a resolved note','restore':'Bring back an archived note','stats':'Usage over the last days','logs':'Show the operational log','plan':'Plan a change to one note',
+ 'apply':'Apply a plan','inspect-plan':'Show a plan in full','rewrite-plan':'Plan rewriting several note bodies','merge-plan':'Plan merging notes','history':'Recent operations','log':'Note and change history',
+ 'undo':'Undo an operation','recover':'Finish or abandon an interrupted operation','diff':'Show what an operation changed','doctor':'Check the install and the store','backup':'Back up the store',
+ 'restore-plan':'Plan restoring a backup','migration-plan':'Plan a store migration','note-type-plan':'Plan note type changes','baseline-plan':'Plan a verification baseline','rebuild':'Rebuild search indexes',
+ 'maintenance':'Automatic maintenance','semantic':'Semantic search settings','validate':'Check notes against the rules','query':'Query the store','taxonomy-plan':'Plan a tag taxonomy change','taxonomy':'Show the tag taxonomy',
+ 'project-plan':'Plan a project registry change','projects':'List projects','system-plan':'Plan a system registry change','systems':'List systems','source-plan':'Plan a knowledge-base source change','sources':'List knowledge-base sources',
+ 'source-sync':'Re-index knowledge-base sources','ingest-scan':'Scan for files to ingest','ingest-skip':'Skip an ingest candidate','ask':'Ask a question about the project','change-plan':'Plan a tracked change',
+ 'changes':'List tracked changes','views':'Saved views','batch':'Run several commands from a JSON file','retag-plan':'Plan retagging notes','remap-plan':'Plan moving notes between domains','promote-plan':'Plan promoting notes to the global domain',
+ 'recall':'Search this session transcript','capture-finalize':'Record which notes a turn saved','list':'List notes','learn':'Learned procedures','domains':'List domains','links':'Links between notes',
+ 'version':'Version and command list','serve':'JSON-lines server on stdin and stdout','sync':'Sync a domain with an Obsidian vault','overlay-build':'Build the Obsidian overlay','overlay-teardown-plan':'Plan removing the overlay','overlay-sync-all':'Sync every domain with the vault'}
+
 def build_parser():
-    parser=argparse.ArgumentParser(description=__doc__)
+    parser=argparse.ArgumentParser(prog='alm',description='Agentic Living Memory: the notes your coding agents keep between sessions. Run alm COMMAND --help for a command.')
     def common(p,suppress=False):
         default=argparse.SUPPRESS if suppress else None
         p.add_argument('--root',type=Path,default=default);p.add_argument('--domain',default=default);p.add_argument('--cwd',default=default)
         p.add_argument('--json',action='store_true',default=argparse.SUPPRESS if suppress else False)
         p.add_argument('--actor',choices=['main','subagent','viewer'],default=argparse.SUPPRESS if suppress else os.environ.get('LIVING_MEMORY_ACTOR','main'))
-    common(parser);subs=parser.add_subparsers(dest='command',required=True)
-    def sub(name):p=subs.add_parser(name);common(p,True);return p
+    common(parser);subs=parser.add_subparsers(dest='command',required=True,metavar='COMMAND')
+    def sub(name):p=subs.add_parser(name,help=HELP.get(name));common(p,True);return p
     p=sub('setup');p.add_argument('--location',type=Path);p.add_argument('--non-interactive',action='store_true');p.add_argument('--source',type=Path);p.add_argument('--apply-plan');p.add_argument('--inspect-plan');p.add_argument('--expected-plan-sha256')
     p=sub('bind');p.add_argument('name');p.add_argument('prefix',nargs='+')
     p=sub('unbind');p.add_argument('name',help='A bound domain with no notes left (move them with remap-plan first)')
@@ -597,7 +618,7 @@ def main(argv=None):
             else:
                 if args.expected_plan_sha256:raise ValueError('--apply-plan is required')
                 result=setup(args.location,args.non_interactive,args.source)
-            print(json.dumps(result,ensure_ascii=False,separators=(',',':')));return 0
+            _emit(result,args);return 0
         from .storage import resolve_root
         root=resolve_root(args.root)[0]
         from . import logs
@@ -725,7 +746,7 @@ def main(argv=None):
                 result={'ok':True,'mode':'sources','domain':domain,'results':sources.search(root,domain,args.query,max(1,min(20,args.limit))),'knowledge_base':sources.state(root,domain)}
                 each=_each_question(args.query,max(1,min(20,args.limit)),lambda q,n:{'results':sources.search(root,domain,q,n)})
                 if each:result['questions']=each
-                invocation['result']=result;print(json.dumps(result,ensure_ascii=False,separators=(',',':')));return 0
+                invocation['result']=result;_emit(result,args);return 0
             config=load_bindings(root);scope=config.get('search_scope',{});globals_=scope.get('global_domains',['_global'])
             globals_=[canonical_domain(g,root) for g in globals_]
             globals_=[g for g in globals_ if (root/'domains'/g).exists()]
@@ -752,7 +773,7 @@ def main(argv=None):
                     hits=sorted(sorted(hits,key=lambda h:h.get('updated',''),reverse=True),key=lambda h:h.get('match')!='files')[:n]
                     if not hits and args.scope=='fallback' and foreign:domains=foreign;hits=file_notes(wanted,domains,root,max(1,min(100,args.limit)));fallback=True
                     result={'ok':True,'mode':'file','file':wanted,'domains':domains,'fallback':fallback,'results':hits}
-                    invocation['result']=result;print(json.dumps(result,ensure_ascii=False,separators=(',',':')));return 0
+                    invocation['result']=result;_emit(result,args);return 0
                 filters['file']={'*':wanted,**{k:child_path(wanted,domain,k,config) for k in kids_of}} if kids_of else wanted
             if not args.query.strip():raise ValueError('search needs a query, or --file PATH')
             result=_note_hits(root,domain,args.query,args.scope,args.limit,args.rebuild,filters,config,globals_,primary,foreign,args.explain)
@@ -1218,10 +1239,11 @@ def main(argv=None):
             from .sync import sync,build_overlay
             result=sync(domain,args.vault,root) if cmd=='sync' else build_overlay(domain,args.vault,root)
         else:raise ValueError('Unsupported command')
-        invocation['result']=result;print(json.dumps(result,ensure_ascii=False,separators=(',',':')));return 0
+        invocation['result']=result;_emit(result,args);return 0
     except (OSError,ValueError,TimeoutError,KeyError,TypeError) as exc:
         message=str(exc);code=error_code(message)
-        print(json.dumps({'ok':False,'error':{'code':code,'message':message}},separators=(',',':')),file=sys.stderr)
+        if not args.json and sys.stderr.isatty():print(f'alm: error ({code}): {message}',file=sys.stderr)
+        else:print(json.dumps({'ok':False,'error':{'code':code,'message':message}},separators=(',',':')),file=sys.stderr)
         invocation.update(code=6 if code=='stale' else 5 if code=='conflict' else 2,error={'code':code,'message':message});return invocation['code']
     except BaseException as exc:
         invocation.update(code=exc.code if isinstance(exc,SystemExit) and isinstance(exc.code,int) else 1,crash=None if isinstance(exc,SystemExit) else exc);raise

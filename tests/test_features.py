@@ -6,7 +6,8 @@ from core.repository import read_json,parse,serialize,transaction,recover,invent
 from core.notes import change,find_note
 from core.governance import apply,remap
 from core.sync import sync,build_overlay
-from core import runtime
+from core import runtime,launcher
+from test_launcher import fake
 
 class Features(StoreFixture):
     def test_sync_baseline_and_auto_applied_update(self):
@@ -142,6 +143,30 @@ class ClaudeIntegrationFixes(StoreFixture):
                 self.assertIn('allow',self.run_hook('pre-tool-use',event))
         event=self.payload(tool_name='Bash',tool_input={'command':self.memory("search 'q'")},agent_id='a1')
         self.assertIn('allow',self.run_hook('pre-tool-use',event))
+    def on_path(self,foreign=False):
+        folder=self.base/'bin';folder.mkdir(exist_ok=True)
+        if foreign:(folder/launcher.FILE).write_bytes(b'MZ foreign')
+        else:fake(folder)
+        launcher._active.cache_clear();self.addCleanup(launcher._active.cache_clear)
+        for cm in (patch.dict(os.environ,{'PATH':str(folder)+os.pathsep+os.environ.get('PATH','')}),patch.object(runtime,'_configured_root',return_value=self.root.resolve())):cm.start();self.addCleanup(cm.stop)
+    def bare(self,rest):return f'alm --json --domain demo {rest}'
+    def test_launcher_gives_agents_a_bare_command(self):
+        self.on_path();start=self.run_hook('session-start',self.payload())['context']
+        self.assertIn('CMD = alm --json --domain demo\n',start);self.assertNotIn('PowerShell: &',start)
+    def test_bare_alm_decisions(self):
+        self.on_path()
+        capture=self.bare("capture --session s1 --type knowledge --subject project --concern knowledge 'T' 'B'")
+        event=self.payload(tool_name='Bash',tool_input={'command':capture})
+        self.assertIn('deny',self.run_hook('pre-tool-use',{**event,'agent_id':'a1'}));self.assertIn('allow',self.run_hook('pre-tool-use',event))
+        bash=lambda command:self.run_hook('pre-tool-use',self.payload(tool_name='Bash',tool_input={'command':command}))
+        self.assertIn('allow',bash(self.bare('search cache')));self.assertNotIn('allow',bash(self.bare('search cache')+' ; rm -rf x'))
+        self.assertNotIn('allow',bash('alm;rm x'));self.assertNotIn('allow',bash('alm.exe --json search x'))
+        self.assertIn('deny',bash('& '+self.bare('search cache')))   # Bash has no call operator
+        ps=self.run_hook('pre-tool-use',self.payload(tool_name='PowerShell',tool_input={'command':'& '+self.bare('search cache')}));self.assertIn('allow',ps)
+    def test_foreign_alm_gets_no_decision_and_cmd_keeps_the_full_form(self):
+        self.on_path(foreign=True);start=self.run_hook('session-start',self.payload())['context']
+        self.assertIn(f'CMD = "{sys.executable}" "{runtime.SCRIPT}" --json',start);self.assertIn('PowerShell: &',start)
+        for tool in ('Bash','PowerShell'):self.assertEqual(self.run_hook('pre-tool-use',self.payload(tool_name=tool,tool_input={'command':self.bare('search cache')})),{})
     def test_retrieval_relevance_floor(self):
         self.note()
         self.assertIn('Cache',self.run_hook('user-prompt',self.payload(prompt='How is the cache rebuilt?'))['context'])

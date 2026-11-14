@@ -7,6 +7,7 @@ from .repository import read_json,canonical_json,now
 from .capture import status as capture_status,turn_key
 from .note_types import NOTE_TYPES
 
+from .launcher import active
 from .instructions import PROTOCOL,AUTO_MEMORY,usage,installed
 SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 # Tools that cannot change files; anything else marks the turn as mutating.
@@ -27,8 +28,8 @@ def _configured_root():
     except (OSError,ValueError,KeyError,TypeError):return None
 
 def command(root,domain=None):
-    """The script invocation agents should run. --root only when the hook is not using the shared store."""
-    text=f'"{sys.executable}" "{SCRIPT}"'
+    """The script invocation agents should run: bare `alm` when the launcher is active (launcher.active), else the quoted interpreter and script. Always --json. --root only when the hook is not using the shared store."""
+    text='alm --json' if active(SCRIPT) else f'"{sys.executable}" "{SCRIPT}" --json'
     if Path(root).resolve()!=_configured_root():text+=f' --root "{root}"'
     return text+(f' --domain {domain}' if domain else '')
 
@@ -52,7 +53,7 @@ def protocol(root,domain=None,harness='',session='SESSION'):
     current static block, only per-session data is injected; otherwise the full protocol, so the agent
     never sees zero copies or two differing copies of the rules."""
     cmd=command(root,domain)
-    dynamic=(f'CMD = {cmd}   (Bash: CMD as is; PowerShell: & CMD ...)'
+    dynamic=(f'CMD = {cmd}'+('' if cmd.startswith('alm ') else '   (Bash: CMD as is; PowerShell: & CMD ...)')+
              f"\nTags (pick the closest; --platform/--technology optional): {_tag_summary(root)}")
     if installed(harness):
         return f'Living Memory is active for domain {domain}; follow the Living Memory section of your instructions.\n'+dynamic
@@ -164,11 +165,17 @@ def _words(rest,grammar):
     return None if ps and STOP_PARSING in words else words
 
 def _parsed(text,grammar=None):
-    """The argument words of an exact, unchained living_memory.py invocation (interpreter and script paths each double- or single-quoted, an optional leading `&`), once per shell grammar that
+    """The argument words of an exact, unchained living_memory.py invocation (interpreter and script paths each double- or single-quoted, or bare `alm` while launcher.active; an optional leading `&`), once per shell grammar that
     may apply, else None. A tool that does not name its shell must be inert under both grammars."""
     match=re.match(r'''\s*(?:&\s*)?(?:"([^"]+)"|'([^']+)')\s+(?:"([^"]+)"|'([^']+)')(.*)\Z''',text,re.S)   # each path double- or single-quoted: literal in both shells
-    if not match or _norm(match[1] or match[2])!=_norm(sys.executable) or _norm(match[3] or match[4])!=_norm(SCRIPT):return None
-    found=[_words(match[5],g) for g in ((grammar,) if grammar in SHELL_GRAMMARS else SHELL_GRAMMARS)]
+    if match:
+        if _norm(match[1] or match[2])!=_norm(sys.executable) or _norm(match[3] or match[4])!=_norm(SCRIPT):return None
+        rest=match[5]
+    else:
+        bare=re.match(r'\s*(?:&\s*)?alm(?=\s|\Z)(.*)\Z',text,re.S)
+        if not bare or not active(SCRIPT):return None   # fail closed: an `alm` that is not our launcher keeps the host's normal prompt
+        rest=bare[1]
+    found=[_words(rest,g) for g in ((grammar,) if grammar in SHELL_GRAMMARS else SHELL_GRAMMARS)]
     return None if any(words is None for words in found) else found
 
 def _subcommand(words):
@@ -1767,8 +1774,9 @@ def _process(harness,event,payload,root=None,info=None):
         named=_titled(root,maps) if maps else []
         detail['maps']=maps
         # A subagent's context has no CMD, so this is the whole command; PowerShell needs the call operator before a quoted path.
+        cmd=command(root,domain)
         if named:result['context']+=(f"\nCodebase maps for the repos this session is working in (read the one for your repo before exploring it: "
-                                     f"{command(root,domain)} read REF"+('; Bash: as written, PowerShell: put & in front' if os.name=='nt' else '')+"): "+'; '.join(named))
+                                     f"{cmd} read REF"+('; Bash: as written, PowerShell: put & in front' if os.name=='nt' and not cmd.startswith('alm ') else '')+"): "+'; '.join(named))
     elif event=='pre-tool-use':
         name=str(payload.get('tool_name') or payload.get('toolName') or '').lower()
         args=payload.get('tool_input',payload.get('toolArgs',payload.get('toolArguments',{})))

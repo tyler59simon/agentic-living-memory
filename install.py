@@ -4,11 +4,16 @@ Windows: %LOCALAPPDATA%/agentic-living-memory/app. Elsewhere: ~/.local/lib/agent
 Plans, journals and the ownership record live beside app/ in that folder. Each harness (Claude Code, Codex,
 Copilot, Factory) is wired afterwards with integrations/setup.py HARNESS --hooks, run from the installed copy.
 Older releases installed into CODEX_HOME/agentic-living-memory; --retire-legacy-plan removes that copy once
-no harness points at it."""
+no harness points at it.
+
+The plan also puts an `alm` launcher in ~/.local/bin and, when that folder is not on PATH, adds it (summary
+keys `launcher` and `path_change`). Apply checks both are unchanged since the plan, then writes them."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -32,6 +37,8 @@ def _install_home() -> Path:
 INSTALL_HOME = _install_home()
 INSTALL_DIR = INSTALL_HOME / "app"
 LEGACY_DIR = CODEX_HOME / "agentic-living-memory"
+LAUNCHER_DIR = Path.home() / ".local" / "bin"
+PROFILE_LINE = 'export PATH="$HOME/.local/bin:$PATH"  # agentic-living-memory'
 
 
 def harness_home(harness: str) -> Path:
@@ -82,7 +89,6 @@ def next_steps() -> list:
 
 def main() -> int:
     import argparse
-    from core.governance import apply
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--location', type=Path, help='Shared memory folder for unattended first-time setup')
     parser.add_argument('--plan', action='store_true')
@@ -107,12 +113,12 @@ def main() -> int:
             parser.error('--expected-plan-sha256 is required')
         # Package plans live in INSTALL_HOME; legacy retirement plans in CODEX_HOME.
         root = INSTALL_HOME if (INSTALL_HOME / '.plans' / f'{args.apply_plan}.json').is_file() else CODEX_HOME
-        result = apply(root, args.apply_plan, args.expected_plan_sha256)
+        result = apply_plan(root, args.apply_plan, args.expected_plan_sha256)
     elif args.retire_legacy_plan:
         result = plan_retire(homes)
     else:
         proposed = plan_install(args.uninstall_plan)
-        result = proposed if args.plan or args.uninstall_plan else apply(INSTALL_HOME, proposed['plan_id'], proposed['digest'])
+        result = proposed if args.plan or args.uninstall_plan else apply_plan(INSTALL_HOME, proposed['plan_id'], proposed['digest'])
     print(json.dumps(result, separators=(',', ':')))
     return 0
 
@@ -124,11 +130,184 @@ def plan_install(uninstall=False):
     with store_lock(INSTALL_HOME):
         changes = _package_changes(INSTALL_DIR, uninstall)
         summary = {'package': str(INSTALL_DIR), 'files': len(changes), 'interpreter': sys.executable}
+        summary['launcher'] = _launcher_plan(uninstall)
         if uninstall:
             summary['before'] = 'Unwire each harness first: setup.py HARNESS --uninstall-plan from the installed copy.'
+            summary['path'] = f'A PATH entry for {LAUNCHER_DIR} is left in place: other programs may live in that folder.'
         else:
             summary['next_steps'] = next_steps()
+            change = _path_plan() if summary['launcher']['action'] in ('create', 'replace', 'keep') else None
+            if change:
+                summary['path_change'] = change
         return plan(INSTALL_HOME, changes, 'package_uninstall' if uninstall else 'package_install', summary=summary)
+
+
+def _sha(data):
+    return hashlib.sha256(data).hexdigest() if data is not None else None
+
+
+def _launcher_state(path: Path):
+    """What is at the launcher path now: None (nothing), 'symlink' (also any non-file), or the sha256 of the file."""
+    if not os.path.lexists(path):
+        return None
+    return 'symlink' if path.is_symlink() or not path.is_file() else _sha(path.read_bytes())
+
+
+def _norm_dir(text):
+    return os.path.normcase(os.path.normpath(os.path.expandvars(text)))
+
+
+def _on_path(folder, path_value, sep):
+    return any(_norm_dir(e) == _norm_dir(str(folder)) for e in path_value.split(sep) if e)
+
+
+def _launcher_plan(uninstall):
+    """The `alm` launcher this plan creates, replaces, keeps or removes. Only a file carrying our marker is ever touched."""
+    from core import launcher
+    path = LAUNCHER_DIR / launcher.FILE
+    script = INSTALL_DIR / 'living_memory.py'
+    state = _launcher_state(path)
+    record = {'path': str(path), 'action': 'none', 'before': state, 'after': None, 'python': sys.executable, 'script': str(script),
+              'on_path': _on_path(LAUNCHER_DIR, os.environ.get('PATH', ''), os.pathsep)}
+    if state is not None and not launcher.ours(path):
+        record['reason'] = 'a file named ' + launcher.FILE + ' that is not ours is already there; left alone'
+    elif uninstall:
+        if state is not None:
+            record['action'] = 'remove'
+        else:
+            record['reason'] = 'no launcher installed'
+    else:
+        want = launcher.build(sys.executable, script)
+        if want is None:
+            record['reason'] = 'no launcher stub found (needs pip: run `py -m ensurepip`); agents keep using the full command'
+        else:
+            record['after'] = _sha(want)
+            record['action'] = 'create' if state is None else 'keep' if state == record['after'] else 'replace'
+    return record
+
+
+def _registry_path():
+    """(value, type) of the user Path value under HKCU\\Environment; ('', REG_EXPAND_SZ) when there is none."""
+    import winreg
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, 'Environment') as key:
+        try:
+            return winreg.QueryValueEx(key, 'Path')
+        except FileNotFoundError:
+            return '', winreg.REG_EXPAND_SZ
+
+
+def _profile():
+    shell = os.path.basename(os.environ.get('SHELL', ''))
+    home = Path.home()
+    return home / '.zprofile' if shell == 'zsh' else home / '.bash_profile' if shell == 'bash' and (home / '.bash_profile').exists() else home / '.profile'
+
+
+def _path_plan():
+    """The PATH change that makes the launcher folder reachable, or None when it already is (this process's PATH, the user's registry value or profile)."""
+    if _on_path(LAUNCHER_DIR, os.environ.get('PATH', ''), os.pathsep):
+        return None
+    if os.name == 'nt':
+        value, kind = _registry_path()
+        if _on_path(LAUNCHER_DIR, value, ';'):
+            return None
+        return {'kind': 'registry', 'target': 'HKCU\\Environment\\Path', 'before': value, 'before_type': kind, 'add': str(LAUNCHER_DIR)}
+    profile = _profile()
+    text = profile.read_text(encoding='utf-8') if profile.is_file() else None
+    if text is not None and PROFILE_LINE in text:
+        return None
+    return {'kind': 'profile', 'target': str(profile), 'before': _sha(text.encode()) if text is not None else None, 'add': PROFILE_LINE}
+
+
+def _path_stale(change):
+    if change['kind'] == 'registry':
+        return list(_registry_path()) != [change['before'], change['before_type']]
+    profile = Path(change['target'])
+    return (_sha(profile.read_bytes()) if profile.is_file() else None) != change['before']
+
+
+def _add_to_path_windows(change):
+    import ctypes
+    import winreg
+    value = change['before'].rstrip(';')
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, 'Environment', 0, winreg.KEY_SET_VALUE) as key:
+        winreg.SetValueEx(key, 'Path', 0, change['before_type'], (value + ';' if value else '') + change['add'])
+    # Tell running programs (Explorer, new terminals) the environment changed.
+    ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, 'Environment', 0x2, 5000, ctypes.byref(ctypes.c_ulong()))
+
+
+def _add_to_path_posix(change):
+    profile = Path(change['target'])
+    text = profile.read_text(encoding='utf-8') if profile.is_file() else ''
+    profile.parent.mkdir(parents=True, exist_ok=True)
+    profile.write_text(text + ('' if not text or text.endswith('\n') else '\n') + change['add'] + '\n', encoding='utf-8')
+
+
+def _launcher_stale(record):
+    if record['python'] != sys.executable or _launcher_state(Path(record['path'])) != record['before']:
+        return True
+    if record['action'] in ('create', 'replace', 'keep'):
+        from core import launcher
+        return _sha(launcher.build(record['python'], record['script'])) != record['after']
+    return False
+
+
+def _write_launcher(record):
+    """Write (create, replace) or remove the launcher, then probe it. A launcher that does not run is removed. Returns a warning or None."""
+    from core import launcher
+    path = Path(record['path'])
+    if record['action'] == 'remove':
+        if launcher.ours(path):
+            path.unlink()
+        return None
+    if record['action'] not in ('create', 'replace'):
+        return None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fresh = path.with_name(path.name + '.new')
+    fresh.write_bytes(launcher.build(record['python'], record['script']))
+    fresh.chmod(0o755)
+    try:
+        os.replace(fresh, path)
+    except PermissionError:   # Windows: a running exe cannot be overwritten but can be renamed
+        old = path.with_name(path.name + '.old')
+        os.replace(path, old)
+        os.replace(fresh, path)
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    try:
+        probe = subprocess.run([str(path), '--help'], capture_output=True, timeout=60)
+        if probe.returncode == 0 and probe.stdout.startswith(b'usage: alm'):
+            return None
+        reason = f'exit {probe.returncode}: ' + probe.stderr.decode('utf-8', 'replace').strip()[:300]
+    except (OSError, subprocess.SubprocessError) as exc:
+        reason = str(exc)
+    path.unlink()
+    return f'The launcher {path} did not run ({reason}) and was removed; agents keep using the full command.'
+
+
+def apply_plan(root, plan_id, digest):
+    """governance.apply, plus the launcher and PATH change a package plan records. Both are checked before anything is written."""
+    from core.governance import apply
+    from core.repository import canonical_json, read_json
+    value = read_json(Path(root) / '.plans' / f'{plan_id}.json') or {}
+    unsigned = {k: v for k, v in value.items() if k != 'digest'}
+    summary = value.get('summary') or {}
+    if value.get('digest') != digest or hashlib.sha256(canonical_json(unsigned).encode()).hexdigest() != digest or 'launcher' not in summary:
+        return apply(root, plan_id, digest)   # unverified or not a package plan: governance decides
+    record, change = summary['launcher'], summary.get('path_change')
+    if _launcher_stale(record) or (change and _path_stale(change)):
+        raise ValueError('stale plan: the launcher or PATH changed since this plan was made; plan again')
+    receipt = apply(root, plan_id, digest)
+    warning = _write_launcher(record)
+    receipt['launcher'] = {'path': record['path'], 'action': record['action'] if not warning else 'failed'}
+    if warning:
+        receipt.setdefault('warnings', []).append(warning)
+    elif change:
+        (_add_to_path_windows if change['kind'] == 'registry' else _add_to_path_posix)(change)
+        receipt['path_change'] = change['add']
+        receipt['notice'] = 'Open a new terminal (and restart running agent sessions) so `alm` is found.'
+    return receipt
 
 
 def plan_retire(extra_homes=()):

@@ -133,4 +133,84 @@ class Delivery(StoreFixture):
         change(a['id'],'demo','update',self.root,expected_revision=note['revision'],body='Reviewed Windows edit')
         self.assertEqual(find_note(a['id'],'demo',self.root)[1]['body'],'Reviewed Windows edit')
 
+class LauncherInstall(StoreFixture):
+    """install.py's `alm` launcher and PATH change, in temp folders: nothing here touches the real ~/.local/bin, registry or profile."""
+    def setUp(self):
+        super().setUp()
+        import install
+        from core import launcher
+        self.install,self.launcher=install,launcher;self.home=self.base/'local'/'agentic-living-memory';self.bin=self.base/'userhome'/'.local'/'bin';self.exe=self.bin/launcher.FILE
+        self.old_path=os.environ.get('PATH','')
+        patch.multiple(install,INSTALL_HOME=self.home,INSTALL_DIR=self.home/'app',LAUNCHER_DIR=self.bin).start();self.addCleanup(patch.stopall)
+        self.on_path(True)
+    def on_path(self,yes):
+        os.environ['PATH']=(str(self.bin)+os.pathsep if yes else '')+self.old_path;self.addCleanup(os.environ.__setitem__,'PATH',self.old_path)
+    def plan(self,uninstall=False):return self.install.plan_install(uninstall)
+    def apply(self,proposed):return self.install.apply_plan(self.home,proposed['plan_id'],proposed['digest'])
+    def test_create_then_keep(self):
+        proposed=self.plan();self.assertEqual(proposed['summary']['launcher']['action'],'create');self.assertNotIn('path_change',proposed['summary'])
+        receipt=self.apply(proposed);self.assertEqual(receipt['launcher']['action'],'create');self.assertTrue(self.launcher.ours(self.exe));self.assertFalse(receipt.get('warnings'))
+        self.assertEqual(self.plan()['summary']['launcher']['action'],'keep')
+        self.assertTrue(self.launcher.active(self.home/'app'/'living_memory.py'))
+        shown=subprocess.run([str(self.exe),'--json','version'],capture_output=True,text=True);self.assertEqual(json.loads(shown.stdout)['ok'],True)
+    def test_replace_a_launcher_that_differs_from_what_would_be_built(self):
+        self.apply(self.plan());self.exe.write_bytes(self.exe.read_bytes()+b'x')   # still ours (marker), but no longer what would be built
+        self.assertEqual(self.plan()['summary']['launcher']['action'],'replace')
+    def test_foreign_file_is_left_alone(self):
+        self.bin.mkdir(parents=True);self.exe.write_bytes(b'foreign program')
+        proposed=self.plan();record=proposed['summary']['launcher'];self.assertEqual(record['action'],'none');self.assertIn('not ours',record['reason'])
+        self.apply(proposed);self.assertEqual(self.exe.read_bytes(),b'foreign program');self.assertTrue((self.home/'app/living_memory.py').exists())
+        self.apply(self.plan(True));self.assertEqual(self.exe.read_bytes(),b'foreign program')   # uninstall keeps it too
+    def test_file_changed_between_plan_and_apply_is_stale(self):
+        proposed=self.plan();self.bin.mkdir(parents=True);self.exe.write_bytes(b'appeared later')
+        with self.assertRaisesRegex(ValueError,'stale'):self.apply(proposed)
+        self.assertFalse((self.home/'app/living_memory.py').exists());self.assertEqual(self.exe.read_bytes(),b'appeared later')
+    def test_uninstall_removes_ours_and_says_the_path_entry_stays(self):
+        self.apply(self.plan());proposed=self.plan(True);self.assertEqual(proposed['summary']['launcher']['action'],'remove');self.assertIn('left in place',proposed['summary']['path'])
+        self.apply(proposed);self.assertFalse(self.exe.exists());self.assertFalse((self.home/'app/living_memory.py').exists())
+    @unittest.skipUnless(os.name=='nt','Windows builds the launcher from pip\'s stub')
+    def test_no_stub_means_no_launcher(self):
+        with patch.object(self.launcher,'_stub',return_value=None):record=self.plan()['summary']['launcher']
+        self.assertEqual(record['action'],'none');self.assertIn('ensurepip',record['reason'])
+    def test_launcher_that_does_not_run_is_removed_with_a_warning(self):
+        with patch('subprocess.run',return_value=subprocess.CompletedProcess([],1,b'',b'blocked')):receipt=self.apply(self.plan())
+        self.assertFalse(self.exe.exists());self.assertIn('blocked',receipt['warnings'][0]);self.assertEqual(receipt['launcher']['action'],'failed');self.assertNotIn('path_change',receipt)
+    @unittest.skipUnless(os.name=='nt','Windows registry')
+    def test_windows_path_change_keeps_the_value_type_and_is_idempotent(self):
+        import winreg
+        store={'v':('C:\\Tools;%USERPROFILE%\\x',winreg.REG_EXPAND_SZ)}
+        class Key:
+            def __enter__(self):return self
+            def __exit__(self,*a):return False
+        patches=[patch('winreg.OpenKey',return_value=Key()),patch('winreg.QueryValueEx',side_effect=lambda k,n:store['v']),patch('winreg.SetValueEx',side_effect=lambda k,n,r,kind,v:store.update(v=(v,kind))),patch('ctypes.windll',create=True)]
+        for each in patches:each.start();self.addCleanup(each.stop)
+        self.on_path(False);proposed=self.plan();change=proposed['summary']['path_change'];self.assertEqual((change['kind'],change['add']),('registry',str(self.bin)))
+        receipt=self.apply(proposed);self.assertEqual(store['v'],(f"C:\\Tools;%USERPROFILE%\\x;{self.bin}",winreg.REG_EXPAND_SZ));self.assertIn('new terminal',receipt['notice'])
+        self.assertNotIn('path_change',self.plan()['summary'])   # already in the registry value
+        store['v']=('C:\\Tools',winreg.REG_EXPAND_SZ);stale=self.plan();store['v']=('C:\\Other',winreg.REG_EXPAND_SZ)
+        with self.assertRaisesRegex(ValueError,'stale'):self.apply(stale)
+        self.assertEqual(store['v'][0],'C:\\Other');store['v']=('C:\\Tools',winreg.REG_EXPAND_SZ)
+        self.apply(self.plan(True));self.assertEqual(store['v'][0],'C:\\Tools')   # uninstall leaves PATH alone
+    def test_profile_choice_by_shell(self):
+        home=self.base/'h';home.mkdir()
+        with patch.object(Path,'home',return_value=home):
+            for shell,expected in (('/bin/zsh','.zprofile'),('/bin/bash','.profile'),('/bin/fish','.profile'),('','.profile')):
+                with patch.dict(os.environ,{'SHELL':shell}):self.assertEqual(self.install._profile(),home/expected)
+            (home/'.bash_profile').write_text('x')
+            with patch.dict(os.environ,{'SHELL':'/bin/bash'}):self.assertEqual(self.install._profile(),home/'.bash_profile')
+    def test_profile_line_is_appended_once_to_the_end(self):
+        profile=self.base/'h'/'.profile';profile.parent.mkdir();profile.write_text('alias x=y')
+        change={'kind':'profile','target':str(profile),'before':None,'add':self.install.PROFILE_LINE}
+        self.install._add_to_path_posix(change);self.assertEqual(profile.read_text(),'alias x=y\n'+self.install.PROFILE_LINE+'\n')
+    @unittest.skipIf(os.name=='nt','POSIX profile file')
+    def test_posix_path_change_by_profile_with_stale_check(self):
+        home=self.base/'h';home.mkdir();self.on_path(False)
+        with patch.object(Path,'home',return_value=home),patch.dict(os.environ,{'SHELL':'/bin/zsh'}):
+            proposed=self.plan();change=proposed['summary']['path_change'];self.assertEqual((change['kind'],change['target']),('profile',str(home/'.zprofile')))
+            self.apply(proposed);text=(home/'.zprofile').read_text();self.assertEqual(text.count(self.install.PROFILE_LINE),1)
+            self.assertNotIn('path_change',self.plan()['summary'])
+            (home/'.zprofile').write_text('');stale=self.plan();(home/'.zprofile').write_text('# edited')
+            with self.assertRaisesRegex(ValueError,'stale'):self.apply(stale)
+            self.apply(self.plan(True));self.assertIn('edited',(home/'.zprofile').read_text())
+
 if __name__=='__main__':unittest.main()
