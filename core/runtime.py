@@ -1403,14 +1403,18 @@ def scope_domains(domain,bindings):
 
 def child_path(shown,domain,child,bindings):
     """A path as shown for `domain` (touched_paths: relative to its folder, else absolute), rewritten relative to the folder of its child domain `child`,
-    which is how that domain's notes name files; None when the file is not inside the child's folder."""
-    from .common import domain_prefixes,display_path
+    which is how that domain's notes name files; None when the file is not inside the child's folder. A folder that is the child's root or
+    contains it gives '' (every file the child's notes name): search_domains' file filter and search.file_matches read '' that way. Hooks test the
+    result for truth, so they skip it: a touched path is a file, never a folder."""
+    from .common import domain_prefixes
     try:
         mine=domain_prefixes(domain,bindings);theirs=domain_prefixes(child,bindings)
         raw=Path(shown);found=[raw] if raw.is_absolute() else [p/raw for p in mine]
         for p in found:
-            rel=display_path(p,theirs)
-            if rel and not Path(rel).is_absolute():return rel
+            p=p.resolve()
+            for t in theirs:
+                if p.is_relative_to(t):return '' if p==t else p.relative_to(t).as_posix()
+                if t.is_relative_to(p):return ''
     except (OSError,ValueError):pass
     return None
 

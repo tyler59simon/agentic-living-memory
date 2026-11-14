@@ -707,22 +707,23 @@ def main(argv=None):
                 from .common import domain_prefixes,display_path
                 given=Path(args.file).expanduser()
                 wanted=(display_path(given.resolve(),domain_prefixes(domain,config)) or args.file) if given.is_absolute() else args.file
+                from .runtime import child_domains,child_path
+                kids_of=child_domains(domain,config) if args.scope!='all' else []   # a child's notes name files relative to the child's folder
                 if not args.query.strip():
                     # Lists notes about a file; --filter narrows a query's results, so it needs a query.
                     if filters:raise ValueError('--filter needs a query; with --file alone, use --scope to choose domains')
                     from .search import file_notes
                     domains=list(dict.fromkeys(sorted(config.get('domains',{}))+globals_)) if args.scope=='all' else primary
-                    from .runtime import child_domains,child_path
-                    n=max(1,min(100,args.limit));kids=child_domains(domain,config) if args.scope!='all' else []
+                    n=max(1,min(100,args.limit));kids=kids_of
                     hits=file_notes(wanted,[d for d in domains if d not in kids],root,n);fallback=False
                     for kid in kids:   # a child's notes name files relative to the child's folder
                         c=child_path(wanted,domain,kid,config)
-                        if c:hits+=[dict(h,file=c) for h in file_notes(c,[kid],root,n)]
+                        if c is not None:hits+=[dict(h,file=c) for h in file_notes(c,[kid],root,n)]
                     hits=sorted(sorted(hits,key=lambda h:h.get('updated',''),reverse=True),key=lambda h:h.get('match')!='files')[:n]
                     if not hits and args.scope=='fallback' and foreign:domains=foreign;hits=file_notes(wanted,domains,root,max(1,min(100,args.limit)));fallback=True
                     result={'ok':True,'mode':'file','file':wanted,'domains':domains,'fallback':fallback,'results':hits}
                     invocation['result']=result;print(json.dumps(result,ensure_ascii=False,separators=(',',':')));return 0
-                filters['file']=wanted
+                filters['file']={'*':wanted,**{k:child_path(wanted,domain,k,config) for k in kids_of}} if kids_of else wanted
             if not args.query.strip():raise ValueError('search needs a query, or --file PATH')
             result=_note_hits(root,domain,args.query,args.scope,args.limit,args.rebuild,filters,config,globals_,primary,foreign,args.explain)
             each=None if filters else _each_question(args.query,max(1,min(20,args.limit)),lambda q,n:{k:v for k,v in _note_hits(root,domain,q,args.scope,n,args.rebuild,filters,config,globals_,primary,foreign).items() if k in {'results','relevant'}})
