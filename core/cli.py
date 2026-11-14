@@ -506,7 +506,7 @@ def build_parser():
     # A reviewed plan replacing the bodies of several notes (a prose rewrite); titles never change.
     p=sub('rewrite-plan');p.add_argument('--payload-file',type=Path,help='JSON list of {"ref", "revision", "body"}; default: stdin')
     p=sub('merge-plan');p.add_argument('--payload-file',type=Path)
-    p=sub('history');p.add_argument('--note');p.add_argument('--limit',type=int,default=20)
+    p=sub('history');p.add_argument('--note');p.add_argument('--limit',type=int,default=20);p.add_argument('--markdown',action='store_true',help='Return {ok, rows, markdown} with a dated list a person can read')
     p=sub('log');p.add_argument('--project',help='Project slug');p.add_argument('--since',help='ISO date or time');p.add_argument('--until',help='ISO date or time, inclusive');p.add_argument('--note',help='One note (REF or ID, deleted notes too) or change (CHG-014)');p.add_argument('--type',help='Note type, change or session');p.add_argument('--event',help='created, updated, confirmed, superseded, resolved, archived, reopened, deleted, promoted, moved, undone, stage, closed or session');p.add_argument('--limit',type=int,default=50)
     p=sub('undo');p.add_argument('operation_id')
     p=sub('recover');p.add_argument('operation_id');p.add_argument('--direction',choices=['forward','backward'],default='forward');p.add_argument('--abandon',action='store_true',help='Stop treating the operation as pending; no note file is changed')
@@ -806,7 +806,7 @@ def main(argv=None):
             elif domain:domains=[domain]
             else:raise ValueError('unbound_project')
             result=note_links(root,domains,args.status)
-        elif cmd=='version':result={'ok':True,'api':SERVE_API,'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'learning':1,'restore':1,'pin':1,'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']}}}
+        elif cmd=='version':result={'ok':True,'api':SERVE_API,'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'learning':1,'restore':1,'pin':1,'history':2,'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']}}}
         elif cmd=='learn':
             from .learning import dispatch,flag_payload
             payload={}
@@ -985,6 +985,9 @@ def main(argv=None):
                     note_id=args.note.rpartition(':')[2]
                     if not __import__('re').fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',note_id):raise
             result=history(root,note_id,args.limit)
+            if args.markdown:
+                from .activity import markdown
+                result={'ok':True,'rows':result,'markdown':markdown(result)}
         elif cmd=='log':
             import re
             from .activity import log

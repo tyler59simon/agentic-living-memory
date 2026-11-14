@@ -81,14 +81,12 @@ def _check_guards(root,value):
 
 def history(root,note_id=None,limit=20):
     root=Path(root).resolve();rows=[]
+    if note_id:
+        from .activity import note_history   # only operations that changed the note itself, from the activity cache
+        return note_history(root,note_id,limit)
     for path in (root/'.operations').glob('*/journal.json'):
         try:
             value=read_json(path)
-            if note_id:
-                import base64
-                # Sync bookkeeping mentions every note; only real note changes belong in a note's history.
-                effects=[e for e in value['effects'] if not e['path'].endswith('sync-state.json') and '/staged/' not in e['path']]
-                if not any(note_id.encode() in base64.b64decode(e[s]) for e in effects for s in ('before','after') if e[s]):continue
             row={'operation_id':value['id'],'kind':value['kind'],'state':value['state'],'created':value['created'],'files':[e['path'] for e in value['effects']]}
         except (ValueError,KeyError,TypeError):continue  # doctor reports unreadable journals by ID
         rows.append(row)

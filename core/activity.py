@@ -5,18 +5,21 @@ the change registry (changes.json) from the same journals, and sessions from led
 derived, incremental cache (.cache/activity.json, keyed by operation ID): a deleted cache rebuilds from the journals, and a
 journal that is not final yet is not cached; an entry also keeps its journal's mtime and size, so a journal that recovery rewrote is read again. The ledger is the only canonical part: append-only, never pruned, no text."""
 from __future__ import annotations
-import base64,json,os,re
+import base64,difflib,json,os,re
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
 from .repository import BOOKKEEPING_KINDS,FINAL_STATES,_TAIL_STATE,canonical_json,digest,now,parse_text,read_json
 
-CACHE_VERSION=2
+CACHE_VERSION=3
 NOTE_PATH=re.compile(r'domains/([^/]+)/(?:notes|archive)/.+\.md')
 CONTENT=('title','body','type','tags','context','files','commands','sources')
 STATUS_EVENT={'superseded':'superseded','resolved':'resolved','archived':'archived','active':'reopened'}
 LIFECYCLE={'created','superseded','resolved','archived','restored','deleted','promoted'}
 EVENTS=('created','updated','confirmed','superseded','resolved','archived','reopened','restored','pinned','unpinned','deleted','promoted','moved','undone','stage','closed','session')
 CHANGE_FIELDS=('title','repo','branch','system','element')
+RETIRED={'superseded','resolved','archived'}
+PLAN_KINDS={'merge','rewrite','bulk_retag','reference_remap','import','ingest','schema_migration','note_type_migration','baseline_migration','taxonomy_expansion'}
+PLAN_PREFIXES=('project_','system_','change_')
 
 def _cache_file(root):return Path(root)/'.cache'/'activity.json'
 def _ledger_dir(root):return Path(root)/'ledger'
@@ -50,6 +53,76 @@ def _event(kind,old,new):
     if o.get('confirmed')!=n.get('confirmed') or o.get('checked')!=n.get('checked'):return 'confirmed'
     return None
 
+def _short(text,n=200):
+    text=' '.join(str(text).split());return text if len(text)<=n else text[:n-3].rstrip()+'...'
+
+def _tags(o,n):
+    old,new=set(o.get('tags') or []),set(n.get('tags') or [])
+    return ' '.join([f'+{t}' for t in sorted(new-old)]+[f'-{t}' for t in sorted(old-new)])
+
+def _actions(o,n):
+    from .note_format import action_items
+    old,new=dict((t,d) for d,t in action_items(o.get('body') or '')),dict((t,d) for d,t in action_items(n.get('body') or ''))
+    out=[f'ticked "{_short(t,40)}"' for t,d in new.items() if d and t in old and not old[t]]+[f'unticked "{_short(t,40)}"' for t,d in new.items() if not d and old.get(t)]
+    return out+[f'added "{_short(t,40)}"' for t in new if t not in old]+[f'removed "{_short(t,40)}"' for t in old if t not in new]
+
+def _body_change(o,n,skip_actions):
+    """The changed section headings and the lines added and removed in them; the Action items section is left out when its checkbox changes are reported on their own."""
+    from .note_format import parts
+    old={h or k:(k,t) for k,h,t in parts(o.get('body') or '')};new={h or k:(k,t) for k,h,t in parts(n.get('body') or '')}
+    labels=[];plus=minus=0
+    for label in [*old,*[x for x in new if x not in old]]:
+        a,b=old.get(label,('',''))[1],new.get(label,('',''))[1]
+        if a==b or (skip_actions and (old.get(label) or new.get(label))[0]=='actions'):continue
+        labels.append(label)
+        for line in difflib.unified_diff(a.splitlines(),b.splitlines(),lineterm='',n=0):
+            if line.startswith('+') and not line.startswith('+++'):plus+=1
+            elif line.startswith('-') and not line.startswith('---'):minus+=1
+    return f"{', '.join(labels)} +{plus}/-{minus} lines" if labels else ''
+
+def _updated(o,n):
+    found=[]
+    if o.get('title')!=n.get('title'):found.append(f"title \"{_short(o.get('title'),40)}\" -> \"{_short(n.get('title'),40)}\"")
+    if o.get('tags')!=n.get('tags'):found.append('tags '+_tags(o,n) if _tags(o,n) else 'tags reordered')
+    if o.get('type')!=n.get('type'):found.append(f"type {o.get('type')} -> {n.get('type')}")
+    if o.get('files')!=n.get('files'):found.append('files changed')
+    if o.get('review_by')!=n.get('review_by'):found.append(f"review date -> {n.get('review_by')}")
+    items=_actions(o,n);found+=items
+    if o.get('body')!=n.get('body') and _body_change(o,n,bool(items)):found.append(_body_change(o,n,bool(items)))
+    found+=[f'{k} changed' for k in ('context','commands','sources') if o.get(k)!=n.get(k)]
+    return '; '.join(found) or 'edited'
+
+def _summary(kind,event,old,new):
+    """One line (200 characters at most) saying what an event did to a note; old and new are the (domain, note) pairs _event received."""
+    o,n=(old[1] if old else {}),(new[1] if new else {});r=n.get('last_retirement') if isinstance(n.get('last_retirement'),dict) else {}
+    if event=='created':
+        from .note_format import summary_text
+        first=re.split(r'(?<=[.!?])\s',' '.join(summary_text(n.get('body') or '').split()),maxsplit=1)[0]
+        text=f"Created as {n.get('type')}"+(f': {first}' if first else '')
+    elif event=='updated':text=_updated(o,n)
+    elif event in ('resolved','archived'):
+        # Who did it is the row's actor; the summary says why (maintenance records a rule and a reason).
+        text=': '.join(str(r[k]) for k in ('rule','reason') if r.get(k)) or event
+    elif event=='superseded':
+        by=str(n.get('superseded_by') or r.get('successor') or '').rpartition(':')[2][:8];text=f'superseded by {by}' if by else 'superseded'
+    elif event=='restored':text='restored and pinned' if n.get('pinned') else 'restored'
+    elif event=='confirmed':text='confirmed' if o.get('confirmed')!=n.get('confirmed') else 'checked'
+    elif event in ('promoted','moved'):text=f'{event} to {new[0]}'
+    elif event=='undone':text='undid '+kind[5:13]
+    else:text=event
+    return _short(text)
+
+def _actor(op,kind,old,new):
+    """Who made the change: maintenance, auto_resolve, obsidian, undo, plan, agent:HARNESS (a capture with an origin) or command."""
+    n=new[1] if new else {};r=n.get('last_retirement') if isinstance(n.get('last_retirement'),dict) else {}
+    if str(op).startswith('m-'):return 'maintenance'
+    if r.get('actor')=='auto_resolve' and n.get('status') in RETIRED and (old[1].get('status','active') if old else None)!=n.get('status'):return 'auto_resolve'
+    if kind.startswith('overlay_'):return 'obsidian'
+    if kind.startswith('undo:'):return 'undo'
+    if kind in PLAN_KINDS or kind.startswith(PLAN_PREFIXES):return 'plan'
+    if kind.startswith('capture') and n.get('origin'):return 'agent:'+str(n['origin']).partition(':')[0]
+    return 'command'
+
 def _note_rows(op,kind,created,effects):
     slots={}
     for effect in effects:
@@ -69,7 +142,7 @@ def _note_rows(op,kind,created,effects):
             # A referring note whose links were rewritten because another note moved: the same move, not an edit of its own.
             if all(o.get(k)==n.get(k) for k in CONTENT if k!='body'):continue
         domain,note=slot.get('after') or slot['before']
-        rows.append(_row(op,created,event,f"{domain}:{note_id}",note.get('title'),note.get('type'),domain,[str(t)[8:] for t in note.get('tags') or [] if str(t).startswith('project/')]))
+        rows.append(_row(op,created,event,f"{domain}:{note_id}",note.get('title'),note.get('type'),domain,[str(t)[8:] for t in note.get('tags') or [] if str(t).startswith('project/')],summary=_summary(kind,event,slot.get('before'),slot.get('after')),actor=_actor(op,kind,slot.get('before'),slot.get('after'))))
     return rows
 
 def _registry(data):
@@ -92,7 +165,7 @@ def _change_rows(op,kind,created,effects):
             elif before.get('status')!=after.get('status'):event='closed' if after.get('status')!='active' else 'reopened';extra={'detail':after.get('status')}
             elif any(before.get(k)!=after.get(k) for k in CHANGE_FIELDS):event='updated'
             else:continue
-            rows.append(_row(op,created,event,display(number),entry.get('title'),'change',str(entry.get('brief') or '').partition(':')[0] or None,[entry['project']] if entry.get('project') else [],**extra))
+            rows.append(_row(op,created,event,display(number),entry.get('title'),'change',str(entry.get('brief') or '').partition(':')[0] or None,[entry['project']] if entry.get('project') else [],summary=extra.get('detail') or event,actor='plan' if kind.startswith('change_') else 'command',**extra))
     return rows
 
 def _sig(path):
@@ -109,7 +182,7 @@ def _read(path):
         journal=read_json(path);op,kind,created,effects=journal['id'],str(journal['kind']),str(journal['created']),journal['effects']
         rows=[] if state!='committed' or kind in BOOKKEEPING_KINDS else _note_rows(op,kind,created,effects)+_change_rows(op,kind,created,effects)
     except (ValueError,KeyError,TypeError,UnicodeError):return None
-    return {'created':created,'kind':kind,'rows':rows,'sig':sig}
+    return {'created':created,'kind':kind,'rows':rows,'files':[e['path'] for e in effects],'sig':sig}
 
 def _cached(root):
     try:value=json.loads(_cache_file(root).read_text(encoding='utf-8'))
@@ -117,8 +190,8 @@ def _cached(root):
     ops=value.get('ops') if isinstance(value,dict) and value.get('version')==CACHE_VERSION else None
     return ops if isinstance(ops,dict) else {}
 
-def journal_rows(root):
-    """Rows of every final note, change and undo journal. Journals already in the cache are not opened: a run after the first only lists and stats the folder."""
+def _entries(root):
+    """The cache entry of every final journal, by operation ID. Journals already in the cache are not opened: a run after the first only lists and stats the folder."""
     root=Path(root);cached=_cached(root);found={};fresh=False
     for path in sorted(root.glob('.operations/*/journal.json')):
         op=path.parent.name;hit=cached.get(op)
@@ -130,7 +203,23 @@ def journal_rows(root):
             from .common import atomic_write
             atomic_write(_cache_file(root),json.dumps({'version':CACHE_VERSION,'ops':found},separators=(',',':'),ensure_ascii=False))
         except OSError:pass   # derived: a cache that cannot be written only costs a rebuild
-    return [row for entry in found.values() for row in entry['rows']]
+    return found
+
+def journal_rows(root):
+    """Rows of every final note, change and undo journal."""
+    return [row for entry in _entries(root).values() for row in entry['rows']]
+
+def note_history(root,note_id,limit=20):
+    """The operations that changed one note itself, newest first, as history rows {operation_id, kind, state, created, files, event, title, summary, actor}."""
+    rows=[]
+    for op,entry in _entries(root).items():
+        row=next((r for r in entry['rows'] if r['ref'].rpartition(':')[2]==note_id),None)
+        if row:rows.append({'operation_id':op,'kind':entry['kind'],'state':'committed','created':entry['created'],'files':entry.get('files',[]),'event':row['event'],'title':row['title'],'summary':row.get('summary'),'actor':row.get('actor')})
+    return sorted(rows,key=lambda r:r['created'],reverse=True)[:max(1,limit)]
+
+def markdown(rows):
+    """A dated list a person can read, one line per history row: - 2026-11-14 18:25 archived (maintenance): summary."""
+    return '\n'.join(f"- {str(r['created'])[:16].replace('T',' ')} {r.get('event') or r['kind']}"+(f" ({r['actor']})" if r.get('actor') else '')+(f": {r['summary']}" if r.get('summary') else '') for r in rows)
 
 def _absolute(path,prefixes):
     """A touched path as the hooks store it (relative to a folder bound to the domain, else absolute) made absolute: the bound folder that holds the file, else the first."""
