@@ -1,6 +1,7 @@
 """Separate reviewed plans for configuration upgrades and note-type normalization."""
 from pathlib import Path
 from .common import memory_root
+from .note_types import keep_baseline
 from .repository import read_json,canonical_json,inventory,FACETS
 from .governance import plan
 
@@ -87,10 +88,30 @@ def note_type_plan(root=None):
             validate(note,note['domain'],root)
             text=serialize(note)
             if target==path and text==path.read_bytes().decode('utf-8'):continue
-            note['updated']=now();old=path.relative_to(root).as_posix();new=target.relative_to(root).as_posix()
+            keep_baseline(note);note['updated']=now();old=path.relative_to(root).as_posix();new=target.relative_to(root).as_posix()
             if old!=new:changes[old]=None
             changes[new]=serialize(note);domains.add(note['domain'])
             updates.append({'id':note['id'],'domain':note['domain'],'type':note['type'],'status':note['status'],'before':old,'after':new})
         return plan(root,changes,'note_type_migration',domains,
                     {'notes':len(updates),'renamed':sum(n['before']!=n['after'] for n in updates),
                      'ids_preserved':True,'statuses_preserved':True,'updates':updates})
+
+
+def baseline_plan(root=None):
+    """A reviewed plan that keeps the old effective verification baseline of existing notes. Before `checked` became the baseline, a note
+    was current from max(updated, checked); `verified_at` now reads `checked` alone, so a map, brief or note with `sources` or
+    `file_hashes` whose `checked` is older than a later body update would report already-covered changes. The plan sets
+    checked=updated for those notes (only `checked` changes; `updated` and the body stay). Notes without `checked` are unaffected."""
+    from .repository import serialize,validate
+    root=Path(root or memory_root()).resolve();changes={};updates=[];domains=set()
+    from .repository import store_lock
+    with store_lock(root):
+        for directory in sorted((root/'domains').iterdir()) if (root/'domains').exists() else []:
+            if not directory.is_dir():continue
+            for note in inventory(directory.name,root,retired=True):
+                if not note.get('checked') or not (note.get('type') in ('map','brief') or note.get('sources') or note.get('file_hashes')):continue
+                if str(note['checked'])>=str(note.get('updated') or ''):continue
+                note=dict(note,checked=note['updated']);validate(note,note['domain'],root)
+                rel=Path(note['path']).relative_to(root).as_posix();changes[rel]=serialize(note);domains.add(note['domain'])
+                updates.append({'id':note['id'],'domain':note['domain'],'type':note.get('type'),'path':rel})
+        return plan(root,changes,'baseline_migration',domains,{'notes':len(updates),'updates':updates})

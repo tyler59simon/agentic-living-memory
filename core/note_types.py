@@ -52,6 +52,23 @@ def last_confirmed(note):
     return max(dates) if dates else None
 
 
+def verified_at(note):
+    """The verification baseline of a note: when its facts were last checked, as an ISO timestamp. `checked` when the note has it (a
+    confirm, a body rewrite, or the baseline a cosmetic edit preserved), else the legacy baseline, `updated` or `created`. Not `max(updated,
+    checked)`: a title or type edit moves `updated` but vouches for nothing."""
+    return str(note.get('checked') or note.get('updated') or note.get('created') or '')
+
+
+def keep_baseline(note):
+    """For an edit that moves `updated` without checking the facts (a title, type or link rewrite, a move, a lifecycle change): write the
+    note's old verification baseline into `checked`, so the new `updated` does not become it by accident. Only notes whose verification
+    is read need it: a map or brief, or a note with digest sources or file hashes. Mutates and returns the note."""
+    if not note.get('checked') and (note.get('type') in KEYED_TYPES or note.get('file_hashes') or note.get('sources')):
+        baseline=verified_at(note)
+        if baseline:note['checked']=baseline
+    return note
+
+
 def effective_date(note):
     """When the note was last known true: its last content change or confirmation, whichever is later."""
     try:

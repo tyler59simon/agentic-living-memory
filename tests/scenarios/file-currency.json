@@ -37,6 +37,8 @@
   {"session": "s2b"},
   {"hook": "user-prompt", "payload": {"prompt": "how many times are failed payment captures retried"},
    "expect": {"inject": ["@retry"], "context_contains": ["STALE: billing/src/retry.py changed since this note — "]}},
+  {"cli": ["update", "@retry", "--title", "Retry cap for payment captures", "--session", "{session}"], "expect": {"exit": 0, "status": "update"}},
+  {"cli": ["read", "@retry"], "expect": {"exit": 0, "result_contains": ["\"stale\":\"STALE: billing/src/retry.py changed since this note\"", "\"state\":\"changed\""]}},
   {"cli": ["confirm", "@retry", "--session", "{session}"], "expect": {"exit": 0, "status": "confirm"}},
   {"cli": ["read", "@retry"], "expect": {"exit": 0, "result_excludes": ["STALE"]}},
   {"session": "s3"},

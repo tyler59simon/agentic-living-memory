@@ -500,6 +500,7 @@ def build_parser():
     p=sub('restore-plan');p.add_argument('file',type=Path)
     p=sub('migration-plan')
     p=sub('note-type-plan')
+    p=sub('baseline-plan')
     p=sub('rebuild');p.add_argument('name',nargs='?')
     p=sub('semantic');p.add_argument('action',choices=['status','install','remove','rebuild','native']);p.add_argument('value',nargs='?',choices=['on','off'],help='native: on or off');p.add_argument('--model',help='Model to install (default: the recommended one)');p.add_argument('--from',dest='source',type=Path,help='Folder already holding the model files, for an offline install; hashes are still verified')
     p=sub('validate');p.add_argument('name',nargs='?')
@@ -728,6 +729,13 @@ def main(argv=None):
             from .digests import stale_note
             stale=stale_note(note,root)   # a digest's source file, or a hashed file the note lists, changed since it was written
             if stale:result['stale']=stale
+            from .worklist import currency_of
+            try:
+                info=currency_of(note,root)   # per-file source states (a map's: the cached finding, no git)
+                if info:result['currency']=info
+            except Exception as exc:
+                from .logs import swallowed
+                swallowed('cli.read.currency',exc,root)
             if args.section:
                 # One section, as the prompt hook's evidence lines name it: "Why", or a path like "Notes > Deeper detail".
                 # The text comes from the note as served (an approved learned runbook's approved body, not an unreviewed edit of
@@ -828,7 +836,7 @@ def main(argv=None):
             elif domain:domains=[domain]
             else:raise ValueError('unbound_project')
             # Read-only for every actor: the worklist writes no usage rows, so a viewer's browsing is no evidence either.
-            found=worklist(root,domains,args.kind or None,max(1,min(100,args.limit)),args.tag)
+            found=worklist(root,domains,args.kind or None,max(1,min(100,args.limit)),args.tag,working_tree=True)
             result={'ok':True,'domain':None if args.all_domains else domain,'due':found['total'],'stale_digests':found['counts'].get('stale',0),'kinds':list(KINDS),'counts':found['counts'],'notes':found['items'],
                     'hint':'Each note lists why (kinds, reason) and an action. Still true -> confirm REF; changed -> update REF; replaced -> supersede REF --by NEW; finished -> resolve REF. A STALE note: read its files, then update REF (or confirm REF if it still holds). '
                            'For a duplicate (pair) or an obsolete note, propose plans for archive or merge; the user applies them. Stale notes come first, never-confirmed notes nobody has read lately lead the due ones.'}
@@ -975,6 +983,9 @@ def main(argv=None):
         elif cmd=='migration-plan':
             from .migration import migration_plan
             result=migration_plan(root)
+        elif cmd=='baseline-plan':
+            from .migration import baseline_plan
+            result=baseline_plan(root)
         elif cmd=='note-type-plan':
             from .migration import note_type_plan
             result=note_type_plan(root)

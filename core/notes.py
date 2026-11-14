@@ -5,7 +5,7 @@ from datetime import date
 from pathlib import Path
 from .common import memory_root,safe_domain,canonical_domain
 from .repository import inventory,parse,serialize,validate,read_json,transaction,reconcile,store_lock,now,digest,clean_files,clean_commands,clean_sources
-from .note_types import prefix_for,normalize,effective_type,default_review_by,KEYED_TYPES
+from .note_types import prefix_for,normalize,effective_type,default_review_by,keep_baseline,KEYED_TYPES
 from .note_format import format_body,without_actions,summary_text,ACTION_TYPES
 from .digests import stale_note
 
@@ -144,7 +144,7 @@ def _move_set(moves,root):
         targets[source.resolve()]=destination;steps.append((move,source,destination,status))
     moved={move['note']['id'] for move in moves}
     for move,source,destination,status in steps:
-        note={**move['note'],'domain':move['target'],'status':status,'updated':now(),'path':str(destination)}
+        note={**keep_baseline(dict(move['note'])),'domain':move['target'],'status':status,'updated':now(),'path':str(destination)}
         if move.get('superseded_by'):note['superseded_by']=move['superseded_by']
         if move.get('supersedes'):note['supersedes']=sorted(set(note.get('supersedes',[]))|set(move['supersedes']))
         note['body']=rewrite_type_links(note['body'],destination,targets,moved_from=source)
@@ -157,7 +157,7 @@ def _move_set(moves,root):
             new=rewrite_type_links(referring['body'],Path(referring['path']),targets)
             if new!=referring['body']:
                 rel=Path(referring['path']).relative_to(root).as_posix()
-                changes[rel]=serialize({**referring,'body':new,'updated':now()});expected[rel]=referring['revision']
+                changes[rel]=serialize({**keep_baseline(dict(referring)),'body':new,'updated':now()});expected[rel]=referring['revision']
     return changes,expected
 
 def _review_date(value):
@@ -324,22 +324,25 @@ def _rehashed(note,domain,root):
 FILE_HASH_TYPES=frozenset({'knowledge','runbook','policy','bug','risk','research'})   # a changed file means these may now be wrong; decisions, plans, statuses and preferences are about a moment
 HASHED_FILES_MAX=5
 
-def _file_hashes(note,domain,root,keep=None):
+def _file_hashes(note,domain,root,keep=None,fresh=False):
     """[{path, sha256}] for the first HASHED_FILES_MAX regular files a note of FILE_HASH_TYPES lists in `files`: the file's hash now, or the one in
-    `keep` ({path: sha256}) for a file already hashed. Folders, globs, files already in `sources` and files that are missing get none."""
+    `keep` ({path: sha256}) for a file already hashed. With fresh=True a kept file that can be read is hashed again (the author vouches for it
+    as it is now) and one that cannot be found keeps its old hash, so a deleted file stays visible. Folders, globs, files already in `sources`
+    and files that were never hashed and are missing get none."""
     if note.get('type') not in FILE_HASH_TYPES:return []
     from .digests import locate,file_sha256
     bindings=read_json(Path(root)/'bindings.json',{});digested={s['path'] for s in note.get('sources') or []};out=[]
     for path in clean_files(note.get('files')):
         if len(out)>=HASHED_FILES_MAX:break
         if path in digested or len(path)>300 or chr(10) in path or any(c in path for c in '*?['):continue
-        if keep and path in keep:out.append({'path':path,'sha256':keep[path]});continue
+        if keep and path in keep and not fresh:out.append({'path':path,'sha256':keep[path]});continue
         found,_=locate(root,domain,path,bindings);sha=file_sha256(found) if found else None
+        sha=sha or (keep or {}).get(path)
         if sha:out.append({'path':path,'sha256':sha})
     return out
 
-def _set_file_hashes(note,domain,root,keep=None):
-    hashes=_file_hashes(note,domain,root,keep)
+def _set_file_hashes(note,domain,root,keep=None,fresh=False):
+    hashes=_file_hashes(note,domain,root,keep,fresh)
     if hashes:note['file_hashes']=hashes
     else:note.pop('file_hashes',None)
 
@@ -642,9 +645,10 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
             if sources:note['sources']=sources
             else:note.pop('sources',None)
         elif 'body' in values and note.get('sources') and rehash:note['sources']=_rehashed(note,domain,root)   # rewritten from the file as it is now
-        if rehash and set(values)&{'files','sources','body','title','type'}:
-            # A rewrite (body, title, type) vouches for the files as they are now; a change of only the list keeps the hashes of files still listed.
-            _set_file_hashes(note,domain,root,None if set(values)&{'body','title','type'} else {h['path']:h['sha256'] for h in note.get('file_hashes') or []})
+        if rehash and set(values)&{'files','sources','body','type'}:
+            # Only a body rewrite vouches for the files as they are now (a deleted file keeps its last hash). A files or type change keeps the hash
+            # of every file still listed and starts one only for a file without a hash; a title edit does not come here at all.
+            _set_file_hashes(note,domain,root,{h['path']:h['sha256'] for h in note.get('file_hashes') or []},fresh='body' in values)
         if 'review_by' in values:
             review=_review_date(values['review_by'])
             if review:note['review_by']=review
@@ -666,7 +670,7 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
         today=date.today().isoformat();confirmed=[d for d in note.get('confirmed') or [] if isinstance(d,str) and d!=today]
         note['confirmed']=(confirmed+[today])[-CONFIRM_KEEP:]
         if note.get('sources'):note['sources']=_rehashed(note,domain,root)   # still true of the file as it is now
-        _set_file_hashes(note,domain,root);note['checked']=now()   # a map or brief reads current from here until the next commit
+        _set_file_hashes(note,domain,root,{h['path']:h['sha256'] for h in note.get('file_hashes') or []},fresh=True);note['checked']=now()   # a map or brief reads current from here until the next commit
         review=default_review_by(note['type'])
         if review:note['review_by']=review
         elif note.get('review_by'):
@@ -692,7 +696,11 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
     target=path if action=='delete' else folder/f"{note['prefix']} - {slug(note['title'])}-{note_id[:8]}.md"
     # `updated` means the content changed; it drives recency and review age. A tag-, snooze- or files-only edit
     # (triage, backfill) must not reorder recency lists or reset the review clock; confirm never bumps it either.
-    if action!='confirm' and not (action=='update' and set(values)<={'tags','review_by','files','commands','sources'}):note['updated']=now()
+    if action!='confirm' and not (action=='update' and set(values)<={'tags','review_by','files','commands','sources'}):
+        verifying=action=='update' and 'body' in values and rehash   # a checkbox tick or a prose rewrite (rehash=False) says nothing about the facts
+        if action!='delete' and not verifying:keep_baseline(note)   # `updated` moves; what was checked does not
+        note['updated']=now()
+        if verifying and note.get('checked'):note['checked']=note['updated']   # a body rewrite is the author's word for the facts as of now
     note['path']=str(target)
     if target.parent!=path.parent and action!='delete':
         # Moving between notes/ and archive/: the note's own relative links must still reach their files.
@@ -711,7 +719,7 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
             if files:successor_note['files']=files
         else:links,pointed=[],[]
         if isinstance(carried,dict):carried.update(carried_links=links,carried_files=pointed)
-        successor_note['updated']=now()
+        keep_baseline(successor_note);successor_note['updated']=now()
         changes[successor_path.relative_to(root).as_posix()]=serialize(successor_note)
         expected[successor_path.relative_to(root).as_posix()]=successor_note['revision']
     if target!=path:
@@ -733,7 +741,7 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
             current=parse_changed(changes.get(rel,pending.get(rel)),referring)
             old=current['body'];new=rewrite_type_links(old,Path(referring['path']),{path.resolve():target})
             if new!=old:
-                current['body']=new;current['updated']=now()
+                keep_baseline(current);current['body']=new;current['updated']=now()
                 changes[rel]=serialize(current)
                 if rel==original:expected[rel]=referring['revision']
     return changes,expected,target
@@ -803,6 +811,8 @@ def rewrite_plan(items,domain=None,root=None):
             rel=path.relative_to(root).as_posix()
             after=parse_changed(step[rel],note)
             after['updated']=note.get('updated')
+            if note.get('checked'):after['checked']=note['checked']
+            else:after.pop('checked',None)
             if note.get('review_by'):after['review_by']=note['review_by']
             else:after.pop('review_by',None)
             text=serialize(after)
@@ -851,7 +861,7 @@ def confirm(note_id,domain,root=None):
     root=Path(root or memory_root()).resolve()
     with store_lock(root):
         _,note=find_note(note_id,domain,root)
-        if date.today().isoformat() in (note.get('confirmed') or []) and note.get('type') not in KEYED_TYPES and not stale_note(note,root) and not (note.get('checked') and note['checked']<str(note.get('updated') or '')):   # a map or brief, a note whose file changed since, or one edited since its last confirmation, is confirmed again
+        if date.today().isoformat() in (note.get('confirmed') or []) and note.get('type') not in KEYED_TYPES and not stale_note(note,root) and not (note.get('checked') and note['checked']<=str(note.get('updated') or '')):   # a map or brief, a note whose file changed since, or one edited since its last confirmation, is confirmed again
             return {'ok':True,'id':note['id'],'status':'unchanged','confirmed':note['confirmed'],'review_by':note.get('review_by')}
         result=change(note['id'],domain,'confirm',root,note['revision'])
         after=find_note(note['id'],domain,root)[1]

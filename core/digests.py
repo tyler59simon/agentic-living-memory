@@ -128,27 +128,39 @@ def rehash(sources,domain,root,bindings=None):
         out.append({'path':s['path'],'sha256':sha or s['sha256']})
     return out
 
-def changed(sources,domain,root,bindings=None):
-    """The paths among a note's sources or file_hashes whose file differs from the hash recorded, or is gone."""
-    bindings=bindings if bindings is not None else load_bindings(root);specs=None;found=[]
-    for s in sources or []:
+def states(listed,domain,root,bindings=None):
+    """{path: state} for the sources or file_hashes of a note: `current` (the file matches the recorded hash), `changed` (read, and it
+    differs), `missing` (the bound folder or source is readable and the file is not there), `unavailable` (the folder is not bound or
+    the file cannot be read, so nothing can be said) or `unchecked` (no hash recorded)."""
+    bindings=bindings if bindings is not None else load_bindings(root);specs=None;out={}
+    for s in listed or []:
         if NAMED.match(s['path']) and specs is None:specs=_specs(root,domain,bindings)
+        if not s.get('sha256'):out[s['path']]='unchecked';continue
         path,known=locate(root,domain,s['path'],bindings,specs)
-        if known and (path is None or cached_sha256(path,root)!=s['sha256']):found.append(s['path'])
+        if path is None:out[s['path']]='missing' if known else 'unavailable'
+        else:
+            sha=cached_sha256(path,root);out[s['path']]='unavailable' if sha is None else 'current' if sha==s['sha256'] else 'changed'
     flush_hashes(root)
-    return found
+    return out
 
-def stale_text(paths,what='digest'):
-    """`STALE: a.md and 2 more changed since this digest` (what='note': `since this note`), '' when nothing changed."""
-    if not paths:return ''
-    names=', '.join(paths[:SHOWN])+(f' and {len(paths)-SHOWN} more' if len(paths)>SHOWN else '')
-    return f'STALE: {names} changed since this {what}'
+def changed(sources,domain,root,bindings=None):
+    """The paths among a note's sources or file_hashes whose file differs from the hash recorded, or is gone (a file the bound folder no longer has)."""
+    return [p for p,state in states(sources,domain,root,bindings).items() if state in ('changed','missing')]
+
+def stale_text(paths,what='digest',missing=()):
+    """`STALE: a.md and 2 more changed since this digest` (what='note': `since this note`), '' when nothing changed. Files in `missing`
+    read `STALE: a.md is missing`; both are joined with `; `."""
+    def names(found):return ', '.join(found[:SHOWN])+(f' and {len(found)-SHOWN} more' if len(found)>SHOWN else '')
+    parts=([f'{names(paths)} changed since this {what}'] if paths else [])+([f"{names(missing)} {'is' if len(missing)==1 else 'are'} missing"] if missing else [])
+    return 'STALE: '+'; '.join(parts) if parts else ''
 
 def stale_note(note,root,bindings=None):
     """stale_text for a note dict with `sources` (a digest) or `file_hashes` and `domain` ('' when it has neither or they are unchanged); never raises."""
     listed=(note.get('sources') or [])+(note.get('file_hashes') or [])
     if not listed:return ''
-    try:return stale_text(changed(listed,note['domain'],root,bindings),'digest' if note.get('sources') else 'note')
+    try:
+        found=states(listed,note['domain'],root,bindings)
+        return stale_text([p for p,v in found.items() if v=='changed'],'digest' if note.get('sources') else 'note',[p for p,v in found.items() if v=='missing'])
     except Exception as exc:
         from .logs import swallowed
         swallowed('digests.stale_note',exc,root);return ''
