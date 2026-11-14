@@ -103,7 +103,7 @@ def inspect_plan(root,identity,full=False):
     if not value:raise ValueError('Plan unavailable')
     effects=[]
     for rel,after in value['changes'].items():
-        path=confined(root,rel);before=path.read_text(encoding='utf-8') if path.exists() else ''
+        path=confined(root,rel);before=path.read_bytes().decode('utf-8',errors='replace') if path.exists() else ''   # a damaged file being repaired still shows
         delta=''.join(difflib.unified_diff(before.splitlines(True),(after or '').splitlines(True),fromfile=rel,tofile=rel))
         effects.append({'path':rel,'expected_revision':value['expected'][rel],'action':'delete' if after is None else 'write','diff':delta[:cut],'truncated':cut is not None and len(delta)>cut})
     return {'ok':True,'plan_id':identity,'digest':value['digest'],'kind':value['kind'],'summary':value['summary'],'effects':effects}

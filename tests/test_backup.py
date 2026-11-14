@@ -244,7 +244,11 @@ class MaintenanceFiles(StoreFixture):
         rel = f"maintenance/runs/{run['day']}/{run['id']}.json"
         source = snap.backup(self.root)['backup']
         (self.root / rel).write_bytes(bytes([0xff, 0xfe]) + b' not utf-8')
-        self.restore(source)
+        from core.governance import inspect_plan
+        proposed = snap.restore_plan(self.root, source)
+        shown = inspect_plan(self.root, proposed['plan_id'])
+        self.assertIn(rel, [e['path'] for e in shown['effects']])
+        apply(self.root, proposed['plan_id'], proposed['digest'])
         self.assertEqual(json.loads((self.root / rel).read_text())['id'], run['id'])
 
     def test_a_restore_with_only_equal_maintenance_files_is_unchanged(self):
