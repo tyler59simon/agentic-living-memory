@@ -11,6 +11,7 @@ Vaults built with the legacy single-folder layout ('Living Memory/...') migrate 
 """
 from __future__ import annotations
 import hashlib,json,re,sys,time,uuid
+from datetime import date
 from pathlib import Path
 from .common import memory_root,atomic_write,load_bindings
 from .repository import inventory,parse,parse_text,validate,serialize,store_lock,read_json,canonical_json,transaction,digest,confined,now,reconcile,clean_files,clean_commands
@@ -518,6 +519,23 @@ STALE_TEXT=('Notes that need a look, by kind. Changed evidence (stale): a cited 
             'Passed review date (due): the review date has passed, or nothing changed in a long time ({days} days; 30-90 for status, plan, bug and risk notes). Also an unconfirmed belief (interim), a content check (warned) and retrieved but never used (noisy). '
             'Pinned notes are marked and automatic maintenance never retires them. Retired notes leave this list and appear under Archive; `restore REF` brings one back. Run `review` for duplicates.\n\n')
 
+def _recap_page(domain,root):
+    """The Recap page text: computed once per local day and domain, then read from .cache/recap-DOMAIN.json. A failing recap gives a short fallback page, never a failed overlay."""
+    path=Path(root)/'.cache'/f'recap-{domain}.json';today=date.today().isoformat()
+    try:
+        cached=json.loads(path.read_text(encoding='utf-8'))
+        if cached.get('day')==today and isinstance(cached.get('markdown'),str):return cached['markdown']
+    except (OSError,ValueError,AttributeError):pass
+    try:
+        from . import recap
+        text=recap.recap(root,[domain])['markdown']
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('sync.recap',exc,root);return '# Recap\n\nRecap unavailable: see the logs.\n'
+    try:atomic_write(path,json.dumps({'day':today,'markdown':text},ensure_ascii=False))
+    except OSError:pass   # derived: a cache that cannot be written only costs a recompute
+    return text
+
 def build_overlay(domain,vault,root=None,trigger=None):
     root=Path(root or memory_root()).resolve();vault=Path(vault).resolve()
     try:sync_result=sync(domain,vault,root,trigger)
@@ -536,12 +554,13 @@ def build_overlay(domain,vault,root=None,trigger=None):
     except ValueError:on=False
     maintenance_line='Automatic maintenance is on: `maintenance history` shows what it archived and why.\n\n' if on else ''
     pages={'Home':'# Living Memory\n\n'+f'Domain: {domain}\n\nActive: {len(active)}; retired: {len(notes)-len(active)}; due for review: {len(stale)}\n\n'
-                  +'\n'.join(f'- [[{DASH}/{p}|{p}]]' for p in ('Domain Overview','Timeline','Stale Notes','Taxonomy','Archive'))+f'\n- [[{DASH}/Sync Status - {domain}|Sync Status]]\n- [[{CANVAS}/{domain}.canvas|Canvas]]',
+                  +'\n'.join(f'- [[{DASH}/{p}|{p}]]' for p in ('Domain Overview','Timeline','Stale Notes','Recap','Taxonomy','Archive'))+f'\n- [[{DASH}/Sync Status - {domain}|Sync Status]]\n- [[{CANVAS}/{domain}.canvas|Canvas]]',
            'Taxonomy':'# Taxonomy\n\n'+'\n'.join(f"- {t}" for t in sorted({t for n in notes for t in n.get('tags',[])})),
            'Stale Notes':'# Stale Notes\n\n'+(STALE_TEXT.format(days=STALE_DAYS)+maintenance_line
                          +'\n'.join(f"- {link(by_ref[r['ref']])}{' (pinned)' if r.get('pinned') else ''} — {', '.join(r['kinds'])}: {r['reason']}" for r in stale) if stale else '_Nothing needs review._'),
            'Timeline':'# Timeline\n\n'+'\n'.join(f"- {n.get('updated','')[:10]} {link(n)}" for n in sorted(notes,key=lambda n:n.get('updated',''),reverse=True)),
            'Domain Overview':'# Domain Overview\n\n'+f'Domain: {domain}\n\n'+'\n'.join('- '+link(n) for n in active),
+           'Recap':_recap_page(domain,root),
            'Archive':'# Archive\n\n'+'\n'.join('- '+link(n) for n in notes if n.get('status')!='active')}
     for name,text in pages.items():changes[f'{DASH}/{name}.md']=text+'\n'
     for t in NOTE_TYPES:changes[f'{TEMPLATES}/{t.capitalize()}.md']=_template(t)

@@ -22,7 +22,7 @@ class ObsidianLayout(StoreFixture):
         self.assertEqual(top, {'Dashboards', 'Domains', 'Canvas', 'Templates'})
         self.assertTrue((vault / 'Domains/demo' / Path(a['path']).name).exists())
         self.assertEqual({p.stem for p in (vault / 'Dashboards').iterdir()},
-                         {'Home', 'Taxonomy', 'Stale Notes', 'Timeline', 'Domain Overview', 'Archive', 'Sync Status - demo'})
+                         {'Home', 'Taxonomy', 'Stale Notes', 'Timeline', 'Domain Overview', 'Recap', 'Archive', 'Sync Status - demo'})
         overview = (vault / 'Dashboards/Domain Overview.md').read_text(encoding='utf-8')
         self.assertIn('[[Domains/demo/' + Path(a['path']).stem + '|', overview)
         canvas = json.loads((vault / 'Canvas/demo.canvas').read_text(encoding='utf-8'))

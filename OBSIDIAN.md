@@ -6,7 +6,7 @@
 | --- | --- |
 | `Domains/DOMAIN/` | Managed copies of active notes. New notes created here are captured. |
 | `Archive/DOMAIN/` | Managed copies of retired notes. |
-| `Dashboards/` | Home, Taxonomy, Stale Notes, Timeline, Domain Overview, Archive, and one Sync Status page per domain. Links are Obsidian wikilinks. |
+| `Dashboards/` | Home, Taxonomy, Stale Notes, Timeline, Domain Overview, Recap, Archive, and one Sync Status page per domain. Links are Obsidian wikilinks. `Recap.md` is the `recap` command's page for the last seven days of the domain; it is computed once per local day and cached in `.cache/recap-DOMAIN.json`, and shows "Recap unavailable" if the recap fails. |
 | `Canvas/DOMAIN.canvas` | Four columns of active notes. An edge means one note links to another with `[[Title]]` (label `link`) or supersedes it; shared tags do not draw edges. Obsidian's reformatting on open is not an edit. |
 | `Templates/` | One template per note type. Seeded once; your edits are kept and the folder is never scanned. |
 | `.living-memory/` | Vault identity (`vault.json`) and the `copies.json`/`generated.json` ownership manifests (hidden by Obsidian). |

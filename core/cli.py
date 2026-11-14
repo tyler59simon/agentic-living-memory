@@ -245,7 +245,7 @@ def _sectioned(args,body='',note_type=None):
 
 # source-sync writes only the derived knowledge-base index (as search --rebuild does the notes' one), so subagents and viewers may run it
 # (not for a remote source, which it would pull from the network: sources.sync refuses that for them).
-READ_ONLY={'search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','ask','sources','source-sync','ingest-scan','changes','views','log','maintenance'}
+READ_ONLY={'search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','ask','sources','source-sync','ingest-scan','changes','views','log','maintenance','recap'}
 # Viewer: a human-facing app browsing the store. Read-only, and its reads are not usage evidence for the diary.
 VIEWER=READ_ONLY|{'taxonomy','review','diff','inspect-plan'}
 SERVE_API=2
@@ -507,6 +507,7 @@ def build_parser():
     p=sub('rewrite-plan');p.add_argument('--payload-file',type=Path,help='JSON list of {"ref", "revision", "body"}; default: stdin')
     p=sub('merge-plan');p.add_argument('--payload-file',type=Path)
     p=sub('history');p.add_argument('--note');p.add_argument('--limit',type=int,default=20);p.add_argument('--markdown',action='store_true',help='Return {ok, rows, markdown} with a dated list a person can read')
+    p=sub('recap');p.add_argument('--days',type=int,default=7,help='Days back, 1 to 90');p.add_argument('--project',help='Project slug');p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain')
     p=sub('log');p.add_argument('--project',help='Project slug');p.add_argument('--since',help='ISO date or time');p.add_argument('--until',help='ISO date or time, inclusive');p.add_argument('--note',help='One note (REF or ID, deleted notes too) or change (CHG-014)');p.add_argument('--type',help='Note type, change or session');p.add_argument('--event',help='created, updated, confirmed, superseded, resolved, archived, reopened, deleted, promoted, moved, undone, stage, closed or session');p.add_argument('--limit',type=int,default=50)
     p=sub('undo');p.add_argument('operation_id')
     p=sub('recover');p.add_argument('operation_id');p.add_argument('--direction',choices=['forward','backward'],default='forward');p.add_argument('--abandon',action='store_true',help='Stop treating the operation as pending; no note file is changed')
@@ -988,6 +989,13 @@ def main(argv=None):
             if args.markdown:
                 from .activity import markdown
                 result={'ok':True,'rows':result,'markdown':markdown(result)}
+        elif cmd=='recap':
+            from .recap import recap
+            if not 1<=args.days<=90:raise ValueError('--days must be 1 to 90')
+            if args.all_domains:scope=[d['name'] for d in list_domains(root)['domains'] if (root/'domains'/d['name']/'notes').is_dir()]
+            elif domain:scope=[domain]
+            else:raise ValueError('unbound_project')
+            result=recap(root,scope,args.days,args.project)
         elif cmd=='log':
             import re
             from .activity import log
