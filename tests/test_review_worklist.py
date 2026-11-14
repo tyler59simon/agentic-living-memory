@@ -170,6 +170,11 @@ class ActionsParse(unittest.TestCase):
              'merge-plan':'merge-plan','plan archive':'plan archive demo:abc'}
     def test_every_action_the_worklist_emits_is_a_command_the_cli_parses(self):
         from core.cli import build_parser
+        from core.worklist import _action,KINDS
+        done_plan={'type':'plan','body':'A plan.\n\n## Action items\n- [x] Ship it'}
+        notes=({'type':'knowledge','body':'x'},{'type':'status','body':'x'},done_plan)
+        emitted={_action([kind],note,pair) for kind in KINDS for note in notes for pair in (None,{'same':True},{'same':False})}
+        self.assertEqual(emitted,set(self.SAMPLES),'a new worklist action needs a sample command here')
         for action,sample in self.SAMPLES.items():
             with self.subTest(action=action):
                 self.assertTrue(sample.startswith(action.split()[0]))
