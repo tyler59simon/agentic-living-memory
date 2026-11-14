@@ -101,6 +101,40 @@ class Provenance(StoreFixture):
         code,result=self.cli('--domain','demo','search','--file','core/cli.py','--filter','type=bug')
         self.assertEqual(code,2);self.assertIn('--filter needs a query',result['error']['message'])
         self.assertFalse((self.root/'domains'/'missing').exists())
+    def test_file_search_all_scope_includes_global_domains_and_children(self):
+        from core.init_domain import init_domain
+        from core.notes import capture,ensure_global
+        ensure_global(self.root);ours=capture('Global file note','Body.',['subject/project','concern/architecture'],'_global',self.root,files=['core/cli.py'])
+        child=self.base/'project'/'pkg';child.mkdir(parents=True);init_domain('pkg',[str(child)],self.root)
+        kid=capture('Child file note','Body.',['subject/project','concern/architecture'],'pkg',self.root,files=['core/cli.py'])
+        code,result=self.cli('--domain','demo','search','--file','core/cli.py','--scope','all')
+        self.assertEqual(code,0,result);self.assertEqual({h['id'] for h in result['results']},{ours['id']});self.assertIn('_global',result['domains'])   # the child's core/cli.py is pkg/core/cli.py from here
+        code,result=self.cli('--domain','demo','search','--file','pkg/core/cli.py','--scope','all')
+        self.assertEqual(code,0,result);self.assertEqual({h['id'] for h in result['results']},{kid['id']})
+        code,result=self.cli('--domain','demo','search','--file','pkg/core/cli.py')   # relative to the session domain; the child names it core/cli.py
+        self.assertEqual(code,0,result);self.assertEqual([h['id'] for h in result['results']],[kid['id']])
+    def test_file_search_translates_child_paths_with_a_query_and_for_folders(self):
+        from core.init_domain import init_domain
+        from core.notes import capture
+        from core.runtime import child_path
+        from core.common import load_bindings
+        child=self.base/'project'/'pkg';child.mkdir(parents=True);init_domain('pkg',[str(child)],self.root)
+        kid=capture('Parser notes','The parser collects errors.',['subject/project','concern/architecture'],'pkg',self.root,files=['src/parser.py'])
+        own=self.note('Parser note elsewhere','The parser in src/parser.py of the project.',files=['src/parser.py'])
+        code,result=self.cli('--domain','demo','search','parser','--file','pkg/src/parser.py')
+        self.assertEqual(code,0,result);self.assertEqual([h['id'] for h in result['results']],[kid['id']])   # not the project's own src/parser.py note
+        code,result=self.cli('--domain','demo','search','parser','--file','src/parser.py')
+        self.assertEqual(code,0,result);self.assertEqual([h['id'] for h in result['results']],[own['id']])
+        code,result=self.cli('--domain','demo','search','parser','--file','pkg')
+        self.assertEqual(code,0,result);self.assertEqual([h['id'] for h in result['results']],[kid['id']])
+        code,result=self.cli('--domain','demo','search','--file','pkg')   # the child's root: every file its notes name
+        self.assertEqual(code,0,result);self.assertEqual([h['id'] for h in result['results']],[kid['id']])
+        config=load_bindings(self.root);self.assertEqual((child_path('pkg','demo','pkg',config),child_path('pkg/src','demo','pkg',config),child_path('other','demo','pkg',config)),('','src',None))
+        for extra in ((),('parser',)):   # --scope all still translates a child's paths
+            code,result=self.cli('--domain','demo','search',*extra,'--file','pkg/src/parser.py','--scope','all')
+            self.assertEqual(code,0,result);self.assertIn(kid['id'],[h['id'] for h in result['results']])
+        code,result=self.cli('--domain','demo','read','Parser notes')   # an exact title resolves in a child domain too
+        self.assertEqual(code,0,result);self.assertEqual(result['id'],kid['id'])
     def test_mentions_need_a_path_token(self):
         self.assertTrue(mentions_file('see core\\cli.py.','core/cli.py'))
         self.assertFalse(mentions_file('see core/cli.pyc','core/cli.py'))

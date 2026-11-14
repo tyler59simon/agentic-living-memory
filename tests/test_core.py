@@ -47,6 +47,35 @@ class StoreCase(StoreFixture):
         p=self.root/'bindings.json';p.write_text('{broken')
         with self.assertRaises(ValueError):init_domain('another',[str(self.base)],self.root)
         self.assertEqual(p.read_text(),'{broken')
+    def cli(self,*argv):
+        from core.cli import main
+        out,err=io.StringIO(),io.StringIO()
+        with contextlib.redirect_stdout(out),contextlib.redirect_stderr(err):code=main(['--root',str(self.root),*argv])
+        return code,json.loads(out.getvalue() or err.getvalue())
+    def test_unbind_removes_the_binding_once_the_domain_holds_no_notes(self):
+        from core.common import resolve_domain,load_bindings
+        init_domain('side',[str(self.base/'side')],self.root);(self.base/'side').mkdir()
+        settings=json.loads((self.root/'bindings.json').read_text(encoding='utf-8'));settings['domain_aliases']={'s':'side','g':'_global'}
+        (self.root/'bindings.json').write_text(json.dumps(settings),encoding='utf-8')
+        self.assertEqual(resolve_domain(self.base/'side',load_bindings(self.root)),'side')
+        code,result=self.cli('unbind','side');self.assertEqual((code,result['status']),(0,'unbound'))
+        self.assertIsNone(resolve_domain(self.base/'side',load_bindings(self.root)));self.assertIn('demo',load_bindings(self.root)['domains'])
+        self.assertEqual(load_bindings(self.root).get('domain_aliases'),{'g':'_global'})   # the alias to the unbound domain goes with it
+        self.assertTrue((self.root/'domains/side/notes').is_dir())   # folders stay; only the binding goes
+        self.assertEqual(self.cli('unbind','side')[0],2)   # unknown now
+    def test_unbind_refuses_a_domain_that_still_holds_notes_or_archived_notes(self):
+        from core.common import load_bindings
+        n=self.note('Rollout plan','A plan.',type='plan');code,result=self.cli('unbind','demo');self.assertEqual(code,2);self.assertIn('remap-plan',result['error']['message']);self.assertIn('1 note',result['error']['message'])
+        change(n['id'],'demo','resolve',self.root);self.assertEqual(len(list((self.root/'domains/demo/notes').glob('*.md'))),0)   # now only in the archive
+        code,result=self.cli('unbind','demo');self.assertEqual(code,2);self.assertIn('remap-plan',result['error']['message'])
+        self.assertIn('demo',load_bindings(self.root)['domains'])
+    def test_unbind_refuses_global_and_unknown_domains_and_non_main_actors(self):
+        init_domain('side',[str(self.base/'side')],self.root)
+        code,result=self.cli('unbind','_global');self.assertEqual(code,2);self.assertIn('global',result['error']['message'])
+        self.assertEqual(self.cli('unbind','nowhere')[0],2)
+        for actor in ('subagent','viewer'):self.assertEqual(self.cli('--actor',actor,'unbind','side')[0],2)
+        from core.runtime import ALLOWED_SUBCOMMANDS
+        self.assertNotIn('unbind',ALLOWED_SUBCOMMANDS)
     def test_transaction_restart_and_preflight(self):
         real=repo._write;counter=[0]
         def crash(path,data):

@@ -91,6 +91,7 @@ def normalize_file(value):
 def file_matches(files,wanted):
     """True when a note's files include this path, or anything under it when it names a folder."""
     wanted=normalize_file(wanted).casefold()
+    if not wanted:return bool(files)   # '' is a folder holding everything (runtime.child_path)
     return any(f.casefold()==wanted or f.casefold().startswith(wanted+'/') for f in map(normalize_file,files or []))
 
 def mentions_file(body,path):
@@ -507,7 +508,12 @@ def search_domains(query,domains,limit=3,root=None,filters=None,rebuild=False,we
     hits=[]
     for index,domain in enumerate(dict.fromkeys(domains)):
         weight=(weights or {}).get(domain,2 if index==0 else 1)
-        found=search_domain(query,domain,max(20,limit),root,filters,rebuild)
+        mine=filters
+        if filters and isinstance(filters.get('file'),dict):   # a path per domain: {domain: path or None (matches nothing), '*': the default}
+            wanted=filters['file'].get(domain,filters['file'].get('*'))
+            if wanted is None:continue
+            mine={**filters,'file':wanted}
+        found=search_domain(query,domain,max(20,limit),root,mine,rebuild)
         for hit in keep(found) if keep else found:
             hit['score']=weight/(60+hit['rank']);hits.append(hit)
     from . import usage

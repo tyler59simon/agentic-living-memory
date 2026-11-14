@@ -16,6 +16,66 @@ class OpenWork(StoreFixture):
         return code,json.loads(out.getvalue() or err.getvalue())
     def project(self):return str(self.base/'project')
 
+    def age(self,note,days):
+        """Rewrite a note's `updated` stamp so it looks `days` days old (hooks only see canonical files)."""
+        from datetime import datetime,timedelta,timezone
+        from core.repository import serialize
+        path,stored=find_note(note['id'],'demo',self.root)
+        path.write_text(serialize(dict(stored,updated=(datetime.now(timezone.utc)-timedelta(days=days)).isoformat(timespec='microseconds'))),encoding='utf-8')
+    def start(self,session='auto',**extra):
+        return runtime.process('claude','session-start',{'cwd':self.project(),'session_id':session,**extra},self.root)['context']
+    def status(self,note):return find_note(note['id'],'demo',self.root)[1]['status']
+    def disable_auto_resolve(self):
+        p=self.root/'bindings.json';config=json.loads(p.read_text(encoding='utf-8-sig'));config['auto_resolve']=False;p.write_text(json.dumps(config),encoding='utf-8')
+
+    def test_session_start_resolves_aged_finished_work_once_and_names_it(self):
+        old=self.plan('Finished migration plan',[],done=['Move the data'])
+        week=self.plan('Fixed crash bug',[],done=['Find cause','Add test'],kind='bug')
+        yesterday=self.plan('Just finished plan',[],done=['Ship it'])
+        partial=self.plan('Half done plan',['Second step'],done=['First step'])
+        open_plan=self.plan('Not started plan',['Step one'])
+        decision=self.note('A decision','We chose X.',type='decision')
+        for n,days in ((old,4),(week,10),(yesterday,1),(partial,10),(open_plan,10),(decision,10)):self.age(n,days)
+        text=self.start()
+        self.assertEqual([self.status(n) for n in (old,week,yesterday,partial,open_plan,decision)],['resolved','resolved','active','active','active','active'])
+        line=next(l for l in text.splitlines() if l.startswith('Auto-resolved'))
+        self.assertTrue(line.startswith('Auto-resolved 2 finished note(s): '),line)
+        for n,title in ((old,'Finished migration plan'),(week,'Fixed crash bug')):self.assertIn(f"{title} (reopen demo:{n['id'][:8]})",line)
+        self.assertIn('1 note(s) have every Action Item done',text)   # the one finished yesterday keeps the old line
+        self.assertNotIn('Finished migration plan',text.replace(line,''))
+        later=self.plan('Another finished plan',[],done=['Done'])
+        self.age(later,9)
+        self.assertNotIn('Auto-resolved',self.start('second'))   # once a day per domain
+        self.assertEqual(self.status(later),'active')
+        marks=json.loads((self.root/'hooks/last-auto-resolve.json').read_text());self.assertEqual(list(marks),['demo'])
+        self.assertEqual(self.cli('reopen','demo:'+old['id'])[0],0);self.assertEqual(self.status(old),'active')
+    def test_the_resolve_is_recorded_as_use(self):
+        n=self.plan('Finished migration plan',[],done=['Move the data']);self.age(n,5);self.start()
+        from core.usage import events
+        rows=events(self.root)
+        self.assertIn(('resolve','demo:'+n['id'],'auto-resolve'),[(r['e'],r['ref'],r.get('k')) for r in rows])
+    def test_the_flag_headless_runs_and_subagents_leave_finished_work_alone(self):
+        from unittest.mock import patch
+        n=self.plan('Finished migration plan',[],done=['Move the data']);self.age(n,5)
+        self.disable_auto_resolve();text=self.start('off')
+        self.assertEqual(self.status(n),'active');self.assertNotIn('Auto-resolved',text);self.assertIn('every Action Item done',text)
+        self.assertFalse((self.root/'hooks/last-auto-resolve.json').exists())
+        (self.root/'bindings.json').write_text((self.root/'bindings.json').read_text().replace('"auto_resolve": false','"auto_resolve": true').replace('"auto_resolve":false','"auto_resolve":true'))
+        with patch.dict('os.environ',{'LIVING_MEMORY_HEADLESS':'1'}):self.start('headless')
+        self.assertEqual(self.status(n),'active')
+        self.start('sub',agent_id='a1');self.assertEqual(self.status(n),'active')
+        self.assertFalse((self.root/'hooks/last-auto-resolve.json').exists())   # none of those used up the day
+        self.assertIn('Auto-resolved 1',self.start('main'));self.assertEqual(self.status(n),'resolved')
+    def test_only_the_active_domain_is_resolved(self):
+        from core.init_domain import init_domain
+        from core.notes import capture
+        (self.base/'project'/'pkg').mkdir(parents=True);init_domain('pkg',[str(self.base/'project'/'pkg')],self.root)
+        kid=capture('Child finished plan',render('A plan.',actions=[],done=['Done']),['subject/project','concern/architecture'],'pkg',self.root,type='plan')
+        path,stored=find_note(kid['id'],'pkg',self.root)
+        from datetime import datetime,timedelta,timezone
+        from core.repository import serialize
+        path.write_text(serialize(dict(stored,updated=(datetime.now(timezone.utc)-timedelta(days=9)).isoformat(timespec='microseconds'))),encoding='utf-8')
+        self.start();self.assertEqual(find_note(kid['id'],'pkg',self.root)[1]['status'],'active')
     def test_action_items_parse_and_flip_in_place(self):
         body=render('S.',actions=['Write tests','Ship it'],done=['Design'])
         self.assertEqual(action_items(body),[(False,'Write tests'),(False,'Ship it'),(True,'Design')])

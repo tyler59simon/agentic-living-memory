@@ -449,6 +449,46 @@ def _prune_journals(root):
         from .logs import swallowed
         swallowed('runtime.prune_journals',exc,root);return None
 
+AUTO_RESOLVE_DAYS=3
+
+def auto_resolve(root,domain,bindings,session=None):
+    """Resolve the active domain's finished work: each active plan, bug or risk note whose Action Items are all done and that nobody has touched
+    for AUTO_RESOLVE_DAYS days. At most once a day per domain (hooks/last-auto-resolve.json, like _prune_journals), never in a headless run,
+    and off with `"auto_resolve": false` at the top level of bindings.json. Each resolve is the journaled, undoable `resolve` change (`reopen REF`
+    brings the note back) and is recorded as use. Returns [(short ref, title)] for the notes resolved; fails open: []."""
+    try:
+        from datetime import datetime,timedelta,timezone
+        if bindings.get('auto_resolve',True) is False or headless():return []
+        marker=root/'hooks'/'last-auto-resolve.json'
+        marks=read_json(marker,{});marks=marks if isinstance(marks,dict) else {}
+        try:age=(datetime.now(timezone.utc)-datetime.fromisoformat(marks[domain])).total_seconds()
+        except (KeyError,TypeError,ValueError):age=None
+        if age is not None and age<24*3600:return []
+        atomic_write(marker,canonical_json({**marks,domain:now()}))
+        from .note_format import action_items,ACTION_TYPES
+        from .notes import change,short_ref
+        from .repository import inventory
+        from .usage import record
+        cutoff=datetime.now(timezone.utc)-timedelta(days=AUTO_RESOLVE_DAYS);done=[]
+        for note in inventory(domain,root):
+            if note.get('type') not in ACTION_TYPES or not note.get('id') or not note.get('title'):continue
+            items=action_items(note.get('body',''))
+            if not items or not all(d for d,_ in items):continue
+            try:
+                stamp=datetime.fromisoformat(str(note.get('updated') or note.get('created') or ''))
+                if stamp.tzinfo is None:stamp=stamp.replace(tzinfo=timezone.utc)
+            except ValueError:continue
+            if stamp>cutoff:continue
+            try:change(note['id'],domain,'resolve',root,expected_revision=note.get('revision'))
+            except (OSError,ValueError,TimeoutError) as exc:   # one stale or locked note must not stop the rest
+                from .logs import swallowed
+                swallowed('runtime.auto_resolve',exc,root);continue
+            record(root,'resolve',[f"{domain}:{note['id']}"],session,'auto-resolve');done.append((short_ref(domain,note['id']),note['title']))
+        return done
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('runtime.auto_resolve',exc,root);return []
+
 def _subagent(payload):
     """Claude Code marks hooks that fire inside a subagent with agent_id. Subagents are read-only
     by protocol and share the parent session_id, so their tool calls must not arm the parent's reminder."""
@@ -513,15 +553,15 @@ def file_hints(paths,state,root,domain,bindings,session=None,trace=None,follow=N
     dict, receives path -> refs of the notes a later update should be asked of: those listing the file, and
     bug or decision notes naming it in the body. digested, when a list, receives the refs that are digests of an edited file."""
     try:
-        from .search import file_notes,file_matches
+        from .search import file_matches
         from . import digests
         seen=set(state.get('file_hints',[]));wanted=[p for p in paths if p not in seen][:HINT_FILES_PER_CALL]
-        domains=[domain]+parent_domains(domain,bindings);blocks=[];refs=[]
+        blocks=[];refs=[];found=scoped_file_hits(wanted,domain,bindings,root,HINT_NOTES_PER_FILE)
         for path in wanted:
-            hits=file_notes(path,domains,root,HINT_NOTES_PER_FILE,ensure_fresh=False)
+            hits=found.get(path)
             if hits:
                 if isinstance(digested,list):   # read before mark() drops `sources`; only digests get the "digest" wording at Stop
-                    digested+=[f"{h['domain']}:{h['id']}" for h in hits if file_matches([s['path'] for s in h.get('sources') or []],path)]
+                    digested+=[f"{h['domain']}:{h['id']}" for h in hits if file_matches([s['path'] for s in h.get('sources') or []],h.get('file',path))]
                 digests.mark(hits,root,bindings)
                 blocks.append(f'Living Memory notes about {path}:\n'+'\n'.join(hit_line(h) for h in hits))
                 refs+=[f"{h['domain']}:{h['id']}" for h in hits]
@@ -555,7 +595,7 @@ def command_hints(text,state,root,domain,bindings,session,trace=None):
         if not keys or all(k in seen for k in keys):return None
         hinted=set(state.get('command_hints',[]))
         from .common import global_domains
-        domains=list(dict.fromkeys([domain]+parent_domains(domain,bindings)+global_domains(root)))
+        domains=list(dict.fromkeys([domain]+scope_domains(domain,bindings)+global_domains(root)))
         hits=[h for h in command_notes(text,domains,root,HINT_NOTES_PER_COMMAND+len(hinted)) if f"{h['domain']}:{h['id']}" not in hinted][:HINT_NOTES_PER_COMMAND]
         if not hits:return None   # a lookup is about a millisecond and a state write several: only a shown hint is remembered
         from . import digests
@@ -1068,12 +1108,12 @@ NUDGE_NOTE_TYPES=frozenset({'preference','policy','decision','knowledge'})
 NUDGE_NOTES=2
 
 def signal_notes(statement,domain,root,bindings):
-    """Up to NUDGE_NOTES saved notes (preference, policy, decision, knowledge; not digests) in this domain, its parents and the global
+    """Up to NUDGE_NOTES saved notes (preference, policy, decision, knowledge; not digests) in this domain, its parents, its children and the global
     domains that the statement may change, through the relevance gate. The statement is searched, never stored. Fails open: []."""
     try:
         from .search import search_domains
         from .common import global_domains
-        domains=list(dict.fromkeys([domain,*parent_domains(domain,bindings),*global_domains(root)]))
+        domains=list(dict.fromkeys([domain,*scope_domains(domain,bindings),*global_domains(root)]))
         hits=search_domains(statement,domains,6,root,keep=relevance_gate(statement,root))
         return [h for h in hits if h.get('type') in NUDGE_NOTE_TYPES and not h.get('sources')][:NUDGE_NOTES]
     except Exception as exc:
@@ -1229,10 +1269,10 @@ def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=N
     if not query:
         return _deliver(prompt,root,topic_hits,[],shown,delivered,trace,session_delivered,units_out,role,False,set(),room)
     scope=bindings.get('search_scope',{});global_domains=[canonical_domain(d,root) for d in scope.get('global_domains',['_global'])];global_domains=[d for d in global_domains if (root/'domains'/d).exists()]
-    parents=parent_domains(active,bindings)
+    parents=scope_domains(active,bindings)
     trace['candidates']=[];relevant=relevance_gate(prompt,root,trace['candidates'])
     domains=list(dict.fromkeys([active]+parents+global_domains))
-    # Global notes hold in every project, so they rank like the project's own; a parent's count half.
+    # Global notes hold in every project, so they rank like the project's own; a parent's or child's count half.
     weights={**{g:2 for g in global_domains},active:2,**{p:1 for p in parents if p!=active}}
     queries=None;items=list_items(prompt)
     if len(prompt)>LONG_PROMPT or items:
@@ -1340,6 +1380,59 @@ def parent_domains(domain,bindings):
     for name,paths in others.items():
         if any(child!=parent and child.is_relative_to(parent) for child in mine for parent in paths):found.append(name)
     return sorted(found,key=lambda n:-max(len(str(p)) for p in others[n]))
+
+def child_domains(domain,bindings):
+    """Domains bound to a folder inside this domain's folder (e.g. Sandbox/project under Sandbox), nearest first. A domain that is also a parent is left out."""
+    from .common import _entries
+    mine=[];others={}
+    for name,_,prefixes in _entries(bindings):
+        paths=[]
+        for raw in prefixes:
+            try:paths.append(Path(os.path.expandvars(str(raw))).expanduser().resolve())
+            except (OSError,ValueError):continue
+        if name==domain:mine=paths
+        else:others[name]=paths
+    depth={}
+    for name,paths in others.items():
+        found=[len(child.relative_to(parent).parts) for child in paths for parent in mine if child!=parent and child.is_relative_to(parent)]
+        if found:depth[name]=min(found)
+    parents=set(parent_domains(domain,bindings))
+    return sorted((n for n in depth if n not in parents),key=lambda n:(depth[n],n))
+
+def scope_domains(domain,bindings):
+    """Parent and child domains: the neighbours whose notes count at weight 1 beside the domain's own."""
+    return parent_domains(domain,bindings)+child_domains(domain,bindings)
+
+def child_path(shown,domain,child,bindings):
+    """A path as shown for `domain` (touched_paths: relative to its folder, else absolute), rewritten relative to the folder of its child domain `child`,
+    which is how that domain's notes name files; None when the file is not inside the child's folder. A folder that is the child's root or
+    contains it gives '' (every file the child's notes name): search_domains' file filter and search.file_matches read '' that way. Hooks test the
+    result for truth, so they skip it: a touched path is a file, never a folder."""
+    from .common import domain_prefixes
+    try:
+        mine=domain_prefixes(domain,bindings);theirs=domain_prefixes(child,bindings)
+        raw=Path(shown);found=[raw] if raw.is_absolute() else [p/raw for p in mine]
+        for p in found:
+            p=p.resolve()
+            for t in theirs:
+                if p.is_relative_to(t):return '' if p==t else p.relative_to(t).as_posix()
+                if t.is_relative_to(p):return ''
+    except (OSError,ValueError):pass
+    return None
+
+def scoped_file_hits(paths,domain,bindings,root,per_file):
+    """{path: notes about it} from the domain, its parents and its child domains (a child's notes name files relative to the child's folder:
+    child_path rewrites the path for them, and each such hit carries it as 'file'). Reads the index without refreshing it, like every hook lookup."""
+    from .search import files_notes
+    paths=list(dict.fromkeys(paths));out=files_notes(paths,[domain]+parent_domains(domain,bindings),root,per_file)
+    for child in child_domains(domain,bindings):
+        mapped={c:p for p in paths if (c:=child_path(p,domain,child,bindings))}
+        if not mapped:continue
+        for c,hits in files_notes(list(mapped),[child],root,per_file).items():
+            for h in hits:h['file']=c
+            out[mapped[c]]=out[mapped[c]]+hits
+    for p,hits in out.items():out[p]=sorted(sorted(hits,key=lambda h:h.get('updated',''),reverse=True),key=lambda h:h.get('match')!='files')[:per_file]
+    return out
 
 def process(harness,event,payload,root=None):
     """No store-wide lock: hooks must not serialize every session's tool calls.
@@ -1483,7 +1576,8 @@ def _process(harness,event,payload,root=None,info=None):
             from .logs import swallowed
             swallowed('runtime.refresh_stale',exc,root)
         from .briefs import brief_folder
-        text,shown,indexed=build_context(cwd,root,max(MIN_BUDGET,BUDGET-len(prefix)),session=session,trace=detail,
+        resolved=[] if _subagent(payload) else auto_resolve(root,domain,bindings,session);detail['auto_resolved']=len(resolved)
+        text,shown,indexed=build_context(cwd,root,max(MIN_BUDGET,BUDGET-len(prefix)),session=session,trace=detail,resolved=resolved,
                                          currency=lambda hit:note_currency(hit,brief_folder(hit,cwd,bindings),root,bindings,state,session,'fresh_brief'))
         detail.update(shown=list(shown),indexed=indexed)
         if session!='unknown':
@@ -1979,10 +2073,10 @@ def doc_query(path,file):
 
 def doc_notes(root,bindings,domain,path,file):
     """Notes a changed document may update: those listing or naming its path, then those matching its headings."""
-    from .search import file_notes,search_domains
+    from .search import search_domains
     from .notes import short_ref
-    domains=[domain]+parent_domains(domain,bindings)
-    hits=file_notes(path,domains,root,2,ensure_fresh=False)
+    domains=[domain]+scope_domains(domain,bindings)
+    hits=scoped_file_hits([path],domain,bindings,root,2)[path]
     query=doc_query(path,file)
     if query:
         try:hits+=search_domains(query,domains,2,root,keep=relevance_gate(query,root))
@@ -2049,7 +2143,7 @@ def follow_pending(root,state,bindings=None,domain=None,changed=None):
     asked about in this session. Candidates, in order: the notes a hint named for a touched file; then one batch lookup (search.files_notes)
     for touched files no hint looked up (past HINT_FILES_PER_CALL) and for files a shell command or git changed (turn_changed, nothing when
     that was a pull). digest marks a note that records hashes of the file (a digest or file_hashes); it only changes the wording."""
-    from .search import active_notes,files_notes,file_matches
+    from .search import active_notes,file_matches
     from .notes import short_ref
     from .session_start import _title
     hinted=state.get('hinted') if isinstance(state.get('hinted'),dict) else {}
@@ -2063,12 +2157,12 @@ def follow_pending(root,state,bindings=None,domain=None,changed=None):
         if not pulled:paths+=[p for p in files if p not in hinted]
     paths=list(dict.fromkeys(paths))[:FOLLOW_BATCH_FILES]
     if paths and domain:
-        for path,hits in files_notes(paths,[domain]+parent_domains(domain,bindings or {}),root,HINT_NOTES_PER_FILE).items():
+        for path,hits in scoped_file_hits(paths,domain,bindings or {},root,HINT_NOTES_PER_FILE).items():
             for h in hits:
                 ref=f"{h['domain']}:{h['id']}"
                 if ref in skip or not (h.get('match')=='files' or h.get('type') in FOLLOW_BODY_TYPES):continue
                 wanted.setdefault(ref,path)
-                if file_matches([s['path'] for s in h.get('sources') or []],path):digested.add(ref)   # "digest" wording only for digests (sources), not hashed notes
+                if file_matches([s['path'] for s in h.get('sources') or []],h.get('file',path)):digested.add(ref)   # "digest" wording only for digests (sources), not hashed notes
     active=active_notes(list(wanted)[:2*STOP_FOLLOW],root)
     return [('follow',{'ref':ref,'short':short_ref(*ref.split(':',1)),'title':_title(active[ref][0]),'type':active[ref][1],'path':wanted[ref],'digest':ref in digested}) for ref in wanted if ref in active]
 

@@ -18,6 +18,7 @@
   {"cli": ["open"], "expect": {"exit": 0}},
   {"cli": ["check", "@plan", "Write the tests"], "expect": {"exit": 0, "status": "update", "result": {"open": 1}}},
   {"cli": ["check", "@plan", "Roll"], "expect": {"exit": 0, "status": "update", "result": {"open": 0}}},
+  {"hook": "session-start", "expect": {"context_contains": ["1 note(s) have every Action Item done"]}},
   {"cli": ["capture", "--title", "Cache uses a two-tier LRU", "--summary", "A small hot tier sits in front of the main LRU.", "--type", "decision", "--supersedes", "@cache"], "expect": {"exit": 0, "status": "created"}},
   {"cli": ["read", "@cache", "--metadata-only"], "expect": {"exit": 0, "result": {"status": "superseded"}}},
   {"cli": ["update", "@deploy", "--body", "Run install.py only.", "--expected-revision", "0000000000000000000000000000000000000000000000000000000000000000"], "expect": {"exit": 6, "reason": "stale_revision"}},

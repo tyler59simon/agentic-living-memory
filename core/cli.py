@@ -14,8 +14,8 @@ def _payload(args):
 def _reference(value,domain,root):
     """(domain, full note ID) for a ref, a unique ID prefix, or an exact note title."""
     from .notes import resolve_ref
-    from .runtime import parent_domains
-    parents=parent_domains(domain,load_bindings(root)) if domain else []
+    from .runtime import scope_domains
+    parents=scope_domains(domain,load_bindings(root)) if domain else []   # parents and children: what search shows can be named back
     return resolve_ref(value,domain,root,parents)
 
 def _turn(root,session,turn):
@@ -326,11 +326,11 @@ def _note_hits(root,domain,query,scope,limit,rebuild,filters,config,globals_,pri
     explain adds why: the semantic backend per domain and why it fell back, each candidate's gate verdict and scores, and
     for each result the section and level the prompt hook would deliver (refs, headings and numbers; no note text)."""
     from .search import search_domains
-    from .runtime import relevance_gate,parent_domains
-    candidates=[] if explain else None
+    from .runtime import relevance_gate,scope_domains,parent_domains,child_domains
+    candidates=[] if explain else None;parents=parent_domains(domain,config);children=child_domains(domain,config)
     gate=relevance_gate(query,root,candidates);gated=True
-    # As for prompts: global notes rank like the project's own, a parent's count half.
-    weights={**{g:2 for g in globals_},domain:2,**{p:1 for p in parent_domains(domain,config) if p!=domain}}
+    # As for prompts: global notes rank like the project's own, a parent's or child's count half.
+    weights={**{g:2 for g in globals_},domain:2,**{p:1 for p in scope_domains(domain,config) if p!=domain}}
     def run(domains):
         # Relevance is judged within each domain before the merge, as for prompts, so weak local hits
         # cannot bury a strong match in a parent or global domain. An explicit search still answers:
@@ -346,7 +346,7 @@ def _note_hits(root,domain,query,scope,limit,rebuild,filters,config,globals_,pri
     digests.mark(hits,root,config)
     for hit in hits:
         if hit.get('stale'):hit['snippet']=f"{hit['stale']} — {hit.get('snippet','')}"
-    for hit in hits:hit['sourceScope']='active' if hit['domain']==domain else 'global' if hit['domain'] in globals_ else 'foreign';hit.pop('path',None)
+    for hit in hits:hit['sourceScope']='active' if hit['domain']==domain else 'global' if hit['domain'] in globals_ else 'parent' if hit['domain'] in parents else 'child' if hit['domain'] in children else 'foreign';hit.pop('path',None)
     decisions={}
     if explain:
         from . import injection
@@ -370,10 +370,10 @@ def _note_hits(root,domain,query,scope,limit,rebuild,filters,config,globals_,pri
 
 def _search_scope(root,domain):
     """(bindings, global domains that exist, the domains a search covers first, foreign domains) for a domain."""
-    from .runtime import parent_domains
+    from .runtime import scope_domains
     config=load_bindings(root);scope=config.get('search_scope',{})
     globals_=[g for g in (canonical_domain(g,root) for g in scope.get('global_domains',['_global'])) if (root/'domains'/g).exists()]
-    return config,globals_,list(dict.fromkeys([domain]+parent_domains(domain,config)+globals_)),scope.get('foreign_domains',[])
+    return config,globals_,list(dict.fromkeys([domain]+scope_domains(domain,config)+globals_)),scope.get('foreign_domains',[])
 
 def _each_question(query,limit,run):
     """[{question, ...run(question, per-question limit)}] for a query holding several questions (runtime.questions), else None.
@@ -461,6 +461,7 @@ def build_parser():
     def sub(name):p=subs.add_parser(name);common(p,True);return p
     p=sub('setup');p.add_argument('--location',type=Path);p.add_argument('--non-interactive',action='store_true');p.add_argument('--source',type=Path);p.add_argument('--apply-plan');p.add_argument('--inspect-plan');p.add_argument('--expected-plan-sha256')
     p=sub('bind');p.add_argument('name');p.add_argument('prefix',nargs='+')
+    p=sub('unbind');p.add_argument('name',help='A bound domain with no notes left (move them with remap-plan first)')
     p=sub('capture');p.add_argument('items',nargs='*');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='');p.add_argument('--prefix',help='Compatibility assertion only; must equal the uppercase type');p.add_argument('--type',choices=NOTE_TYPES,help='Note type (default: knowledge)');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help="REF of a note this one replaces; it is retired in the same transaction, and its links and files are carried over (see --drop-links)");p.add_argument('--drop-links',action='store_true',help='With --supersedes: do not carry the links and files of the replaced note over');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk/map/runbook/brief notes get a default')
     for facet in CAPTURE_FACETS:p.add_argument('--'+facet,action='append',default=[])
     p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
@@ -600,6 +601,9 @@ def main(argv=None):
         if cmd=='bind':
             from .init_domain import init_domain
             init_domain(args.name,args.prefix,root);result={'ok':True,'domain':args.name,'status':'bound'}
+        elif cmd=='unbind':
+            from .init_domain import unbind_domain
+            result={'ok':True,'domain':unbind_domain(args.name,root),'status':'unbound'}
         elif cmd=='capture':
             from .notes import capture
             structured=any(getattr(args,k) for k in SECTION_ARGS)
@@ -700,24 +704,31 @@ def main(argv=None):
             config=load_bindings(root);scope=config.get('search_scope',{});globals_=scope.get('global_domains',['_global'])
             globals_=[canonical_domain(g,root) for g in globals_]
             globals_=[g for g in globals_ if (root/'domains'/g).exists()]
-            from .runtime import parent_domains
-            primary=list(dict.fromkeys([domain]+parent_domains(domain,config)+globals_));foreign=scope.get('foreign_domains',[])
+            from .runtime import scope_domains
+            primary=list(dict.fromkeys([domain]+scope_domains(domain,config)+globals_));foreign=scope.get('foreign_domains',[])
             filters=dict(value.split('=',1) for value in args.filter)
             if set(filters)-{'prefix','status','tag','type','file'}:raise ValueError('Unsupported search filter')
             if args.file:
                 from .common import domain_prefixes,display_path
                 given=Path(args.file).expanduser()
                 wanted=(display_path(given.resolve(),domain_prefixes(domain,config)) or args.file) if given.is_absolute() else args.file
+                from .runtime import child_domains,child_path
+                kids_of=child_domains(domain,config)   # a child's notes name files relative to the child's folder, in every scope
                 if not args.query.strip():
                     # Lists notes about a file; --filter narrows a query's results, so it needs a query.
                     if filters:raise ValueError('--filter needs a query; with --file alone, use --scope to choose domains')
                     from .search import file_notes
-                    domains=sorted(config.get('domains',{})) if args.scope=='all' else primary
-                    hits=file_notes(wanted,domains,root,max(1,min(100,args.limit)));fallback=False
+                    domains=list(dict.fromkeys(sorted(config.get('domains',{}))+globals_)) if args.scope=='all' else primary
+                    n=max(1,min(100,args.limit));kids=kids_of
+                    hits=file_notes(wanted,[d for d in domains if d not in kids],root,n);fallback=False
+                    for kid in kids:   # a child's notes name files relative to the child's folder
+                        c=child_path(wanted,domain,kid,config)
+                        if c is not None:hits+=[dict(h,file=c) for h in file_notes(c,[kid],root,n)]
+                    hits=sorted(sorted(hits,key=lambda h:h.get('updated',''),reverse=True),key=lambda h:h.get('match')!='files')[:n]
                     if not hits and args.scope=='fallback' and foreign:domains=foreign;hits=file_notes(wanted,domains,root,max(1,min(100,args.limit)));fallback=True
                     result={'ok':True,'mode':'file','file':wanted,'domains':domains,'fallback':fallback,'results':hits}
                     invocation['result']=result;print(json.dumps(result,ensure_ascii=False,separators=(',',':')));return 0
-                filters['file']=wanted
+                filters['file']={'*':wanted,**{k:child_path(wanted,domain,k,config) for k in kids_of}} if kids_of else wanted
             if not args.query.strip():raise ValueError('search needs a query, or --file PATH')
             result=_note_hits(root,domain,args.query,args.scope,args.limit,args.rebuild,filters,config,globals_,primary,foreign,args.explain)
             each=None if filters else _each_question(args.query,max(1,min(20,args.limit)),lambda q,n:{k:v for k,v in _note_hits(root,domain,q,args.scope,n,args.rebuild,filters,config,globals_,primary,foreign).items() if k in {'results','relevant'}})
@@ -842,11 +853,11 @@ def main(argv=None):
                            'For a duplicate (pair) or an obsolete note, propose plans for archive or merge; the user applies them. Stale notes come first, never-confirmed notes nobody has read lately lead the due ones.'}
         elif cmd=='open':
             from .notes import open_work,short_ref
-            from .runtime import parent_domains
+            from .runtime import scope_domains
             if args.all_domains:scope=[d['name'] for d in list_domains(root)['domains'] if (root/'domains'/d['name']/'notes').is_dir()]
             elif domain:
                 from .common import global_domains
-                scope=[domain]+parent_domains(domain,load_bindings(root))+global_domains(root)
+                scope=[domain]+scope_domains(domain,load_bindings(root))+global_domains(root)
             else:raise ValueError('unbound_project')
             found=open_work(list(dict.fromkeys(scope)),root,args.tag)
             items=[{'ref':f"{d}:{n['id']}",'short_ref':short_ref(d,n['id']),'title':n['title'],'type':n['type'],'updated':str(n.get('updated',''))[:10],'index':i,'item':text}

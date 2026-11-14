@@ -74,13 +74,13 @@ def _cost(note):
     return max(50,round(len(note.get('body',''))/4/50)*50)
 
 def _scope(active,root,bindings):
-    from .runtime import parent_domains
+    from .runtime import scope_domains
     scope=bindings.get("search_scope",{}) if isinstance(bindings.get("search_scope",{}),dict) else {}
     globals_=[]
     for name in scope.get("global_domains",["_global"]):
         try:globals_.append(canonical_domain(name,root))
         except ValueError:continue
-    return list(dict.fromkeys([active]+parent_domains(active,bindings)+globals_))
+    return list(dict.fromkeys([active]+scope_domains(active,bindings)+globals_))
 
 OPEN_NOTES=3
 OPEN_BUGS=2
@@ -151,12 +151,12 @@ def _user_brief(root):
         swallowed('session_start.user_brief',exc,root);return None
 
 def _open_lines(active,root,bindings,project=None):
-    """(header line, lines, how many lines are notes with open action items) for the active, parent and global domains: those notes
+    """(header line, lines, how many lines are notes with open action items) for the active, parent, child and global domains: those notes
     first (the current project's first, stable; the count in the header does not change), then bugs with no recorded root cause."""
-    from .runtime import parent_domains
+    from .runtime import scope_domains
     from .notes import open_work,unresolved_bugs
     from .common import global_domains
-    domains=list(dict.fromkeys([active]+parent_domains(active,bindings)+global_domains(root)))
+    domains=list(dict.fromkeys([active]+scope_domains(active,bindings)+global_domains(root)))
     # A bug recorded as a pitfall (a gotcha) is listed as one; the rest are open until someone writes down why.
     found=open_work(domains,root);bugs=[(d,n) for d,n in unresolved_bugs(domains,root) if not is_gotcha(n)]
     if not found and not bugs:return None,[],0
@@ -189,9 +189,10 @@ def _last_session_line(active,root,session,notes):
     if not parts:return []
     return [f"Last session ({str(last.get('ended',''))[:10]}, {last.get('harness','unknown')}): "+'; '.join(parts)+'.']
 
-def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|None=None,trace: dict|None=None,currency=None):
+def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|None=None,trace: dict|None=None,currency=None,resolved=None):
     """(text or None, {ref: revision key} of guidance shown with its snippet, whether the title index listed any note).
-    trace, when a dict, receives how far the text degraded to fit the budget (counts and flags only)."""
+    trace, when a dict, receives how far the text degraded to fit the budget (counts and flags only). resolved: [(short ref, title)] of the finished
+    notes runtime.auto_resolve just resolved; they get a tail line of their own."""
     root=(root or memory_root()).resolve();bindings=load_bindings(root);active=resolve_domain(cwd,bindings)
     if not active:return None,[],False
     notes=[]
@@ -200,7 +201,7 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
         try:notes.extend(dict(n,domain=domain) for n in inventory(domain,root))
         except (OSError,ValueError):continue
     project,here=_project_context(cwd,active,root,bindings)
-    tail=_finished_line(notes)+_review_line(active,root,[n for n in notes if n['domain']==active])+_problem_line(active,root)+_backup_line(root)
+    tail=_resolved_line(resolved)+_finished_line(notes)+_review_line(active,root,[n for n in notes if n['domain']==active])+_problem_line(active,root)+_backup_line(root)
     last=_last_session_line(active,root,session,notes)
     notes=_collapse([n for n in notes if n.get('id') and n.get('title')])
     from . import usage
@@ -308,6 +309,17 @@ def _review_line(domain,root,notes=None,shown=2):
     listed='; '.join(f"{short_ref(*r['ref'].split(':',1))} {_title(r['title'])[:REVIEW_TITLE]}" for r in found['items'])
     line=f"{found['total']} note(s) due for review ({kinds}; `review` lists all): {listed}"
     return [line if len(line)<=REVIEW_LINE_MAX else line[:REVIEW_LINE_MAX-1]+'…']
+
+RESOLVED_SHOWN=3
+RESOLVED_TITLE=40
+
+def _resolved_line(resolved):
+    """The one tail line naming the finished notes SessionStart resolved (runtime.auto_resolve); with many, the first RESOLVED_SHOWN and a count."""
+    if not resolved:return []
+    named=', '.join(f"{_title(title)[:RESOLVED_TITLE]} (reopen {ref})" for ref,title in resolved[:RESOLVED_SHOWN])
+    rest=resolved[RESOLVED_SHOWN:]
+    more=f" and {len(rest)} more (reopen {', '.join(ref for ref,_ in rest[:4])}{', ...' if len(rest)>4 else ''})" if rest else ''
+    return [f"Auto-resolved {len(resolved)} finished note(s): {named}{more}"]
 
 def _finished_line(notes,shown=2):
     """Active plan, bug and risk notes whose action items are all ticked: finished work that keeps taking
