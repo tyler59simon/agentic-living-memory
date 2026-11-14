@@ -262,7 +262,7 @@ def packet(root, cands, run_id):
     """(packet text, manifest). The text is JSON of at most PACKET_MAX bytes, all of it redacted. The manifest is private: it maps each
     evidence id (E1, E2, ...) to the real note revision or file hash, and records what each candidate may do."""
     from .note_format import action_items
-    manifest = {'version': 1, 'run_id': run_id, 'evidence': {}, 'candidates': {}, 'deferred': {}, 'dropped': []}
+    manifest = {'version': 1, 'run_id': run_id, 'evidence': {}, 'candidates': {}, 'deferred': {}, 'dropped': [], 'keys': {}}
     blocks, size, counter = [], 2 + RUN_ID_ROOM + 40, 0   # fixed room for the id, so a trial packet drops the same notes as the real one
 
     def new_id():
@@ -298,7 +298,8 @@ def packet(root, cands, run_id):
             evidence[fid] = record
             entries.append(entry)
         permits = permitted(note, cand['kinds'], cand['pair_same'], bool(successors))
-        block = {'ref': ref, 'revision': cand['revision'], 'title': note.get('title'), 'type': cand['type'], 'status': note.get('status', 'active'),
+        key = f"C{len(manifest['keys']) + 1}"
+        block = {'key': key, 'title': note.get('title'), 'type': cand['type'], 'status': note.get('status', 'active'),
                  'pinned': cand['pinned'], 'tags': note.get('tags') or [], 'created': note.get('created'), 'updated': note.get('updated'),
                  'checked': note.get('checked'), 'confirmed': note.get('confirmed') or [], 'review_by': note.get('review_by'), 'files': note.get('files') or [],
                  'body': body, 'action_items': [{'done': d, 'text': t} for d, t in action_items(body)], 'review_kinds': cand['kinds'],
@@ -310,8 +311,9 @@ def packet(root, cands, run_id):
             continue
         size += len(text.encode('utf-8')) + 1
         blocks.append(text)
+        manifest['keys'][key] = ref
         manifest['evidence'].update(evidence)
-        manifest['candidates'][ref] = {'revision': cand['revision'], 'domain': cand['domain'], 'kinds': cand['kinds'], 'pair_same': cand['pair_same'], 'permitted': permits,
+        manifest['candidates'][ref] = {'key': key, 'revision': cand['revision'], 'domain': cand['domain'], 'kinds': cand['kinds'], 'pair_same': cand['pair_same'], 'permitted': permits,
                                        'evidence_ids': list(evidence), 'successors': successor_refs, 'fingerprint': cand['fingerprint'],
                                        'files': {f['path']: {'state': f['state'], 'sha256': f['sha256'], 'kind': f['kind']} for f in cand['files']},
                                        'currency_state': (cand['currency'] or {}).get('state'), 'type': cand['type']}

@@ -128,10 +128,12 @@ def run_fixture(args):
 
 def run_copy(args):
     source=Path(args.root).resolve()
-    with tempfile.TemporaryDirectory(prefix='living-memory-maint-copy-') as folder:
+    with tempfile.TemporaryDirectory(prefix='living-memory-maint-copy-',ignore_cleanup_errors=True) as folder:
         root=Path(folder)/'store';shutil.copytree(source,root,ignore=COPY_IGNORE)
         # The copy carries each domain's sync-state.json with the real vault's path; never sync it from the copy.
         for state in root.glob('domains/*/sync-state.json'):state.unlink()
+        # The copy gets its own allowance: the real store's run records and retry holds would block or narrow the dry run.
+        shutil.rmtree(root/'maintenance',ignore_errors=True)
         # Review exactly the requested domain, whatever the real store has configured (a configured list would win over the fallback).
         ms.set_config(root,ms.validate(dict(ms.config(root),enabled=False,domains=[args.domain]),root,allow_global=True),allow_global=True)
         source_maint=hashes(source,('maintenance.json','maintenance/**/*'))

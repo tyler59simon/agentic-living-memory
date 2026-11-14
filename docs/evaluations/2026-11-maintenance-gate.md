@@ -2,7 +2,7 @@
 
 The gate from the handoff (`alm-automatic-note-maintenance-plan.md` sections 4.7 and 5.2): one real reviewer dry run on a labelled fixture store and one on a copy of the real store, before `maintenance enable`. Reviewer: Claude Sonnet through the installed `claude` CLI, default limits (10 notes, 300 s, 1 USD). Script: `scripts/eval_maintenance.py`.
 
-Result: **passed on both stores after one fix.** Eight paid runs cost 0.418 USD in all.
+Result: **passed on both stores.** Eleven paid gate and diagnostic runs cost 0.594 USD in all, plus 0.077 USD for the first live run.
 
 ## Failure found and fixed
 
@@ -13,6 +13,16 @@ Fix (user decision, 2026-11-14): a decision whose ref is in the batch but whose 
 A second defect showed up while fixing it: the report is validated three times (`maintenance_agent.review()`, `maintenance.run()` and `maintenance.apply()`), so the new `code` field failed the second pass (`no unknown keys`). The validator is now idempotent: it accepts `code` only as `revision_mismatch` on a defer and carries it through, and it runs every structural check (evidence ids, patches, rule) before turning a mismatch into a defer, so a miscopied revision never hides another contract break. The Codex review of the first fix found the `apply()` pass and the skipped checks; a live (non-dry) run test now covers both.
 
 The same review tightened the gate script: the `changed_source` case counts only when its patches apply and turn "30 seconds" into "60 seconds", and `copy` mode sets the copy's configured domains to the requested one.
+
+## Follow-up: one key per candidate (2026-11-14)
+
+The first live run (20261114T182521-bb89b590: 10 reviewed, 7 kept, 3 deferred, nothing retired, 0.077 USD) had two `revision_mismatch` defers, and one note (`sandbox:1ea15070`) mismatched in every run on the real store. A diagnostic dry run on a copy (0.078 USD) kept the raw report: Sonnet's decision for that note was correct, but it wrote the revision of the note before it in the packet. The miscopies are slips between neighbouring candidates, not only typos, so a shorter revision would not stop them.
+
+Fix (user decision, 2026-11-14): each packet block carries one key (`C1`, `C2`, ...) in place of its ref and revision, and the report names candidates by that key. The validator maps a key to the ref and the batch revision, so a ref and a revision can no longer disagree. The ref-and-revision form stays accepted for internal callers and for normalising twice.
+
+With keys, both gates pass again (runs below); `sandbox:1ea15070` got a real decision (keep) for the first time.
+
+A restore check on a copy of the real store passed: maintenance (with a scripted reviewer) archived a real note with a full retirement record, `restore` brought it back active and pinned, a second restore was refused, and the pinned note was no longer offered for archiving. The live store has no archived notes yet, and none of the archivable candidates had inbound links, so link rewriting on real notes is still covered only by the unit tests.
 
 ## Runs
 
@@ -26,6 +36,9 @@ The same review tightened the gate script: the `changed_source` case counts only
 | 20261114T173500-1f300511 | fixture | dry_run, every check passed | 0.034 |
 | 20261114T175729-27edd149 | fixture | dry_run, every check passed (after the Codex fixes) | 0.032 |
 | 20261114T175752-953d18cb | copy | dry_run, every check passed (after the Codex fixes): 9 defer, 1 update | 0.078 |
+| (diagnostic) | copy | dry_run with the raw report kept: the mismatch was the previous candidate's revision | 0.078 |
+| 20261114T191608-5e28561d | fixture | dry_run with candidate keys, every check passed | 0.033 |
+| 20261114T191620-c191a23c | copy | dry_run with candidate keys, every check passed: 9 keep, 1 update, no mismatch defers | 0.066 |
 
 ## Fixture decisions (final run)
 

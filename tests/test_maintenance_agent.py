@@ -69,6 +69,10 @@ class Provider(Fake):
         self.assertTrue(out['ok'],out)
         again=agent.validate_report(out['report'],'r1',self.request['manifest'])['decisions'][0]   # what maintenance.run() does next
         self.assertEqual((again['action'],again['code'],again['revision']),('defer','revision_mismatch','a'*64))
+    def test_the_schema_asks_for_one_candidate_key_not_a_ref_and_revision(self):
+        item=agent.SCHEMA['properties']['decisions']['items']
+        self.assertEqual(item['required'],['key','action','reason']);self.assertNotIn('revision',item['properties']);self.assertNotIn('ref',item['properties'])
+        self.assertIn('copying its key (C1, C2, ...) exactly',agent.POLICY)
     def test_schema_and_policy_are_well_formed(self):
         self.assertEqual(json.loads(agent.SCHEMA_JSON),agent.SCHEMA);self.assertIn('untrusted data',agent.POLICY)
         self.assertEqual(set(agent.SCHEMA['properties']['decisions']['items']['properties']['action']['enum']),set(agent.ACTIONS))

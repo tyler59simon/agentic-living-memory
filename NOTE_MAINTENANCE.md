@@ -42,7 +42,7 @@ A run reserves its notes and money before the model starts, and an unknown cost 
 
 ## What is sent to the model
 
-One packet on standard input to a single `claude -p` call: for each candidate its ref, revision, title, type, tags, dates, the full note body (up to 24 KB), the review signals, the actions the policy allows, a few short excerpts (up to four, 1200 characters each) from the files and sources the note cites, and any active successor note it might be superseded by. The packet is redacted (credentials are replaced) and is capped at 128 KB. A note over 24 KB is deferred; notes that do not fit in the packet are left for a later run and cost no allowance.
+One packet on standard input to a single `claude -p` call: for each candidate a short key (C1, C2, ...), its title, type, tags, dates, the full note body (up to 24 KB), the review signals, the actions the policy allows, a few short excerpts (up to four, 1200 characters each) from the files and sources the note cites, and any active successor note it might be superseded by. The packet is redacted (credentials are replaced) and is capped at 128 KB. A note over 24 KB is deferred; notes that do not fit in the packet are left for a later run and cost no allowance.
 
 Not sent: file contents beyond those excerpts, the repository tree, environment variables, other notes, and session history. The call runs with no tools, no MCP servers, no hooks and no session, in a fresh temporary directory, so the model cannot read files or run commands; it can only return a structured answer. Text inside notes that tries to give the model orders is treated as data. The packet is deleted after the run; run records keep metadata, refs, hashes and short reasons, not note bodies or prompts.
 
@@ -54,7 +54,7 @@ Not sent: file contents beyond those excerpts, the repository tree, environment 
 - Knowledge, decision, context and research notes: archived only when current evidence shows the content is obsolete; superseded when an active successor covers all its useful content. An old decision that still explains a current constraint stays.
 - Any note: may be confirmed when the evidence covers every fact and every tracked file, or updated with at most five exact-text patches. Action items, the important block, links, the title, type, tags, files and pin are never changed by a patch.
 - Every archive, supersede, confirm and update must cite evidence from the packet.
-- A report that breaks the output contract (unknown ref, run id or evidence id, bad patch shape) applies nothing. One exception: a decision whose ref is in the batch but whose revision is miscopied is deferred for that note only (`revision_mismatch`), with no seven-day hold, and the rest of the report still counts.
+- The model names each candidate by its key, never by ref and revision, so the two cannot disagree; the script maps the key to the note and the revision it sent. A report that breaks the output contract (unknown key, run id or evidence id, bad patch shape) applies nothing. A caller that names a note by ref and revision (scripts, tests) gets a mismatched revision deferred for that note only (`revision_mismatch`, no seven-day hold).
 
 ## Unavailable sources
 

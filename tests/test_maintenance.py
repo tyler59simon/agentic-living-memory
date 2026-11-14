@@ -237,6 +237,24 @@ class Adversarial(Base):
         self.bad(mutate=lambda r:r['decisions'][0].update(patches=[{'find':'a','replace':'b'*2001}]))
         self.bad(mutate=lambda r:r['decisions'][0].update(evidence_ids=['E1','E1']))
         self.bad(mutate=lambda r:r['decisions'][0].update(patches=[{'find':'A plain','replace':'  '}]))
+    def test_the_model_names_candidates_by_packet_key(self):
+        blocks=json.loads(self.text)['candidates']
+        self.assertEqual([b['key'] for b in blocks],['C1','C2']);self.assertFalse({'ref','revision'}&set(blocks[0]))
+        keys={ref:c['key'] for ref,c in self.manifest['candidates'].items()};own=lambda n:self.manifest['candidates'][self.ref(n)]['evidence_ids'][:1]
+        report=[{'key':keys[self.ref(self.n)],'action':'keep','reason':'Fine.'},
+                {'key':keys[self.ref(self.m)],'action':'archive','rule':'obsolete_content','reason':'Obsolete.','evidence_ids':own(self.m)}]
+        res=self.apply(self.run,self.manifest,report)
+        self.assertEqual([(r['ref'],r['result']) for r in res['results']],[(self.ref(self.n),'kept'),(self.ref(self.m),'applied')])
+        self.assertEqual(self.get(self.m)['status'],'archived')
+    def test_an_unknown_key_or_a_key_with_a_ref_is_invalid(self):
+        keys={ref:c['key'] for ref,c in self.manifest['candidates'].items()}
+        self.bad(mutate=lambda r:r['decisions'][0].update(key='C9'))   # with ref and revision too: an unknown field
+        for bad in ('C9','c1','R1',1):
+            with self.subTest(key=bad):
+                res=self.apply(self.run,self.manifest,[{'key':bad,'action':'keep','reason':'Fine.'}])
+                self.assertEqual((res['ok'],res['reason_code']),(False,'invalid_report'))
+        dup=[{'key':keys[self.ref(self.n)],'action':'keep','reason':'Fine.'},self.d(self.manifest,self.n,'keep')]
+        res=self.apply(self.run,self.manifest,dup);self.assertEqual((res['ok'],res['reason_code']),(False,'invalid_report'))
     def test_omitted_candidates_become_defers(self):
         res=self.apply(self.run,self.manifest,[self.d(self.manifest,self.n,'keep')])
         self.assertEqual([(r['ref'],r['result']) for r in res['results']],[(self.ref(self.n),'kept'),(self.ref(self.m),'deferred')])
@@ -450,7 +468,7 @@ class Gate(StoreFixture):
             decisions=[]
             for ref,cand in req['manifest']['candidates'].items():
                 d=choose(labels[ref]['label'],cand)
-                if d:decisions.append({'ref':ref,'revision':cand['revision'],'reason':'Scripted.','evidence_ids':cand['evidence_ids'][:1],**d})
+                if d:decisions.append({'key':cand['key'],'reason':'Scripted.','evidence_ids':cand['evidence_ids'][:1],**d})   # the model's form
             return {'ok':True,'report':{'version':1,'run_id':req['run']['id'],'decisions':decisions},'usage_micro':1234,'stderr':''}
         real=gate.build_fixture
         def build(base):
