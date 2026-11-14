@@ -55,9 +55,12 @@ class StoreCase(StoreFixture):
     def test_unbind_removes_the_binding_once_the_domain_holds_no_notes(self):
         from core.common import resolve_domain,load_bindings
         init_domain('side',[str(self.base/'side')],self.root);(self.base/'side').mkdir()
+        settings=json.loads((self.root/'bindings.json').read_text(encoding='utf-8'));settings['domain_aliases']={'s':'side','g':'_global'}
+        (self.root/'bindings.json').write_text(json.dumps(settings),encoding='utf-8')
         self.assertEqual(resolve_domain(self.base/'side',load_bindings(self.root)),'side')
         code,result=self.cli('unbind','side');self.assertEqual((code,result['status']),(0,'unbound'))
         self.assertIsNone(resolve_domain(self.base/'side',load_bindings(self.root)));self.assertIn('demo',load_bindings(self.root)['domains'])
+        self.assertEqual(load_bindings(self.root).get('domain_aliases'),{'g':'_global'})   # the alias to the unbound domain goes with it
         self.assertTrue((self.root/'domains/side/notes').is_dir())   # folders stay; only the binding goes
         self.assertEqual(self.cli('unbind','side')[0],2)   # unknown now
     def test_unbind_refuses_a_domain_that_still_holds_notes_or_archived_notes(self):

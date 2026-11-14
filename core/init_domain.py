@@ -33,7 +33,10 @@ def unbind_domain(name,root=None):
         if name not in domains:raise ValueError(f'{name} is not a bound domain')
         held=sum(len(_note_files(root,d)) for d in (root/'domains'/name/'notes',root/'domains'/name/'archive') if d.is_dir())
         if held:raise ValueError(f'{name} still holds {held} note(s) (notes and archive): move them with remap-plan first, then unbind')
-        del domains[name];transaction(root,{'bindings.json':canonical_json(settings)},'unbind_domain')
+        del domains[name]
+        aliases=settings.get('domain_aliases')
+        if isinstance(aliases,dict):settings['domain_aliases']={k:v for k,v in aliases.items() if v!=name}   # an alias must not name a domain that no longer resolves
+        transaction(root,{'bindings.json':canonical_json(settings)},'unbind_domain')
         return name
 
 def main(argv=None):
