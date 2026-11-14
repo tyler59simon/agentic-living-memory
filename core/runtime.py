@@ -71,8 +71,8 @@ def protected_rule(path,cwd,root):
         p=p.resolve();root=Path(root).resolve()
         from .storage import config_path
         if p.is_relative_to(root/'domains'):return 'domains'
-        if p.is_relative_to(root/'ledger') or p.is_relative_to(root/'.views'):return 'config'
-        if p in {root/'bindings.json',root/'tag_taxonomy.json',root/'projects.json',root/'systems.json',root/'sources.json',root/'changes.json',root/'views.json',root/'.relocated.json',config_path().resolve()}:return 'config'
+        if p.is_relative_to(root/'ledger') or p.is_relative_to(root/'.views') or p.is_relative_to(root/'maintenance'):return 'config'
+        if p in {root/'bindings.json',root/'tag_taxonomy.json',root/'projects.json',root/'systems.json',root/'sources.json',root/'changes.json',root/'maintenance.json',root/'views.json',root/'.relocated.json',config_path().resolve()}:return 'config'
         # Vault edits are auto-applied and vault checkboxes approve plans, so agents must not write there either.
         return 'vault' if any(p.is_relative_to(v/folder) for v in vault_roots(root) for folder in ('Domains','Archive','Dashboards')) else None
     except (ValueError,OSError):return None
