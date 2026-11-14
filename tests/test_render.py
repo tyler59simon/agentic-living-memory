@@ -24,6 +24,24 @@ class RenderShapes(unittest.TestCase):
     def test_receipt_lists_similar_and_warnings(self):
         text=render.render({'ok':True,'status':'created','id':self.HIT['id'],'domain':'demo','similar':[{'ref':'demo:b','title':'Other'}],'quality_warnings':['style: x']})
         self.assertEqual(text.splitlines()[:2],['created: demo:a6e9955e','  similar: demo:b  Other']);self.assertIn('quality_warnings: style: x',text)
+    # Codex review of feat/alm-command: the shapes below were crashed, dropped or misrouted.
+    def test_open_lists_items_beside_an_integer_note_count(self):
+        text=render.render({'ok':True,'domain':'demo','notes':1,'count':1,'items':[{'ref':'demo:'+self.HIT['id'],'short_ref':'demo:a6e9955e','title':'Plan','type':'plan','updated':'2026-11-14','index':2,'item':'Ship it'}]})
+        self.assertIn('Plan  [plan, 2026-11-14]  demo:a6e9955e',text);self.assertIn('#2 Ship it',text)
+    def test_metadata_only_read_shows_metadata(self):
+        text=render.render({'title':'Cache','type':'knowledge','status':'active','id':self.HIT['id'],'domain':'demo','files':['core/a.py'],'review_by':'2027-01-01'})
+        self.assertEqual(text.splitlines()[0],'Cache');self.assertIn('review_by: 2027-01-01',text);self.assertIn('core/a.py',text)
+    def test_read_shows_the_stale_source_warning(self):
+        text=render.render({'title':'Cache','type':'knowledge','id':self.HIT['id'],'domain':'demo','body':'B','stale':'STALE: core/a.py changed since this digest'})
+        self.assertIn('STALE: core/a.py changed',text)
+        text=render.render({'title':'Cache','type':'knowledge','id':self.HIT['id'],'domain':'demo','body':'B','currency':{'state':'missing'}});self.assertIn('source: missing',text)
+    def test_list_with_summary_shows_summary_files_and_actions(self):
+        text=render.render({'ok':True,'notes':[dict(self.HIT,summary='The cache is rebuildable.',files=['core/a.py'],actions={'open':2,'done':1})]})
+        self.assertIn('The cache is rebuildable.',text);self.assertIn('files: core/a.py',text);self.assertIn('actions: 2 open, 1 done',text)
+    def test_relocation_inspection_names_setup_apply_and_keeps_its_checks(self):
+        text=render.render({'ok':True,'plan_id':'p'*32,'digest':'d'*64,'source':'C:/old','destination':'D:/new','config_changed':False,'added':[],'removed':['x.md'],'changed':[]})
+        self.assertIn('alm setup --apply-plan '+'p'*32+' --expected-plan-sha256 '+'d'*64,text);self.assertNotIn('alm apply ',text)
+        self.assertIn('destination: D:/new',text);self.assertIn('config_changed: false',text);self.assertIn('x.md',text)
     def test_batch_and_fallback(self):
         text=render.render([{'exit_code':0,'result':{'ok':True,'status':'created','id':self.HIT['id'],'domain':'demo'},'error':None},{'exit_code':2,'result':None,'error':'bad'}]);self.assertIn('exit code 0',text);self.assertIn('bad',text)
         self.assertEqual(render.render({'ok':True,'python':'3.15','nested':{'a':1},'items_':[1,2]}),'python: 3.15\nnested:\n  a: 1\nitems_:\n  - 1\n  - 2')

@@ -153,6 +153,9 @@ class LauncherInstall(StoreFixture):
         self.assertEqual(self.plan()['summary']['launcher']['action'],'keep')
         self.assertTrue(self.launcher.active(self.home/'app'/'living_memory.py'))
         shown=subprocess.run([str(self.exe),'--json','version'],capture_output=True,text=True);self.assertEqual(json.loads(shown.stdout)['ok'],True)
+    def test_retrying_an_applied_plan_succeeds(self):   # Codex review: the launcher step already done must not read as stale
+        proposed=self.plan();self.apply(proposed);again=self.apply(proposed);self.assertEqual(again['launcher']['action'],'create');self.assertTrue(self.launcher.ours(self.exe))
+        removal=self.plan(True);self.apply(removal);self.apply(removal);self.assertFalse(self.exe.exists())
     def test_replace_a_launcher_that_differs_from_what_would_be_built(self):
         self.apply(self.plan());self.exe.write_bytes(self.exe.read_bytes()+b'x')   # still ours (marker), but no longer what would be built
         self.assertEqual(self.plan()['summary']['launcher']['action'],'replace')
@@ -186,6 +189,7 @@ class LauncherInstall(StoreFixture):
         for each in patches:each.start();self.addCleanup(each.stop)
         self.on_path(False);proposed=self.plan();change=proposed['summary']['path_change'];self.assertEqual((change['kind'],change['add']),('registry',str(self.bin)))
         receipt=self.apply(proposed);self.assertEqual(store['v'],(f"C:\\Tools;%USERPROFILE%\\x;{self.bin}",winreg.REG_EXPAND_SZ));self.assertIn('new terminal',receipt['notice'])
+        self.apply(proposed);self.assertEqual(store['v'][0],f"C:\\Tools;%USERPROFILE%\\x;{self.bin}")   # a retry finds the entry written and adds it once
         self.assertNotIn('path_change',self.plan()['summary'])   # already in the registry value
         store['v']=('C:\\Tools',winreg.REG_EXPAND_SZ);stale=self.plan();store['v']=('C:\\Other',winreg.REG_EXPAND_SZ)
         with self.assertRaisesRegex(ValueError,'stale'):self.apply(stale)

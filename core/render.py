@@ -17,8 +17,11 @@ def _row(row,n):
     name=row.get('title') or row.get('path') or row.get('file') or row.get('source') or _ref(row)
     meta=', '.join(str(row[k])[:10] if k in ('updated','date') else str(row[k]) for k in ('type','updated','date','status') if row.get(k))
     lines=[head+str(name or json.dumps(row,ensure_ascii=False))+(f'  [{meta}]' if meta else '')+(f'  {_ref(row)}' if row.get('title') and _ref(row) else '')]
-    for key in ('snippet','excerpt','text','reason','action'):
+    if row.get('item'):lines+=_wrap(f"#{row['index']} {row['item']}" if 'index' in row else row['item'])   # open: the action item itself
+    for key in ('summary','snippet','excerpt','text','reason','action'):
         if row.get(key):lines+=_wrap(row[key])
+    if isinstance(row.get('files'),list) and row['files']:lines+=_wrap('files: '+', '.join(map(str,row['files'])))
+    if isinstance(row.get('actions'),dict):lines.append(f"   actions: {row['actions'].get('open',0)} open, {row['actions'].get('done',0)} done")
     return lines
 
 def _kv(value,depth=0):
@@ -36,12 +39,18 @@ def _kv(value,depth=0):
     return out
 
 def _plan(r):
-    lines=[f"Plan {r['plan_id']} ({r.get('kind','')})"]+_kv({k:r[k] for k in ('summary','effects') if k in r},1)
-    return lines+['','Apply it with:',f"  alm apply {r['plan_id']} --expected-plan-sha256 {r['digest']}"]
+    relocation='destination' in r   # setup's store relocation plan: its own fields, applied by setup, not by apply
+    rest={k:v for k,v in r.items() if k not in ('ok','plan_id','digest','kind')+TRAILER} if relocation else {k:r[k] for k in ('summary','effects') if k in r}
+    lines=[f"Plan {r['plan_id']}"+(f" ({r['kind']})" if r.get('kind') else '')]+_kv(rest,1)
+    return lines+['','Apply it with:',f"  alm {'setup --apply-plan' if relocation else 'apply'} {r['plan_id']} --expected-plan-sha256 {r['digest']}"]
 
+NOTE_HEAD=('ok','title','type','status','updated','tags','id','domain','body','truncated','stale','currency')
 def _read(r):
     lines=[str(r['title']),'  '+'  '.join(str(r[k]) for k in ('type','status') if r.get(k))+(f"  updated {r['updated']}" if r.get('updated') else '')+f"  {_ref(r)}"]
     if r.get('tags'):lines.append('  tags: '+', '.join(r['tags']))
+    if r.get('stale'):lines.append('  '+str(r['stale']))
+    elif isinstance(r.get('currency'),dict) and r['currency'].get('state') not in (None,'current'):lines.append(f"  source: {r['currency']['state']}")
+    if 'body' not in r:return lines+_kv({k:v for k,v in r.items() if k not in NOTE_HEAD+TRAILER},1)   # read --metadata-only
     return lines+['',str(r['body']).rstrip()]+(['','(truncated)'] if r.get('truncated') else [])
 
 def _receipt(r):
@@ -53,7 +62,7 @@ def _receipt(r):
 def _rows(r):
     lines=[]
     for key in LISTS:
-        rows=[x for x in r.get(key) or [] if isinstance(x,dict)]
+        rows=[x for x in r[key] if isinstance(x,dict)] if isinstance(r.get(key),list) else []   # open's `notes` is a count
         if rows:
             lines+=([''] if lines else [])+(['Sources:'] if key=='sources' else [])
             for n,row in enumerate(rows,1):lines+=_row(row,n if key=='results' or 'rank' in row else 0)
@@ -69,7 +78,7 @@ def render(result):
         return '\n'.join(' '.join(f'{k}={_s(v)}' for k,v in x.items() if not isinstance(v,(dict,list))) if isinstance(x,dict) else _s(x) for x in result) or 'Nothing.'
     if not isinstance(result,dict):return _s(result)
     if result.get('plan_id') and result.get('digest') and result.get('status')!='approval_required':lines=_plan(result)
-    elif 'title' in result and 'body' in result:lines=_read(result)
+    elif 'title' in result and ('body' in result or 'type' in result):lines=_read(result)
     elif result.get('status') and result.get('id'):lines=_receipt(result)
     elif any(isinstance(result.get(k),list) for k in LISTS):lines=_rows(result)
     else:lines=_kv({k:v for k,v in result.items() if k not in TRAILER})

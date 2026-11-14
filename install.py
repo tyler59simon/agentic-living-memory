@@ -242,8 +242,20 @@ def _add_to_path_posix(change):
     profile.write_text(text + ('' if not text or text.endswith('\n') else '\n') + change['add'] + '\n', encoding='utf-8')
 
 
+def _path_done(change):
+    """True when the PATH entry this change adds is already there (a retry after it was written)."""
+    if change['kind'] == 'registry':
+        return _on_path(change['add'], _registry_path()[0], ';')
+    profile = Path(change['target'])
+    return profile.is_file() and change['add'] in profile.read_text(encoding='utf-8')
+
+
 def _launcher_stale(record):
-    if record['python'] != sys.executable or _launcher_state(Path(record['path'])) != record['before']:
+    if record['python'] != sys.executable:
+        return True
+    # A retry of this plan may find its own launcher step already done: that state is expected too.
+    done = {'create': record['after'], 'replace': record['after'], 'remove': None}.get(record['action'], record['before'])
+    if _launcher_state(Path(record['path'])) not in (record['before'], done):
         return True
     if record['action'] in ('create', 'replace', 'keep'):
         from core import launcher
@@ -296,7 +308,7 @@ def apply_plan(root, plan_id, digest):
     if value.get('digest') != digest or hashlib.sha256(canonical_json(unsigned).encode()).hexdigest() != digest or 'launcher' not in summary:
         return apply(root, plan_id, digest)   # unverified or not a package plan: governance decides
     record, change = summary['launcher'], summary.get('path_change')
-    if _launcher_stale(record) or (change and _path_stale(change)):
+    if _launcher_stale(record) or (change and _path_stale(change) and not _path_done(change)):
         raise ValueError('stale plan: the launcher or PATH changed since this plan was made; plan again')
     receipt = apply(root, plan_id, digest)
     warning = _write_launcher(record)
@@ -304,7 +316,8 @@ def apply_plan(root, plan_id, digest):
     if warning:
         receipt.setdefault('warnings', []).append(warning)
     elif change:
-        (_add_to_path_windows if change['kind'] == 'registry' else _add_to_path_posix)(change)
+        if not _path_done(change):
+            (_add_to_path_windows if change['kind'] == 'registry' else _add_to_path_posix)(change)
         receipt['path_change'] = change['add']
         receipt['notice'] = 'Open a new terminal (and restart running agent sessions) so `alm` is found.'
     return receipt
