@@ -257,7 +257,7 @@ def accounting(root, now=None):
     for k in COUNTERS:
         out[k] = max(out[k], sums[k])
     if latest and (not cp or not cp['last_attempt_at'] or _parse(latest['attempted_at']) > _parse(cp['last_attempt_at'])):
-        out['last_attempt_at'], out['last_attempt_config_revision'] = latest['attempted_at'], latest['config_revision']
+        out['last_attempt_at'], out['last_attempt_config_revision'], out['last_run'] = latest['attempted_at'], latest['config_revision'], latest['id']
         # Only a failure before launch (released) may be retried early after a config change.
         out['last_failure'] = ({'at': latest['finished_at'], 'reason_code': latest['reason_code'], 'run_id': latest['id']}
                                if latest.get('released') else None)
@@ -297,7 +297,9 @@ def eligibility(root, now=None, cfg=None):
         return no('provider_budget')
     if acc['last_attempt_at']:
         due = _parse(acc['last_attempt_at']) + timedelta(seconds=cfg['min_interval_seconds'])
-        corrected = acc['last_failure'] and acc['last_attempt_config_revision'] != revision
+        # Early retry only when the latest attempt itself failed before launch; an older run released later does not count.
+        corrected = (acc['last_failure'] and acc['last_failure'].get('run_id') == acc['last_run']
+                     and acc['last_attempt_config_revision'] != revision)
         if due > eff and not corrected:
             return no('interval', due)
     if acc['reviewed'] + acc['reserved_notes'] >= cfg['max_notes_per_day']:
