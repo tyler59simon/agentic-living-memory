@@ -99,3 +99,11 @@ living_memory.py apply PLAN_ID --expected-plan-sha256 DIGEST
 ```
 
 `rewrite.json` is a list of `{"ref": "domain:id", "revision": "...", "body": "..."}`, with the revision each new body was written from. A rewrite keeps each note's `updated` and `review_by`, because the facts did not change. Maps, briefs and learned runbooks are refused: maps and briefs keep their labels, and learned runbooks change through learning review.
+
+## What counts as checking a note
+
+A note that cites files or code says "checked" only when someone read the source. Which edits re-verify:
+
+- **Re-verify:** `confirm` (you read the files and the note still holds) and an `update --body` (you rewrote the facts as they are now). Both re-hash the files the note lists, except that a file that is missing keeps its last hash.
+- **Do not re-verify:** a title, type, tag, context, command or review-date change, a rename, a checkbox tick, a prose rewrite plan and moving a note between lifecycle states. A stale note stays stale after them.
+- A note whose files changed stays `STALE` until you read the files, then `update` or `confirm`.
