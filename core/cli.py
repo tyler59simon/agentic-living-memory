@@ -14,8 +14,8 @@ def _payload(args):
 def _reference(value,domain,root):
     """(domain, full note ID) for a ref, a unique ID prefix, or an exact note title."""
     from .notes import resolve_ref
-    from .runtime import parent_domains
-    parents=parent_domains(domain,load_bindings(root)) if domain else []
+    from .runtime import scope_domains
+    parents=scope_domains(domain,load_bindings(root)) if domain else []   # parents and children: what search shows can be named back
     return resolve_ref(value,domain,root,parents)
 
 def _turn(root,session,turn):
@@ -708,7 +708,7 @@ def main(argv=None):
                 given=Path(args.file).expanduser()
                 wanted=(display_path(given.resolve(),domain_prefixes(domain,config)) or args.file) if given.is_absolute() else args.file
                 from .runtime import child_domains,child_path
-                kids_of=child_domains(domain,config) if args.scope!='all' else []   # a child's notes name files relative to the child's folder
+                kids_of=child_domains(domain,config)   # a child's notes name files relative to the child's folder, in every scope
                 if not args.query.strip():
                     # Lists notes about a file; --filter narrows a query's results, so it needs a query.
                     if filters:raise ValueError('--filter needs a query; with --file alone, use --scope to choose domains')
