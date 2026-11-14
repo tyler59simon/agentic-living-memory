@@ -285,6 +285,41 @@ class Stale(Base):
         res=self.apply(run,manifest,[self.d(manifest,n,'supersede',rule='duplicate',successor=self.ref(other),evidence=['own','successor'])])
         self.assertEqual(self.one(res)['reason_code'],'stale_revision');self.assertEqual(self.get(n)['status'],'active')
 
+    def test_an_uncited_successor_is_still_rechecked(self):
+        self.tearDown_run()
+        body='Deploys run from the main branch after the test suite passes on the build server and a reviewer approves the change in the tracker.'
+        a=self.mk('Deploy process',body,review_by=OLD);b=self.mk('Deploy process',body+' Always.',review_by=OLD,idempotency_key='k2')
+        run,manifest,_=self.prepare()
+        n=next(x for x in (a,b) if manifest['candidates'].get(self.ref(x),{}).get('successors'))
+        other=b if n is a else a
+        notes.change(other['id'],'demo','update',self.root,body='Changed since.')
+        res=self.apply(run,manifest,[self.d(manifest,n,'supersede',rule='duplicate',successor=self.ref(other),evidence=['own'])])
+        self.assertEqual(self.one(res)['reason_code'],'stale_revision');self.assertEqual(self.get(n)['status'],'active')
+    def test_a_map_is_confirmed_only_against_fresh_currency(self):
+        from unittest import mock
+        self.tearDown_run();m=self.mk('Repo map','The code lives in src/.',type='map',files=[str(self.project)],review_by=OLD)
+        run,manifest,_=self.prepare();self.assertIn(self.ref(m),manifest['candidates'])
+        fresh={'state':'changed','verified_at':None,'changed':['src/new.py']}
+        with mock.patch('core.worklist.currency_of',return_value=fresh):
+            res=self.apply(run,manifest,[self.d(manifest,m,'confirm')])
+        self.assertEqual((self.one(res)['result'],self.one(res)['reason_code']),('deferred','source_changed'));self.assertFalse(self.get(m).get('confirmed'))
+
+class Batch(Base):
+    def test_a_batch_never_exceeds_the_report_limit(self):
+        cfg=self.cfg=ms.validate(dict(self.cfg,max_notes_per_day=25));ms.set_config(self.root,cfg)
+        for i in range(12):self.mk(f'Status {i}',f'Sprint {i} is over.',type='status',review_by=OLD)
+        seen=[]
+        def adapter(req):seen.append(len(req['manifest']['candidates']));return {'ok':True,'report':{'version':1,'run_id':req['run']['id'],'decisions':[]},'usage_micro':1,'stderr':''}
+        self.tick();res=maintenance.run(self.root,adapter=adapter,now=self.now)
+        self.assertEqual(seen,[10]);self.assertEqual(self.read_run(res['id'])['reserved_notes'],10)
+    def test_notes_dropped_from_the_packet_cost_no_allowance(self):
+        for i in range(8):self.mk(f'Large note {i}',f'Topic {i}. '+('Sentence number %d is here and stays. '%i)*500,review_by=OLD)
+        seen=[]
+        def adapter(req):seen.append(len(req['manifest']['candidates']));return {'ok':True,'report':{'version':1,'run_id':req['run']['id'],'decisions':[]},'usage_micro':1,'stderr':''}
+        self.tick();res=maintenance.run(self.root,adapter=adapter,now=self.now)
+        self.assertLess(seen[0],8);self.assertEqual(self.read_run(res['id'])['reserved_notes'],seen[0])
+        self.assertEqual(ms.state(self.root,self.now)['reviewed'],seen[0])
+
 class Recovery(Base):
     def test_a_decision_is_never_applied_twice(self):
         n=self.mk('Sprint status','Done.',type='status',review_by=OLD)
@@ -355,6 +390,7 @@ class Service(Base):
         n=self.mk('Sprint status','Done.',type='status',review_by=OLD)
         res=self.go((n,'archive',{'rule':'expired_status'}),dry=True)
         self.assertEqual((res['status'],res['proposed'],res['archived']),('dry_run',{'archive':1},0))
+        self.assertEqual([(d['ref'],d['action'],d['rule']) for d in res['decisions']],[(self.ref(n),'archive','expired_status')])
         self.assertEqual(self.get(n)['status'],'active');st=ms.state(self.root,self.now);self.assertEqual((st['reviewed'],st['charged_micro']),(1,1000))
         self.cfg=ms.validate({'enabled':True,'domains':['demo']});ms.set_config(self.root,self.cfg)   # the default interval now applies
         self.assertEqual(maintenance.run(self.root,adapter=self.specs_adapter(),now=self.now+timedelta(minutes=5))['skip_reason'],'interval')

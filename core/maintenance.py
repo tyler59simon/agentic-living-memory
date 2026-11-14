@@ -15,6 +15,7 @@ from .repository import canonical_json, digest, redact, store_lock, find_secret,
 PACKET_MAX = 128 * 1024
 BODY_MAX = 24 * 1024
 EXCERPTS = 4
+RUN_ID_ROOM = 100
 EXCERPT_CHARS = 1200
 FILE_READ_MAX = 1 << 20
 EXCLUDED = ('preference', 'policy')            # normative: never reviewed by the model
@@ -252,7 +253,7 @@ def packet(root, cands, run_id):
     evidence id (E1, E2, ...) to the real note revision or file hash, and records what each candidate may do."""
     from .note_format import action_items
     manifest = {'version': 1, 'run_id': run_id, 'evidence': {}, 'candidates': {}, 'deferred': {}, 'dropped': []}
-    blocks, size, counter = [], 2 + len(run_id) + 40, 0
+    blocks, size, counter = [], 2 + RUN_ID_ROOM + 40, 0   # fixed room for the id, so a trial packet drops the same notes as the real one
 
     def new_id():
         nonlocal counter
@@ -438,9 +439,22 @@ def _decide(root, run, ref, dec, manifest, now, deadline, clock):
             rule = rule or 'replaced_by_successor'
             successor = dec['successor']
             ok = rule in ('replaced_by_successor', 'duplicate') and successor in cand['successors'] and successor.partition(':')[0] == domain and successor != ref
+            # The successor is checked whether or not the model cited it: it must still be active and unchanged since the packet.
+            if ok and _recheck(root, domain, {'kind': 'note', 'ref': successor, 'revision': cand['successors'][successor]}, bindings):
+                return end('skipped', 'stale_revision')
             values = {'superseded_by': successor.partition(':')[2]} if ok else {}
         elif action == 'confirm':
-            ok = full and not dec['patches'] and (t not in ('map', 'brief') or cand['currency_state'] in ('current', 'changed'))
+            ok = full and not dec['patches']
+            if ok and t in ('map', 'brief'):
+                # Currency is computed again now (git and working tree): every changed cited file must be one the evidence covered.
+                from .worklist import currency_of
+                try:
+                    fresh = currency_of(dict(note, domain=domain), root, bindings, working_tree=True)
+                except Exception:
+                    fresh = None
+                ok = bool(fresh) and fresh.get('state') in ('current', 'changed') and set(fresh.get('changed') or []) <= covered
+                if not ok:
+                    return end('deferred', 'source_changed', True)
         else:
             ok = bool(dec['patches'])
         if action != 'update' and dec['patches']:
@@ -545,7 +559,10 @@ def run(root, dry_run=False, adapter=None, now=None):
                 return _skipped(verdict['skip_reason'], verdict['next_eligible_at'])
             st = ms.state(root, start)
             remaining = cfg['max_notes_per_day'] - st['reviewed'] - st['reserved_notes']
-            selected = candidates(root, cfg, st, start, remaining)
+            selected = candidates(root, cfg, st, start, min(remaining, agent.BATCH_MAX))
+            # Notes that would not fit in the packet are left out before the reservation, so they cost no allowance.
+            dropped = set(packet(root, selected, '')[1]['dropped'])
+            selected = [c for c in selected if c['ref'] not in dropped]
             if not selected:
                 return _skipped('no_candidates')
             record = ms.reserve(root, cfg, len(selected), start, selected=[{'ref': c['ref'], 'revision': c['revision']} for c in selected])
@@ -593,7 +610,8 @@ def run(root, dry_run=False, adapter=None, now=None):
                 proposed = {}
                 for d in report['decisions']:
                     proposed[d['action']] = proposed.get(d['action'], 0) + 1
-                return {**base, 'status': 'dry_run', 'reason_code': None, 'proposed': proposed, **{k: 0 for k in COUNT_KEYS}}
+                # The decisions come back (not stored) so the dry-run gate can inspect every recommendation.
+                return {**base, 'status': 'dry_run', 'reason_code': None, 'proposed': proposed, 'decisions': report['decisions'], **{k: 0 for k in COUNT_KEYS}}
             record = ms.applying(root, record, clock())
             try:
                 done = apply(root, record, report, manifest, cfg, now, deadline)

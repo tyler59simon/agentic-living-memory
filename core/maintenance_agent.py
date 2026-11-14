@@ -24,6 +24,7 @@ STDERR_MAX = 16 * 1024
 STDERR_EXCERPT = 1000
 REASON_MAX = 500
 PATCH_MAX = 5
+BATCH_MAX = 10   # decisions per report, so at most this many candidates per run
 REPLACE_MAX = 2000
 FIND_MAX = 4000
 EVIDENCE_MAX = 8
@@ -53,7 +54,7 @@ SCHEMA = {
     'properties': {
         'version': {'type': 'integer', 'enum': [1]},
         'run_id': {'type': 'string'},
-        'decisions': {'type': 'array', 'maxItems': 10, 'items': {
+        'decisions': {'type': 'array', 'maxItems': BATCH_MAX, 'items': {
             'type': 'object', 'additionalProperties': False, 'required': ['ref', 'revision', 'action', 'reason'],
             'properties': {
                 'ref': {'type': 'string'},
