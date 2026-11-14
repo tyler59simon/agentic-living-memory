@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_CEILING
 from pathlib import Path
 from .common import file_lock, global_domains, safe_domain
-from .repository import canonical_json, digest, read_json, store_lock, transaction
+from .repository import canonical_json, digest, read_json, roll_forward_pending, store_lock, transaction
 
 CONFIG = 'maintenance.json'
 STATE = 'maintenance/state.json'
@@ -354,11 +354,11 @@ def _current(root, run):
     return _read_run(Path(root) / _run_path(run), run['day'])
 
 
-def _move(root, run, to, now, apply):
+def _move(root, run, to, now, apply, only_from=None):
     """One transition: check it, let `apply(run, acc)` edit the record and the day's accounting, commit both."""
     with store_lock(root):
         stored = _current(root, run)
-        if to not in TRANSITIONS.get(stored['state'], ()):
+        if to not in TRANSITIONS.get(stored['state'], ()) or (only_from and stored['state'] != only_from):
             raise ValueError(f'Invalid maintenance transition: {stored["state"]} -> {to}')
         acc, eff = accounting(root, now)
         same_day = acc['day'] == stored['day']
@@ -403,7 +403,7 @@ def release(root, run, reason, now=None):
         _free(new, acc)
         new.update(released=True, reason_code=reason, finished_at=at)
         _failed(acc, new, at, reason)
-    return _move(root, run, 'failed', now, apply)
+    return _move(root, run, 'failed', now, apply, only_from='reserved')  # a launched run ends through finish(), which charges it
 
 
 def finish(root, run, usage_micro, outcome, now=None, reason=None):
@@ -442,6 +442,7 @@ def recover_runs(root, now=None):
     """Settle runs a dead worker left behind; call it holding the worker lock. Returns the recovered run IDs."""
     done = []
     with store_lock(root):
+        roll_forward_pending(root)  # a transition cut off between the run record and the checkpoint is completed first
         base = Path(root) / RUNS
         for path in sorted(base.glob('*/*.json')) if base.exists() else []:
             try:

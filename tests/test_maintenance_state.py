@@ -157,6 +157,19 @@ class CheckpointLoss(Base):
         self.reserve(d1,cfg=cfg);new=self.reserve(d2,cfg=cfg);ms.release(self.root,new,'adapter_missing',d2)
         ms.recover_runs(self.root,d2+H/2)
         self.change(model='haiku');self.assertTrue(ms.eligibility(self.root,d2+H)['eligible'])
+    def test_release_refuses_a_launched_run(self):
+        run=self.reserve();ms.launch(self.root,run,T0)
+        with self.assertRaises(ValueError):ms.release(self.root,run,'adapter_missing',T0)
+        ms.finish(self.root,run,None,'failed',T0,'timeout');self.assertEqual(ms.state(self.root,T0+H)['charged_micro'],1_000_000)
+    def test_recovery_completes_a_cut_off_transition(self):
+        from unittest import mock
+        run=self.reserve();ms.launch(self.root,run,T0);real=repo.atomic_write
+        def flaky(path,*a,**k):
+            if str(path).replace('\\','/').endswith(ms.STATE):raise OSError('disk gone')
+            return real(path,*a,**k)
+        with mock.patch('core.repository.atomic_write',flaky),self.assertRaises(OSError):ms.finish(self.root,run,10,'completed',T0)
+        ms.recover_runs(self.root,T0+H)
+        acc=json.loads((self.root/ms.STATE).read_text());self.assertEqual((acc['reserved_micro'],acc['charged_micro']),(0,10))
     def test_domain_names_are_plain(self):
         (self.root/'domains/_global').mkdir(parents=True)
         for bad in ('./_global','../demo','demo/..',str(self.root/'domains/demo')):
