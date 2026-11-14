@@ -67,6 +67,15 @@ class Features(StoreFixture):
         proposal=remap(self.root,[{'before':{'domain':'demo','id':a['id']},'after':{'domain':'other','id':a['id']}}])
         receipt=apply(self.root,proposal['plan_id'],proposal['digest']);self.assertEqual(find_note(a['id'],'other',self.root)[1]['domain'],'other')
         proposal=undo(self.root,receipt['operation_id']);apply(self.root,proposal['plan_id'],proposal['digest']);self.assertEqual(find_note(a['id'],'demo',self.root)[1]['domain'],'demo')
+    def test_remap_keeps_the_verification_baseline(self):
+        from core.init_domain import init_domain
+        from core.note_types import verified_at
+        init_domain('other',[str(self.base/'other')],self.root);(self.base/'project').mkdir(exist_ok=True);(self.base/'project'/'x.py').write_text('x=1',encoding='utf-8')
+        a=self.note(files=['x.py']);before=find_note(a['id'],'demo',self.root)[1]
+        self.assertTrue(before.get('file_hashes'));self.assertFalse(before.get('checked'))
+        proposal=remap(self.root,[{'before':{'domain':'demo','id':a['id']},'after':{'domain':'other','id':a['id']}}])
+        apply(self.root,proposal['plan_id'],proposal['digest']);after=find_note(a['id'],'other',self.root)[1]
+        self.assertEqual(verified_at(after),verified_at(before))   # a move vouches for nothing
     def test_script_capture_batch_compact_output(self):
         payload=[{'title':str(i),'body':'durable '+str(i),'tags':['subject/project','concern/architecture'],'domain':'demo'} for i in range(2)]
         script=Path(__file__).resolve().parents[1]/'living_memory.py'
