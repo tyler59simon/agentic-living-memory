@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
+from .common import parse_iso
 
 # surface: a candidate the prompt hook found relevant but did not inject (cut by its cap); it is never evidence of
 # use or of disuse. An inject row may carry 'l', the delivery level (pointer, evidence or expanded; core/delivery.py).
@@ -123,7 +124,7 @@ def stats(root,domains,days=30,limit=10):
         event=row['e']
         if event=='reminder':reminders[row.get('k') or 'unknown']=reminders.get(row.get('k') or 'unknown',0)+1
         elif event=='signal-capture':
-            try:year,week,_=datetime.fromisoformat(row['t']).isocalendar();key=f'{year}-W{week:02d}'
+            try:year,week,_=parse_iso(row['t']).isocalendar();key=f'{year}-W{week:02d}'
             except (KeyError,ValueError,TypeError):continue
             weekly[key]=weekly.get(key,0)+1
     counts,sessions=_tally(rows,domains);notes={}

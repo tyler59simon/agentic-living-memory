@@ -7,7 +7,7 @@ from __future__ import annotations
 import json,os,re,zipfile
 from datetime import datetime,timezone
 from pathlib import Path
-from .common import atomic_write,retry_sharing
+from .common import atomic_write,parse_iso,retry_sharing
 from .repository import canonical_json,confined,parse_text,read_json,store_lock
 
 KEEP=7
@@ -145,7 +145,7 @@ def maybe_backup(root):
     try:
         root=Path(root).resolve();marker=root/'hooks'/'last-backup.json'
         # An unreadable marker means "no backup known", not "never back up again".
-        try:age=(datetime.now(timezone.utc)-datetime.fromisoformat((read_json(marker,{}) or {})['at'])).total_seconds()/3600
+        try:age=(datetime.now(timezone.utc)-parse_iso((read_json(marker,{}) or {})['at'])).total_seconds()/3600
         except (KeyError,TypeError,ValueError):age=None
         if age is not None and age<INTERVAL_HOURS:return None
         if sum(1 for f in canonical_files(root) if f.endswith('.md'))>AUTO_MAX_NOTES:return None

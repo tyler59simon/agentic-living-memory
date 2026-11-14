@@ -8,7 +8,7 @@ See [architecture](ARCHITECTURE.md) for the design, components and known limits.
 
 ## Install and use
 
-Python 3.10+ with SQLite FTS5 is required. Python 3.15 is supported; use your selected interpreter for setup and installation. On this Windows installation:
+Python 3.10 to 3.15 with SQLite FTS5 is required; use your selected interpreter for setup and installation. On this Windows installation:
 
 ```powershell
 py -3.15 living_memory.py setup

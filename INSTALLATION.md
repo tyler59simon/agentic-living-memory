@@ -1,6 +1,6 @@
 # Direct installation
 
-After cloning the repository, run `py -3.15 living_memory.py setup` from its directory. Python 3.10+ with SQLite FTS5 is required; substitute your selected Python version on other installations. The wizard displays the current store and suggests `~/LivingMemory` (for example `C:\Users\you\LivingMemory`). Press Enter or supply a custom absolute local folder. Setup initializes an empty store or connects to an existing valid store. It never merges stores implicitly.
+After cloning the repository, run `py -3.15 living_memory.py setup` from its directory. Python 3.10 to 3.15 with SQLite FTS5 is required; substitute your selected Python version on other installations. The wizard displays the current store and suggests `~/LivingMemory` (for example `C:\Users\you\LivingMemory`). Press Enter or supply a custom absolute local folder. Setup initializes an empty store or connects to an existing valid store. It never merges stores implicitly.
 
 The shared pointer is `~/.config/agentic-living-memory/config.json`: `{"version":1,"data_root":"ABSOLUTE_PATH"}`. It is independent of every harness installation. Installers and hooks use the same resolver. `--root` takes precedence over `LIVING_MEMORY_ROOT`, then the legacy `LIVING_MEMORY_HOME` alias, then this configuration. An existing legacy store can be discovered when no shared configuration exists; new harness-specific stores are not created implicitly. Invalid configuration or an unavailable selected directory produces an error rather than a fallback store.
 

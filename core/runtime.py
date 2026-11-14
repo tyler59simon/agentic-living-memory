@@ -2,7 +2,7 @@
 from __future__ import annotations
 import hashlib,json,os,re,shlex,sys,time
 from pathlib import Path
-from .common import memory_root,load_bindings,resolve_domain,atomic_write,canonical_domain,file_lock,head_oid
+from .common import memory_root,load_bindings,resolve_domain,atomic_write,canonical_domain,file_lock,head_oid,parse_iso
 from .repository import read_json,canonical_json,now
 from .capture import status as capture_status,turn_key
 from .note_types import NOTE_TYPES
@@ -420,7 +420,7 @@ def _sync_vaults(root,trigger,min_interval=0):
         if min_interval:
             from datetime import datetime,timezone
             last=read_json(root/'hooks/last-sync.json',{}) or {}
-            try:age=(datetime.now(timezone.utc)-datetime.fromisoformat(last['at'])).total_seconds()
+            try:age=(datetime.now(timezone.utc)-parse_iso(last['at'])).total_seconds()
             except (KeyError,TypeError,ValueError):age=None
             if age is not None and age<min_interval:return None
         return sync_all(root,trigger)
@@ -444,7 +444,7 @@ def _prune_journals(root):
         from datetime import datetime,timezone
         from .repository import prune_journals,prune_plans
         marker=root/'hooks'/'last-prune.json'
-        try:age=(datetime.now(timezone.utc)-datetime.fromisoformat(read_json(marker,{})['at'])).total_seconds()
+        try:age=(datetime.now(timezone.utc)-parse_iso(read_json(marker,{})['at'])).total_seconds()
         except (KeyError,TypeError,ValueError):age=None
         if age is not None and age<24*3600:return None
         atomic_write(marker,canonical_json({'at':now()}))
@@ -476,7 +476,7 @@ def auto_resolve(root,domain,bindings,session=None):
         if bindings.get('auto_resolve',True) is False or headless():return []
         marker=root/'hooks'/'last-auto-resolve.json'
         marks=read_json(marker,{});marks=marks if isinstance(marks,dict) else {}
-        try:age=(datetime.now(timezone.utc)-datetime.fromisoformat(marks[domain])).total_seconds()
+        try:age=(datetime.now(timezone.utc)-parse_iso(marks[domain])).total_seconds()
         except (KeyError,TypeError,ValueError):age=None
         if age is not None and age<24*3600:return []
         atomic_write(marker,canonical_json({**marks,domain:now()}))
@@ -490,7 +490,7 @@ def auto_resolve(root,domain,bindings,session=None):
             items=action_items(note.get('body',''))
             if not items or not all(d for d,_ in items):continue
             try:
-                stamp=datetime.fromisoformat(str(note.get('updated') or note.get('created') or ''))
+                stamp=parse_iso(str(note.get('updated') or note.get('created') or ''))
                 if stamp.tzinfo is None:stamp=stamp.replace(tzinfo=timezone.utc)
             except ValueError:continue
             if stamp>cutoff:continue

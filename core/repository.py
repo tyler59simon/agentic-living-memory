@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .common import atomic_write, file_lock, memory_root, retry_sharing
+from .common import atomic_write, file_lock, memory_root, parse_iso, retry_sharing
 
 STATUSES = {"active", "resolved", "archived", "superseded"}
 FACETS = ("subject", "concern", "platform", "technology", "project", "system")
@@ -319,7 +319,7 @@ def check_retirement(value):
     for key in ("at", "restored_at"):
         if key == "at" or value.get(key) is not None:
             try:
-                datetime.fromisoformat(value[key])
+                parse_iso(value[key])
             except (KeyError, TypeError, ValueError):
                 raise ValueError(f"last_retirement {key} must be an ISO timestamp") from None
     for key in ("rule", "run_id", "operation_id", "successor", "restored_by"):
@@ -494,7 +494,7 @@ def validate(note, domain, root=None, new=False, extra_tags=()):
         check_sources(note["file_hashes"], MAX_FILES, "file_hashes")
     if "checked" in note:
         try:
-            datetime.fromisoformat(note["checked"])
+            parse_iso(note["checked"])
         except (TypeError, ValueError):
             raise ValueError("checked must be an ISO timestamp") from None
     if "pinned" in note and not isinstance(note["pinned"], bool):
@@ -683,7 +683,7 @@ def prune_journals(root, days=14, kinds=BOOKKEEPING_KINDS):
             if not isinstance(value, dict) or value.get("kind") not in kinds or value.get("state") != "committed":
                 continue
             try:
-                created = datetime.fromisoformat(str(value.get("created")))
+                created = parse_iso(str(value.get("created")))
             except ValueError:
                 continue
             if created.tzinfo is None:
@@ -714,7 +714,7 @@ def prune_plans(root, applied_days=1, unapplied_days=30):
                 continue
             try:
                 value = read_json(plan_path, None)
-                created = datetime.fromisoformat(str(value.get("created")))
+                created = parse_iso(str(value.get("created")))
             except (ValueError, AttributeError):
                 continue
             if created.tzinfo is None:
