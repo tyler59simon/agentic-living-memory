@@ -5,13 +5,14 @@
 allowance in force is the element-wise maximum of it and the figures summed from the run records, so deleting
 the checkpoint (or `.cache`) never creates a new allowance. Money is integer microdollars; records hold metadata only."""
 from __future__ import annotations
+import hashlib
 import re
 import uuid
 from contextlib import ExitStack, contextmanager
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_CEILING
 from pathlib import Path
-from .common import file_lock, global_domains
+from .common import file_lock, global_domains, safe_domain
 from .repository import canonical_json, digest, read_json, store_lock, transaction
 
 CONFIG = 'maintenance.json'
@@ -107,8 +108,13 @@ def validate(cfg, root=None, allow_global=False):
     parse_usd(c['daily_budget_usd'])
     if not isinstance(c['model'], str) or not re.fullmatch(r'[a-z0-9.-]{1,40}', c['model']):
         raise ValueError('Invalid model: a lowercase alias such as "sonnet"')
-    if not isinstance(c['domains'], list) or any(not isinstance(d, str) or not d for d in c['domains']) or len(set(c['domains'])) != len(c['domains']):
+    if not isinstance(c['domains'], list) or len(set(map(str, c['domains']))) != len(c['domains']):
         raise ValueError('Invalid domains: a list of distinct domain names')
+    for d in c['domains']:
+        try:
+            safe_domain(d)  # plain names only, so './_global' cannot slip past the global-domain check below
+        except ValueError:
+            raise ValueError(f'Invalid domain name: {d!r}') from None
     if c['enabled_at'] is not None:
         try:
             _parse(c['enabled_at'])
@@ -234,7 +240,8 @@ def accounting(root, now=None):
     eff = now
     if cp and cp['last_attempt_at']:
         eff = max(eff, _parse(cp['last_attempt_at']))
-    runs = _scan(root, eff.date() - timedelta(days=1))
+    # Without a checkpoint, the interval and a provider block may rest on runs of any age, so read every record.
+    runs = _scan(root, eff.date() - timedelta(days=1) if cp else date.min)
     latest = max(runs, key=lambda r: _parse(r['attempted_at']), default=None)
     if latest and _parse(latest['attempted_at']) > eff:
         eff = _parse(latest['attempted_at'])
@@ -251,6 +258,9 @@ def accounting(root, now=None):
         out[k] = max(out[k], sums[k])
     if latest and (not cp or not cp['last_attempt_at'] or _parse(latest['attempted_at']) > _parse(cp['last_attempt_at'])):
         out['last_attempt_at'], out['last_attempt_config_revision'] = latest['attempted_at'], latest['config_revision']
+        # Only a failure before launch (released) may be retried early after a config change.
+        out['last_failure'] = ({'at': latest['finished_at'], 'reason_code': latest['reason_code'], 'run_id': latest['id']}
+                               if latest.get('released') else None)
     if not out['blocked']:
         over = [r for r in runs if r.get('reason_code') == 'provider_budget']
         if over:
@@ -304,11 +314,9 @@ def _file_digest(root, rel):
     return digest(path.read_bytes()) if path.exists() else None
 
 
-def _commit(root, run, acc, expected_run, expected_state, op=None, write_state=True):
-    changes = {_run_path(run): canonical_json(run)}
-    expected = {_run_path(run): expected_run}
-    if write_state:
-        changes[STATE], expected[STATE] = canonical_json(acc), expected_state
+def _commit(root, run, acc, expected_run, expected_state, op=None):
+    changes = {_run_path(run): canonical_json(run), STATE: canonical_json(acc)}
+    expected = {_run_path(run): expected_run, STATE: expected_state}
     return transaction(root, changes, 'maintenance_run', expected=expected, operation_id=op)
 
 
@@ -340,9 +348,8 @@ def reserve(root, cfg, n_candidates, now=None, selected=None):
 
 
 def _current(root, run):
-    """The stored record of `run`; a stale caller copy or a terminal state refuses the move."""
-    stored = _read_run(Path(root) / _run_path(run), run['day'])
-    return stored
+    """The stored record of `run` (callers may hold an older copy)."""
+    return _read_run(Path(root) / _run_path(run), run['day'])
 
 
 def _move(root, run, to, now, apply):
@@ -355,8 +362,12 @@ def _move(root, run, to, now, apply):
         same_day = acc['day'] == stored['day']
         before_state, before_run = _file_digest(root, STATE), _file_digest(root, _run_path(stored))
         new = dict(stored, state=to)
-        apply(new, acc if same_day else _blank(stored['day']), _iso(eff))
-        _commit(root, new, acc, before_run, before_state, write_state=same_day)
+        # A run from an earlier day leaves today's counters alone, but its block and failure still reach the checkpoint.
+        target = acc if same_day else {**acc, **{k: 0 for k in COUNTERS}, 'cost_complete': True}
+        apply(new, target, _iso(eff))
+        if not same_day:
+            acc['blocked'], acc['last_failure'] = target['blocked'], target['last_failure']
+        _commit(root, new, acc, before_run, before_state)
         return new
 
 
@@ -400,13 +411,10 @@ def finish(root, run, usage_micro, outcome, now=None, reason=None):
         if known and usage_micro > new['budget_passed_micro']:
             new['reason_code'] = 'provider_budget'
             acc['blocked'] = {'reason': 'provider_budget', 'config_revision': new['config_revision']}
-        if outcome == 'failed':
-            acc['last_failure'] = {'at': at, 'reason_code': reason, 'run_id': new['id']}
     return _move(root, run, outcome, now, apply)
 
 
 def operation_id(run_id, ref, action):
-    import hashlib
     return 'm-' + hashlib.sha256(f'{run_id}|{ref}|{action}'.encode()).hexdigest()[:40]
 
 

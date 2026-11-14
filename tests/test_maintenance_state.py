@@ -128,6 +128,29 @@ class Damage(Base):
         (self.root/ms.STATE).unlink();self.assertEqual(self.code(T0+DAY),'provider_budget')
         self.change(model='haiku');self.assertTrue(ms.eligibility(self.root,T0+2*DAY)['eligible'])
 
+class CheckpointLoss(Base):
+    def test_rebuild_reads_runs_older_than_yesterday(self):
+        cfg=self.change(min_interval_seconds=3*86400);run=self.reserve(cfg=cfg);ms.launch(self.root,run,T0);ms.finish(self.root,run,10,'completed',T0)
+        (self.root/ms.STATE).unlink();self.assertEqual(self.code(T0+2*DAY+H),'interval')
+    def test_old_provider_block_survives_rebuild(self):
+        run=self.reserve();ms.launch(self.root,run,T0);ms.finish(self.root,run,1_500_000,'completed',T0)
+        (self.root/ms.STATE).unlink();self.assertEqual(self.code(T0+5*DAY),'provider_budget')
+    def test_block_after_midnight_reaches_checkpoint(self):
+        late=datetime(2026,3,10,23,50,tzinfo=timezone.utc);after=datetime(2026,3,11,0,10,tzinfo=timezone.utc)
+        run=self.reserve(late);ms.launch(self.root,run,late);ms.finish(self.root,run,1_500_000,'completed',after)
+        self.assertEqual(ms.state(self.root,after)['blocked']['reason'],'provider_budget')
+        self.assertEqual(self.code(after+5*DAY),'provider_budget')
+    def test_rebuild_keeps_pre_launch_failure(self):
+        run=self.reserve();ms.release(self.root,run,'adapter_missing',T0);(self.root/ms.STATE).unlink()
+        self.change(model='haiku');self.assertTrue(ms.eligibility(self.root,T0+H)['eligible'])
+    def test_failure_after_launch_never_allows_early_retry(self):
+        run=self.reserve();ms.launch(self.root,run,T0);ms.finish(self.root,run,None,'failed',T0,'timeout')
+        self.change(model='haiku');self.assertEqual(self.code(T0+H),'interval')
+    def test_domain_names_are_plain(self):
+        (self.root/'domains/_global').mkdir(parents=True)
+        for bad in ('./_global','../demo','demo/..',str(self.root/'domains/demo')):
+            with self.subTest(bad=bad),self.assertRaises(ValueError):ms.set_config(self.root,{'domains':[bad]})
+
 class Concurrency(Base):
     def test_two_reserves_make_one_run(self):
         out=[];gate=threading.Barrier(2)
