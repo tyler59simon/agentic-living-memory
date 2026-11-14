@@ -77,7 +77,8 @@ def render(result):
             return '\n'.join(lines)
         return '\n'.join(' '.join(f'{k}={_s(v)}' for k,v in x.items() if not isinstance(v,(dict,list))) if isinstance(x,dict) else _s(x) for x in result) or 'Nothing.'
     if not isinstance(result,dict):return _s(result)
-    if result.get('plan_id') and result.get('digest') and result.get('status')!='approval_required':lines=_plan(result)
+    if isinstance(result.get('markdown'),str):lines=[result['markdown'].rstrip()]   # recap, history --markdown: already written for a person
+    elif result.get('plan_id') and result.get('digest') and result.get('status')!='approval_required':lines=_plan(result)
     elif 'title' in result and ('body' in result or 'type' in result):lines=_read(result)
     elif result.get('status') and result.get('id'):lines=_receipt(result)
     elif any(isinstance(result.get(k),list) for k in LISTS):lines=_rows(result)

@@ -42,6 +42,8 @@ class RenderShapes(unittest.TestCase):
         text=render.render({'ok':True,'plan_id':'p'*32,'digest':'d'*64,'source':'C:/old','destination':'D:/new','config_changed':False,'added':[],'removed':['x.md'],'changed':[]})
         self.assertIn('alm setup --apply-plan '+'p'*32+' --expected-plan-sha256 '+'d'*64,text);self.assertNotIn('alm apply ',text)
         self.assertIn('destination: D:/new',text);self.assertIn('config_changed: false',text);self.assertIn('x.md',text)
+    def test_markdown_results_print_their_markdown(self):   # recap and history --markdown
+        self.assertEqual(render.render({'ok':True,'rows':[{'op':'x'}],'markdown':'## Recap\n- one\n'}),'## Recap\n- one')
     def test_batch_and_fallback(self):
         text=render.render([{'exit_code':0,'result':{'ok':True,'status':'created','id':self.HIT['id'],'domain':'demo'},'error':None},{'exit_code':2,'result':None,'error':'bad'}]);self.assertIn('exit code 0',text);self.assertIn('bad',text)
         self.assertEqual(render.render({'ok':True,'python':'3.15','nested':{'a':1},'items_':[1,2]}),'python: 3.15\nnested:\n  a: 1\nitems_:\n  - 1\n  - 2')
