@@ -109,6 +109,64 @@ class AcrossDomains(GlobalFixture):
         self.assertEqual((out['status'], out['id']), ('promoted', first['id']))
         self.assertIn('update _global:' + first['id'], out['hint'])
 
+    def allow_project_tag(self):
+        path = self.root / 'tag_taxonomy.json';taxonomy = json.loads(path.read_text())
+        path.write_text(json.dumps({**taxonomy, 'tags': taxonomy['tags'] + ['project/other']}))
+
+    def seeded(self, title='Codex review needs a full-repo brief', body='Codex review covers only the diff.', **extra):
+        self.other();(self.base / 'other').mkdir(exist_ok=True);self.allow_project_tag();(self.base / 'other' / 'x.py').write_text('x=1', encoding='utf-8')
+        return capture(title, body, TAGS + ['project/other'], 'other', self.root, **extra)
+
+    def assertCleaned(self, note, original):
+        self.assertFalse([t for t in note['tags'] if t.startswith('project/')])
+        for key in ('files', 'repo', 'file_hashes'):self.assertNotIn(key, note)
+        self.assertEqual(set(note['tags']), set(original['tags']) - {'project/other'});self.assertEqual(note['body'], original['body'])
+
+    def test_a_promoted_copy_drops_project_tags_and_files_and_undo_restores_them(self):
+        first = self.seeded(files=['x.py']);original = self.ids('other')[first['id']]
+        self.assertTrue(original['files'] and original['file_hashes'] and 'project/other' in original['tags'])
+        out = capture('Codex review needs a full-repo brief', 'Codex review covers only the diff.', TAGS, 'demo', self.root)
+        self.assertEqual(out['status'], 'promoted');self.assertIn('project tags and files were dropped', out['hint'])
+        self.assertCleaned(self.ids('_global')[first['id']], original)
+        self.undo(out['operation_id'])
+        restored = self.ids('other')[first['id']]
+        self.assertEqual((restored['tags'], restored['files'], restored['file_hashes']), (original['tags'], original['files'], original['file_hashes']))
+
+    def test_a_near_identical_promoted_copy_is_cleaned_too(self):
+        body = 'Codex review only covers the diff, so a whole-repo review needs codex exec with a full-repo brief and read-only sandbox.'
+        first = self.seeded(body=body, files=['x.py']);original = self.ids('other')[first['id']]
+        out = capture('Codex review needs a full repo brief', body.replace('read-only sandbox', 'a read-only sandbox'), TAGS, 'demo', self.root)
+        self.assertEqual(out['status'], 'promoted');self.assertCleaned(self.ids('_global')[first['id']], original)
+
+    def test_a_note_naming_a_project_path_stays_put(self):
+        body = f"Run the script at {(self.base / 'other' / 'x.py').as_posix().upper()} first."
+        first = self.seeded(body=body)
+        with self.assertRaisesRegex(ValueError, 'other:' + first['id'] + '.*names a project path'):
+            capture('Codex review needs a full-repo brief', body, TAGS, 'demo', self.root)
+        self.assertIn(first['id'], self.ids('other'));self.assertEqual(self.ids('demo'), {});self.assertFalse((self.root / 'domains/_global/notes').is_dir())
+
+    def test_digest_and_map_notes_stay_put(self):
+        from core.digests import describe
+        self.other();(self.base / 'other').mkdir(exist_ok=True);(self.base / 'other' / 'doc.md').write_text('# Doc', encoding='utf-8')
+        d = capture('Doc digest', 'Summary of the doc.', TAGS, 'other', self.root, sources=[describe(self.root, 'other', 'doc.md')])
+        with self.assertRaisesRegex(ValueError, 'other:' + d['id'] + '.*digest'):
+            capture('Doc digest', 'Summary of the doc.', TAGS, 'demo', self.root, allow_similar=True)
+        m = capture('Layout', 'Where things live.', TAGS, 'other', self.root, type='map', files=['.'])
+        with self.assertRaisesRegex(ValueError, 'other:' + m['id'] + '.*map'):
+            capture('Layout', 'Where things live.', TAGS, 'demo', self.root, type='map', files=['.'])
+        self.assertEqual(self.ids('demo'), {})
+
+    def test_promote_plan_cleans_the_same_way_and_refuses_the_same_notes(self):
+        first = self.seeded(files=['x.py']);original = self.ids('other')[first['id']]
+        proposed = promote_plan(self.root, ['other:' + first['id']]);apply(self.root, proposed['plan_id'], proposed['digest'])
+        self.assertCleaned(self.ids('_global')[first['id']], original)
+        pathy = capture('Run the script', f"Run {self.base / 'other' / 'x.py'}.", TAGS, 'other', self.root)
+        with self.assertRaisesRegex(ValueError, 'names a project path'):
+            promote_plan(self.root, ['other:' + pathy['id']])
+        m = capture('Layout', 'Where things live.', TAGS, 'other', self.root, type='map', files=['.'])
+        with self.assertRaisesRegex(ValueError, 'map'):
+            promote_plan(self.root, ['other:' + m['id']])
+
     def test_a_merely_similar_note_in_an_unrelated_project_is_refused_with_promote_plan(self):
         self.other()
         first = capture('Deploy with install.py', 'Use install.py to deploy.', TAGS, 'other', self.root)

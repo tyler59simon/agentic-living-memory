@@ -1,6 +1,6 @@
 ﻿"""Governed canonical note operations; all persistence goes through transactions."""
 from __future__ import annotations
-import argparse,json,re,uuid
+import argparse,json,os,re,uuid
 from datetime import date
 from . import clock
 from pathlib import Path
@@ -143,6 +143,34 @@ def scope_hint(note):
     if note.get('type')=='preference' and not note.get('files'):return 'a preference that names no project files'
     return None
 
+def promotion_cleaned(note):
+    """A copy of a project note as it reads in the global domain: no project/ tags and no `files`, `repo` or `file_hashes`."""
+    note=dict(note);note['tags']=[t for t in note.get('tags',[]) if not str(t).startswith('project/')]
+    for key in ('files','repo','file_hashes'):note.pop(key,None)
+    return note
+
+def _project_folders(root):
+    """Absolute folders of every bound domain and registered project, as lowercase forward-slash text."""
+    from .common import load_bindings,_entries
+    from . import projects
+    found=set()
+    for _,_,prefixes in _entries(load_bindings(root)):
+        for raw in prefixes:
+            try:found.add(str(Path(os.path.expandvars(str(raw))).expanduser().resolve()))
+            except (OSError,ValueError):continue
+    for project in projects.load(root)['projects']:found.update(str(r) for r in project.get('repos',[]))
+    folders={f.replace(chr(92),'/').rstrip('/').lower() for f in found}
+    return {f for f in folders if len(f)>3}
+
+def promotion_blocker(note,root):
+    """Why a project note stays in its project instead of moving to the global domain, or None. A digest of a project file (`sources`),
+    a map or brief, and a note whose body names a path inside a bound folder or registered project repo are project-specific."""
+    if note.get('sources'):return 'it is a digest of a project file'
+    if effective_type(note) in KEYED_TYPES:return f"it is a {effective_type(note)}"
+    text=str(note.get('body','')).replace(chr(92),'/').lower()
+    if any(re.search(r'(?<!\w)'+re.escape(f)+r'(?![\w.-])',text) for f in _project_folders(root)):return 'it names a project path'
+    return None
+
 def _move_set(moves,root):
     """(changes, expected) moving notes to other domains in one step. Each move is {'note', 'target',
     and optionally 'status', 'superseded_by', 'supersedes'}. IDs and filenames are kept; relative Markdown
@@ -158,7 +186,9 @@ def _move_set(moves,root):
         targets[source.resolve()]=destination;steps.append((move,source,destination,status))
     moved={move['note']['id'] for move in moves}
     for move,source,destination,status in steps:
-        note={**keep_baseline(dict(move['note'])),'domain':move['target'],'status':status,'updated':now(),'path':str(destination)}
+        note=dict(move['note'])
+        if move.get('clean'):note=promotion_cleaned(note)
+        note={**keep_baseline(note),'domain':move['target'],'status':status,'updated':now(),'path':str(destination)}
         if move.get('superseded_by'):note['superseded_by']=move['superseded_by']
         if move.get('supersedes'):note['supersedes']=sorted(set(note.get('supersedes',[]))|set(move['supersedes']))
         note['body']=rewrite_type_links(note['body'],destination,targets,moved_from=source)
@@ -429,13 +459,17 @@ def _cross_similar(title,body,note_type,domain,root):
 
 def _promote_existing(note,source,root,origin_ref=None):
     """Move one active project note into the global domain as it is (journaled, undoable)."""
+    ref=f"{source}:{note['id']}"
+    blocker=promotion_blocker(note,root)
+    if blocker:raise ValueError(f"possible_duplicate conflict: the same note is in project {source} ({ref}) but {blocker}, so it stays there; "
+                                f"capture a version without project-specific detail, or `update {ref}`")
     target=ensure_global(root)
-    changes,expected=_move_set([{'note':note,'target':target}],root)
+    changes,expected=_move_set([{'note':note,'target':target,'clean':True}],root)
     receipt=_commit_many([source,target],changes,'promote',root,expected)
     ref=f"{target}:{note['id']}"
     receipt.update(id=note['id'],domain=target,ref=ref,status='promoted',promoted_from=f"{source}:{note['id']}",
                    hint=f'The same note was already in project {source}, so it now lives in the global domain, '
-                        f'where every project sees it. If your version adds detail, run `update {ref}`.')
+                        f'where every project sees it; its project tags and files were dropped. If your version adds detail, run `update {ref}`.')
     return receipt
 
 DIGEST_KEY='digest:'   # capture_key of a digest note: digest:<path>:<sha256 of that file's content>

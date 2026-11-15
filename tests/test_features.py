@@ -77,6 +77,7 @@ class Features(StoreFixture):
         proposal=remap(self.root,[{'before':{'domain':'demo','id':a['id']},'after':{'domain':'other','id':a['id']}}])
         apply(self.root,proposal['plan_id'],proposal['digest']);after=find_note(a['id'],'other',self.root)[1]
         self.assertEqual(verified_at(after),verified_at(before))   # a move vouches for nothing
+        self.assertEqual((after['files'],after['file_hashes'],after['tags']),(before['files'],before['file_hashes'],before['tags']))   # only promotion cleans a note
     def test_script_capture_batch_compact_output(self):
         payload=[{'title':str(i),'body':'durable '+str(i),'tags':['subject/project','concern/architecture'],'domain':'demo'} for i in range(2)]
         script=Path(__file__).resolve().parents[1]/'living_memory.py'

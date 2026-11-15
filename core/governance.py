@@ -245,7 +245,7 @@ def promote_plan(root,refs):
     relative links follow. Two of the notes that are the same knowledge (same type, similar titles) become
     one: the newer supersedes the older inside the global domain."""
     from .common import global_domains
-    from .notes import resolve_ref,find_note,_move_set,ensure_global,TitleScorer,domain_folders
+    from .notes import resolve_ref,find_note,_move_set,ensure_global,TitleScorer,domain_folders,promotion_blocker
     root=Path(root).resolve()
     if not isinstance(refs,list) or not 1<=len(refs)<=20:raise ValueError('promote-plan takes 1..20 note references')
     target=ensure_global(root);globals_=set(global_domains(root))
@@ -257,8 +257,10 @@ def promote_plan(root,refs):
             note=find_note(note_id,d,root)[1]
             if note.get('status','active')!='active':raise ValueError(f'{ref} is not active; only active notes are promoted')
             if any(n['id']==note['id'] for n in notes):raise ValueError(f'{ref} is listed twice')
+            blocker=promotion_blocker(note,root)
+            if blocker:raise ValueError(f'{ref} stays in its project: {blocker}')
             notes.append(note)
-        scorer=TitleScorer(notes);moves={n['id']:{'note':n,'target':target} for n in notes};superseded=[]
+        scorer=TitleScorer(notes);moves={n['id']:{'note':n,'target':target,'clean':True} for n in notes};superseded=[]
         ordered=sorted(notes,key=lambda n:str(n.get('updated') or ''),reverse=True)
         for i,newer in enumerate(ordered):
             if moves[newer['id']].get('status'):continue
