@@ -443,7 +443,7 @@ def error_code(message):
     so a note title, tag or path inside the message cannot change the code."""
     import re
     head=re.split(r''': |["']''',message,maxsplit=1)[0].lower()
-    return 'stale' if 'stale' in head else 'conflict' if 'conflict' in head else 'invalid'
+    return 'hivemind' if head=='hivemind' else 'stale' if 'stale' in head else 'conflict' if 'conflict' in head else 'invalid'
 
 def serve(root,cwd,commands):
     """JSON lines on stdin: {"id", "argv", "stdin"?} -> one {"id", "exit_code", "result", "error"} line each, run in-process."""
@@ -629,6 +629,10 @@ def main(argv=None):
     parser=build_parser();subs=parser.subs;args=parser.parse_args(argv);cwd=args.cwd or os.getcwd()
     invocation={'start':time.perf_counter(),'argv':list(argv) if argv is not None else sys.argv[1:]}
     try:
+        # Agents started inside a Hivemind terminal inherit HIVEMIND_SESSION; Hivemind's own backend does not. Every path (batch and serve
+        # re-enter main) reaches this point before a governed command runs.
+        if os.environ.get('HIVEMIND_SESSION') and (args.command in {'apply','undo','recover'} or (args.command=='setup' and args.apply_plan)):
+            raise ValueError('hivemind: Memory plans are applied and undone by you in Hivemind, not by an agent. Write the plan; the user applies it.')
         if args.command=='setup':
             from .storage import setup,apply_relocation,inspect_relocation
             if args.actor in {'subagent','viewer'}:raise ValueError('Subagents are read-only' if args.actor=='subagent' else 'Viewers are read-only')

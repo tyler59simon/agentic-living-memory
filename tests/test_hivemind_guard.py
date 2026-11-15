@@ -1,8 +1,10 @@
 """Hivemind guard: with HIVEMIND_SESSION set, an agent's shell command may not apply or undo a plan."""
 import contextlib, io, json, os, sys, unittest
+from pathlib import Path
 from unittest.mock import patch
 from test_core import StoreFixture
 from core import logs, runtime
+from core.cli import main
 
 REASON = 'Memory plans are applied and undone by you in Hivemind, not by an agent. Write the plan; the user applies it.'
 MODES = ('default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions')
@@ -116,6 +118,84 @@ class HivemindGuard(StoreFixture):
         payload = {'cwd': str(self.base / 'project'), 'session_id': 's1', 'tool_name': 'Read',
                    'tool_input': {'file_path': str(self.base / 'project' / 'undo.txt')}}
         self.assertNotIn('deny', runtime.process('claude', 'pre-tool-use', payload, self.root))
+
+
+    def test_unbound_working_directory_is_denied(self):
+        elsewhere = str(self.base / 'unbound')
+        for harness, tool in (('claude', 'Bash'), ('codex', 'shell')):
+            payload = self.payload(harness, tool, self.memory('undo op-1'), cwd=elsewhere)
+            self.assertEqual(runtime.process(harness, 'pre-tool-use', payload, self.root).get('deny'), REASON)
+            payload = self.payload(harness, tool, 'alm --domain demo undo op-1', cwd=elsewhere)
+            self.assertEqual(runtime.process(harness, 'pre-tool-use', payload, self.root).get('deny'), REASON)
+
+    def test_equals_and_abbreviated_global_options_are_denied(self):
+        base = f'"{sys.executable}" "{runtime.SCRIPT}"'
+        for rest in ('--domain=demo undo op-1', '--dom demo undo op-1', '--root=x --domain=demo apply p --expected-plan-sha256 a',
+                     '--domain=demo setup --apply-plan p1', '--json --actor=main recover op-1'):
+            with self.subTest(rest=rest):
+                self.assertTrue(self.denied(f'{base} {rest}'))
+                self.assertTrue(self.denied(f'{base} {rest}', tool='PowerShell'))
+        self.assertFalse(self.denied(f'{base} --domain=demo search cache'))
+
+
+class HivemindCli(StoreFixture):
+    """The CLI refuses governed commands itself: batch and serve re-enter main(), so they pass the same check."""
+    def run_main(self, *argv, stdin=None):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            if stdin is None:
+                code = main(['--root', str(self.root), '--domain', 'demo', *argv])
+            else:
+                with patch('sys.stdin', io.StringIO(stdin)):
+                    code = main(['--root', str(self.root), '--domain', 'demo', *argv])
+        return code, out.getvalue(), err.getvalue()
+
+    def refused(self, err):
+        error = json.loads(err)['error']
+        return error['code'] == 'hivemind' and error['message'].endswith(REASON)
+
+    def with_env(self, value):
+        env = patch.dict(os.environ, {'HIVEMIND_SESSION': value} if value else {}, clear=False)
+        env.start(); self.addCleanup(env.stop)
+        if not value:
+            os.environ.pop('HIVEMIND_SESSION', None)
+
+    def test_governed_commands_are_refused_with_the_variable(self):
+        self.with_env('hm-1')
+        for argv in (['apply', 'p1', '--expected-plan-sha256', 'a'], ['undo', 'op-1'], ['recover', 'op-1'], ['setup', '--apply-plan', 'p1', '--expected-plan-sha256', 'a']):
+            with self.subTest(argv=argv):
+                code, out, err = self.run_main('--json', *argv)
+                self.assertEqual(code, 2)
+                self.assertTrue(self.refused(err), err)
+
+    def test_other_commands_and_the_unset_variable_pass_the_check(self):
+        self.with_env('hm-1')
+        code, out, err = self.run_main('--json', 'version')
+        self.assertEqual(code, 0, err)
+        self.with_env('')
+        code, out, err = self.run_main('--json', 'undo', 'missing-op')
+        self.assertNotEqual(code, 0)
+        self.assertFalse(self.refused(err), err)
+
+    def test_batch_with_a_nested_undo_is_refused(self):
+        self.with_env('hm-1')
+        payload = self.base / 'ops.json'
+        payload.write_text(json.dumps([{'argv': ['version']}, {'argv': ['undo', 'op-1']}]))
+        code, out, err = self.run_main('--json', 'batch', '--payload-file', str(payload))
+        self.assertEqual(code, 0, err)
+        rows = json.loads(out)
+        self.assertEqual(rows[0]['exit_code'], 0)
+        self.assertEqual(rows[1]['exit_code'], 2)
+        self.assertEqual(json.loads(rows[1]['error'])['error']['code'], 'hivemind')
+
+    def test_serve_refuses_a_governed_request(self):
+        self.with_env('hm-1')
+        lines = ''.join(json.dumps(r) + chr(10) for r in ({'id': 1, 'argv': ['undo', 'op-1']}, {'id': 2, 'argv': ['version']}))
+        code, out, err = self.run_main('serve', '--stdio', stdin=lines)
+        replies = [json.loads(l) for l in out.splitlines()]
+        self.assertEqual(replies[0]['exit_code'], 2)
+        self.assertEqual(replies[0]['error']['code'], 'hivemind')
+        self.assertEqual(replies[1]['exit_code'], 0)
 
 
 if __name__ == '__main__':

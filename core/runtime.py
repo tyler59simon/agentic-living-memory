@@ -217,11 +217,9 @@ def hivemind_governed(text,grammar):
     def flag(word):
         name=word.partition('=')[0];return len(name)>=3 and name.startswith('--') and '--apply-plan'.startswith(name)
     parsed=_parsed(text,grammar)
-    if parsed and memory_subcommand(text,grammar):
-        for words in parsed:
-            sub=_subcommand(words)
-            if sub in HIVEMIND_GOVERNED or (sub=='setup' and any(flag(w) for w in words)):return True
-        return False
+    subs=[_subcommand(words) for words in parsed or []]
+    if parsed and all(sub and not sub.startswith('-') for sub in subs):   # an option in the subcommand slot (--domain=x, --dom x) is not a subcommand: read the tokens
+        return any(sub in HIVEMIND_GOVERNED or (sub=='setup' and any(flag(w) for w in words)) for sub,words in zip(subs,parsed))
     tokens=[t for t in re.split(r'''[\s;&|()"'`{}<>=,]+''',text) if t]
     named=any(t.lower().endswith(('living_memory.py','living_memory')) or re.split(r'[\\/]',t)[-1].lower() in ('alm','alm.exe','alm.cmd') for t in tokens)
     return named and any(t in HIVEMIND_GOVERNED or flag(t) for t in tokens)
@@ -1670,6 +1668,17 @@ def _process(harness,event,payload,root=None,info=None):
         synced=_sync_vaults(root,'session end');backup=_daily_backup(root);pruned=_prune_journals(root)
         detail['housekeeping']={'synced':len(synced.get('results',[])) if isinstance(synced,dict) else None,'backup':bool(backup),'pruned':pruned is not None}
         return {}
+    if event=='pre-tool-use' and os.environ.get('HIVEMIND_SESSION'):
+        # Before the unbound-project return: an agent in a Hivemind terminal may not apply or undo a plan whatever its working directory.
+        args=payload.get('tool_input',payload.get('toolArgs',payload.get('toolArguments',{})))
+        if isinstance(args,str):
+            try:args=json.loads(args)
+            except json.JSONDecodeError:pass
+        name=str(payload.get('tool_name') or payload.get('toolName') or '').lower();text=shell_command(args) if name in SHELL_TOOLS else ''
+        if text and hivemind_governed(text,shell_grammar(name)):
+            detail['tool']=name;detail['decision']='deny:hivemind'
+            result['deny']='Memory plans are applied and undone by you in Hivemind, not by an agent. Write the plan; the user applies it.'
+            return result
     if not domain:
         if event=='stop':detail['reason']='unbound'
         if event=='session-start' and session!='unknown':
@@ -1918,10 +1927,6 @@ def _process(harness,event,payload,root=None,info=None):
         if subcommand and grammar=='posix' and re.match(r'\s*&',text):
             detail['decision']='deny:call-operator'
             result['deny']='In Bash, drop the leading &: '+re.sub(r'^\s*&\s*','',text)
-            return result
-        if text and os.environ.get('HIVEMIND_SESSION') and hivemind_governed(text,grammar):
-            detail['decision']='deny:hivemind'
-            result['deny']='Memory plans are applied and undone by you in Hivemind, not by an agent. Write the plan; the user applies it.'
             return result
         learn_write=learn_settings=False
         if subcommand=='learn':
