@@ -145,6 +145,13 @@ class AcrossDomains(GlobalFixture):
             capture('Codex review needs a full-repo brief', body, TAGS, 'demo', self.root)
         self.assertIn(first['id'], self.ids('other'));self.assertEqual(self.ids('demo'), {});self.assertFalse((self.root / 'domains/_global/notes').is_dir())
 
+    def test_a_project_path_ending_a_sentence_counts_but_a_sibling_folder_does_not(self):
+        from core.notes import promotion_blocker
+        self.other();folder = (self.base / 'other').resolve().as_posix()
+        for body, blocked in ((f'The checkout is {folder}.', True), (f'The checkout is {folder}', True), (f'Run {folder}/x.py, then stop.', True),
+                              (f'See `{folder}`.', True), (f'Use {folder}-old/x.py.', False), (f'Use {folder}.old/x.py.', False)):
+            with self.subTest(body=body):self.assertEqual(promotion_blocker({'body': body}, self.root) is not None, blocked)
+
     def test_digest_and_map_notes_stay_put(self):
         from core.digests import describe
         self.other();(self.base / 'other').mkdir(exist_ok=True);(self.base / 'other' / 'doc.md').write_text('# Doc', encoding='utf-8')

@@ -168,7 +168,7 @@ def promotion_blocker(note,root):
     if note.get('sources'):return 'it is a digest of a project file'
     if effective_type(note) in KEYED_TYPES:return f"it is a {effective_type(note)}"
     text=str(note.get('body','')).replace(chr(92),'/').lower()
-    if any(re.search(r'(?<!\w)'+re.escape(f)+r'(?![\w.-])',text) for f in _project_folders(root)):return 'it names a project path'
+    if any(re.search(r'(?<!\w)'+re.escape(f)+r'(?![\w-]|\.\w)',text) for f in _project_folders(root)):return 'it names a project path'
     return None
 
 def _move_set(moves,root):
