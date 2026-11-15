@@ -42,6 +42,7 @@ Each run ends with `validate` and `doctor`.
 The report goes to `.cache/simulation/<UTC time>.json`, and `--keep` keeps each store for inspection.
 
 The simulation exercises Living Memory's side of each harness contract as written in the adapters. It does not prove what a live harness sends.
+**Simulated time.** A headless run (`LIVING_MEMORY_HEADLESS=1`) can set `LIVING_MEMORY_CLOCK_OFFSET_SECONDS` to age its records without waiting, for example `345600` for four days ahead, so the three-day auto-resolve, review dates, staleness, the daily maintenance allowance and recap windows can be exercised across several simulated sprints. The offset is read on every call by `core/clock.py` and ignored outside a headless run. Codebase map currency compares note dates with git commit dates, so a harness that sets the offset also sets `GIT_AUTHOR_DATE` and `GIT_COMMITTER_DATE`. `tests/test_clock.py` covers the clock; the auto-resolve, review worklist and maintenance accounting tests have offset cases.
 
 Native adapter fixtures establish wire-format behavior, not live support in every harness version. Claude Code and Codex are installed and used live on this machine; Factory and Copilot are checked against fixtures and vendor documentation only. Hook config alone does not prove trust or delivery: verify native `/hooks`, then check the last observed invocation in `doctor`. There is no fresh-machine or non-Windows installation test in this environment.
 

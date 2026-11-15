@@ -9,9 +9,10 @@ import re
 import threading
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import timezone
 from pathlib import Path
 
+from . import clock
 from .common import atomic_write, file_lock, memory_root, parse_iso, retry_sharing
 
 STATUSES = {"active", "resolved", "archived", "superseded"}
@@ -113,7 +114,7 @@ def redact(text):
 
 
 def now():
-    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    return clock.now().isoformat(timespec="microseconds")
 
 
 def digest(data):
@@ -672,7 +673,7 @@ def prune_journals(root, days=14, kinds=BOOKKEEPING_KINDS):
     """Delete committed journals of the given kinds older than `days`; returns how many were removed."""
     from datetime import timedelta
     import shutil
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff = clock.now() - timedelta(days=days)
     removed = 0
     with store_lock(Path(root).resolve()):
         for journal_path in sorted(Path(root).glob(".operations/*/journal.json")):
@@ -699,7 +700,7 @@ def prune_plans(root, applied_days=1, unapplied_days=30):
     than `unapplied_days`. A plan whose journal is in any other state, or unreadable, stays, and so does one an
     Obsidian approval still waits on (`pending_plan` in a domain's sync-state.json). Returns the count removed."""
     from datetime import timedelta
-    now_utc = datetime.now(timezone.utc)
+    now_utc = clock.now()
     removed = 0
     with store_lock(Path(root).resolve()):
         waiting = set()

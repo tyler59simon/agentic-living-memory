@@ -11,8 +11,9 @@ import subprocess
 import sys
 import tempfile
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
+from .clock import now as clock_now
 from . import maintenance_agent as agent
 from . import maintenance_state as ms
 from .repository import canonical_json, digest, redact, store_lock, find_secret, transaction
@@ -33,7 +34,7 @@ STATE_PRIORITY = {'changed': 0, 'missing': 1, 'unavailable': 2, 'unchecked': 3, 
 
 
 def _clock(now):
-    return (lambda: ms._aware(now)) if now is not None else (lambda: datetime.now(timezone.utc))
+    return (lambda: ms._aware(now)) if now is not None else clock_now
 
 
 def _type(note):

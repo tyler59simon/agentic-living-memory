@@ -6,8 +6,8 @@ one present with different content is reported as a conflict and left alone, and
 """
 from __future__ import annotations
 import hashlib,os,re,zipfile
-from datetime import datetime,timezone
 from pathlib import Path
+from . import clock
 
 SCHEMA=1
 MEMBER=re.compile(r'(?:(notes|archive)/[^/\\]+\.md|learning/(?:tasks|attempts|evidence|candidates|procedures|versions|uses|feedback)/[a-f0-9.-]+\.json)')
@@ -38,7 +38,7 @@ def export(root,domain,out,types=(),tags=(),retired=False,include_learning=False
                     data=serialize(portable).encode('utf-8')
                 archive.writestr(name,data);used|=set(note.get('tags',[]))
                 entries.append({'id':note['id'],'path':name,'sha256':hashlib.sha256(data).hexdigest()})
-            manifest={'schema':SCHEMA,'domain':domain,'exported':datetime.now(timezone.utc).isoformat(timespec='seconds'),'notes':entries,'tags':sorted(used)}
+            manifest={'schema':SCHEMA,'domain':domain,'exported':clock.now().isoformat(timespec='seconds'),'notes':entries,'tags':sorted(used)}
             if include_learning:
                 from .learning import export_records
                 members=export_records(root,domain,[n['learning_procedure'] for n in notes if n.get('learning_procedure')])

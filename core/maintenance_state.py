@@ -13,6 +13,7 @@ from contextlib import ExitStack, contextmanager
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_CEILING
 from pathlib import Path
+from . import clock
 from .common import file_lock, global_domains, parse_iso, safe_domain
 from .repository import canonical_json, digest, read_json, roll_forward_pending, store_lock, transaction
 
@@ -47,7 +48,7 @@ class Unavailable(Exception):
 # ---- time and money
 
 def _aware(now=None):
-    now = now or datetime.now(timezone.utc)
+    now = now or clock.now()
     if now.tzinfo is None:
         raise ValueError('now must be timezone-aware')
     return now.astimezone(timezone.utc)

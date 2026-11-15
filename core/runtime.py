@@ -4,6 +4,7 @@ import hashlib,json,os,re,shlex,sys,time
 from pathlib import Path
 from .common import memory_root,load_bindings,resolve_domain,atomic_write,canonical_domain,file_lock,head_oid,parse_iso
 from .repository import read_json,canonical_json,now
+from . import clock
 from .capture import status as capture_status,turn_key
 from .note_types import NOTE_TYPES
 
@@ -418,9 +419,8 @@ def _sync_vaults(root,trigger,min_interval=0):
     try:
         from .sync import sync_all
         if min_interval:
-            from datetime import datetime,timezone
             last=read_json(root/'hooks/last-sync.json',{}) or {}
-            try:age=(datetime.now(timezone.utc)-parse_iso(last['at'])).total_seconds()
+            try:age=(clock.now()-parse_iso(last['at'])).total_seconds()
             except (KeyError,TypeError,ValueError):age=None
             if age is not None and age<min_interval:return None
         return sync_all(root,trigger)
@@ -441,10 +441,9 @@ def _prune_journals(root):
     """At most once a day, drop old sync-bookkeeping journals from the store and each managed vault.
     Never fails the hook."""
     try:
-        from datetime import datetime,timezone
         from .repository import prune_journals,prune_plans
         marker=root/'hooks'/'last-prune.json'
-        try:age=(datetime.now(timezone.utc)-parse_iso(read_json(marker,{})['at'])).total_seconds()
+        try:age=(clock.now()-parse_iso(read_json(marker,{})['at'])).total_seconds()
         except (KeyError,TypeError,ValueError):age=None
         if age is not None and age<24*3600:return None
         atomic_write(marker,canonical_json({'at':now()}))
@@ -468,15 +467,15 @@ AUTO_RESOLVE_DAYS=3
 
 def auto_resolve(root,domain,bindings,session=None):
     """Resolve the active domain's finished work: each active plan, bug or risk note whose Action Items are all done and that nobody has touched
-    for AUTO_RESOLVE_DAYS days. At most once a day per domain (hooks/last-auto-resolve.json, like _prune_journals), never in a headless run,
+    for AUTO_RESOLVE_DAYS days. At most once a day per domain (hooks/last-auto-resolve.json, like _prune_journals), never in a headless run unless the clock is simulated,
     and off with `"auto_resolve": false` at the top level of bindings.json. Each resolve is the journaled, undoable `resolve` change (`reopen REF`
     brings the note back) and is recorded as use. Returns [(short ref, title)] for the notes resolved; fails open: []."""
     try:
-        from datetime import datetime,timedelta,timezone
-        if bindings.get('auto_resolve',True) is False or headless():return []
+        from datetime import timedelta,timezone
+        if bindings.get('auto_resolve',True) is False or (headless() and not clock.simulated()):return []
         marker=root/'hooks'/'last-auto-resolve.json'
         marks=read_json(marker,{});marks=marks if isinstance(marks,dict) else {}
-        try:age=(datetime.now(timezone.utc)-parse_iso(marks[domain])).total_seconds()
+        try:age=(clock.now()-parse_iso(marks[domain])).total_seconds()
         except (KeyError,TypeError,ValueError):age=None
         if age is not None and age<24*3600:return []
         atomic_write(marker,canonical_json({**marks,domain:now()}))
@@ -484,7 +483,7 @@ def auto_resolve(root,domain,bindings,session=None):
         from .notes import change,short_ref
         from .repository import inventory
         from .usage import record
-        cutoff=datetime.now(timezone.utc)-timedelta(days=AUTO_RESOLVE_DAYS);done=[]
+        cutoff=clock.now()-timedelta(days=AUTO_RESOLVE_DAYS);done=[]
         for note in inventory(domain,root):
             if note.get('type') not in ACTION_TYPES or not note.get('id') or not note.get('title') or note.get('pinned') is True:continue   # a pin blocks automatic retirement
             items=action_items(note.get('body',''))
@@ -2421,8 +2420,8 @@ HEADLESS_TEXT="This is a non-interactive run and only your last message is retur
 
 def headless():
     """True in a non-interactive run (`claude -p`, the SDK), where the caller receives only the final message."""
-    env=os.environ
-    return env.get('LIVING_MEMORY_HEADLESS')=='1' or env.get('CLAUDE_CODE_SESSION_ATTENDED')=='0' or env.get('CLAUDE_CODE_ENTRYPOINT','').startswith('sdk')
+    from .clock import headless_env
+    return headless_env()
 
 def stop_text(pending,session,used=None):
     """The Stop continuation for what stop_pending found, about STOP_TEXT_CAP characters: the first item always,

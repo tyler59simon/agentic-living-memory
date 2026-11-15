@@ -1,6 +1,7 @@
 """The note type is the source of truth for human-readable prefixes and review horizons."""
 from datetime import date, timedelta, timezone
 
+from . import clock
 from .common import parse_iso
 
 NOTE_TYPES = ('knowledge', 'decision', 'preference', 'context', 'status', 'bug', 'plan', 'risk', 'research', 'policy', 'map', 'runbook', 'brief')
@@ -45,7 +46,7 @@ def default_review_by(note_type, today=None):
     days = REVIEW_DAYS.get(LEGACY_TYPES.get(note_type, note_type))
     if not days:
         return None
-    return ((today or date.today()) + timedelta(days=days)).isoformat()
+    return ((today or clock.today()) + timedelta(days=days)).isoformat()
 
 
 def last_confirmed(note):
@@ -96,7 +97,7 @@ def review_due(note, today=None):
     A confirmation counts as fresh: `confirm` resets the age a note without a review date is judged by."""
     if note.get('status', 'active') != 'active':
         return False
-    today = today or date.today()
+    today = today or clock.today()
     review = str(note.get('review_by') or '')[:10]
     if review:
         return review < today.isoformat()
@@ -111,7 +112,7 @@ def review_due(note, today=None):
 def review_order(notes, read_refs=(), domain=None, today=None):
     """Due notes, most neglected first: never confirmed and not in read_refs ('domain:id' strings the usage
     diary saw read or used; it keeps 30 days) ahead of the rest, then the oldest review date or effective date."""
-    today = today or date.today()
+    today = today or clock.today()
     read = set(read_refs)
     def key(note):
         confirmed = last_confirmed(note)

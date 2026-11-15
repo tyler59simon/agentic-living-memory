@@ -1,7 +1,8 @@
 """Recap: what happened in the store over the last days, built from the activity log, the maintenance run records, the open work and the review worklist. Read-only."""
 from __future__ import annotations
-from datetime import datetime,timedelta,timezone
+from datetime import timedelta,timezone
 from pathlib import Path
+from . import clock
 
 GROUPS=('created','updated','resolved','superseded','archived','restored','deleted')
 MAX_LISTED=15
@@ -79,7 +80,7 @@ def recap(root,domains,days=7,project=None,now=None):
     from .activity import log
     from .notes import open_work
     from .worklist import worklist
-    root=Path(root);domains=list(dict.fromkeys(domains));high=(now or datetime.now(timezone.utc)).astimezone(timezone.utc);low=high-timedelta(days=days)
+    root=Path(root);domains=list(dict.fromkeys(domains));high=(now or clock.now()).astimezone(timezone.utc);low=high-timedelta(days=days)
     since,until=low.isoformat(),high.isoformat()
     rows=[r for r in log(root,None,project,since,until,limit=10**9)['rows'] if r['domain'] in domains]
     notes=[r for r in rows if r['event']!='session'];sessions=_sessions([r for r in rows if r['event']=='session'])

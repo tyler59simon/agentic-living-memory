@@ -66,6 +66,24 @@ class OpenWork(StoreFixture):
         self.start('sub',agent_id='a1');self.assertEqual(self.status(n),'active')
         self.assertFalse((self.root/'hooks/last-auto-resolve.json').exists())   # none of those used up the day
         self.assertIn('Auto-resolved 1',self.start('main'));self.assertEqual(self.status(n),'resolved')
+    def test_a_simulated_clock_lets_a_headless_run_resolve_finished_work(self):
+        from unittest.mock import patch
+        from core.clock import OFFSET_ENV
+        n=self.plan('Finished migration plan',[],done=['Move the data'])
+        offset=str(4*86400)
+        with patch.dict('os.environ',{'LIVING_MEMORY_HEADLESS':'1'}):self.start('headless')   # headless without an offset: still left alone
+        self.assertEqual(self.status(n),'active')
+        self.assertFalse((self.root/'hooks/last-auto-resolve.json').exists())
+        with patch.dict('os.environ',{OFFSET_ENV:offset}):self.start('attended')   # not headless: the offset is ignored, so the note is too new
+        self.assertEqual(self.status(n),'active')
+        (self.root/'hooks/last-auto-resolve.json').unlink()
+        with patch.dict('os.environ',{'LIVING_MEMORY_HEADLESS':'1',OFFSET_ENV:offset}):text=self.start('simulated')
+        self.assertEqual(self.status(n),'resolved');self.assertIn('Auto-resolved 1',text)
+        later=self.plan('Another finished plan',[],done=['Done'])
+        with patch.dict('os.environ',{'LIVING_MEMORY_HEADLESS':'1',OFFSET_ENV:offset}):self.start('same-day')
+        self.assertEqual(self.status(later),'active')   # the once-a-day marker counts simulated days
+        with patch.dict('os.environ',{'LIVING_MEMORY_HEADLESS':'1',OFFSET_ENV:str(9*86400)}):self.start('next-days')
+        self.assertEqual(self.status(later),'resolved')
     def test_a_pinned_note_is_not_auto_resolved(self):
         n=self.plan('Pinned finished plan',[],done=['Ship it'],pinned=True);self.age(n,5)
         self.assertNotIn('Auto-resolved',self.start());self.assertEqual(self.status(n),'active')

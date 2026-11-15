@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib,json,re,sys,time,uuid
 from datetime import date
 from pathlib import Path
+from . import clock
 from .common import memory_root,atomic_write,load_bindings
 from .repository import inventory,parse,parse_text,validate,serialize,store_lock,read_json,canonical_json,transaction,digest,confined,now,reconcile,clean_files,clean_commands
 from .governance import plan
@@ -521,7 +522,7 @@ STALE_TEXT=('Notes that need a look, by kind. Changed evidence (stale): a cited 
 
 def _recap_page(domain,root):
     """The Recap page text: computed once per local day and domain, then read from .cache/recap-DOMAIN.json. A failing recap gives a short fallback page, never a failed overlay."""
-    path=Path(root)/'.cache'/f'recap-{domain}.json';today=date.today().isoformat()
+    path=Path(root)/'.cache'/f'recap-{domain}.json';today=clock.today().isoformat()
     try:
         cached=json.loads(path.read_text(encoding='utf-8'))
         if cached.get('day')==today and isinstance(cached.get('markdown'),str):return cached['markdown']

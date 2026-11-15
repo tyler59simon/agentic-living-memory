@@ -41,6 +41,16 @@ class Worklist(Base):
         self.assertEqual((rows[self.ref(old)]['action'],rows[self.ref(decided)]['action']),('plan archive','confirm'))
         self.assertIn('2020-01-01',rows[self.ref(old)]['reason'])
 
+    def test_a_simulated_clock_makes_a_status_note_due_only_when_headless(self):
+        from unittest.mock import patch
+        made=self.cap('Build status','Green on main.',type='status')
+        self.assertEqual(self.rows(kinds=['due']),{})
+        offset=str(31*86400)
+        with patch.dict('os.environ',{'LIVING_MEMORY_CLOCK_OFFSET_SECONDS':offset}):self.assertEqual(self.rows(kinds=['due']),{})   # attended: ignored
+        with patch.dict('os.environ',{'LIVING_MEMORY_HEADLESS':'1','LIVING_MEMORY_CLOCK_OFFSET_SECONDS':str(29*86400)}):self.assertEqual(self.rows(kinds=['due']),{})
+        with patch.dict('os.environ',{'LIVING_MEMORY_HEADLESS':'1','LIVING_MEMORY_CLOCK_OFFSET_SECONDS':offset}):rows=self.rows(kinds=['due'])
+        self.assertEqual(set(rows),{self.ref(made)})
+
     def test_interim_waits_for_the_days_then_lists_unconfirmed_beliefs(self):
         made=self.cap('Cache miss cause','The miss rate is probably the TTL, unconfirmed.',type='bug')
         self.assertEqual(self.rows(kinds=['interim']),{})
@@ -280,6 +290,14 @@ class Maps(StoreFixture):
         def counting(*a,**k):calls.append(a);return real(*a,**k)
         with patch('core.maps.working_tree_changes',side_effect=counting):row=worklist(self.root,['demo'],kinds=['stale'],working_tree=True)['items'][0]
         self.assertEqual(len(calls),1);self.assertIn('src/Money.java',row['currency']['changed']);self.assertIn('src/Money.java',row['reason'])
+
+    def test_a_map_verified_on_a_simulated_clock_still_sees_later_uncommitted_edits(self):
+        from unittest.mock import patch
+        # The verification time is simulated (4 days ahead) but file mtimes are real; the edit after it must still count.
+        with patch.dict('os.environ',{'LIVING_MEMORY_HEADLESS':'1','LIVING_MEMORY_CLOCK_OFFSET_SECONDS':str(4*86400)}):
+            self.captured_map();(self.app/'src'/'Money.java').write_text('long cents; int extra;',encoding='utf-8')
+            row=worklist(self.root,['demo'],kinds=['stale'],working_tree=True)['items'][0]
+        self.assertIn('src/Money.java',row['currency']['changed'])
 
 
 class ActionsParse(unittest.TestCase):

@@ -2,6 +2,7 @@
 from __future__ import annotations
 import argparse,json,re,uuid
 from datetime import date
+from . import clock
 from pathlib import Path
 from .common import memory_root,safe_domain,canonical_domain
 from .repository import inventory,parse,serialize,validate,read_json,transaction,reconcile,store_lock,now,digest,clean_files,clean_commands,clean_sources
@@ -684,7 +685,7 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
     elif action=='confirm':
         # "Still true": a dated confirmation and a fresh review date, without touching content or `updated`.
         if note.get('status','active')!='active':raise ValueError('Only active notes can be confirmed')
-        today=date.today().isoformat();confirmed=[d for d in note.get('confirmed') or [] if isinstance(d,str) and d!=today]
+        today=clock.today().isoformat();confirmed=[d for d in note.get('confirmed') or [] if isinstance(d,str) and d!=today]
         note['confirmed']=(confirmed+[today])[-CONFIRM_KEEP:]
         if note.get('sources'):note['sources']=_rehashed(note,domain,root)   # still true of the file as it is now
         _set_file_hashes(note,domain,root,{h['path']:h['sha256'] for h in note.get('file_hashes') or []},fresh=True);note['checked']=now()   # a map or brief reads current from here until the next commit
@@ -694,7 +695,7 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
             # An explicit date on a type without an interval would keep the note due; move it out like the age rule.
             from .note_types import STALE_DAYS
             from datetime import timedelta
-            note['review_by']=(date.today()+timedelta(days=STALE_DAYS)).isoformat()
+            note['review_by']=(clock.today()+timedelta(days=STALE_DAYS)).isoformat()
     elif action in {'resolve','reopen'}:
         # Notes that track work (plan, bug, risk) are resolved when the work is finished; other types are archived by plan.
         if action=='resolve' and (note['type'] not in ACTION_TYPES or note.get('status')!='active'):raise ValueError('Only active plan, bug and risk notes may be resolved')
@@ -903,7 +904,7 @@ def confirm(note_id,domain,root=None):
     root=Path(root or memory_root()).resolve()
     with store_lock(root):
         _,note=find_note(note_id,domain,root)
-        if date.today().isoformat() in (note.get('confirmed') or []) and note.get('type') not in KEYED_TYPES and not stale_note(note,root) and not (note.get('checked') and note['checked']<=str(note.get('updated') or '')):   # a map or brief, a note whose file changed since, or one edited since its last confirmation, is confirmed again
+        if clock.today().isoformat() in (note.get('confirmed') or []) and note.get('type') not in KEYED_TYPES and not stale_note(note,root) and not (note.get('checked') and note['checked']<=str(note.get('updated') or '')):   # a map or brief, a note whose file changed since, or one edited since its last confirmation, is confirmed again
             return {'ok':True,'id':note['id'],'status':'unchanged','confirmed':note['confirmed'],'review_by':note.get('review_by')}
         result=change(note['id'],domain,'confirm',root,note['revision'])
         after=find_note(note['id'],domain,root)[1]

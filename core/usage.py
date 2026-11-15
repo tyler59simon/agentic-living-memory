@@ -6,8 +6,9 @@ date: no prompt text, titles or bodies. One file per UTC day in .turns/, so the 
 """
 from __future__ import annotations
 import json
-from datetime import datetime,timedelta,timezone
+from datetime import datetime,timedelta
 from pathlib import Path
+from . import clock
 from .common import parse_iso
 
 # surface: a candidate the prompt hook found relevant but did not inject (cut by its cap); it is never evidence of
@@ -28,7 +29,7 @@ def record(root,event,refs=(None,),session=None,kind=None,levels=None):
     try:
         from .common import file_lock
         from .runtime import session_hash
-        when=datetime.now(timezone.utc);path=_path(root,when)
+        when=clock.now();path=_path(root,when)
         s=session_hash(session) if session and session!='unknown' else None
         row=lambda ref:{'t':when.isoformat(timespec='seconds'),'e':event,'ref':ref,'s':s,'k':kind,**({'l':levels[ref]} if levels and ref in levels else {})}
         lines=''.join(json.dumps(row(ref),separators=(',',':'))+'\n' for ref in refs)
@@ -41,7 +42,7 @@ def record(root,event,refs=(None,),session=None,kind=None,levels=None):
 
 def events(root,days=30,today=None):
     """Diary rows from the last `days` days before `today` (a date; default: now), oldest first; unreadable lines are skipped."""
-    cutoff=((datetime.now(timezone.utc).date() if today is None else today)-timedelta(days=days));rows=[]
+    cutoff=((clock.now().date() if today is None else today)-timedelta(days=days));rows=[]
     for path in sorted((Path(root)/'.turns').glob('usage-*.jsonl')):
         try:
             if datetime.strptime(path.stem[6:],'%Y-%m-%d').date()<cutoff:continue
@@ -70,7 +71,7 @@ def _day(value):
 def strength(note,uses=(),today=None):
     """Activation for one note. uses: (event, iso time) pairs from the diary."""
     import math
-    today=today or datetime.now(timezone.utc).date();presented=[]
+    today=today or clock.now().date();presented=[]
     for value in (note.get('created'),note.get('updated') if note.get('updated')!=note.get('created') else None):
         if value and _day(value):presented.append((1.0,_day(value)))
     presented+=[(1.0,_day(d)) for d in note.get('confirmed') or [] if _day(d)]
@@ -119,7 +120,7 @@ def capture_coverage(root,domains,days=30,today=None):
     files (f > 0), how many saved a note (n) or got a receipt (r). ratio is None with no such session. PROV-1 (a read-only
     PowerShell command counted as an edit) inflates `mutating`."""
     from .activity import last_session_rows,_instant
-    now=datetime.now(timezone.utc) if today is None else today;mutating=covered=0
+    now=clock.now() if today is None else today;mutating=covered=0
     for row in last_session_rows(root).values():
         try:
             if row.get('d') not in domains or _instant(row['t'])<now-timedelta(days=days):continue

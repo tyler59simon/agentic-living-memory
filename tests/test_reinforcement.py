@@ -40,9 +40,8 @@ class Confirm(StoreFixture):
         self.assertEqual(confirm(n['id'], 'demo', self.root)['status'], 'unchanged')
         older = [f'2026-01-{d:02d}' for d in range(1, 11)]
         from core.notes import change
-        with patch('core.notes.date') as fake:
+        with patch('core.notes.clock') as fake:
             fake.today.return_value = date(2026, 1, 1)
-            fake.fromisoformat = date.fromisoformat
             for day in range(1, 11):
                 fake.today.return_value = date(2026, 1, day)
                 change(n['id'], 'demo', 'confirm', self.root)

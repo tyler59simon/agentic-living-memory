@@ -319,8 +319,8 @@ def _coverage_line(domain,root,session):
     at least COVERAGE_MIN_SESSIONS of them and a ratio under COVERAGE_MAX_RATIO. Told at most once a day (a date in .cache/coverage-told),
     and only to a session hook (`session` given). Fails open."""
     if not session:return []
-    from datetime import datetime,timezone
-    today=datetime.now(timezone.utc).strftime('%Y-%m-%d');marker=root/'.cache'/'coverage-told'
+    from . import clock
+    today=clock.now().date().isoformat();marker=root/'.cache'/'coverage-told'
     try:
         if marker.read_text(encoding='utf-8').strip()==today:return []
     except OSError:pass

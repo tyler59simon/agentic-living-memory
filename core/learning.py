@@ -8,8 +8,9 @@ import json
 import re
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
+from . import clock
 from .repository import (canonical_json, confined, digest, read_json, now,
                          store_lock, transaction, serialize, SETTLE_NS)
 
@@ -1060,7 +1061,7 @@ def op_task_prune_plan(root, domain, ident, payload):
     days = payload.get('days', 90)
     if not isinstance(days, int) or days < 1:
         raise ValueError('days must be a positive integer')
-    cutoff = (datetime.now(timezone.utc)-timedelta(days=days)).isoformat()
+    cutoff = (clock.now()-timedelta(days=days)).isoformat()
     _, kept_attempts = referenced(root, domain)
     attempts = rows(root, domain, 'attempts')
     evidence = rows(root, domain, 'evidence')

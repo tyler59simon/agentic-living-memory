@@ -1085,7 +1085,8 @@ def main(argv=None):
             from .backup import backup
             result=backup(root,max(1,min(100,args.keep)))
             from .common import atomic_write
-            atomic_write(root/'hooks'/'last-backup.json',canonical_json({'at':now(),'backup':Path(result['backup']).name}))
+            from datetime import datetime,timezone   # real time, like backup.maybe_backup that reads this marker; not the test clock
+            atomic_write(root/'hooks'/'last-backup.json',canonical_json({'at':datetime.now(timezone.utc).isoformat(),'backup':Path(result['backup']).name}))
         elif cmd=='restore-plan':
             from .backup import restore_plan
             result=restore_plan(root,args.file)

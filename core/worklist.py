@@ -7,6 +7,7 @@ notes.QUALITY_CHECKS), noisy (retrieved often, never used). The worklist only pr
 only the explicit `review` path, working_tree=True, runs one bounded `git diff HEAD` per map for uncommitted edits to cited files). Archive and merge are plans the user applies."""
 from __future__ import annotations
 from collections import Counter
+from . import clock
 from datetime import date,timedelta
 from pathlib import Path
 
@@ -202,7 +203,7 @@ def worklist(root,domains,kinds=None,limit=100,tags=None,cheap=False,notes=None,
     (the explicit `review`) also looks for uncommitted edits to the files a map cites. Read-only: no usage rows, and git only for working_tree."""
     from .repository import inventory
     from .common import load_bindings
-    root=Path(root);today=today or date.today();domains=list(dict.fromkeys(domains))
+    root=Path(root);today=today or clock.today();domains=list(dict.fromkeys(domains))
     wanted=[k for k in KINDS if not kinds or k in kinds]
     if cheap:wanted=[k for k in wanted if k!='duplicate']
     if notes is None:

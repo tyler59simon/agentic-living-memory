@@ -65,6 +65,13 @@ class Allowances(Base):
         self.assertEqual(self.code(after),'interval')
         acc=ms.state(self.root,after);self.assertEqual((acc['reviewed'],acc['charged_micro'],acc['day']),(0,0,'2026-03-11'))
         self.change(min_interval_seconds=3600);self.assertTrue(ms.eligibility(self.root,after)['eligible'])
+    def test_a_simulated_clock_rolls_the_accounting_day_only_when_headless(self):
+        from unittest.mock import patch
+        today=datetime.now(timezone.utc).date()
+        with patch.dict('os.environ',{'LIVING_MEMORY_CLOCK_OFFSET_SECONDS':str(2*86400)}):self.assertEqual(ms.state(self.root)['day'],today.isoformat())
+        with patch.dict('os.environ',{'LIVING_MEMORY_HEADLESS':'1','LIVING_MEMORY_CLOCK_OFFSET_SECONDS':str(2*86400)}):
+            self.assertEqual(ms.state(self.root)['day'],(today+2*DAY).isoformat())
+            run=ms.reserve(self.root,self.cfg,3);self.assertEqual(run['day'],(today+2*DAY).isoformat())
     def test_backward_clock(self):
         run=self.reserve();ms.launch(self.root,run,T0);back=T0-2*DAY
         self.assertEqual(self.code(back),'interval')

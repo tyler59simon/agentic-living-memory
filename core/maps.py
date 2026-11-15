@@ -249,7 +249,10 @@ def working_tree_changes(hit,repo,bindings=None,timeout=2):
         out=_git(repo,'diff','--name-only','--no-renames','--relative','HEAD',timeout=timeout)
         if out is None:return None
         from datetime import datetime
-        try:since=parse_iso(last_current(hit)).timestamp()
+        from .clock import offset_seconds
+        # The verification time is on the record clock; file mtimes are real. Under a simulated clock the current offset maps it back, which can
+        # only move it earlier (offsets grow as simulated time advances), so it errs toward reporting a file as changed.
+        try:since=parse_iso(last_current(hit)).timestamp()-offset_seconds()
         except ValueError:since=None
         found=[]
         for path in cited_paths(hit,[l.strip() for l in out.splitlines() if l.strip()][:MAX_CHANGED],repo,bindings):
