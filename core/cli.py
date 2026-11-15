@@ -929,14 +929,32 @@ def main(argv=None):
                     mine=find_note(n,d,root)[1]
                     if args.distinct:
                         if not args.why:raise ValueError('--distinct needs --why with the reason, one line of 8 to 200 characters')
-                        values['distinct_from']=distinct_with(mine,d,on,args.why,'user')
+                        why=args.why
+                        if args.redact:
+                            from .repository import redact as redact_text
+                            why,kinds=redact_text(why);redacted+=[{'kind':k,'field':'why'} for k in kinds]
+                        if args.session:
+                            from .private import overlap
+                            if overlap(_session_state(root,args.session),[('why',why)]):raise ValueError('private_content conflict: why repeats text the user marked <private>; leave it out of memory')
+                        values['distinct_from']=distinct_with(mine,d,on,why,'user')
                     else:
                         theirs=find_note(on,d,root)[1]
                         if not any(_same_pair(e,d,on) for e in mine.get('distinct_from') or []) and not any(_same_pair(e,d,n) for e in theirs.get('distinct_from') or []):
                             raise ValueError(f'{d}:{n} and {d}:{on} are not marked distinct')
                         if any(_same_pair(e,d,on) for e in mine.get('distinct_from') or []):values['distinct_from']=distinct_without(mine,d,on)
-                        if any(_same_pair(e,d,n) for e in theirs.get('distinct_from') or []):other=change(on,d,'update',root,None,distinct_from=distinct_without(theirs,d,n))
-                result=change(n,d,'update',root,revision,**values) if values else other
+                        if any(_same_pair(e,d,n) for e in theirs.get('distinct_from') or []):other=(on,distinct_without(theirs,d,n))
+                if other:
+                    # Both notes change in one journaled transaction, after the expected revision is checked: one undo reverts the pair.
+                    from .notes import _change_set,_commit
+                    if revision and current['revision']!=revision:raise ValueError('stale_revision')
+                    changes,expected={},{}
+                    if values:
+                        changes,expected,_=_change_set(n,d,'update',root,revision,**values)
+                    more,more_expected,target=_change_set(other[0],d,'update',root,None,pending=changes,distinct_from=other[1])
+                    changes.update(more)
+                    for rel,rev in more_expected.items():expected.setdefault(rel,rev)
+                    result=_commit(d,changes,'update',root,expected);result.update(id=n if values else other[0],path=str(find_note(n if values else other[0],d,root)[0]),status='update')
+                else:result=change(n,d,'update',root,revision,**values)
             if replaced:result['replaced']=replaced
             if redacted:result['redacted']=redacted
             if suggested:result['suggested_files']=suggested

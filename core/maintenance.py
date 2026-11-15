@@ -191,8 +191,7 @@ def candidates(root, cfg, state, now=None, limit=10):
             except Exception:
                 currency = None
             rows.append({'ref': ref, 'kinds': [], 'reason': 'every action item is checked', **({'currency': currency} if currency else {})})
-    replaced = replaced_candidates(root, state, notes, now, {r['ref'] for r in rows}, set(domains))
-    queues = {}
+    queues, queued = {}, set()
     for position, row in enumerate(rows):
         note = notes.get(row['ref'])
         if note is None or _excluded(note):
@@ -211,7 +210,9 @@ def candidates(root, cfg, state, now=None, limit=10):
                 'currency': row.get('currency'), 'pair': pair['id'] if pair else None, 'pair_note': pair, 'pair_same': same, 'fingerprint': fingerprint, 'files': files, 'note': note,
                 'permitted': permitted(note, row['kinds'], same, pair is not None)}
         queues.setdefault(note['domain'], []).append((cand['level'], verified_at(note), position, row['ref'], cand))
-    for position, cand in enumerate(replaced, len(rows)):
+        queued.add(row['ref'])
+    # A row held by retry_hold is not queued, so an older note of a queued pair still gets its replaced review.
+    for position, cand in enumerate(replaced_candidates(root, state, notes, now, queued, set(domains)), len(rows)):
         queues.setdefault(cand['domain'], []).append((cand['level'], verified_at(cand['note']), position, cand['ref'], cand))
     for queue in queues.values():
         queue.sort(key=lambda q: q[:4])

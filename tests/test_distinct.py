@@ -1,5 +1,5 @@
 """UX-C9: the `distinct_from` field, `update --distinct/--not-distinct`, and the duplicate scan skipping distinct pairs."""
-import contextlib,io,json,unittest
+import contextlib,io,json,unittest,unittest.mock
 from test_core import StoreFixture
 from core.cli import main
 from core.governance import apply,undo
@@ -69,5 +69,36 @@ class Distinct(StoreFixture):
         self.assertEqual(worklist(self.root,['demo'],kinds=['duplicate'])['items'],[])
         self.cli('update','demo:'+b['id'],'--not-distinct','demo:'+a['id'])
         self.assertEqual(len(worklist(self.root,['demo'],kinds=['duplicate'])['items']),1)
+
+    def test_a_credential_in_why_is_redacted_or_refused(self):
+        a,b=self.pair();secret='password: Hunter2Hunter2'
+        code,text=self.cli('update','demo:'+b['id'],'--distinct','demo:'+a['id'],'--why','Different scope '+secret,ok=False)
+        self.assertNotEqual(code,0);self.assertNotIn('distinct_from',self.get(b))
+        result=self.cli('update','demo:'+b['id'],'--distinct','demo:'+a['id'],'--why','Different scope '+secret,'--redact')
+        why=self.get(b)['distinct_from'][0]['why'];self.assertNotIn('Hunter2',why);self.assertTrue(result.get('redacted'))
+        with self.assertRaises(ValueError):validate({**self.get(b),'distinct_from':[self.entry(a,why='Different scope '+secret)]},'demo',self.root)
+
+    def test_a_private_span_in_why_is_refused_with_a_session(self):
+        from core.cli import _session_state
+        a,b=self.pair();phrase='the moon cheese ledger of seventeen hidden vaults today'
+        from core.private import remember
+        state={};remember(state,'<private>'+phrase+'</private>')
+        with unittest.mock.patch('core.cli._session_state',return_value=state):
+            code,text=self.cli('update','demo:'+b['id'],'--distinct','demo:'+a['id'],'--why',phrase,'--session','s1',ok=False)
+        self.assertNotEqual(code,0);self.assertIn('private',text);self.assertNotIn('distinct_from',self.get(b))
+
+    def test_not_distinct_is_one_transaction_and_checks_the_expected_revision_first(self):
+        a,b=self.pair();self.cli('update','demo:'+b['id'],'--distinct','demo:'+a['id'],'--why','Different retry scopes.')
+        revisions=(self.get(a)['revision'],self.get(b)['revision'])
+        code,text=self.cli('update','demo:'+a['id'],'--not-distinct','demo:'+b['id'],'--expected-revision','0'*8,ok=False)
+        self.assertNotEqual(code,0);self.assertEqual((self.get(a)['revision'],self.get(b)['revision']),revisions);self.assertTrue(self.get(b).get('distinct_from'))
+        code,text=self.cli('update','demo:'+b['id'],'--not-distinct','demo:'+a['id'],'--review-by','not-a-date',ok=False);self.assertNotEqual(code,0)
+        self.assertEqual((self.get(a)['revision'],self.get(b)['revision']),revisions)
+        a2,b2=self.pair()
+        self.cli('update','demo:'+a2['id'],'--distinct','demo:'+b2['id'],'--why','Different retry scopes.')
+        result=self.cli('update','demo:'+b2['id'],'--not-distinct','demo:'+a2['id'],'--context','together')
+        self.assertEqual((self.get(b2).get('context'),'distinct_from' in self.get(a2)),('together',False))
+        reverse=undo(self.root,result['operation_id']);apply(self.root,reverse['plan_id'],reverse['digest'])
+        self.assertEqual((self.get(b2).get('context'),'distinct_from' in self.get(a2)),('',True))
 
 if __name__=='__main__':unittest.main()

@@ -517,7 +517,8 @@ def queue(root):
         if isinstance(back, dict):
             out['backfill'] = {'done': back.get('done') is True, 'next': back['next'] if type(back.get('next')) is int and back['next'] >= 0 else 0,
                                'at': back.get('at') if isinstance(back.get('at'), str) else None}
-        out['pairs'] = [{'new': p['new'], 'old': p['old'], 'at': p['at']} for p in value.get('pairs') or [] if _pair_ok(p)]
+        pairs = value.get('pairs')
+        out['pairs'] = [{'new': p['new'], 'old': p['old'], 'at': p['at']} for p in pairs if _pair_ok(p)] if isinstance(pairs, list) else []
     return out
 
 

@@ -1,6 +1,6 @@
 """UX-C9: possible replacements. Capture queues a pair, the maintenance reviewer sees it as a `replaced` candidate and either supersedes the
 older note, records the pair as distinct, or defers; a backfill queues the pairs already in the store."""
-import unittest
+import json,unittest
 from datetime import datetime,timedelta,timezone
 from unittest import mock
 from core import maintenance,maintenance_state as ms,notes
@@ -73,6 +73,11 @@ class Candidates(Pairs):
         notes.change(old['id'],'demo','update',self.root,review_by=OLD)
         found=self.cands();self.assertEqual([(c['ref'],c['kinds']) for c in found],[(self.ref(old),['due'])])
         self.assertEqual(self.queue(),[self.pair(old,new)])
+    def test_a_held_normal_row_yields_to_the_queued_pair(self):
+        old,new=self.old_new()
+        notes.change(old['id'],'demo','update',self.root,review_by=OLD)
+        row=self.cands()[0];ms.set_retry(self.root,row['ref'],row['revision'],row['fingerprint'],'kept',self.now)
+        found=self.cands();self.assertEqual([(c['ref'],c['kinds']) for c in found],[(self.ref(old),['replaced'])])
     def test_the_budget_is_shared_with_the_other_kinds(self):
         self.cfg=ms.validate({**self.cfg,'max_notes_per_day':2});ms.set_config(self.root,self.cfg)
         due=self.mk('Money decision','Money is long cents.',type='decision',review_by=OLD);old,new=self.old_new()
@@ -176,5 +181,11 @@ class Contract(Pairs):
         (self.root/ms.QUEUE).parent.mkdir(exist_ok=True);(self.root/ms.QUEUE).write_text('{not json',encoding='utf-8')
         self.assertEqual(ms.queue(self.root)['pairs'],[])
         self.assertEqual(ms.queue_add(self.root,[{'new':'demo:a','old':'demo:b'}]),1);self.assertEqual(len(ms.queue(self.root)['pairs']),1)
+    def test_a_queue_file_of_the_wrong_shape_reads_as_empty_or_drops_bad_entries(self):
+        (self.root/ms.QUEUE).parent.mkdir(exist_ok=True)
+        good={'new':'demo:a','old':'demo:b','at':'2026-11-15T10:00:00+00:00'}
+        for text,count in (('{"pairs": 1}',0),('{"pairs": {"x": 1}}',0),('[1]',0),(json.dumps({'pairs':[1,'x',{'new':1,'old':'demo:b','at':'t'},good]}),1)):
+            (self.root/ms.QUEUE).write_text(text,encoding='utf-8')
+            self.assertEqual(len(ms.queue(self.root)['pairs']),count,text);self.assertEqual(self.cands(),[])
 
 if __name__=='__main__':unittest.main()
