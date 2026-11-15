@@ -5,10 +5,16 @@ conversational-signal (runtime.durable_signal) code. It never changes canonical 
 may refresh. A fixture with a "notes" list is synthetic: it is built into a temporary store and its
 cases name notes as "@key". Otherwise cases name real notes by ref (short refs and exact titles work).
 
-    py -3.15 scripts/eval_retrieval.py --fixture ~/LivingMemory/.eval/sandbox.json [--root STORE] [--json]
+In a temporary store (a synthetic fixture, or a real store with --copy) the retrieval cases also run through
+the whole UserPromptSubmit hook, which adds maps, the project brief, notes listed under them, the titles
+overview and source excerpts to the notes: false_injection_by_kind says which of these each negative got.
+A case may set "cwd" (a synthetic fixture: "@project" or "@project/sub") and "first_prompt": false (a later
+prompt of its session, so the map and brief count as already shown).
+
+    py -3.15 scripts/eval_retrieval.py --fixture ~/LivingMemory/.eval/sandbox.json [--root STORE] [--copy [--keep]] [--json]
 """
 from __future__ import annotations
-import argparse,json,sys,tempfile,time
+import argparse,json,shutil,sys,tempfile,time
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from core import runtime,session_start
@@ -65,6 +71,55 @@ def _resolver(domain,root,keys):
     return resolve
 
 def _ratio(num,den):return round(num/den,3) if den else None
+
+# The usage diary kind each part of the prompt hook's context is recorded under (runtime.process, user-prompt).
+HOOK_KINDS={'prompt':'notes','prompt-map':'maps','prompt-brief':'brief','map-brief':'linked','source':'sources'}
+KINDS=('notes','maps','brief','linked','overview','sources')
+
+def _case_cwd(case,cwd):
+    """A case's own cwd; "@project" stands for the fixture's project folder."""
+    here=case.get('cwd')
+    if not here:return cwd
+    return str(Path(cwd)/here[len('@project'):].lstrip('/\\')) if here.startswith('@project') else here
+
+def _hooked(cwd,prompt,root,number,first=True):
+    """{kind: [refs]} the real UserPromptSubmit hook injected for one prompt in a fresh session (KINDS: notes, maps, brief,
+    linked = notes listed under a map or brief, overview, sources). Only for a temporary store: the hook writes session state
+    and usage diary rows. The diary is put back after the case, so the eval's own injections never reinforce later cases."""
+    sid=f'eval-hook-{number}';turns=Path(root)/'.turns'
+    before={p:p.stat().st_size for p in turns.glob('usage-*.jsonl')}
+    try:
+        if not first:runtime.process('claude','user-prompt',{'cwd':cwd,'session_id':sid,'turn_id':'t0','prompt':'Hello, let us start.'},root)
+        sizes={p:p.stat().st_size for p in turns.glob('usage-*.jsonl')}
+        text=runtime.process('claude','user-prompt',{'cwd':cwd,'session_id':sid,'turn_id':'t1','prompt':prompt},root).get('context') or ''
+        rows=[]
+        for path in sorted(turns.glob('usage-*.jsonl')):
+            with open(path,'rb') as handle:
+                handle.seek(sizes.get(path,0));rows+=[json.loads(line) for line in handle.read().decode('utf-8').splitlines() if line.strip()]
+    finally:
+        for path in turns.glob('usage-*.jsonl'):
+            if path in before:
+                with open(path,'r+b') as handle:handle.truncate(before[path])
+            else:path.unlink()
+    got={}
+    for row in rows:
+        kind=HOOK_KINDS.get(row.get('k'))
+        if kind and row.get('e')=='inject' and row.get('s')==runtime.session_hash(sid):got.setdefault(kind,[]).append(row.get('ref'))
+    # Not diary rows: an unmapped repo's one-line hint, and the titles overview offered when nothing matched.
+    if 'has no codebase map yet' in text:got.setdefault('maps',[]).append('(unmapped repo hint)')
+    if 'for semantic consideration:' in text:got['overview']=['(titles overview)']
+    return got
+
+def _by_kind(fixture,root,cwd):
+    """The retrieval cases through the whole prompt hook: per kind, the share of negatives that got it, and which."""
+    rows=[]
+    for number,case in enumerate(fixture.get('retrieval',[])):
+        if case.get('expect'):continue
+        got=_hooked(_case_cwd(case,cwd),case['prompt'],root,number,case.get('first_prompt',True))
+        rows.append({'prompt':case['prompt'],'got':got})
+    out={kind:{'rate':_ratio(sum(1 for r in rows if kind in r['got']),len(rows)),'prompts':[{'prompt':r['prompt'],'injected':r['got'][kind]} for r in rows if kind in r['got']]} for kind in KINDS}
+    out['any']={'rate':_ratio(sum(1 for r in rows if r['got']),len(rows)),'prompts':[r['prompt'] for r in rows if r['got']]}
+    return out
 
 # The retrieval variants compared on one fixture (VALIDATION.md). Each sets the switches below before the store is built:
 #   A  lexical: FTS5 and the gates, no model, the line-per-note delivery
@@ -178,15 +233,16 @@ def evaluate_sessions(fixture,root,cwd,domain,resolve):
     return {'steps':len(steps),'correct':_ratio(sum(s['ok'] for s in steps),len(steps)),'injected_chars':total,'redundant_chars':redundant,
             'wrong':[s for s in steps if not s['ok']]}
 
-def evaluate(fixture,root,cwd=None,domain=None,keys=None,harness='claude'):
-    """Metrics for one fixture against the store at root."""
+def evaluate(fixture,root,cwd=None,domain=None,keys=None,harness='claude',hooked=False):
+    """Metrics for one fixture against the store at root. hooked (a temporary store only) also runs the retrieval
+    negatives through the whole prompt hook for false_injection_by_kind, last, after every other measurement."""
     root=Path(root).resolve();cwd=cwd or fixture.get('cwd');domain=domain or fixture.get('domain')
     if not cwd or not domain:raise ValueError('Fixture needs "cwd" and "domain"')
     resolve=_resolver(domain,root,keys or {})
     cases=[]
     for case in fixture.get('retrieval',[]):
         expect=[resolve(r) for r in case.get('expect',[])];forbid=[resolve(r) for r in case.get('forbid',[])]
-        started=time.perf_counter();text,ids,overview=runtime.context(cwd,case['prompt'],root,domain)
+        started=time.perf_counter();text,ids,overview=runtime.context(_case_cwd(case,cwd),case['prompt'],root,domain)
         cases.append({'prompt':case['prompt'],'expect':expect,'forbid':forbid,'injected':ids,'overview':overview,'ms':(time.perf_counter()-started)*1000,
                       'chars':len(text or ''),'hit':bool(set(expect)&set(ids)) if expect else None,
                       'forbidden':sorted(set(forbid)&set(ids)),'false':bool(ids) if not expect else None})
@@ -263,11 +319,13 @@ def evaluate(fixture,root,cwd=None,domain=None,keys=None,harness='claude'):
     extra={}
     if fixture.get('units'):extra['units']=evaluate_units(fixture,root,cwd,domain,resolve)
     if fixture.get('sessions'):extra['sessions']=evaluate_sessions(fixture,root,cwd,domain,resolve)   # last: it edits notes
+    by_kind=_by_kind(fixture,root,cwd) if hooked else None
     return {**extra,
         'retrieval':{
             'cases':len(cases),'positive':len(positive),'negative':len(negative),
             'hit@3':_ratio(sum(c['hit'] for c in positive),len(positive)),
             'false_injection':_ratio(sum(c['false'] for c in negative),len(negative)),
+            'false_injection_by_kind':by_kind,
             'forbid_violations':[{'prompt':c['prompt'],'refs':c['forbidden']} for c in cases if c['forbidden']],
             'mean_injected_chars':round(sum(c['chars'] for c in cases)/len(cases)) if cases else None,
             'mean_ms':round(sum(c['ms'] for c in cases)/len(cases),1) if cases else None,
@@ -310,10 +368,14 @@ def evaluate(fixture,root,cwd=None,domain=None,keys=None,harness='claude'):
                    'wrong':[s for s in signals if s['got']!=s['kind']]},
     }
 
-def run(fixture_path,root=None,semantic_mode=None,config=None,model_dir=None):
+COPY_SKIP=('*.lock','.operations','backups','logs','.views')   # journals, snapshots and logs a prompt never reads
+
+def run(fixture_path,root=None,semantic_mode=None,config=None,model_dir=None,copy=False,keep=False):
     """semantic_mode 'on'/'off' measures with or without the installed semantic model, then puts the indexes back.
     A synthetic fixture runs in a temporary store; model_dir installs that model (a folder holding the pinned files,
-    as `semantic install --from` takes) into it, and config picks a variant (CONFIGS)."""
+    as `semantic install --from` takes) into it, and config picks a variant (CONFIGS). copy runs a real store in a
+    temporary copy, so the store itself is never touched and the whole prompt hook can be measured; keep leaves the copy
+    behind (the report's 'copy' names it)."""
     fixture=json.loads(Path(fixture_path).expanduser().read_text(encoding='utf-8-sig'))
     if fixture.get('notes'):
         if semantic_mode:raise ValueError('--semantic needs a real store: synthetic fixtures run in a temporary store with no model (use --model-dir)')
@@ -330,13 +392,22 @@ def run(fixture_path,root=None,semantic_mode=None,config=None,model_dir=None):
                     started=time.perf_counter();semantic.rebuild_all(store,units=True);index['build_s']=round(time.perf_counter()-started,2)
                 index.update(vectors.status(domain,store))
                 try:
-                    report=evaluate(fixture,store,cwd,domain,keys)
+                    report=evaluate(fixture,store,cwd,domain,keys,hooked=True)
                     return {**report,'config':config,'index':index}
                 finally:semantic._unload()   # Windows cannot delete a mapped model file
         finally:restore()
     from core.storage import resolve_root
     from core import semantic
     store=resolve_root(root)[0]
+    if copy:
+        if semantic_mode:raise ValueError('--semantic and --copy do not combine: the copy measures the store as its hooks use it')
+        folder=Path(tempfile.mkdtemp(prefix='living-memory-eval-copy-'))
+        try:
+            shutil.copytree(store,folder/'store',ignore=shutil.ignore_patterns(*COPY_SKIP))
+            try:return {**evaluate(fixture,folder/'store',hooked=True),'copy':str(folder/'store') if keep else None}
+            finally:semantic._unload()   # Windows cannot delete a mapped model file
+        finally:
+            if not keep:shutil.rmtree(folder,ignore_errors=True)
     if not semantic_mode:return evaluate(fixture,store)
     # Hooks never rebuild, so the derived indexes must match the setting being measured, and afterwards the
     # setting the hooks use, or they would fall back to lexical search until the next write.
@@ -373,7 +444,9 @@ def _table(report):
     qz,im=report['quiz'],report['interim']
     lines=_units_table(report)+[f"Retrieval: {r['cases']} cases ({r['positive']} positive, {r['negative']} negative)",
            f"  hit@3            {r['hit@3']}   (target >= 0.8)",
-           f"  false injection  {r['false_injection']}   (target <= 0.1)",
+           f"  false injection  {r['false_injection']}   (target <= 0.1; notes)",
+           *([f"    {k:<9}      {v['rate']}   ({len(v['prompts'])} of {r['negative']} negatives, whole prompt hook)" for k,v in r['false_injection_by_kind'].items()]
+             if r.get('false_injection_by_kind') else ["    by kind needs a temporary store (a synthetic fixture, or --copy)"]),
            f"  forbid hits      {len(r['forbid_violations'])}",
            f"  mean chars       {r['mean_injected_chars']}",
            f"  mean ms          {r['mean_ms']}   (prompt-time retrieval, in process)",
@@ -399,6 +472,8 @@ def _table(report):
            f"Session start: {s['chars']} chars (target <= {s['budget']}); index coverage {s['index_coverage']}; {s['fallback_chars']} chars if the instruction block is stale",
            f"Signals: {g['cases']} cases; false-arm {g['false_arm']}"]
     lines+=[f"  {k:<11} precision {v['precision']} recall {v['recall']} ({v['cases']} cases)" for k,v in g['per_kind'].items()]
+    for kind,v in (r.get('false_injection_by_kind') or {}).items():
+        if kind!='any' and v['prompts']:lines+=[f'False injections ({kind}, whole hook):']+[f'  - {json.dumps(row,ensure_ascii=False)}' for row in v['prompts']]
     for title,rows in (('Misses',r['misses']),('Long-prompt misses',lp['misses']),('Long-prompt false injections',lp['false_injections']),('Quiz misses',qz['misses']),('Quiz false injections',qz['false_injections']),('Interim errors',im['wrong']),('Command-hint misses',cm['misses']),('Command false hints',cm['false_hints']),('Source misses',src['misses']),('Source prompt misses',src['prompt_misses']),('Source false injections',src['false_injections']),('False injections',r['false_injections']),('Forbidden injected',r['forbid_violations']),('Signal errors',g['wrong'])):
         if rows:lines+=[title+':']+[f'  - {json.dumps(row,ensure_ascii=False)}' for row in rows]
     return '\n'.join(lines)
@@ -410,11 +485,17 @@ def main(argv=None):
     parser.add_argument('--semantic',choices=['on','off'],help='Override core.semantic.USE_SEMANTIC (on needs `semantic install` in the store); indexes are rebuilt to match and restored afterwards')
     parser.add_argument('--config',choices=sorted(CONFIGS),help='Retrieval variant for a synthetic fixture: A lexical, B Python note-level, C native note-level, P Python units, D native units, E D plus the injection controller')
     parser.add_argument('--model-dir',help='Folder with the pinned model files, installed into the temporary store of a synthetic fixture')
+    parser.add_argument('--copy',action='store_true',help='Run a real store in a temporary copy: the store is never touched, and false injection is measured per kind through the whole prompt hook')
+    parser.add_argument('--keep',action='store_true',help='With --copy: keep the copy and name it in the report')
     args=parser.parse_args(argv)
+    if args.keep and not args.copy:parser.error('--keep needs --copy')
     if args.strength:
         from core import usage
         usage.USE_STRENGTH=args.strength=='on'
-    report=run(args.fixture,args.root,args.semantic,args.config,args.model_dir)
+    import os
+    os.environ.setdefault('LIVING_MEMORY_NO_BACKGROUND','1')   # the hook may start a source sync; an eval must not leave processes behind
+    report=run(args.fixture,args.root,args.semantic,args.config,args.model_dir,args.copy,args.keep)
+    if args.copy and report.get('copy'):print(f"Store copy kept: {report['copy']}",file=sys.stderr)
     print(json.dumps(report,indent=2,ensure_ascii=False) if args.json else _table(report))
 
 if __name__=='__main__':main()

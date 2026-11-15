@@ -84,6 +84,47 @@ class RealStoreMode(StoreFixture):
         after = sorted(p.read_bytes() for p in (self.root / 'domains' / 'demo' / 'notes').glob('*.md'))
         self.assertEqual(before, after)  # canonical notes untouched
 
+    def mapped(self):
+        """The project is a git repo with a codebase map; a negative prompt asked twice, first and later in its session."""
+        (self.base / 'project' / '.git').mkdir(parents=True)
+        capture('project codebase map', 'Layout: src holds the code.', TAGS, 'demo', self.root, type='map', files=[str((self.base / 'project').resolve())])
+        return {'domain': 'demo', 'cwd': str(self.base / 'project'), 'retrieval': [
+            {'prompt': 'suggest a good python variable name', 'expect': []},
+            {'prompt': 'suggest a good python variable name', 'expect': [], 'first_prompt': False},
+        ]}
+
+    def test_the_whole_hook_counts_a_map_a_negative_got(self):
+        report = EVAL.evaluate(self.mapped(), self.root, hooked=True)
+        r = report['retrieval']
+        self.assertEqual(r['false_injection'], 0.0)   # notes only, comparable with earlier runs
+        kinds = r['false_injection_by_kind']
+        self.assertEqual(kinds['maps']['rate'], 0.5)   # the first prompt of a session gets the map; a later one does not
+        self.assertEqual(kinds['notes']['rate'], 0.0)
+        self.assertEqual(kinds['any']['rate'], 0.5)   # the later prompt gets nothing at all
+        self.assertEqual(kinds['maps']['prompts'][0]['injected'][0][:5], 'demo:')
+
+    def test_the_hook_pass_puts_the_usage_diary_back(self):
+        fixture = self.mapped()
+        turns = self.root / '.turns'
+        before = {p.name: p.read_bytes() for p in turns.glob('usage-*.jsonl')} if turns.exists() else {}
+        EVAL.evaluate(fixture, self.root, hooked=True)
+        after = {p.name: p.read_bytes() for p in turns.glob('usage-*.jsonl')}
+        self.assertEqual(before, after)
+
+    def test_by_kind_is_not_measured_in_place(self):
+        report = EVAL.evaluate(self.mapped(), self.root)
+        self.assertIsNone(report['retrieval']['false_injection_by_kind'])
+
+    def test_copy_never_touches_the_store(self):
+        path = self.base / 'fixture.json'
+        path.write_text(json.dumps(self.mapped()), encoding='utf-8')
+        snapshot = lambda: {p.relative_to(self.root).as_posix(): (p.stat().st_size, p.stat().st_mtime_ns) for p in self.root.rglob('*') if p.is_file()}
+        before = snapshot()
+        report = EVAL.run(path, self.root, copy=True)
+        self.assertEqual(snapshot(), before)
+        self.assertEqual(report['retrieval']['false_injection_by_kind']['maps']['rate'], 0.5)
+        self.assertIsNone(report['copy'])
+
     def test_stale_ref_is_a_fixture_error(self):
         fixture = {'domain': 'demo', 'cwd': str(self.base / 'project'), 'retrieval': [{'prompt': 'x y', 'expect': ['demo:deadbeef']}]}
         with self.assertRaisesRegex(ValueError, 'does not resolve'):
