@@ -378,10 +378,16 @@ class TurnTools(StopFixture):
                               'still failing': [bash('a', 'pytest', True), EDIT, bash('b', 'pytest', True)],
                               'edit before the failure': [EDIT, bash('a', 'pytest', True), bash('b', 'pytest')],
                               'memory command': [bash('a', 'alm search x', True), EDIT, bash('b', 'alm search x')],
-                              'grep finds nothing, then finds it': [bash('a', 'grep -n foo src/app.py', True), EDIT, bash('b', 'grep -n foo src/app.py')]}.items():
+                              'grep finds nothing, then finds it': [bash('a', 'grep -n foo src/app.py', True), EDIT, bash('b', 'grep -n foo src/app.py')],
+                              'the edit failed': [bash('a', 'pytest', True), use('e', 'Edit', file_path='a.py'), result('e', 'old_string not found', True), bash('b', 'pytest')],
+                              'only a read-only command between': [bash('a', 'pytest', True), bash('r', 'git status'), bash('b', 'pytest')]}.items():
             with self.subTest(case=case):
                 self.write(*entries)
                 self.assertEqual(self.stop(self.edit), '')
+
+    def test_a_shell_edit_counts_as_the_edit(self):
+        self.write(bash('a', 'pytest', True), bash('s', "sed -i 's/a/b/' src/app.py"), bash('b', 'pytest'))
+        self.assertIn('(`pytest`)', self.stop(self.edit))
 
     def test_a_receipt_settles_it(self):
         from core.capture import finalize
@@ -432,6 +438,12 @@ class TurnTools(StopFixture):
     def test_a_prompt_decision_is_not_raised_twice(self):
         self.write(use('p', 'ExitPlanMode', plan='# Plan'), result('p'))
         self.assertEqual(self.stop(prompt='We decided to use sqlite').count('The user made a decision'), 1)
+
+    def test_leaving_plan_mode_with_a_preference_still_arms_the_decision(self):
+        self.payload.update(prompt='plan the parser refactor', permission_mode='plan', session_id='copilot')
+        self.assertEqual(self.turn(harness='copilot'), {})
+        self.payload.update(prompt='Go ahead. From now on, use tabs.', permission_mode='default')
+        self.assertIn('The user made a decision', self.turn(harness='copilot')['continue_reason'])
 
     def test_leaving_plan_mode_arms_a_decision_for_any_harness(self):
         for harness in ('claude', 'codex', 'copilot'):

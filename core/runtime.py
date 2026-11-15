@@ -1520,7 +1520,8 @@ def _process(harness,event,payload,root=None,info=None):
             kinds=[] if planning else signals_of(text,raised);signal,source=kinds[0] if kinds else (None,None)
             # Leaving plan mode is the user approving a plan: a decision even when the prompt says nothing durable (UX-C4).
             mode=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()
-            approved=bool(mode) and mode!='plan' and state.get('last_mode')=='plan' and not signal
+            # A blocking statement already holds Stop; a preference or correction does not, so the approval outranks it.
+            approved=bool(mode) and mode!='plan' and state.get('last_mode')=='plan' and signal not in BLOCKING_SIGNALS
             statements=dict(kinds)   # held for this hook only, to search the notes a statement may change
             # Only the kind and a salted hash of the statement are kept, never the prompt text; the hash settles at Stop.
             shash=hashed(source) if signal and hashed else None
@@ -1535,8 +1536,6 @@ def _process(harness,event,payload,root=None,info=None):
                     s['heads']=heads  # ...and a shell commit by HEAD moving
                 s['turn']=turn;s['open_turns']=(list(s.get('open_turns',[]))+[turn])[-20:]
                 if mode:s['last_mode']=mode
-                # No statement to hash: any receipt settles it at Stop. A decision the prompt itself carried is not raised twice.
-                if approved:s['signal']='decision';s['signal_hash']=None;s['signal_hashes']=[];s.pop('signal_words',None)
                 if signal:
                     s['signal']=signal;s['signal_hash']=shash;s['signal_hashes']=shashes
                     # Hashes of the statement's words, under a per-session salt, so Stop can check a note covers it.
@@ -1544,6 +1543,10 @@ def _process(harness,event,payload,root=None,info=None):
                         import secrets
                         s['signal_salt']=secrets.token_hex(16)
                     s['signal_words']=content_hashes(s['signal_salt'],source,MAX_SIGNAL_WORDS)
+                # No words to cover: any receipt settles the approval at Stop. A nonblocking statement's hashes still settle.
+                if approved:
+                    s['signal']='decision';s.pop('signal_words',None)
+                    if not signal:s['signal_hash']=None;s['signal_hashes']=[]
                 # <private> spans: salted shingle hashes only, so a capture that copies one can be refused.
                 if isinstance(text,str) and not MACHINE_PROMPT.match(text) and private.remember(s,text):s['private_turn']=turn
                 if transcript:s['transcript']=transcript
@@ -2091,12 +2094,15 @@ def command_key(text):
 
 def verified_fix(tools):
     """The command key of a shell command that failed, then (after an edit) passed, in one turn's tool calls; else None.
-    Memory commands and results with no exit code are ignored."""
+    An edit is an edit tool that did not fail, or a successful shell command that is not read-only (`sed -i`, `npm install`)
+    and is not one of the failed commands. Memory commands and results with no exit code are ignored."""
     from .recall import _command_text
     failed=set();ready=set()
     for tool in tools:
         name=str(tool.get('name','')).lower()
-        if name in EDIT_TOOLS:ready|=failed;continue
+        if name in EDIT_TOOLS:
+            if tool.get('ok') is not False:ready|=failed
+            continue
         if name not in SHELL_TOOLS or tool.get('ok') is None:continue
         args=tool.get('input') or {}
         text=_command_text(args.get('command',args.get('cmd')))
@@ -2104,6 +2110,7 @@ def verified_fix(tools):
         if not key or key.split()[0] in MEMORY_COMMANDS or key.split()[0].lower() in PROBE_COMMANDS or 'living_memory.py' in text:continue
         if not tool['ok']:failed.add(key);ready.discard(key)
         elif key in ready:return key
+        elif key not in failed and not readonly_shell(text):ready|=failed
     return None
 
 def approved_decision(tools):
