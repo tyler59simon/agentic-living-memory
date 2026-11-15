@@ -4,12 +4,12 @@ Automatic note maintenance reviews a few of the oldest or most doubtful notes ea
 
 ## What it does and does not do
 
-A model reviews a small batch of candidate notes and recommends one action for each: keep, defer, confirm, update, resolve, archive or supersede. The model only recommends. The script re-checks every recommendation against the current note, pin, action items, configuration and source files, and commits each accepted one as its own journaled, undoable change.
+A model reviews a small batch of candidate notes and recommends one action for each: keep, defer, confirm, update, resolve, archive, supersede or, for a queued pair of notes, distinct. The model only recommends. The script re-checks every recommendation against the current note, pin, action items, configuration and source files, and commits each accepted one as its own journaled, undoable change.
 
 Maintenance does not:
 
 - delete any note. Retired notes move to `archive/` (or are resolved or superseded) and can be brought back.
-- touch preference or policy notes or learned procedures, or retire a pinned note (a pinned note can still be confirmed or get a factual update).
+- touch preference or policy notes or learned procedures, or retire a pinned note (a pinned note can still be confirmed or get a factual update). The one exception to reading them is a queued pair (see Possible replacements): the reviewer may read such an older note and record the pair as distinct, but never change or supersede it.
 - retire maps, briefs or runbooks. These can be kept, deferred, confirmed or updated.
 - merge, retag, remap, change the taxonomy or edit configuration. Those still need an approved plan.
 - retire a note only because it is noisy (retrieved often but never used). Usage, age and review dates are signals, never proof.
@@ -53,8 +53,18 @@ Not sent: file contents beyond those excerpts, the repository tree, environment 
 - Plan, bug and risk notes: resolved when every action item is checked and the body keeps nothing that is not covered elsewhere; archived only when current evidence shows the work was cancelled or is obsolete. Inactivity or unchecked items alone are not evidence.
 - Knowledge, decision, context and research notes: archived only when current evidence shows the content is obsolete; superseded when an active successor covers all its useful content. An old decision that still explains a current constraint stays.
 - Any note: may be confirmed when the evidence covers every fact and every tracked file, or updated with at most five exact-text patches. Action items, the important block, links, the title, type, tags, files and pin are never changed by a patch.
-- Every archive, supersede, confirm and update must cite evidence from the packet.
+- Every archive, supersede, distinct, confirm and update must cite evidence from the packet.
 - The model names each candidate by its key, never by ref and revision, so the two cannot disagree; the script maps the key to the note and the revision it sent. A report that breaks the output contract (unknown key, run id or evidence id, bad patch shape) applies nothing. A caller that names a note by ref and revision (scripts, tests) gets a mismatched revision deferred for that note only (`revision_mismatch`, no seven-day hold).
+
+## Possible replacements
+
+A newer decision on the same subject does not retire the older one by itself, and the capture-time check cannot tell a replacement from a sibling note (about one match in twenty is a real replacement). So the pairs go to the reviewer.
+
+- **Queue.** When a captured decision, policy or preference has a top related hit that passes the strict bar (rank 1, a strong match, and a title score of 0.5 or a meaning match well above the model's threshold) in the same domain, and the pair is not marked distinct, the pair `{new, old, at}` is appended to `maintenance/related-queue.json`. This happens only where maintenance is enabled for the domain, is deduplicated, never fails the capture, and changes nothing in the capture result. A note that capture already lists as `similar` (title score 0.6 to 0.8) is left out, as the related list leaves it out.
+- **Backfill.** The first maintenance run on a store with no backfill mark scans the active decision, policy and preference notes of the enabled domains with the same check and queues their pairs (the later-created note is `new`). It stops after 45 seconds, saves its place in the queue file and finishes on the next run. It runs once; the mark is `backfill.done` in the queue file.
+- **Candidate `replaced`.** Queued pairs whose two notes are still active, in one domain and not distinct become candidates of kind `replaced`: the older note is the candidate and the newer one its successor. They rank after every other kind (level 10), share the 10-a-day allowance, and are left for a later batch when another row already reviews the older note. The packet gives both notes in full with their created and updated dates.
+- **Actions.** `supersede` (rule `replaced_by_successor`) retires the older note by the newer one, only where the policy table allows a supersede: never a pinned note, never a preference, policy, map, brief or runbook. `distinct` writes `distinct_from` on the newer note with the reviewer's reason (8 to 200 characters) and `by: maintenance`; the older note is not touched, and the pair is never queued or listed as a duplicate again. `keep` drops the pair without a record. `defer` keeps it, held for seven days. A pair that is decided leaves the queue; one whose notes were retired, edited since the packet or marked distinct by hand is dropped or skipped as for any other candidate.
+- **By hand.** `update NEWER --distinct OLDER --why '...'` records a pair as distinct (`by: user`); `update NEWER --not-distinct OLDER` removes the record from whichever note holds it, so the pair can be queued again. Both are journaled and undoable. `recap` lists the pairs marked distinct in its window.
 
 ## Unavailable sources
 
