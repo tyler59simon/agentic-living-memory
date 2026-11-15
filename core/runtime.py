@@ -2080,7 +2080,7 @@ MEMORY_COMMANDS={'alm','living_memory.py'}
 # Positive evidence that a shell command wrote a file (a guess either way, so only what plainly writes counts): in-place
 # editors, a redirect to a file, file moves and package installs. A diagnostic or test run that merely is not provably
 # read-only is no edit.
-SHELL_WRITE=re.compile(r"\b(?:sed|perl)\s+(?:-\w+\s+)*-\w*i|(?<![\d&])>{1,2}\s*(?!&|/dev/null|\$null|nul\b)[\w./\\~\"'$-]"
+SHELL_WRITE=re.compile(r"\b(?:sed|perl)\s+(?:-\w+\s+)*(?:-\w*i|--in-place)|(?<![\d&])>{1,2}\s*(?!&|/dev/null|\$null|nul\b)[\w./\\~\"'$-]"
                        r"|\b(?:tee|mv|cp|rm|touch|patch|truncate)\s|\bgit\s+(?:apply|am|checkout\s+--|restore|stash|cherry-pick|revert|merge|rebase|reset)\b"
                        r"|\b(?:npm|pnpm|yarn|pip|uv|cargo|go)\s+(?:install|add|i|get|sync)\b"
                        r"|\b(?:set-content|add-content|out-file|new-item|remove-item|move-item|copy-item|rename-item)\b",re.I)
@@ -2117,7 +2117,7 @@ def verified_fix(tools):
         if not key or key.split()[0] in MEMORY_COMMANDS or key.split()[0].lower() in PROBE_COMMANDS or 'living_memory.py' in text:continue
         if not tool['ok']:failed.add(key);ready.discard(key)
         elif key in ready:return key
-        elif key not in failed and SHELL_WRITE.search(text):ready|=failed
+        elif key not in failed and SHELL_WRITE.search(text) and not readonly_shell(text):ready|=failed
     return None
 
 def approved_decision(tools):
