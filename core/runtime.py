@@ -1336,7 +1336,7 @@ def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=N
         try:
             from .search import strong
             if not any(strong(h,root) for h in found):   # nothing here answers the prompt well: another project may hold a portable note
-                sibling=sibling_hit(prompt,root,bindings,set(domains)|set(scope.get('foreign_domains') or ()),not queries)
+                sibling=sibling_hit(prompt,root,bindings,_own_scope(active,bindings,root),not queries)
                 if sibling:found=found+[sibling];trace['sibling']=f"{sibling['domain']}:{sibling['id']}"
         except Exception as exc:   # fail open: the prompt keeps what it found
             from .logs import swallowed
@@ -1387,7 +1387,7 @@ SIBLING_DOMAINS=4   # sibling projects searched for a portable note
 def _own_scope(active,bindings,root):
     """The domains a prompt searches as its own: the active one, its parents and children, the global domains and the foreign fallback."""
     scope=bindings.get('search_scope',{})
-    return {active,*scope_domains(active,bindings),*(canonical_domain(d,root) for d in scope.get('global_domains',['_global'])),*(scope.get('foreign_domains') or ())}
+    return {active,*scope_domains(active,bindings),*(canonical_domain(d,root) for d in scope.get('global_domains',['_global'])),*(canonical_domain(d,root) for d in scope.get('foreign_domains') or ())}   # aliases resolved: hits carry canonical names
 
 def sibling_hit(prompt,root,bindings,skip,body=True):
     """The one strong, portable note another bound project holds for a prompt this project answers weakly (UX-C7), marked

@@ -369,6 +369,18 @@ class ReviewFixes(StoreFixture):
         hits = search_domains('quokka burrow collapse depth', ['demo'], 20, self.root, resolved=True)
         self.assertIn(active['id'], [h['id'] for h in hits])
 
+    def test_an_aliased_foreign_domain_is_not_treated_as_a_sibling(self):
+        import json
+        init_domain('shared', [str(self.base / 'shared')], self.root)
+        config = json.loads((self.root / 'bindings.json').read_text(encoding='utf-8'))
+        config.setdefault('domain_aliases', {})['legacy'] = 'shared'; config['search_scope']['foreign_domains'] = ['legacy']
+        (self.root / 'bindings.json').write_text(json.dumps(config), encoding='utf-8')
+        capture('Zebra proxy timeout', 'Raise the zebra proxy timeout to stop dropped uploads.\n\n## Why\n\nA low zebra proxy timeout cuts long uploads off.',
+                TAGS, 'shared', self.root, type='knowledge')
+        first = self.prompt('zebra proxy timeout')
+        self.assertIn('Zebra proxy timeout', first or ''); self.assertNotIn('[from shared] ', first or '')
+        self.assertNotIn('[from shared] ', self.prompt('why is that? repeat that') or '')
+
     def resolve(self, note):
         from core.notes import change
         change(note['id'], 'demo', 'resolve', self.root)
