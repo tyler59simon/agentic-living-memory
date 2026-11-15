@@ -18,6 +18,9 @@ def _reference(value,domain,root):
     parents=scope_domains(domain,load_bindings(root)) if domain else []   # parents and children: what search shows can be named back
     return resolve_ref(value,domain,root,parents)
 
+def _same_pair(entry,domain,note_id):
+    return isinstance(entry,dict) and entry.get('ref')==f'{domain}:{note_id}'
+
 def _turn(root,session,turn):
     """The turn a receipt belongs to: explicit, else the session's latest prompt."""
     if turn or not session:return turn
@@ -527,6 +530,9 @@ def build_parser():
     p=sub('read');p.add_argument('reference');p.add_argument('--max-chars',type=int,default=16000);p.add_argument('--metadata-only',action='store_true');p.add_argument('--section',help='Only this section, by heading (as search evidence and prompt lines name it)')
     p=sub('update');p.add_argument('reference');p.add_argument('--title');p.add_argument('--body');p.add_argument('--body-file',type=Path);p.add_argument('--tag',action='append');p.add_argument('--type',choices=NOTE_TYPES);p.add_argument('--context');p.add_argument('--review-by');p.add_argument('--expected-revision');p.add_argument('--payload-file',type=Path);p.add_argument('--session');p.add_argument('--turn')
     pins=p.add_mutually_exclusive_group();pins.add_argument('--pin',dest='pin',action='store_const',const=True,help=PIN_HELP);pins.add_argument('--unpin',dest='pin',action='store_const',const=False,help='Remove retirement protection (a pin change never counts as checking the note)')
+    p.add_argument('--distinct',metavar='REF',help='Record that this note and REF (same domain) are different subjects, so neither replaces the other; needs --why')
+    p.add_argument('--why',help='With --distinct: the reason, one line of 8 to 200 characters')
+    p.add_argument('--not-distinct',metavar='REF',dest='not_distinct',help='Remove the distinct record between this note and REF (kept on either note), so maintenance may review the pair again')
     for facet in FACET_FLAGS:p.add_argument('--'+facet,action='append')
     p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
     sections_args(p,update=True);_file_flags(p)
@@ -882,7 +888,7 @@ def main(argv=None):
         elif cmd=='update':
             from .notes import change
             d,n=_reference(args.reference,domain,root)
-            values=_payload(args) if args.payload_file or not any(getattr(args,k) is not None for k in ('title','body','body_file','tag','type','context','review_by','pin','file','files','shell_command','source','subject','concern','platform','technology')+SECTION_ARGS+AMEND_ARGS) else {}
+            values=_payload(args) if args.payload_file or not any(getattr(args,k) is not None for k in ('title','body','body_file','tag','type','context','review_by','pin','file','files','shell_command','source','subject','concern','platform','technology','distinct','not_distinct')+SECTION_ARGS+AMEND_ARGS) else {}
             if args.title is not None:values['title']=args.title
             if args.body is not None:values['body']=args.body
             if args.body_file:values['body']=args.body_file.read_text(encoding='utf-8-sig')
@@ -912,7 +918,25 @@ def main(argv=None):
                     new=[describe(root,d,v,cwd) for v in args.source]   # the file's hash now; a path already listed takes the new hash
                     values['sources']=[s for s in find_note(n,d,root)[1].get('sources') or [] if s['path'] not in {x['path'] for x in new}]+new
                 if 'actor' in values:raise ValueError('Cannot update: actor')
-                result=change(n,d,'update',root,revision,**values)
+                other=None
+                if args.distinct or args.not_distinct:
+                    from .notes import distinct_with,distinct_without
+                    if args.distinct and args.not_distinct:raise ValueError('Pass --distinct or --not-distinct, not both')
+                    if args.why and not args.distinct:raise ValueError('--why goes with --distinct')
+                    od,on=_reference(args.distinct or args.not_distinct,domain,root)
+                    if od!=d:raise ValueError('A distinct pair must be two notes in the same domain')
+                    if on==n:raise ValueError('A note cannot be distinct from itself')
+                    mine=find_note(n,d,root)[1]
+                    if args.distinct:
+                        if not args.why:raise ValueError('--distinct needs --why with the reason, one line of 8 to 200 characters')
+                        values['distinct_from']=distinct_with(mine,d,on,args.why,'user')
+                    else:
+                        theirs=find_note(on,d,root)[1]
+                        if not any(_same_pair(e,d,on) for e in mine.get('distinct_from') or []) and not any(_same_pair(e,d,n) for e in theirs.get('distinct_from') or []):
+                            raise ValueError(f'{d}:{n} and {d}:{on} are not marked distinct')
+                        if any(_same_pair(e,d,on) for e in mine.get('distinct_from') or []):values['distinct_from']=distinct_without(mine,d,on)
+                        if any(_same_pair(e,d,n) for e in theirs.get('distinct_from') or []):other=change(on,d,'update',root,None,distinct_from=distinct_without(theirs,d,n))
+                result=change(n,d,'update',root,revision,**values) if values else other
             if replaced:result['replaced']=replaced
             if redacted:result['redacted']=redacted
             if suggested:result['suggested_files']=suggested

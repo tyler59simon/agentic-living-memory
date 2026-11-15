@@ -140,7 +140,7 @@ def _duplicates(pool):
     """{ref: pair} for the later note of each similar same-type pair in a domain: a title scoring DUPLICATE_TITLE or more
     (notes.pair_score, so numbered status titles count), or a nearly identical body. Candidates come from inverted indexes (title
     word stems, and a small sketch of each body's shingles), so the scan is not quadratic."""
-    from .notes import TitleScorer,pair_score,_title_words,_shingles,NEAR_BODY,NEAR_TITLE
+    from .notes import TitleScorer,pair_score,_title_words,_shingles,NEAR_BODY,NEAR_TITLE,distinct
     from .note_types import effective_type,KEYED_TYPES
     found={};by_domain={}
     for n in pool:
@@ -163,6 +163,7 @@ def _duplicates(pool):
                     for b in range(a+1,len(posting)):same_body.add((posting[a],posting[b]))
         for i,j in sorted({k for k,c in shared.items() if c>=2 or words[k[0]]==words[k[1]]}|same_body):
             a,b=notes[i],notes[j];kind=effective_type(a)
+            if distinct(a,b):continue   # judged different subjects (update --distinct, or maintenance)
             score=pair_score(scorer,a['title'],b['title'],kind,kind) if shared.get((i,j)) else 0.0
             x,y=shingles[i],shingles[j];body=len(x&y)/len(x|y) if x and y else 0.0
             if score>=DUPLICATE_TITLE:why=f"title {score:.2f} like";same=score>=NEAR_TITLE and body>=NEAR_BODY

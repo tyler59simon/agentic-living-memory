@@ -252,7 +252,7 @@ def parse_text(raw, path=""):
 
 # Frontmatter order: the properties a person reads first, then bookkeeping.
 FRONT_KEYS = ("title", "type", "status", "tags", "context", "files", "commands", "sources")
-SYSTEM_KEYS = ("id", "domain", "created", "updated", "review_by", "confirmed", "supersedes", "superseded_by", "schema_version", "capture_key", "origin", "repo", "file_hashes", "checked", "pinned", "last_retirement")
+SYSTEM_KEYS = ("id", "domain", "created", "updated", "review_by", "confirmed", "supersedes", "superseded_by", "schema_version", "capture_key", "origin", "repo", "file_hashes", "checked", "pinned", "distinct_from", "last_retirement")
 MAX_FILES = 30
 
 
@@ -335,6 +335,24 @@ def check_retirement(value):
         shape = {"note": ("ref", "revision"), "file": ("path", "sha256")}.get(item.get("kind") if isinstance(item, dict) else None)
         if not shape or set(item) != {"kind", *shape} or not isinstance(item[shape[0]], str) or not item[shape[0]].strip() or len(item[shape[0]]) > 300 or not isinstance(item[shape[1]], str) or not SHA256.fullmatch(item[shape[1]]):
             raise ValueError("last_retirement evidence entries are {kind note, ref, revision} or {kind file, path, sha256} with a 64-digit hash")
+
+
+DISTINCT_MAX = 20
+DISTINCT_BY = ("maintenance", "user")
+
+
+def check_distinct(value):
+    """The `distinct_from` property: at most DISTINCT_MAX {ref (domain:full-id), why (8-200 characters), by (maintenance or user), at} pairs the note was judged not to replace."""
+    if not isinstance(value, list) or len(value) > DISTINCT_MAX:
+        raise ValueError(f"distinct_from must be a list of at most {DISTINCT_MAX} {{ref, why, by, at}} objects")
+    for item in value:
+        if (not isinstance(item, dict) or set(item) != {"ref", "why", "by", "at"} or not isinstance(item["ref"], str) or not re.fullmatch(r"[^:\s]+:[^:\s]+", item["ref"])
+                or not isinstance(item["why"], str) or not 8 <= len(item["why"].strip()) <= 200 or "\n" in item["why"] or item["by"] not in DISTINCT_BY):
+            raise ValueError("distinct_from entries are {ref domain:<full note id>, why (one line of 8 to 200 characters), by maintenance or user, at ISO timestamp}")
+        try:
+            parse_iso(item["at"])
+        except (TypeError, ValueError):
+            raise ValueError("distinct_from at must be an ISO timestamp") from None
 
 
 def clean_sources(value):
@@ -500,6 +518,8 @@ def validate(note, domain, root=None, new=False, extra_tags=()):
             raise ValueError("checked must be an ISO timestamp") from None
     if "pinned" in note and not isinstance(note["pinned"], bool):
         raise ValueError("pinned must be true or false")
+    if "distinct_from" in note:
+        check_distinct(note["distinct_from"])
     if "last_retirement" in note:
         check_retirement(note["last_retirement"])
     if "repo" in note and not isinstance(note["repo"], str):

@@ -11,7 +11,7 @@ from .note_format import format_body,without_actions,summary_text,ACTION_TYPES
 from .digests import stale_note
 
 # Fields an agent may change directly (journaled and undoable, no plan) with `update`.
-UPDATABLE=('title','body','tags','type','context','review_by','files','commands','sources','pinned')
+UPDATABLE=('title','body','tags','type','context','review_by','files','commands','sources','pinned','distinct_from')
 LINK_UPDATE_MAX=100   # notes whose links one move may rewrite; a larger move needs its own reviewed operation
 
 def slug(value):return re.sub(r'[^a-z0-9]+','-',value.casefold()).strip('-')[:64] or 'note'
@@ -533,6 +533,25 @@ def _related(note,domain,root,skip):
     """Up to 3 active notes of the same type group the new note may replace (see _related_hits). Advisory: never raises."""
     return [{'ref':f"{domain}:{h['id']}",'title':h['title'],'type':h['type']} for h in _related_hits(note,domain,root,skip)[:3]]
 
+def _distinct_id(entry):
+    return str(entry.get('ref') or '').split(':',1)[-1] if isinstance(entry,dict) else ''
+
+def distinct(a,b):
+    """True when either note records the other in `distinct_from` (judged a different subject, so neither replaces the other). Compared by ID."""
+    def lists(x,y):return any(_distinct_id(e)==y.get('id') for e in x.get('distinct_from') or [] if isinstance(e,dict) and str(e.get('ref') or '').split(':',1)[0]==y.get('domain'))
+    return lists(a,b) or lists(b,a)
+
+def distinct_with(note,other_domain,other_id,why,by):
+    """`note`'s distinct_from list with the pair added (an earlier entry for the same note is replaced; the newest 20 are kept)."""
+    ref=f'{other_domain}:{other_id}'
+    kept=[e for e in note.get('distinct_from') or [] if isinstance(e,dict) and e.get('ref')!=ref]
+    return (kept+[{'ref':ref,'why':' '.join(str(why or '').split()),'by':by,'at':now()}])[-20:]
+
+def distinct_without(note,other_domain,other_id):
+    """`note`'s distinct_from list without the pair."""
+    ref=f'{other_domain}:{other_id}'
+    return [e for e in note.get('distinct_from') or [] if isinstance(e,dict) and e.get('ref')!=ref]
+
 def related_domains(domain,root):
     """The domains the related check could widen to: the domain, its parents and children, and the global domains, deduplicated.
     A global domain searches only the global domains."""
@@ -727,6 +746,9 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
             # of every file still listed and starts one only for a file without a hash; a title edit does not come here at all.
             _set_file_hashes(note,domain,root,{h['path']:h['sha256'] for h in note.get('file_hashes') or []},fresh='body' in values)
         if 'pinned' in values:note['pinned']=values['pinned']   # validate refuses anything but a bool
+        if 'distinct_from' in values:
+            if values['distinct_from']:note['distinct_from']=values['distinct_from']   # validate checks the shape
+            else:note.pop('distinct_from',None)
         if 'review_by' in values:
             review=_review_date(values['review_by'])
             if review:note['review_by']=review
@@ -789,7 +811,7 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
     target=path if action=='delete' else folder/f"{note['prefix']} - {slug(note['title'])}-{note_id[:8]}.md"
     # `updated` means the content changed; it drives recency and review age. A tag-, snooze- or files-only edit
     # (triage, backfill) must not reorder recency lists or reset the review clock; confirm never bumps it either.
-    if action!='confirm' and not (action=='update' and set(values)<={'tags','review_by','files','commands','sources','pinned'}):
+    if action!='confirm' and not (action=='update' and set(values)<={'tags','review_by','files','commands','sources','pinned','distinct_from'}):
         verifying=action=='update' and 'body' in values and rehash   # a checkbox tick or a prose rewrite (rehash=False) says nothing about the facts
         if action!='delete' and not verifying:keep_baseline(note)   # `updated` moves; what was checked does not
         note['updated']=now()
