@@ -253,6 +253,14 @@ class ResolvedNotes(StoreFixture):
         self.assertIn('[resolved] ', line)
         self.assertIn('demo:' + bug['id'][:8], line)
 
+    def test_a_strongly_matching_resolved_bug_is_not_crowded_out(self):
+        # A live store found it: halving a fused score sank a resolved bug that quoted the prompt below every kept active note.
+        for i, words in enumerate(['zebra gateway sizing', 'zebra gateway owners', 'zebra gateway timeout budget', 'zebra gateway alerts', 'gateway timeout dashboards']):
+            capture(f'Gateway note {i}', f'Notes on {words} for the proxy.', TAGS, 'demo', self.root, type='knowledge', allow_similar=True)
+        self.resolve(capture('Zebra gateway timeout drops uploads', 'ERR_ZEBRA_GATEWAY: the zebra gateway timeout drops uploads; fixed by raising it.', TAGS, 'demo', self.root, type='bug'))
+        context = self.prompt('zebra gateway timeout drops uploads')
+        self.assertIn('[resolved] Zebra gateway timeout drops uploads', context)
+
     def test_a_resolved_plan_is_not_injected(self):
         plan = capture('Zebra gateway rollout', 'ERR_ZEBRA_GATEWAY rollout steps for the proxy.', TAGS, 'demo', self.root, type='plan')
         self.resolve(plan)

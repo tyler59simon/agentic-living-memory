@@ -16,7 +16,7 @@ run now just get got know think want like help some thing things also then has h
 current currently state latest again more much very really'''.split())
 MAX_TERMS=32
 # Resolved bugs and risks the prompt hook and file hints still offer (their fix is the point), at this share of their fused score.
-RESOLVED_TYPES=('bug','risk');RESOLVED_FACTOR=0.5
+RESOLVED_TYPES=('bug','risk');RESOLVED_FACTOR=0.5;RESOLVED_DEMOTION=1   # a strong match is demoted by rank places instead (search_domains)
 # A relevance-gate verdict is strong (search.strong) when the title matched, or coverage / similarity clears these bars; tuned on tests/fixtures/eval_cross.json.
 STRONG_COVERAGE=0.75;STRONG_MARGIN=0.1
 SNIPPET=450
@@ -585,7 +585,16 @@ def search_domains(query,domains,limit=3,root=None,filters=None,rebuild=False,we
         # Reinforcement breaks near-ties: notes in use recently and repeatedly rise a little.
         power=usage.strength_map(Path(root or memory_root()),{h['domain'] for h in hits});top=max(power.values(),default=0) or 1
         for hit in hits:hit['score']*=1+usage.STRENGTH_NUDGE*power.get(f"{hit['domain']}:{hit['id']}",0)/top
-    return sorted(hits,key=lambda h:(-h['score'],h['domain'],h['id']))[:limit]
+    ranked=sorted(hits,key=lambda h:(-h['score'],h['domain'],h['id']))
+    # Fused scores sit close together (rank 1 is 2/61, rank 10 is 2/70; the strength nudge is worth several places), so the half
+    # score sinks a resolved note below every kept active hit. One that strongly matches is placed by position instead: RESOLVED_DEMOTION
+    # places below its own rank, with a score between its new neighbours so a later sort by score keeps it there.
+    for hit in sorted((h for h in ranked if h.get('status')=='resolved' and strong(h,root)),key=lambda h:h['rank']):
+        ranked.remove(hit);at=min(len(ranked),hit['rank']-1+RESOLVED_DEMOTION)
+        if 0<at<len(ranked):hit['score']=(ranked[at-1]['score']+ranked[at]['score'])/2
+        elif at and ranked:hit['score']=min(hit['score'],ranked[-1]['score'])
+        ranked.insert(at,hit)
+    return ranked[:limit]
 def relevance_gate(query,root,trace=None,body=True,least=0):
     """The prompt hook's relevance test as a search_domains `keep` filter: enough of the query's informative
     words in a note's title or body, or (with a semantic model) a close match in meaning. trace, when a list,
