@@ -1329,6 +1329,15 @@ def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=N
         found=sorted(best.values(),key=lambda h:(-h['score'],-h.get('relevance',0) if items else 0,h['domain'],h['id']))
     else:found=search_domains(prompt,domains,10,root,weights=weights,keep=relevant,resolved=True)
     if not found and scope.get('foreign_domains'):found=search_domains(prompt,scope['foreign_domains'],10,root,keep=relevant)
+    if bindings.get('cross_project',True) is not False:
+        try:
+            from .search import strong
+            if not any(strong(h,root) for h in found):   # nothing here answers the prompt well: another project may hold a portable note
+                sibling=sibling_hit(prompt,root,bindings,set(domains)|set(scope.get('foreign_domains') or ()),not queries)
+                if sibling:found=found+[sibling];trace['sibling']=f"{sibling['domain']}:{sibling['id']}"
+        except Exception as exc:   # fail open: the prompt keeps what it found
+            from .logs import swallowed
+            swallowed('runtime.context.sibling',exc,root)
     from .search import LAST_SEMANTIC
     # Which vector backend served each domain and why not native (debug log; counts and codes only).
     trace['semantic']={d:LAST_SEMANTIC[d] for d in domains if d in LAST_SEMANTIC}
@@ -1338,7 +1347,7 @@ def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=N
             listed={(h['domain'],h['id']) for h in topic_hits}
             return _deliver(prompt,root,topic_hits,[h for h in found if (h['domain'],h['id']) not in listed],shown,delivered,trace,session_delivered,units_out,role,bool(items),query,room)
     seen=set(shown);ref=lambda h:f"{h['domain']}:{h['id']}"
-    unseen=[h for h in found if _unseen(h,shown)];hits=unseen[:min(LIST_CAP,len(items)) if items else 3]
+    unseen=[h for h in found if _unseen(h,shown)];hits=[h for h in unseen if not h.get('sibling')][:min(LIST_CAP,len(items)) if items else 3]+[h for h in unseen if h.get('sibling')]
     width=LIST_SNIPPET if items else HIT_SNIPPET
     if items:
         # The lowest-scored notes go first when the lines would exceed the list budget (one note always stays).
@@ -1346,7 +1355,7 @@ def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=N
         for i,h in enumerate(hits):
             used+=len(hit_line(h,width))+1
             if used>LIST_BUDGET and i:hits=hits[:i];break
-    trace.update(injected=[ref(h) for h in hits],suppressed_shown=[ref(h) for h in found if not _unseen(h,shown)],cut_by_cap=[ref(h) for h in unseen[len(hits):]])
+    trace.update(injected=[ref(h) for h in hits],suppressed_shown=[ref(h) for h in found if not _unseen(h,shown)],cut_by_cap=[ref(h) for h in unseen if h not in hits])
     if hits:
         trace['path']='injected'
         from . import digests
@@ -1370,6 +1379,32 @@ def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=N
     from .notes import short_ref
     return (f'No lexical match. {heading} for semantic consideration:\n'+'\n'.join(f"- {short_ref(n['domain'],n['id'])} {n['title']}" for n in overview),[],True)
 
+SIBLING_DOMAINS=4   # sibling projects searched for a portable note
+
+def sibling_hit(prompt,root,bindings,skip,body=True):
+    """The one strong, portable note another bound project holds for a prompt this project answers weakly (UX-C7), marked
+    hit['sibling'], or None. Portable: see search.sibling_search, which reads each sibling's index only (a sibling's notes are
+    never parsed, so up to SIBLING_DOMAINS of them cost a few milliseconds each). skip is the domains already searched. The winner
+    must still match its canonical file. Fails open: any error leaves the prompt with what it found."""
+    try:
+        from .search import sibling_search,strong,relevance_gate,_unchanged
+        from .common import _entries
+        names=sorted(n for n,_,_ in _entries(bindings) if n not in skip and (root/'domains'/n/'notes').is_dir())[:SIBLING_DOMAINS]
+        gate=relevance_gate(prompt,root,body=body);best=None
+        for name in names:
+            try:hits=gate(sibling_search(prompt,name,root))
+            except Exception as exc:
+                from .logs import swallowed
+                swallowed('runtime.sibling_hit',exc,root);continue
+            for h in hits:
+                h['score']=2/(60+h['rank'])
+                if strong(h,root) and (best is None or (h.get('relevance',0),h['score'])>(best.get('relevance',0),best['score'])) and _unchanged(h['path'],h['revision']):best=h
+        if best:best['sibling']=True
+        return best
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('runtime.sibling_hit',exc,root);return None
+
 def _deliver(prompt,root,topic_hits,found,shown,delivered,trace,session_delivered,units_out,role,listy,query,room=None):
     """context() with the delivery controller: per hit, the unit to deliver and its level (injection.choose, level_of),
     dropped when this session already has it (injection.novel), at most 3 hits (a list prompt: up to LIST_CAP within
@@ -1380,19 +1415,19 @@ def _deliver(prompt,root,topic_hits,found,shown,delivered,trace,session_delivere
     topical={id(h) for h in topic_hits};chosen=[];suppressed=[]
     for h in topic_hits+found:
         mine=id(h) in topical
-        unit=injection.choose(h,query,near,role if mine else None,prompt)
-        level=injection.level_of(unit,prompt);key=injection.unit_key(unit)
+        unit=None if h.get('sibling') else injection.choose(h,query,near,role if mine else None,prompt)   # a sibling project's note is always a pointer
+        level='pointer' if h.get('sibling') else injection.level_of(unit,prompt);key=injection.unit_key(unit)
         # "Does that still apply?" re-states the note's current summary and date even if it was shown before.
         if injection.novel(h,key,level,session_delivered or {},shown,again or (mine and role=='overview')):chosen.append((h,unit,level,key))
         else:suppressed.append(ref(h))
-    picked=chosen[:min(LIST_CAP,trace.get('items') or 0) if listy else 3]
+    picked=[c for c in chosen if not c[0].get('sibling')][:min(LIST_CAP,trace.get('items') or 0) if listy else 3]+[c for c in chosen if c[0].get('sibling')]   # the sibling's pointer comes last, beyond the cap
     width=LIST_SNIPPET if listy else HIT_SNIPPET
     if picked:digests.mark([h for h,_,_,_ in picked],root,load_bindings(root))
     lines=[injection.line(h,u,level,width) for h,u,level,_ in picked]
     # The lowest-scored notes go first when the lines would exceed the list budget or the hook's room (one note always stays).
     room=injection.PROMPT_CAP if room is None else room;keep=injection.within(lines,injection.HEADING,min(LIST_BUDGET,room) if listy else room)
     if keep<len(lines):trace['cut_by_budget']=[ref(h) for h,_,_,_ in picked[keep:]];picked,lines=picked[:keep],lines[:keep]
-    trace.update(injected=[ref(h) for h,_,_,_ in picked],suppressed_shown=suppressed,cut_by_cap=[ref(h) for h,_,_,_ in chosen[len(picked):]],
+    trace.update(injected=[ref(h) for h,_,_,_ in picked],suppressed_shown=suppressed,cut_by_cap=[ref(c[0]) for c in chosen if c not in picked],
                  levels={ref(h):[level,u['role'] if u else 'overview'] for h,u,level,_ in picked})   # roles, not headings: the log holds no note text
     if not picked:trace['path']='all_shown';return None,[],False
     trace['path']='injected'

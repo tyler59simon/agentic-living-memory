@@ -286,6 +286,66 @@ class ResolvedNotes(StoreFixture):
         self.assertEqual(runtime.process('claude', 'stop', payload, self.root), {})   # a resolved note is not an owed update
 
 
+class SiblingNotes(StoreFixture):
+    """UX-C7: when this project answers a prompt weakly, one strong portable note of another bound project is offered as a pointer."""
+    def setUp(self):
+        super().setUp()
+        init_domain('a', [str(self.base / 'a')], self.root)
+        (self.root / 'tag_taxonomy.json').write_text(json.dumps({'tags': ['subject/project', 'concern/architecture', 'concern/decision', 'project/alpha']}))
+        self.fix = capture('Zebra proxy timeout', 'Raise the zebra proxy timeout to stop dropped uploads.', TAGS, 'a', self.root, type='knowledge')
+        self.weak = capture('Gateway notes', 'The zebra proxy sits behind the gateway.', TAGS, 'demo', self.root, type='knowledge')
+
+    def prompt(self, text, session='s'):
+        payload = {'cwd': str(self.base / 'project'), 'session_id': session, 'prompt': text}
+        return runtime.process('claude', 'user-prompt', payload, self.root)['context']
+
+    def test_a_weak_local_hit_gets_one_pointer_from_a_sibling_project(self):
+        context = self.prompt('zebra proxy timeout')
+        lines = [l for l in context.splitlines() if l.startswith('- ')]
+        self.assertEqual(len(lines), 2, context)
+        self.assertIn('Gateway notes', lines[0])
+        self.assertIn('[from a] ', lines[1])
+        self.assertIn('Zebra proxy timeout', lines[1])
+        self.assertNotIn('§', lines[1])   # a pointer, not evidence
+
+    def test_only_portable_notes_cross_projects(self):
+        capture('Zebra proxy decision', 'Zebra proxy timeout is a decision for project a.', TAGS, 'a', self.root, type='decision', allow_similar=True)
+        capture('Zebra proxy timeout alpha', 'Zebra proxy timeout in alpha.', TAGS + ['project/alpha'], 'a', self.root, type='knowledge', allow_similar=True)
+        context = self.prompt('zebra proxy timeout')
+        self.assertIn('[from a] ', context)
+        self.assertNotIn('Zebra proxy decision', context)
+        self.assertNotIn('alpha', context)
+
+    def test_a_decision_or_a_project_tagged_note_alone_never_crosses(self):
+        capture('Quokka burrow depth', 'Quokka burrow depth is decided per project.', TAGS, 'a', self.root, type='decision')
+        capture('Quokka burrow notes', 'Quokka burrow depth in alpha.', TAGS + ['project/alpha'], 'a', self.root, type='knowledge', allow_similar=True)
+        context = self.prompt('quokka burrow depth') or ''
+        self.assertNotIn('[from a]', context)
+        self.assertNotIn('Quokka', context)
+
+    def test_a_strong_local_hit_suppresses_the_lookup(self):
+        capture('Zebra proxy timeout local', 'Local timeout notes.', TAGS, 'demo', self.root, type='knowledge', allow_similar=True)
+        self.assertNotIn('[from a]', self.prompt('zebra proxy timeout'))
+
+    def test_cross_project_false_turns_it_off(self):
+        path = self.root / 'bindings.json'
+        bindings = json.loads(path.read_text())
+        path.write_text(json.dumps({**bindings, 'cross_project': False}))
+        self.assertNotIn('[from a]', self.prompt('zebra proxy timeout'))
+
+    def test_the_line_per_note_delivery_adds_the_pointer_too(self):
+        with patch.object(runtime, 'DELIVERY', False):
+            lines = [l for l in self.prompt('zebra proxy timeout').splitlines() if l.startswith('- ')]
+        self.assertEqual(len(lines), 2)
+        self.assertIn('[from a] ', lines[1])
+
+    def test_the_sibling_pointer_is_in_the_usage_diary(self):
+        from core import usage
+        self.prompt('zebra proxy timeout')
+        refs = {r['ref'] for r in usage.events(self.root) if r['e'] == 'inject' and r.get('k') == 'prompt'}
+        self.assertIn('a:' + self.fix['id'], refs)
+
+
 if __name__ == '__main__':
     import unittest
     unittest.main()

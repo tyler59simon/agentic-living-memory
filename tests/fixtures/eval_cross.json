@@ -1,0 +1,203 @@
+{
+ "comment": "Cross-project eval fixture (UX-C6, UX-C7): scripts/eval_retrieval.py builds these notes into a temporary store with three bound projects. The cwd is evalcross; cases name notes as @key. Positives expect a strong portable note from a sibling project when evalcross answers weakly, or a resolved bug; forbids are notes that must never be injected.",
+ "domain": "evalcross",
+ "domains": {
+  "evalcross": "project",
+  "alpha": "alpha",
+  "beta": "beta"
+ },
+ "distractors": 24,
+ "notes": [
+  {
+   "key": "cache",
+   "type": "knowledge",
+   "title": "Cache eviction policy",
+   "body": "The cache uses LRU eviction with a 500 entry cap."
+  },
+  {
+   "key": "gateway",
+   "type": "knowledge",
+   "title": "Gateway routing notes",
+   "body": "Traffic enters through the gateway and the upload proxy, then reaches the service tier."
+  },
+  {
+   "key": "export_bug",
+   "type": "bug",
+   "status": "resolved",
+   "title": "Dashboard export crash",
+   "body": "ERR_EXPORT_77 crashed the dashboard export. Fixed by closing the file handle before the rename."
+  },
+  {
+   "key": "export_plan",
+   "type": "plan",
+   "status": "resolved",
+   "title": "Dashboard export rewrite",
+   "body": "ERR_EXPORT_77 export rewrite steps: stream rows, close handles, rename once."
+  },
+  {
+   "key": "proxy_fix",
+   "domain": "alpha",
+   "type": "knowledge",
+   "title": "Raise the upload proxy timeout",
+   "body": "Dropped uploads came from a low proxy timeout. Raise the upload proxy timeout to 120 seconds."
+  },
+  {
+   "key": "cert_runbook",
+   "domain": "alpha",
+   "type": "runbook",
+   "title": "Rotate the signing certificate",
+   "body": "1. Generate the new signing certificate. 2. Install it on the gateway. 3. Restart the signer and check the expiry date."
+  },
+  {
+   "key": "webhook_bug",
+   "domain": "alpha",
+   "type": "bug",
+   "title": "Webhook retries flood the queue",
+   "body": "A failing webhook endpoint made every retry land in the queue at once. Add jittered backoff to the webhook retry loop."
+  },
+  {
+   "key": "proxy_decision",
+   "domain": "alpha",
+   "type": "decision",
+   "title": "Upload proxy timeout decision",
+   "body": "Alpha decided the upload proxy timeout stays at 30 seconds for its own tenants."
+  },
+  {
+   "key": "alpha_scoped",
+   "domain": "alpha",
+   "type": "knowledge",
+   "tags": [
+    "subject/project",
+    "concern/knowledge",
+    "project/alpha"
+   ],
+   "title": "Alpha billing rounding rules",
+   "body": "Alpha billing rounds invoice totals half up to the cent for every tenant."
+  },
+  {
+   "key": "alpha_plan",
+   "domain": "alpha",
+   "type": "plan",
+   "title": "Alpha rotate backup keys plan",
+   "body": "Plan to rotate the backup encryption keys every quarter in alpha."
+  },
+  {
+   "key": "beta_status",
+   "domain": "beta",
+   "type": "status",
+   "title": "Beta quarterly orchard status",
+   "body": "The beta orchard harvest report is green and the pruning schedule is on track."
+  }
+ ],
+ "retrieval": [
+  {
+   "prompt": "how do I rotate the signing certificate",
+   "expect": [
+    "@cert_runbook"
+   ]
+  },
+  {
+   "prompt": "why do uploads drop when the upload proxy timeout is low",
+   "expect": [
+    "@proxy_fix"
+   ],
+   "forbid": [
+    "@proxy_decision",
+    "@alpha_scoped"
+   ]
+  },
+  {
+   "prompt": "the webhook retries flood the queue again",
+   "expect": [
+    "@webhook_bug"
+   ]
+  },
+  {
+   "prompt": "what is our cache eviction policy",
+   "expect": [
+    "@cache"
+   ],
+   "forbid": [
+    "@proxy_fix",
+    "@cert_runbook",
+    "@webhook_bug"
+   ]
+  },
+  {
+   "prompt": "ERR_EXPORT_77 crashed the dashboard export",
+   "expect": [
+    "@export_bug"
+   ],
+   "forbid": [
+    "@export_plan"
+   ]
+  },
+  {
+   "prompt": "add jittered backoff when a webhook endpoint keeps failing",
+   "expect": [
+    "@webhook_bug"
+   ]
+  },
+  {
+   "prompt": "restart the signer after you rotate the certificate",
+   "expect": [
+    "@cert_runbook"
+   ]
+  },
+  {
+   "prompt": "what is the retry story for webhook delivery failures",
+   "expect": [
+    "@webhook_bug"
+   ]
+  },
+  {
+   "prompt": "uploads keep failing behind the proxy",
+   "expect": [
+    "@proxy_fix"
+   ],
+   "forbid": [
+    "@proxy_decision",
+    "@alpha_scoped"
+   ]
+  },
+  {
+   "prompt": "retry storms from broken webhooks overload our queue",
+   "expect": [
+    "@webhook_bug"
+   ]
+  },
+  {
+   "prompt": "how are invoice totals rounded in billing",
+   "forbid": [
+    "@alpha_scoped"
+   ]
+  },
+  {
+   "prompt": "should we rotate the backup keys every quarter",
+   "forbid": [
+    "@alpha_plan"
+   ]
+  },
+  {
+   "prompt": "is the pruning schedule on track",
+   "forbid": [
+    "@beta_status"
+   ]
+  },
+  {
+   "prompt": "which proxy do we use for file downloads"
+  },
+  {
+   "prompt": "how do retries work for the payment api"
+  },
+  {
+   "prompt": "what is the timeout for database queries"
+  },
+  {
+   "prompt": "quantum telescope calibration schedule"
+  },
+  {
+   "prompt": "what time does the train leave tomorrow"
+  }
+ ]
+}

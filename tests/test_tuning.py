@@ -35,6 +35,18 @@ class Tuning(StoreFixture):
         self.assertEqual(runtime.durable_signal('in the future, use tabs'), 'preference')
         self.assertEqual(runtime.durable_signal('in future please run the tests first'), 'preference')
 
+    def test_the_cross_project_strong_bar_is_pinned(self):
+        # Tuned on tests/fixtures/eval_cross.json (UX-C7): a paraphrase at 0.6 coverage or a meaning match under threshold + 0.1 stays local.
+        from core import search
+        self.assertEqual((search.STRONG_COVERAGE, search.STRONG_MARGIN), (0.75, 0.1))
+        hit = lambda gate, **kw: {'gate': gate, **kw}
+        self.assertTrue(search.strong(hit('kept:title'), self.root))
+        self.assertTrue(search.strong(hit('kept:coverage', coverage=0.75), self.root))
+        self.assertFalse(search.strong(hit('kept:coverage', coverage=0.6), self.root))
+        self.assertFalse(search.strong(hit('kept:semantic', similarity=0.99), self.root))   # no model: nothing to measure a margin against
+        self.assertFalse(search.strong(hit('dropped:weak', coverage=1.0), self.root))
+        self.assertFalse(search.strong({'coverage': 1.0}, self.root))   # a hit the gate never judged
+
 
 if __name__ == '__main__':
     unittest.main()

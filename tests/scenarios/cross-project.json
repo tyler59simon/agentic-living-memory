@@ -1,0 +1,18 @@
+{
+ "name": "cross-project",
+ "description": "A weak match in this project plus a strong portable note in another bound project: one [from DOMAIN] pointer, delivered last and recorded in the diary like any injected note; a decision of the other project never crosses; a strong local match suppresses the lookup.",
+ "harnesses": ["claude"],
+ "domains": {"demo": "project", "other": "other"},
+ "notes": [
+  {"key": "gateway", "title": "Gateway notes", "body": "The zebra proxy sits behind the gateway."},
+  {"key": "cache", "title": "Cache eviction policy", "body": "The cache uses LRU eviction with a 500 entry cap."},
+  {"key": "fix", "domain": "other", "title": "Zebra proxy timeout", "body": "Raise the zebra proxy timeout to stop dropped uploads."},
+  {"key": "decision", "domain": "other", "type": "decision", "title": "Zebra proxy timeout decision", "body": "The other project keeps the zebra proxy timeout at 30 seconds."},
+  {"key": "cachefix", "domain": "other", "title": "Cache eviction policy tuning", "body": "Tune the cache eviction policy per tenant."}
+ ],
+ "steps": [
+  {"hook": "session-start", "expect": {"detail": {"indexed": true}}},
+  {"hook": "user-prompt", "payload": {"prompt": "zebra proxy timeout"}, "expect": {"inject": ["@gateway", "@fix"], "path": "injected", "context_contains": ["[from other] "], "context_excludes": ["Zebra proxy timeout decision"]}},
+  {"hook": "user-prompt", "payload": {"prompt": "what is our cache eviction policy"}, "expect": {"inject": ["@cache"], "path": "injected", "context_excludes": ["[from other] "]}}
+ ]
+}

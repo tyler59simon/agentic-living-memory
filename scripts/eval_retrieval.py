@@ -17,19 +17,26 @@ from core.notes import resolve_ref,short_ref
 SIGNAL_KINDS=('remember','correction','preference','decision','directive')
 
 def _build(fixture,root):
-    """A temporary store holding the fixture's notes; returns (cwd, domain, {key: 'domain:id'})."""
+    """A temporary store holding the fixture's notes; returns (cwd, domain, {key: 'domain:id'}). The cwd is the fixture domain's project.
+    An optional "domains" map {name: folder} binds more projects (siblings); a note's "domain" puts it there, and "status": "resolved" resolves it."""
     from core.init_domain import init_domain
     from core.notes import capture
     from core.repository import atomic_write,canonical_json
     domain=fixture.get('domain','eval');project=root.parent/'project';project.mkdir(exist_ok=True)
     init_domain(domain,[str(project)],root)
+    for name,folder in (fixture.get('domains') or {}).items():
+        if name!=domain:(root.parent/folder).mkdir(exist_ok=True);init_domain(name,[str(root.parent/folder)],root)
     tags=sorted({t for n in fixture['notes'] for t in n.get('tags',['subject/project','concern/knowledge'])})
     atomic_write(root/'tag_taxonomy.json',canonical_json({'tags':tags}))
     keys={}
     for n in fixture['notes']:
         extra={'supersedes':[keys[n['supersedes'][1:]]]} if n.get('supersedes') else {}
-        made=capture(n['title'],n['body'],n.get('tags',['subject/project','concern/knowledge']),domain,root,type=n.get('type','knowledge'),allow_similar=True,**extra)
-        keys[n['key']]=f"{domain}:{made['id']}"
+        home=n.get('domain',domain)
+        made=capture(n['title'],n['body'],n.get('tags',['subject/project','concern/knowledge']),home,root,type=n.get('type','knowledge'),allow_similar=True,**extra)
+        keys[n['key']]=f"{home}:{made['id']}"
+        if n.get('status')=='resolved':
+            from core.notes import change
+            change(made['id'],home,'resolve',root)
     # Seeded filler notes on unrelated everyday topics, so rank metrics are not decided by a dozen notes.
     import random
     rng=random.Random(11);topics=('garden','recipe','travel','bicycle','music','library','aquarium','hiking','pottery','chess','sailing','baking')
@@ -107,7 +114,7 @@ def evaluate_units(fixture,root,cwd,domain,resolve):
     rows=[]
     for case in fixture.get('units',[]):
         expect=[resolve(r) for r in case.get('expect',[])];forbid=[resolve(r) for r in case.get('forbid',[])]
-        ranked=[f"{h['domain']}:{h['id']}" for h in search_domains(case['prompt'],[domain],10,root)]
+        ranked=[f"{h['domain']}:{h['id']}" for h in search_domains(case['prompt'],list(dict.fromkeys([domain,*(fixture.get('domains') or {})])),10,root)]
         started=time.perf_counter();text,ids,overview=runtime.context(cwd,case['prompt'],root,domain);ms=(time.perf_counter()-started)*1000
         text=text or '';answer=case.get('answer')
         answered=bool(answer) and answer.casefold() in text.casefold() and bool(set(expect)&set(ids))

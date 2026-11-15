@@ -429,6 +429,55 @@ def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False,reso
         LAST_SEMANTIC[domain]=semantic_info
         return output
 
+def sibling_search(query,domain,root=None,limit=5):
+    """search_domain for another project's portable notes (knowledge, bug and runbook notes that are active and have no project/ tag),
+    from its search.sqlite3 alone: nothing is parsed and nothing is rebuilt, so a hook can afford a few of these. A missing index
+    gives []; a stale one may name a note that changed since, which the caller checks (_unchanged). Hits are search_domain's hits
+    (gate keys included) for the same query, without units, sources or learned runbooks (those are left out)."""
+    root=Path(root or memory_root()).resolve();tokens=query_terms(query)
+    try:path=domain_dir(domain,root)/'search.sqlite3'
+    except ValueError:return []
+    if not tokens or not path.exists():return []
+    from .learning import published
+    try:manifests,_=published(root,domain)
+    except (ValueError,OSError):manifests={}
+    try:
+        db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)
+        try:
+            ids={}
+            for note_id,title,kind,updated,note_path,revision in db.execute("SELECT id,title,type,updated,path,revision FROM notes WHERE status='active' AND type IN ('knowledge','bug','runbook') AND tags NOT LIKE '%\"project/%'"):
+                if note_id not in manifests:ids[note_id]={'id':note_id,'title':title,'type':kind,'updated':updated,'path':note_path,'revision':revision,'status':'active'}
+            if not ids:return []
+            found=[];listed=set()
+            for joiner in (' AND ',' OR '):   # as search_domain: notes with every term first, then notes with some
+                match=joiner.join('"'+t+'"' for t in tokens)
+                batch=db.execute('SELECT n.id,bm25(notes_fts,5.0,3.0,1.0),n.rowid FROM notes_fts JOIN notes n ON n.rowid=notes_fts.rowid WHERE notes_fts MATCH ? ORDER BY bm25(notes_fts,5.0,3.0,1.0)',(match,)).fetchall()
+                found+=[row for row in batch if row[0] in ids and row[0] not in listed];listed|={row[0] for row in batch}
+                if len(found)>=limit or len(tokens)==1:break
+            ranked=[(ids[note_id],-score) for note_id,score,_ in found]
+            per_row,informative,common=_coverage_fts(db,tokens)
+            coverage={note_id:per_row.get(rowid,0)/max(1,len(informative)) for note_id,_,rowid in found} if informative else {note_id:0.0 for note_id,_,_ in found}
+            from . import semantic
+            similarity,_,info=_semantic(db,query,ids,root,domain,[note_id for note_id,_,_ in found]) if semantic.load(root) else (None,{},{'backend':'lexical'})   # no model: nothing to score, so no unit index is opened
+            if similarity is not None:
+                ranked=_fuse(ranked,similarity,ids);rowids=dict(db.execute('SELECT id,rowid FROM notes').fetchall())
+                for note,_ in ranked:
+                    if note['id'] not in coverage:coverage[note['id']]=per_row.get(rowids[note['id']],0)/max(1,len(informative)) if informative else 0.0
+            ranked=ranked[:max(1,min(100,limit))]
+            bodies={i:(b,t) for i,b,t in db.execute(f"SELECT id,body,tags FROM notes WHERE id IN ({','.join('?'*len(ranked))})",[n['id'] for n,_ in ranked])} if ranked else {}
+        finally:db.close()
+    except (sqlite3.Error,TypeError,IndexError):return []
+    wanted={stem(t) for t in tokens if t not in common};output=[]
+    for note,score in ranked:
+        title=stems(note['title']);body,tags=bodies.get(note['id'],('','[]'))
+        try:tags=json.loads(tags or '[]')
+        except ValueError:tags=[]
+        output.append({'id':note['id'],'domain':domain,'path':note['path'],'title':note['title'],'type':note['type'],'updated':str(note['updated'] or '')[:10],'tags':tags,
+                       'status':'active','snippet':snippet(body,tokens),'score':score,'rank':len(output)+1,'engine':'fts5+semantic' if similarity is not None else 'fts5','revision':note['revision'],
+                       'sourceScope':'active','coverage':coverage[note['id']],'titleOverlap':len(wanted&title),'titleTerms':len(title),'queryTerms':len(wanted),'relevance':round(coverage[note['id']],2),'backend':info['backend']})
+        if similarity is not None:output[-1]['similarity']=round(similarity.get(note['id'],0.0),4)
+    return output
+
 _queries={}
 def _query_vector(model,query):
     """The query's embedding, computed once per process for a query searched in several domains."""

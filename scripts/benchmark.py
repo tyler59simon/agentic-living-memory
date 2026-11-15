@@ -29,8 +29,9 @@ WORDS=('cache deploy rollback session token queue index schema migration retry t
        'invoice tenant shard replica gateway proxy cluster build release artifact pipeline lint format logger metric tracer alert budget quota '
        'limit policy audit secret rotate backup restore snapshot journal').split()
 
-def synthetic_store(base,count,semantic_from=None,model_dir=None):
+def synthetic_store(base,count,semantic_from=None,model_dir=None,siblings=0):
     """(store root, project folder, ms to build the first index) for `count` generated notes under `base`.
+    siblings: that many more bound projects (sib0, sib1, ...) of `count` notes each, so a weakly matched prompt searches them too (UX-C7).
     Notes are written as files and indexed once: capturing them one by one would time the very cost being measured."""
     import random,shutil
     from core.notes import build_note
@@ -39,22 +40,26 @@ def synthetic_store(base,count,semantic_from=None,model_dir=None):
     init_domain('scale',[str(project)],root);p=migration_plan(root);apply(root,p['plan_id'],p['digest'])
     if semantic_from:shutil.copytree(Path(semantic_from)/'.models',root/'.models')
     if model_dir:shutil.copytree(model_dir,root/'.models'/Path(model_dir).name)   # a copy: the store being measured is never the real one
-    for i in range(count):
+    names=['scale']+[f'sib{i}' for i in range(siblings)]
+    for name in names[1:]:(base/name).mkdir();init_domain(name,[str(base/name)],root)
+    for name in names:
+      for i in range(count):
         words=rng.sample(WORDS,6);title=f"{' '.join(words[:3]).capitalize()} note {i}"
         body=(' '.join(rng.choices(WORDS,k=30))+'.\n\n## Details\n'
               +'\n'.join(f"- **{word.capitalize()}:** "+' '.join(rng.choices(WORDS,k=25))+'.' for word in words))
-        path,_,text=build_note(title,body,['subject/project','concern/knowledge'],'scale',root)
+        path,_,text=build_note(title,body,['subject/project','concern/knowledge'],name,root)
         path.parent.mkdir(parents=True,exist_ok=True);path.write_text(text,encoding='utf-8',newline='\n')
-    started=time.perf_counter();reconcile('scale',root)
+    started=time.perf_counter()
+    for name in names:reconcile(name,root)
     return root,project,round((time.perf_counter()-started)*1000)
 
-def scale(count,semantic_from=None,runs=7):
+def scale(count,semantic_from=None,runs=7,siblings=0):
     """Latency at `count` notes: a prompt hook, a capture and a session start, run in-process on a synthetic store.
     semantic_from: a store whose installed model (.models) is copied in, so writes pay for embeddings as they do in use."""
     from core import repository,runtime,semantic
     with tempfile.TemporaryDirectory(prefix='living-memory-scale-',ignore_cleanup_errors=True) as directory:
       try:
-        root,project,built=synthetic_store(Path(directory),count,semantic_from)
+        root,project,built=synthetic_store(Path(directory),count,semantic_from,siblings=siblings)
         payload={'cwd':str(project),'session_id':'scale'}
         runtime.process('claude','session-start',payload,root)
         def timed(action,cold=True):
@@ -88,7 +93,7 @@ def scale(count,semantic_from=None,runs=7):
         p95=lambda xs:xs[int(len(xs)*.95)-1]
         written=timed(lambda i:capture(f'Scale capture {i} zebra{i}',f'Distinct fact number {i} about quokka{i}.',['subject/project','concern/knowledge'],'scale',root))
         started_ms=timed(lambda i:runtime.process('claude','session-start',{**payload,'session_id':f'scale{i}'},root))
-        value={'schema':1,'notes':count,'semantic':bool(semantic_from),'runs':runs,'first_index_build_ms':built,'prompt_ms':prompt,'prompt_warm_ms':warm,'prompt_long_ms':round(statistics.median(longs),1),'prompt_long_p95_ms':round(longs[int(len(longs)*.95)-1],1),
+        value={'schema':1,'notes':count,'siblings':siblings,'semantic':bool(semantic_from),'runs':runs,'first_index_build_ms':built,'prompt_ms':prompt,'prompt_warm_ms':warm,'prompt_long_ms':round(statistics.median(longs),1),'prompt_long_p95_ms':round(longs[int(len(longs)*.95)-1],1),
                               'capture_ms':written,'session_start_ms':started_ms,'bash_pre_off_ms':round(statistics.median(base),1),'bash_pre_off_p95_ms':round(p95(base),1),'bash_pre_ms':round(statistics.median(miss),1),'bash_pre_p95_ms':round(p95(miss),1),'bash_pre_hit_ms':round(statistics.median(hit),1),'bash_pre_hit_p95_ms':round(p95(hit),1),'targets_ms':TARGETS,'met':prompt<=TARGETS['prompt_ms'] and written<=TARGETS['capture_ms'] and max(p95(miss),p95(hit))-p95(base)<=TARGETS['bash_pre_extra_p95_ms'],
                'includes':'everything a hook or command does in one new process; excludes interpreter start, imports and the first model load'}
         print(json.dumps(value));return value
@@ -300,6 +305,7 @@ if __name__=='__main__':
     parser.add_argument('--hook-cwd',type=Path,help='With --hook-store: a folder bound to a domain in that store')
     parser.add_argument('--hook-prompt',default='why did we choose static embeddings over onnx for semantic search',help='With --hook-store: the prompt')
     parser.add_argument('--scale',type=int,help='Time a prompt hook and a capture on a synthetic store of this many notes')
+    parser.add_argument('--siblings',type=int,default=0,help='With --scale: bind this many more projects of the same size, so a weak prompt also searches siblings (UX-C7)')
     parser.add_argument('--semantic-from',type=Path,help='With --scale: a store whose installed semantic model is copied into the synthetic one')
     parser.add_argument('--model-dir',type=Path,help='A potion model folder (e.g. <store>/.models/potion-retrieval-32M); copied into a temporary store for the semantic prompt case, skipped when absent')
     parser.add_argument('--sources',type=int,help='Time the knowledge base (sync, ask, the hook paths) on this many generated files')
@@ -307,7 +313,7 @@ if __name__=='__main__':
     if args.vectors:vectors_case(args.vectors,queries=args.queries);raise SystemExit(0)
     if args.hook_store:hook_case(args.hook_store,args.hook_cwd or Path.cwd(),args.hook_prompt);raise SystemExit(0)
     if args.sources:raise SystemExit(0 if sources_scale(args.sources)['met'] else 1)
-    if args.scale:raise SystemExit(0 if scale(args.scale,args.semantic_from)['met'] else 1)
+    if args.scale:raise SystemExit(0 if scale(args.scale,args.semantic_from,siblings=args.siblings)['met'] else 1)
     main()
     model=args.model_dir if args.model_dir and (args.model_dir/'verified.json').is_file() else None
     if args.model_dir and not model:print(f'semantic case skipped: no verified model in {args.model_dir}')
