@@ -13,9 +13,9 @@ SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 # Tools that cannot change files; anything else marks the turn as mutating.
 READ_TOOLS={'read','read_file','glob','grep','search','view_image','view','ls','list','webfetch','websearch','web_fetch','web_search','todowrite','task','agent','toolsearch','askuserquestion','exitplanmode','enterplanmode'}
 SHELL_TOOLS={'bash','powershell','shell','run_shell_command','exec_command','local_shell','execute'}
-ALLOWED_SUBCOMMANDS={'ask','sources','source-sync','ingest-scan','search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','promote-plan','projects','systems','changes','views','resolve','reopen','restore','learn','log','maintenance','recap'}
+ALLOWED_SUBCOMMANDS={'ask','sources','source-sync','ingest-scan','search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','promote-plan','projects','systems','changes','views','resolve','reopen','restore','learn','log','maintenance','recap','status'}
 # Subagents are read-only: these are denied for them even though the main agent gets them auto-allowed.
-MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm','resolve','reopen','restore'}
+MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm','resolve','reopen','restore','off','on'}
 GLOBAL_OPTIONS={'--root','--domain','--cwd','--actor'}
 HOOK_LOCK_TIMEOUT=5
 # Codex has no SessionEnd, so its session start picks up Obsidian edits, at most this often.
@@ -911,6 +911,20 @@ def _record_ledger(root,domain,session,state,cwd,turns=()):
 
 def _pointer(root,session):return root/'.turns'/(hashlib.sha256(session.encode()).hexdigest()+'.current.json')
 
+# The per-session off switch: `alm off` sets state['off'], LIVING_MEMORY_OFF=1 in the harness's environment turns a whole session off.
+# Off means the session sees no memory and leaves nothing behind: no injection, saves, reminders, diary rows or session state.
+OFF_ENV='LIVING_MEMORY_OFF'
+OFF_NOTICE=('Living Memory is off for this session (the user turned it off). Do not search, read or save memory, '
+            'and ignore earlier Living Memory instructions until it is turned back on.')
+BACK_ON='Living Memory is back on for this session.'
+
+def env_off():return os.environ.get(OFF_ENV,'').strip().lower() in {'1','true','yes'}
+
+def session_off(state):
+    # 'env' when the environment turns memory off, 'switch' when `alm off` did, else None.
+    if env_off():return 'env'
+    return 'switch' if isinstance(state,dict) and state.get('off') else None
+
 # Compaction. The harness's summary carries the conversation; Living Memory adds what it does not: the notes
 # this session saved and surfaced, and a way back to exact detail (recall over the transcript, read on demand).
 AUTO_RECALL_PROMPTS=5
@@ -1471,7 +1485,7 @@ def process(harness,event,payload,root=None):
             detail=dict(info.get('detail') or {})
             if isinstance(detail.get('candidates'),list):detail['candidates']=detail['candidates'][:20]
             found.update(turn=session_hash(info['turn']) if info.get('turn') else None,detail=detail or None)
-        if logs.content_allowed(root):
+        if logs.content_allowed(root) and not info.get('off'):
             args=payload.get('tool_input',payload.get('toolArgs',payload.get('toolArguments')))
             found['content']=logs.content({'prompt':payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or payload.get('transformedPrompt'),
                                            'tool_input':args,**{k:result.get(k) for k in ('context','deny','allow','continue_reason','warning','instructions')}})
@@ -1497,6 +1511,33 @@ def _process(harness,event,payload,root=None,info=None):
     pinned=state.get('domain')
     domain=pinned if pinned and pinned in bindings.get('domains',{}) else resolve_domain(cwd,bindings)
     info['domain']=domain
+    off=session_off(state)
+    if off:
+        info['off']=True;detail['reason']='off';detail['off']=off
+        if event=='session-end':
+            # Store-wide housekeeping only; nothing about this session is recorded.
+            _sync_vaults(root,'session end');_daily_backup(root);_prune_journals(root)
+            return {}
+        if event=='pre-tool-use':
+            # The protected-path guard keeps the store intact whether or not memory is on.
+            args=payload.get('tool_input',payload.get('toolArgs',payload.get('toolArguments',{})))
+            if isinstance(args,str):
+                try:args=json.loads(args)
+                except json.JSONDecodeError:pass
+            name=str(payload.get('tool_name') or payload.get('toolName') or '').lower()
+            rule=next((r for r in (protected_rule(p,cwd,root) for p in raw_paths(args)) if r),None) if name not in READ_TOOLS and name not in SHELL_TOOLS else None
+            if rule:
+                detail['decision']='deny:protected:'+rule
+                return {'deny':'Use Living Memory scripts for canonical mutations; direct file edits bypass revision checks and receipts.'}
+            return {}
+        if off=='switch' and session!='unknown' and not _subagent(payload):
+            # The session saw the protocol before `alm off`: say once that it no longer applies (again after a compaction).
+            if event=='session-start':return {'context':OFF_NOTICE}
+            if event=='user-prompt' and not state.get('off_told'):
+                _update(root,session,lambda s:s.update(off_told=True))
+                return {'context':OFF_NOTICE}
+        return {}
+    resumed=bool(state.get('resumed'))
     source=str(payload.get('source') or '').lower()
     transcript=None if _subagent(payload) else _transcript(payload)
     if event=='session-start' and session!='unknown':
@@ -1550,6 +1591,7 @@ def _process(harness,event,payload,root=None,info=None):
                 # <private> spans: salted shingle hashes only, so a capture that copies one can be refused.
                 if isinstance(text,str) and not MACHINE_PROMPT.match(text) and private.remember(s,text):s['private_turn']=turn
                 if transcript:s['transcript']=transcript
+                s.pop('resumed',None);s.pop('off_told',None)
             state=_update(root,session,opened)
     elif not turn:
         turn=state.get('turn','')
@@ -1735,6 +1777,8 @@ def _process(harness,event,payload,root=None,info=None):
             from .usage import record
             record(root,'surface',list(detail['cut_by_cap'])[:3],session,'prompt')
         result['context']=header+('\n'+maps_text if maps_text else '')+('\n'+hits if hits else '')
+        # The first prompt after `alm on` repeats the session-start protocol: a compaction while off may have dropped it.
+        if resumed:result['context']=BACK_ON+'\n'+protocol(root,domain,harness,session)+f'\nLiving Memory session={session}\n'+result['context'];detail['resumed']=True
         fits=lambda text:not DELIVERY or len(result['context'])+len(text)+1+sum(len(g)+1 for g in governance)<=injection.PROMPT_CAP
         if isinstance(prompt,str) and not MACHINE_PROMPT.match(prompt) and relevant_notes<2 and not _subagent(payload):
             try:

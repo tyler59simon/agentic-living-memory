@@ -34,6 +34,29 @@ def _session_state(root,session):
     except ValueError:return {}
     return value if isinstance(value,dict) else {}
 
+SESSION_ENV='CLAUDE_CODE_SESSION_ID'   # Claude Code gives every shell command its session ID, the one hooks receive
+SWITCH={'off','on','status'}
+# Commands that still run while memory is off for the session: the switch itself and checks that touch no notes.
+OFF_ALLOWED=SWITCH|{'version','doctor'}
+
+def _switch(root,cmd,session):
+    """alm off / on / status for one session: a flag in the hooks' session state (runtime.session_off)."""
+    from .runtime import _pointer,_update,session_hash,env_off
+    if not session:raise ValueError(f'no_session: run it inside a Claude Code session (! alm {cmd}) or pass --session ID')
+    known=_pointer(root,session).exists()
+    if cmd=='on' and env_off():raise ValueError('env_off: this session was started with LIVING_MEMORY_OFF=1; start a new session without it')
+    if cmd=='off':_update(root,session,lambda s:s.update(off={'at':now()}))
+    elif cmd=='on':
+        def back(s):
+            if s.pop('off',None):s['resumed']=True   # the next prompt repeats the protocol
+            s.pop('off_told',None)
+        _update(root,session,back)
+    state=_session_state(root,session)
+    reason='env' if env_off() else 'switch' if state.get('off') else None
+    result={'ok':True,'session':session_hash(session),'memory':'off' if reason else 'on','reason':reason}
+    if cmd=='status':result['known']=known
+    return result
+
 def _session_domain(root,session):
     """The domain the hooks pinned for this session, if it is still bound."""
     pinned=_session_state(root,session).get('domain')
@@ -245,7 +268,7 @@ def _sectioned(args,body='',note_type=None):
 
 # source-sync writes only the derived knowledge-base index (as search --rebuild does the notes' one), so subagents and viewers may run it
 # (not for a remote source, which it would pull from the network: sources.sync refuses that for them).
-READ_ONLY={'search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','ask','sources','source-sync','ingest-scan','changes','views','log','maintenance','recap'}
+READ_ONLY={'status','search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','ask','sources','source-sync','ingest-scan','changes','views','log','maintenance','recap'}
 # Viewer: a human-facing app browsing the store. Read-only, and its reads are not usage evidence for the diary.
 VIEWER=READ_ONLY|{'taxonomy','review','diff','inspect-plan'}
 SERVE_API=2
@@ -481,7 +504,7 @@ HELP={'setup':'Choose or move the shared memory folder','bind':'Bind a domain to
  'project-plan':'Plan a project registry change','projects':'List projects','system-plan':'Plan a system registry change','systems':'List systems','source-plan':'Plan a knowledge-base source change','sources':'List knowledge-base sources',
  'source-sync':'Re-index knowledge-base sources','ingest-scan':'Scan for files to ingest','ingest-skip':'Skip an ingest candidate','ask':'Ask a question about the project','change-plan':'Plan a tracked change',
  'changes':'List tracked changes','views':'Saved views','batch':'Run several commands from a JSON file','retag-plan':'Plan retagging notes','remap-plan':'Plan moving notes between domains','promote-plan':'Plan promoting notes to the global domain',
- 'recall':'Search this session transcript','capture-finalize':'Record which notes a turn saved','list':'List notes','learn':'Learned procedures','domains':'List domains','links':'Links between notes',
+ 'recall':'Search this session transcript','off':'Turn Living Memory off for this session','on':'Turn Living Memory back on for this session','status':'Whether Living Memory is on for this session','capture-finalize':'Record which notes a turn saved','list':'List notes','learn':'Learned procedures','domains':'List domains','links':'Links between notes',
  'version':'Version and command list','serve':'JSON-lines server on stdin and stdout','sync':'Sync a domain with an Obsidian vault','overlay-build':'Build the Obsidian overlay','overlay-teardown-plan':'Plan removing the overlay','overlay-sync-all':'Sync every domain with the vault'}
 
 def build_parser():
@@ -573,6 +596,7 @@ def build_parser():
     p=sub('remap-plan');p.add_argument('--payload-file',type=Path)
     p=sub('promote-plan');p.add_argument('refs',nargs='*',help='Project notes to move to the global domain');p.add_argument('--suggest',action='store_true',help='List candidates with reasons; writes nothing');p.add_argument('--only',help='With --suggest: one domain instead of all')
     p=sub('recall');p.add_argument('query');p.add_argument('--session',required=True);p.add_argument('--limit',type=int,default=5);p.add_argument('--all',action='store_true',help='Search the whole transcript, not only what precedes the latest compaction')
+    for name in sorted(SWITCH):p=sub(name);p.add_argument('--session',help='Session ID; default: $CLAUDE_CODE_SESSION_ID, which Claude Code sets for shell commands')
     p=sub('capture-finalize');p.add_argument('--session',required=True);p.add_argument('--turn',help='Defaults to the latest prompt of the session');p.add_argument('--note',action='append',default=[])
     p=sub('list');p.add_argument('--status',choices=['active','resolved','archived','superseded','any'],default='active');p.add_argument('--type',choices=NOTE_TYPES,action='append');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)');p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--with-summary',action='store_true',help='Add summary, files and actions {open, done} to each row');p.add_argument('--offset',type=int,default=0);p.add_argument('--limit',type=int,default=200)
     from .learning import ENTITIES,RESULTS,METHODS,OUTCOMES,USAGES,CONTRIBUTIONS
@@ -642,7 +666,15 @@ def main(argv=None):
             raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' are read-only: views list and render --format json (no --out) are allowed; run the rest as --actor main')
         if cmd=='maintenance' and args.action not in {'status','preview','history'} and args.actor in {'subagent','viewer'}:
             raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' are read-only: maintenance status, preview and history are allowed; run the rest as --actor main')
+        if cmd in SWITCH-{'status'} and args.actor in {'subagent','viewer'}:raise ValueError('Only the user turns Living Memory on or off; run it as --actor main')
+        session=getattr(args,'session',None) or os.environ.get(SESSION_ENV)
+        if cmd not in OFF_ALLOWED:
+            from .runtime import env_off
+            if env_off():raise ValueError('memory_off: LIVING_MEMORY_OFF=1 is set in this environment; unset it to use Living Memory')
+            if session and _session_state(root,session).get('off'):
+                raise ValueError('memory_off: Living Memory is off for this session; run alm on to use it again')
         if cmd=='serve':return serve(root,cwd,set(subs.choices)-{'serve','setup'})
+        if cmd in SWITCH:result=_switch(root,cmd,session);invocation['result']=result;_emit(result,args);return 0
         if cmd=='bind':
             from .init_domain import init_domain
             init_domain(args.name,args.prefix,root);result={'ok':True,'domain':args.name,'status':'bound'}
