@@ -207,6 +207,25 @@ def memory_subcommand(text,grammar=None):
     found={_subcommand(words) for words in parsed}
     return found.pop() if len(found)==1 else None
 
+# Hivemind sets HIVEMIND_SESSION for every program it starts in a terminal. Agents there write plans; only the user applies or undoes them.
+HIVEMIND_GOVERNED={'apply','undo','recover'}   # `setup --apply-plan` also applies a plan; `plan` and the other *-plan commands only write one
+
+def hivemind_governed(text,grammar):
+    """True when a shell command applies or undoes a plan: apply, undo, recover or setup --apply-plan. Exact invocations are read by
+    word; text that cannot be parsed (chained, redirected, expanded) is refused when it names living_memory or a standalone `alm`
+    together with a governed word as a separate token."""
+    def flag(word):
+        name=word.partition('=')[0];return len(name)>=3 and name.startswith('--') and '--apply-plan'.startswith(name)
+    parsed=_parsed(text,grammar)
+    if parsed and memory_subcommand(text,grammar):
+        for words in parsed:
+            sub=_subcommand(words)
+            if sub in HIVEMIND_GOVERNED or (sub=='setup' and any(flag(w) for w in words)):return True
+        return False
+    tokens=[t for t in re.split(r'''[\s;&|()"'`{}<>=,]+''',text) if t]
+    named=any(t.lower().endswith(('living_memory.py','living_memory')) or re.split(r'[\\/]',t)[-1].lower() in ('alm','alm.exe','alm.cmd') for t in tokens)
+    return named and any(t in HIVEMIND_GOVERNED or flag(t) for t in tokens)
+
 # Options that read a file into a note. Auto-approval covers only files the session could already see.
 FILE_OPTIONS=('--content-file','--body-file','--payload-file')
 
@@ -1886,7 +1905,8 @@ def _process(harness,event,payload,root=None,info=None):
             try:args=json.loads(args)
             except json.JSONDecodeError:pass
         detail['tool']=name
-        # Shell text is not checked: a regex over commands is trivially bypassed and blocks harmless reads.
+        # Shell text is not regex-checked: a regex over commands is trivially bypassed and blocks harmless reads. The one narrow exception
+        # is the Hivemind guard below, which reuses memory_subcommand() and fails closed on text it cannot parse.
         rule=next((r for r in (protected_rule(p,cwd,root) for p in raw_paths(args)) if r),None) if name not in READ_TOOLS and name not in SHELL_TOOLS else None
         if rule:
             detail['decision']='deny:protected:'+rule
@@ -1898,6 +1918,10 @@ def _process(harness,event,payload,root=None,info=None):
         if subcommand and grammar=='posix' and re.match(r'\s*&',text):
             detail['decision']='deny:call-operator'
             result['deny']='In Bash, drop the leading &: '+re.sub(r'^\s*&\s*','',text)
+            return result
+        if text and os.environ.get('HIVEMIND_SESSION') and hivemind_governed(text,grammar):
+            detail['decision']='deny:hivemind'
+            result['deny']='Memory plans are applied and undone by you in Hivemind, not by an agent. Write the plan; the user applies it.'
             return result
         learn_write=learn_settings=False
         if subcommand=='learn':
