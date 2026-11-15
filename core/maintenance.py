@@ -244,6 +244,11 @@ def queued_pairs(root, notes, domains):
     return valid, invalid
 
 
+def replaced_hold(ref):
+    """The retry key of a note's replaced review. It is separate from the note's own key, so deferring one review never lifts the other's hold."""
+    return f'{ref}#replaced'
+
+
 def replaced_candidates(root, state, notes, now, taken, domains):
     """Candidates of kind `replaced`: the older note of each queued pair, with the newer one as its successor. One per older note, and none for a
     note another row already reviews in this batch. They rank after every other kind."""
@@ -252,13 +257,13 @@ def replaced_candidates(root, state, notes, now, taken, domains):
         if p['old'] in used:
             continue
         fingerprint = digest(canonical_json(['replaced', p['new'], new['revision']]).encode())
-        if ms.retry_hold(state, p['old'], old['revision'], fingerprint, now):
+        if ms.retry_hold(state, replaced_hold(p['old']), old['revision'], fingerprint, now):
             continue
         used.add(p['old'])
         out.append({'ref': p['old'], 'domain': old['domain'], 'title': old.get('title'), 'type': _type(old), 'revision': old['revision'], 'level': 10,
                     'kinds': ['replaced'], 'reason': f"queued as possibly replaced by {p['new']} \"{new.get('title')}\"", 'pinned': old.get('pinned') is True,
                     'currency': None, 'pair': new['id'], 'pair_note': new, 'pair_same': True, 'fingerprint': fingerprint, 'files': [], 'note': old,
-                    'permitted': permitted(old, ['replaced'], True, True)})
+                    'hold': replaced_hold(p['old']), 'permitted': permitted(old, ['replaced'], True, True)})
     return out
 
 
@@ -383,7 +388,7 @@ def packet(root, cands, run_id):
         note, ref = cand['note'], cand['ref']
         body = note.get('body', '')
         if len(body.encode('utf-8')) > BODY_MAX:
-            manifest['deferred'][ref] = {'reason_code': 'note_too_large', 'revision': cand['revision'], 'fingerprint': cand['fingerprint']}
+            manifest['deferred'][ref] = {'reason_code': 'note_too_large', 'revision': cand['revision'], 'fingerprint': cand['fingerprint'], 'hold': cand.get('hold', ref)}
             continue
         mark, evidence, entries = counter, {}, []
         own = new_id()
@@ -425,7 +430,7 @@ def packet(root, cands, run_id):
         manifest['keys'][key] = ref
         manifest['evidence'].update(evidence)
         manifest['candidates'][ref] = {'key': key, 'revision': cand['revision'], 'domain': cand['domain'], 'kinds': cand['kinds'], 'pair_same': cand['pair_same'], 'permitted': permits,
-                                       'evidence_ids': list(evidence), 'successors': successor_refs, 'fingerprint': cand['fingerprint'],
+                                       'evidence_ids': list(evidence), 'successors': successor_refs, 'fingerprint': cand['fingerprint'], 'hold': cand.get('hold', ref),
                                        'pair': next(iter(successor_refs), None) if 'replaced' in cand['kinds'] else None,
                                        'files': {f['path']: {'state': f['state'], 'sha256': f['sha256'], 'kind': f['kind']} for f in cand['files']},
                                        'currency_state': (cand['currency'] or {}).get('state'), 'type': cand['type']}
@@ -446,7 +451,7 @@ def _close(root, run, ref, action, result, code, info, now, hold=False, rule=Non
     try:
         _decision_record(root, run, ref, action, result, code, rule, reason)
         if hold and info:
-            ms.set_retry(root, ref, info['revision'], info['fingerprint'], code or result, now)
+            ms.set_retry(root, info.get('hold', ref), info['revision'], info['fingerprint'], code or result, now)
     except (OSError, ValueError, TimeoutError, ms.Unavailable):
         out['record_failed'] = True
     return out
@@ -740,7 +745,7 @@ def run(root, dry_run=False, adapter=None, now=None, allow_disabled=False, domai
             text, manifest = packet(root, selected, record['id'])
             if not manifest['candidates']:
                 for ref, info in manifest['deferred'].items():
-                    ms.set_retry(root, ref, info['revision'], info['fingerprint'], info['reason_code'], clock())
+                    ms.set_retry(root, info.get('hold', ref), info['revision'], info['fingerprint'], info['reason_code'], clock())
                 ms.release(root, record, 'no_candidates', clock())
                 return _skipped('no_candidates')
             adapter = adapter or agent.review

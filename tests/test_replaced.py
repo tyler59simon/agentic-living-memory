@@ -78,6 +78,18 @@ class Candidates(Pairs):
         notes.change(old['id'],'demo','update',self.root,review_by=OLD)
         row=self.cands()[0];ms.set_retry(self.root,row['ref'],row['revision'],row['fingerprint'],'kept',self.now)
         found=self.cands();self.assertEqual([(c['ref'],c['kinds']) for c in found],[(self.ref(old),['replaced'])])
+    def test_deferring_the_normal_and_the_replaced_review_holds_both(self):
+        # Each review kind keeps its own retry hold, so deferring one never lifts the other's and an unchanged note is not reviewed again.
+        old,new=self.old_new()
+        notes.change(old['id'],'demo','update',self.root,review_by=OLD)
+        for kinds in (['due'],['replaced']):
+            run,manifest,_=self.prepare()
+            self.assertEqual(manifest['candidates'][self.ref(old)]['kinds'],kinds)
+            res=self.apply(run,manifest,[self.d(manifest,old,'defer')])
+            self.assertEqual(self.one(res)['result'],'deferred')
+            ms.finish(self.root,run,0,'completed',self.now);self.now+=timedelta(days=1)
+        self.assertEqual(self.cands(),[])
+        self.assertEqual(self.queue(),[self.pair(old,new)])
     def test_the_budget_is_shared_with_the_other_kinds(self):
         self.cfg=ms.validate({**self.cfg,'max_notes_per_day':2});ms.set_config(self.root,self.cfg)
         due=self.mk('Money decision','Money is long cents.',type='decision',review_by=OLD);old,new=self.old_new()
