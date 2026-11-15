@@ -80,6 +80,9 @@ def render(result):
     if isinstance(result.get('markdown'),str):lines=[result['markdown'].rstrip()]   # recap, history --markdown: already written for a person
     elif result.get('plan_id') and result.get('digest') and result.get('status')!='approval_required':lines=_plan(result)
     elif 'title' in result and ('body' in result or 'type' in result):lines=_read(result)
+    elif result.get('memory') in {'on','off'} and 'session' in result:   # alm off / on / status
+        lines=[f"Living Memory is {result['memory']} for this session ({result['session']})"+(': started with LIVING_MEMORY_OFF=1.' if result.get('reason')=='env' else '.')]
+        if result.get('known') is False:lines.append('No hook has seen this session yet.')
     elif result.get('status') and result.get('id'):lines=_receipt(result)
     elif any(isinstance(result.get(k),list) for k in LISTS):lines=_rows(result)
     else:lines=_kv({k:v for k,v in result.items() if k not in TRAILER})
