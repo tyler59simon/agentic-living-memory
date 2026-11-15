@@ -98,6 +98,9 @@ def _updated(o,n):
     items=_actions(o,n);found+=items
     if o.get('body')!=n.get('body') and _body_change(o,n,bool(items)):found.append(_body_change(o,n,bool(items)))
     found+=[f'{k} changed' for k in ('context','commands','sources') if o.get(k)!=n.get(k)]
+    if o.get('distinct_from')!=n.get('distinct_from'):
+        added=[e for e in n.get('distinct_from') or [] if e not in (o.get('distinct_from') or [])]
+        found.append('marked distinct from '+str(added[0]['ref']).rpartition(':')[2][:8] if added else 'distinct record removed')
     return '; '.join(found) or 'edited'
 
 def _summary(kind,event,old,new):

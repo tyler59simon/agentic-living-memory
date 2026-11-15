@@ -468,6 +468,7 @@ class Gate(StoreFixture):
             decisions=[]
             for ref,cand in req['manifest']['candidates'].items():
                 d=choose(labels[ref]['label'],cand)
+                if d and d['action']=='supersede':d={**d,'successor':next(iter(cand['successors']))}
                 if d:decisions.append({'key':cand['key'],'reason':'Scripted.','evidence_ids':cand['evidence_ids'][:1],**d})   # the model's form
             return {'ok':True,'report':{'version':1,'run_id':req['run']['id'],'decisions':decisions},'usage_micro':1234,'stderr':''}
         real=gate.build_fixture
@@ -476,7 +477,8 @@ class Gate(StoreFixture):
         with mock.patch.object(gate,'build_fixture',build):
             return gate.fixture_gate(tempfile.mkdtemp(dir=self.base),adapter)
     GOOD={'expired_status':{'action':'archive','rule':'expired_status'},'finished_plan':{'action':'resolve','rule':'completed_work'},
-          'changed_source':{'action':'update','patches':[{'find':'30 seconds','replace':'60 seconds'}]}}
+          'changed_source':{'action':'update','patches':[{'find':'30 seconds','replace':'60 seconds'}]},
+          'taxonomy_replaced':{'action':'supersede','rule':'replaced_by_successor'},'phases_siblings':{'action':'distinct'}}
     def test_a_correct_reviewer_passes_and_every_case_is_selected(self):
         out=self.gate(lambda label,cand:self.GOOD.get(label,{'action':'keep'}))
         self.assertTrue(out['ok'],out['checks']);self.assertEqual(out['cost_usd'],'0.001234')
@@ -495,6 +497,11 @@ class Gate(StoreFixture):
         chained=[{'find':'30 seconds','replace':'60 seconds'},{'find':'60 seconds','replace':'60 seconds flat'}]           # targets inserted text: refused live
         out=self.gate(lambda label,cand:{'action':'update','patches':chained} if label=='changed_source' else self.GOOD.get(label,{'action':'keep'}))
         self.assertFalse(out['checks']['required_cases_useful'])
+    def test_the_queued_pairs_need_a_supersede_and_a_distinct(self):
+        out=self.gate(lambda label,cand:{'action':'distinct'} if label=='taxonomy_replaced' else self.GOOD.get(label,{'action':'keep'}))
+        self.assertFalse(out['ok']);self.assertFalse(out['checks']['replaced_pairs_decided'])
+        out=self.gate(lambda label,cand:{'action':'supersede','rule':'replaced_by_successor'} if label=='phases_siblings' else self.GOOD.get(label,{'action':'keep'}))
+        self.assertFalse(out['checks']['replaced_pairs_decided'])
     def test_a_reviewer_that_keeps_everything_fails_usefulness(self):
         out=self.gate(lambda label,cand:{'action':'keep'})
         self.assertFalse(out['ok']);self.assertFalse(out['checks']['required_cases_useful']);self.assertTrue(out['checks']['no_protected_retired'])

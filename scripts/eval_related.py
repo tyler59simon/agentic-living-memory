@@ -16,7 +16,7 @@ from datetime import datetime,timedelta,timezone
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from core.common import atomic_write
-from core.notes import RELATED_GROUPS,_related_hits,related_domains,near_titles,resolve_ref,domain_folders
+from core.notes import RELATED_GROUPS,scan_related,related_domains,resolve_ref,domain_folders
 from core.repository import inventory,serialize,reconcile
 
 COPY_SKIP=('*.lock','.operations','backups','logs','.views')   # journals, snapshots and logs a related check never reads
@@ -51,14 +51,10 @@ def _scan(root):
     """Every active decision-group note run through the widened related check: (scanned notes, rows of new/old pairs)."""
     rows=[];scanned=[]
     for domain in domain_folders(root):
-        active=[n for n in inventory(domain,root) if n.get('status','active')=='active']
-        near_pool=[n for n in active if not n.get('sources')]
         widened=related_domains(domain,root)
-        for note in active:
-            if note.get('type') not in SCANNED:continue
-            skip={note['id']}|{n['id'] for n in near_titles(note['title'],[n for n in near_pool if n['id']!=note['id']],note_type=note.get('type'))}
+        for note,hits in scan_related(domain,root,widened):
             scanned.append({'ref':_ref(domain,note['id']),'created':note.get('created')})
-            for h in _related_hits(note,domain,root,skip,widened)[:3]:
+            for h in hits[:3]:
                 rows.append({'new':{'ref':_ref(domain,note['id']),'title':note['title'],'type':note.get('type'),'created':note.get('created')},
                              'old':{'ref':_ref(h['domain'],h['id']),'title':h['title'],'type':h.get('type')},
                              'same_domain':h['domain']==domain,'signals':_signals(h)})

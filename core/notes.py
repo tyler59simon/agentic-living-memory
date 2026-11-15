@@ -531,7 +531,47 @@ def _related_hits(note,domain,root,skip,domains=None):
 
 def _related(note,domain,root,skip):
     """Up to 3 active notes of the same type group the new note may replace (see _related_hits). Advisory: never raises."""
-    return [{'ref':f"{domain}:{h['id']}",'title':h['title'],'type':h['type']} for h in _related_hits(note,domain,root,skip)[:3]]
+    return _related_listing(_related_hits(note,domain,root,skip),domain)
+
+def _related_listing(hits,domain):
+    return [{'ref':f"{domain}:{h['id']}",'title':h['title'],'type':h['type']} for h in hits[:3]]
+
+def owed_pair(note,hits,domain,root):
+    """The top hit when it may be a replacement of `note`: it passes owed_bar, lies in the note's own domain, and the pair is not marked distinct. Else None."""
+    top=hits[0] if hits else None
+    if not top or not top.get('owed_bar') or top['domain']!=domain:return None
+    try:other=find_note(top['id'],domain,root)[1]
+    except ValueError:return None
+    return None if distinct(note,other) else top
+
+def related_scan_ids(domain,root,notes=None):
+    """The ids, in scan order, of the active decision, policy and preference notes of a domain (what scan_related visits)."""
+    return [n['id'] for n in (notes if notes is not None else inventory(domain,root)) if n.get('status','active')=='active' and n.get('type') in RELATED_GROUPS]
+
+def scan_related(domain,root,widened=None,notes=None,only=None):
+    """(note, hits) for every active decision, policy and preference note of a domain (only those with an id in `only`, when given), run through
+    the related check as if it were being captured now: the note itself and the notes capture lists as `similar` are skipped. `widened` is the
+    list of domains to search (default the domain). A generator, so a caller may stop early. Shared by the maintenance backfill and scripts/eval_related.py."""
+    active=[n for n in (notes if notes is not None else inventory(domain,root)) if n.get('status','active')=='active']
+    pool=[n for n in active if not n.get('sources')]
+    for note in active:
+        if note.get('type') not in RELATED_GROUPS or (only is not None and note['id'] not in only):continue
+        skip={note['id']}|{n['id'] for n in near_titles(note['title'],[n for n in pool if n['id']!=note['id']],note_type=note.get('type'))}
+        yield note,_related_hits(note,domain,root,skip,widened)
+
+def _queue_replaced(note,hits,domain,root):
+    """Queue the pair (this note, its top related hit) for the maintenance reviewer when the hit passes owed_bar in the same domain and the pair is not
+    distinct. Only where maintenance is enabled for the domain. Advisory: never raises."""
+    try:
+        if not hits or not hits[0].get('owed_bar'):return
+        from . import maintenance_state as ms
+        cfg=ms.config(root)
+        if not cfg['enabled'] or domain not in cfg['domains']:return
+        top=owed_pair(note,hits,domain,root)
+        if top:ms.queue_add(root,[{'new':f"{domain}:{note['id']}",'old':f"{domain}:{top['id']}"}])
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('notes.queue_replaced',exc,root)
 
 def _distinct_id(entry):
     return str(entry.get('ref') or '').split(':',1)[-1] if isinstance(entry,dict) else ''
@@ -686,7 +726,9 @@ def capture(title,body,tags,domain,root=None,**metadata):
         if hint:result['scope_hint']={'reason':hint,'next':f'If this holds beyond this project, run `promote-plan {domain}:{note["id"]}`.'}
         near=near_titles(title,[n for n in existing if n.get('status','active')=='active' and n['id'] not in set(supersedes) and not other_map(n)],note_type=selected_type)
         if near:result['similar']=[{'ref':f"{domain}:{n['id']}",'title':n['title']} for n in near]
-        related=_related(note,domain,root,{n['id'] for n in near}|set(supersedes))
+        hits=_related_hits(note,domain,root,{n['id'] for n in near}|set(supersedes))
+        related=_related_listing(hits,domain)
+        _queue_replaced(note,hits,domain,root)
         if related:
             result['related']=related
             result['related_hint']=f"if this replaces one of them: supersede REF --by {domain}:{note['id']}; a different subject: nothing to do"

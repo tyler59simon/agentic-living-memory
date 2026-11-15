@@ -25,6 +25,7 @@ def note_hashes(root):return hashes(root,('domains/*/notes/*.md','domains/*/arch
 
 # ---- fixture
 
+# A run reviews at most 10 notes (BATCH_MAX), so these cases and the two queued pairs below fill one batch; the deleted-source case lives in the unit tests.
 # Each case: (label, title, body, capture options, acceptable actions, required). A required case must get one of its acceptable actions;
 # every other case must at least not be retired unless retirement is acceptable for it. An update of a case in PATCHED must also apply
 # cleanly (each find occurs once) and leave the body with the first text and without the second.
@@ -44,11 +45,16 @@ def cases():
         ('caveat_bug','Crash on a cold cache',render('The indexer crashed when the cache folder was empty. Fixed by creating the folder on start. Keep the caveat: a cold cache still makes the first search slow.',actions=[],done=['Create the cache folder on start']),
          {'type':'bug'},{'keep','confirm','update','defer'},False),
         ('pinned','Build image Python version','The build image uses Python 3.8.',{'pinned':True,'review_by':OLD},{'keep','confirm','update','defer'},False),
-        ('missing_source','Legacy CSV import','The legacy CSV import lives in src/legacy.py and runs nightly at 02:00.',
-         {'files':['src/legacy.py'],'review_by':OLD},{'keep','update','defer'},False),
         ('duplicate_a','Deploy process',deploy,{'review_by':OLD},{'keep','confirm','defer','update','supersede'},False),
         ('duplicate_b','Deploy process',deploy+' Always.',{'review_by':OLD,'idempotency_key':'k2'},{'keep','confirm','defer','update','supersede'},False),
     ]
+
+# Queued pairs (UX-C9): (label, older title, older body, newer title, newer body, acceptable actions). The older note is the candidate. A pair is a
+# required case: the replaced taxonomy must be superseded by its newer note, and two phases of one plan must be recorded as distinct.
+PAIRS=[('taxonomy_replaced','Final ten-type taxonomy','The note taxonomy is final at ten types: knowledge, decision, preference, context, status, bug, plan, risk, research and policy.',
+        'Final taxonomy of thirteen note types','The note taxonomy has thirteen types: the ten earlier types plus map, runbook and brief. The ten-type taxonomy is no longer final.',{'supersede'}),
+       ('phases_siblings','Phase 4: how it is being built','Phase 4 is built as a detached worker that scans the store for notes that need review, one batch per day.',
+        'Phase 5: how it is being built','Phase 5 is built as a recap section that lists what changed in the last days. It does not touch the worker of phase 4.',{'distinct'})]
 
 def build_fixture(base):
     from core.init_domain import init_domain
@@ -59,15 +65,19 @@ def build_fixture(base):
     (root/'tag_taxonomy.json').write_text(json.dumps({'tags':TAGS}))
     (project/'src/config.py').write_text('TIMEOUT = 30\n')
     (project/'src/client.py').write_text('def get(url):\n    return retry(url)\n')
-    (project/'src/legacy.py').write_text('def import_csv(path):\n    pass\n')
     labels,bodies={},{}
     for label,title,body,kw,accept,required in cases():
         note=capture(title,body,TAGS,'demo',root,allow_similar=True,**kw)
         labels[f"demo:{note['id']}"]={'label':label,'accept':sorted(accept),'required':required}
         bodies[f"demo:{note['id']}"]=body
-    # After capture: the timeout changed and the legacy module was deleted.
+    for label,old_title,old_body,new_title,new_body,accept in PAIRS:
+        old=capture(old_title,old_body,TAGS,'demo',root,type='decision',allow_similar=True)
+        new=capture(new_title,new_body,TAGS,'demo',root,type='decision',allow_similar=True)
+        labels[f"demo:{old['id']}"]={'label':label,'accept':sorted(accept),'required':True}
+        bodies[f"demo:{old['id']}"]=old_body
+        ms.queue_add(root,[{'new':f"demo:{new['id']}",'old':f"demo:{old['id']}"}])
+    # After capture: the timeout changed.
     (project/'src/config.py').write_text('TIMEOUT = 60\n')
-    (project/'src/legacy.py').unlink()
     ms.set_config(root,ms.validate({'enabled':False,'domains':['demo']}))
     return root,project,labels,bodies
 
@@ -98,6 +108,7 @@ def score(labels,result,permitted,status,bodies=None):
     checks['retirements_cite_evidence']=all(r['evidence_ids'] or r['action']=='resolve' for r in retired)
     pair=[r for r in rows if r['label'].startswith('duplicate_')]
     checks['duplicates_not_both_retired']=sum(r['action'] in RETIRE for r in pair)<2
+    checks['replaced_pairs_decided']=all(r['action'] in r['accept'] for r in rows if r['label'] in {p[0] for p in PAIRS})
     checks['required_cases_useful']=all(r['acceptable'] for r in rows if r['required'])
     checks['every_case_acceptable']=all(r['acceptable'] for r in rows)
     acc=status.get('accounting') or {}

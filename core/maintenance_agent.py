@@ -15,7 +15,7 @@ from pathlib import Path
 from .maintenance_state import format_usd, micro_from_provider
 from .repository import redact
 
-ACTIONS = ('keep', 'defer', 'confirm', 'update', 'resolve', 'archive', 'supersede')
+ACTIONS = ('keep', 'defer', 'confirm', 'update', 'resolve', 'archive', 'supersede', 'distinct')
 RULES = ('expired_status', 'completed_work', 'cancelled_work', 'obsolete_source_claim', 'obsolete_content', 'replaced_by_successor', 'duplicate')
 REQUIRED_FLAGS = ('--output-format', '--model', '--tools', '--safe-mode', '--strict-mcp-config', '--no-session-persistence',
                   '--disable-slash-commands', '--system-prompt', '--json-schema', '--max-budget-usd')
@@ -44,8 +44,11 @@ Actions.
 - resolve: only for a plan, bug or risk with action items that are all checked, whose work is finished and whose body keeps no unique guidance, root cause or caveat that nothing else covers. Otherwise keep.
 - archive: the note has no remaining active purpose. For a status note: its review date has passed and it holds no unique current instruction or unresolved work (rule expired_status). For a plan, bug or risk: current evidence shows the work was cancelled or is obsolete (rule cancelled_work, obsolete_content or obsolete_source_claim); inactivity or unchecked items alone are not evidence. For knowledge, decision, context or research: current evidence shows the content is obsolete (obsolete_source_claim or obsolete_content). An old decision that still explains current constraints stays. A note that is partly outdated and partly useful is an update or keep, never an archive.
 - supersede: an active successor listed in the packet covers all the useful current content of this note, shown by comparing both full bodies. Set successor to its ref and rule to replaced_by_successor or duplicate. Notes that merely look alike are not duplicates.
+- distinct: only for a candidate with review kind replaced. The packet gives the older note (the candidate) and a newer successor on a similar subject. If the newer note does not replace the older one (a sibling on another phase, step, component or question; both are still true), answer distinct, so the pair is never offered again. The reason is then recorded as the explanation: one plain line of 8 to 200 characters naming how the two differ.
 
-Evidence. Cite the evidence ids (E1, E2, ...) that support the decision. Every archive, supersede, confirm and update needs at least one. The note itself has an id too. Never invent an id, a ref or a path. A missing, unreadable or unavailable source is not proof of anything; defer unless independent evidence settles it.
+Replaced candidates. A candidate whose review_kinds is ["replaced"] is a pair: the candidate is the older note, and successors holds the newer note, both in full with created and updated dates. Read both. Answer supersede (rule replaced_by_successor) only when the newer note states the same subject again with changed facts, so the older note would mislead a reader and the newer one covers all that is still useful in it; for example a decision to keep ten types followed by a decision that there are thirteen. Answer distinct when both can be true together, such as two parts of one plan or two numbered phases. Answer keep when neither applies and the pair is not worth recording, and defer when the evidence is not enough. Never supersede a note unless supersede is in its permitted_actions.
+
+Evidence. Cite the evidence ids (E1, E2, ...) that support the decision. Every archive, supersede, distinct, confirm and update needs at least one. The note itself has an id too. Never invent an id, a ref or a path. A missing, unreadable or unavailable source is not proof of anything; defer unless independent evidence settles it.
 
 Reason. One or two plain sentences, at most 500 characters, saying what the evidence shows. Never repeat credentials."""
 

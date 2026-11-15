@@ -26,8 +26,8 @@ EXCERPT_CHARS = 1200
 FILE_READ_MAX = 1 << 20
 EXCLUDED = ('preference', 'policy')            # normative: never reviewed by the model
 LIMITED = ('map', 'brief', 'runbook')          # kept, deferred, confirmed or updated; never retired
-COUNT_KEYS = ('updated', 'confirmed', 'archived', 'superseded', 'resolved', 'kept', 'deferred', 'skipped')
-APPLIED_KEY = {'update': 'updated', 'confirm': 'confirmed', 'archive': 'archived', 'supersede': 'superseded', 'resolve': 'resolved'}
+COUNT_KEYS = ('updated', 'confirmed', 'archived', 'superseded', 'resolved', 'kept', 'deferred', 'skipped', 'distinct')
+APPLIED_KEY = {'update': 'updated', 'confirm': 'confirmed', 'archive': 'archived', 'supersede': 'superseded', 'resolve': 'resolved', 'distinct': 'distinct'}
 ARCHIVE_RULES = {'status': ('expired_status',), 'action': ('cancelled_work', 'obsolete_content', 'obsolete_source_claim'),
                  'other': ('obsolete_content', 'obsolete_source_claim')}
 STATE_PRIORITY = {'changed': 0, 'missing': 1, 'unavailable': 2, 'unchecked': 3, 'current': 4}
@@ -56,8 +56,21 @@ def _completed(note):
 
 def permitted(note, kinds=(), pair_same=False, has_successor=False):
     """The actions the policy table (spec 2.1) allows for this note as it is now. Usage alone (a noisy row with no other signal) never retires."""
+    if 'replaced' in kinds:
+        return _replaced_permitted(note, has_successor)
     out = _permitted(note, kinds, pair_same, has_successor)
     return [a for a in out if a not in ('archive', 'supersede')] if kinds and set(kinds) <= {'noisy'} else out
+
+
+def _replaced_permitted(note, has_successor):
+    """The actions for the older note of a queued pair: it may be recorded as distinct from the newer one, and superseded by it where the policy table
+    allows a supersede (never a pinned note or a limited or normative type, which the reviewer may still read and record distinct)."""
+    if not has_successor:
+        return ['keep', 'defer']
+    out = ['keep', 'defer', 'distinct']
+    if not _excluded(note) and 'supersede' in _permitted(note, ['replaced'], True, True):
+        out.append('supersede')
+    return out
 
 
 def _permitted(note, kinds, pair_same, has_successor):
@@ -148,7 +161,7 @@ def _level(kinds, note, completed):
         return 2
     if _type(note) == 'status' and 'due' in kinds:
         return 3
-    return next((n for n, k in ((4, 'duplicate'), (5, 'due'), (6, 'interim'), (7, 'warned'), (8, 'noisy')) if k in kinds), 9)
+    return next((n for n, k in ((4, 'duplicate'), (5, 'due'), (6, 'interim'), (7, 'warned'), (8, 'noisy')) if k in kinds), 10 if 'replaced' in kinds else 9)
 
 
 def candidates(root, cfg, state, now=None, limit=10):
@@ -178,6 +191,7 @@ def candidates(root, cfg, state, now=None, limit=10):
             except Exception:
                 currency = None
             rows.append({'ref': ref, 'kinds': [], 'reason': 'every action item is checked', **({'currency': currency} if currency else {})})
+    replaced = replaced_candidates(root, state, notes, now, {r['ref'] for r in rows}, set(domains))
     queues = {}
     for position, row in enumerate(rows):
         note = notes.get(row['ref'])
@@ -197,6 +211,8 @@ def candidates(root, cfg, state, now=None, limit=10):
                 'currency': row.get('currency'), 'pair': pair['id'] if pair else None, 'pair_note': pair, 'pair_same': same, 'fingerprint': fingerprint, 'files': files, 'note': note,
                 'permitted': permitted(note, row['kinds'], same, pair is not None)}
         queues.setdefault(note['domain'], []).append((cand['level'], verified_at(note), position, row['ref'], cand))
+    for position, cand in enumerate(replaced, len(rows)):
+        queues.setdefault(cand['domain'], []).append((cand['level'], verified_at(cand['note']), position, cand['ref'], cand))
     for queue in queues.values():
         queue.sort(key=lambda q: q[:4])
     start = domains.index(state.get('domain_cursor')) if state.get('domain_cursor') in domains else 0
@@ -207,6 +223,97 @@ def candidates(root, cfg, state, now=None, limit=10):
             if queues.get(d) and len(chosen) < limit:
                 chosen.append(queues[d].pop(0)[4])
     return chosen
+
+
+def queued_pairs(root, notes, domains):
+    """([(pair, older note, newer note)] still worth a review, [(new, old)] that are not). A pair is valid while both notes are active, in one
+    domain, and neither is marked distinct from the other. Pairs of a domain outside `domains` are neither (maintenance does not cover it)."""
+    from .notes import distinct
+    valid, invalid = [], []
+    for p in ms.queue(root)['pairs']:
+        new_domain, old_domain = p['new'].partition(':')[0], p['old'].partition(':')[0]
+        if new_domain not in domains and old_domain not in domains:
+            continue
+        new, old = notes.get(p['new']), notes.get(p['old'])
+        if new_domain != old_domain or new is None or old is None or new.get('status', 'active') != 'active' or old.get('status', 'active') != 'active' or distinct(new, old):
+            invalid.append((p['new'], p['old']))
+        else:
+            valid.append((p, old, new))
+    return valid, invalid
+
+
+def replaced_candidates(root, state, notes, now, taken, domains):
+    """Candidates of kind `replaced`: the older note of each queued pair, with the newer one as its successor. One per older note, and none for a
+    note another row already reviews in this batch. They rank after every other kind."""
+    out, used = [], set(taken)
+    for p, old, new in queued_pairs(root, notes, domains)[0]:
+        if p['old'] in used:
+            continue
+        fingerprint = digest(canonical_json(['replaced', p['new'], new['revision']]).encode())
+        if ms.retry_hold(state, p['old'], old['revision'], fingerprint, now):
+            continue
+        used.add(p['old'])
+        out.append({'ref': p['old'], 'domain': old['domain'], 'title': old.get('title'), 'type': _type(old), 'revision': old['revision'], 'level': 10,
+                    'kinds': ['replaced'], 'reason': f"queued as possibly replaced by {p['new']} \"{new.get('title')}\"", 'pinned': old.get('pinned') is True,
+                    'currency': None, 'pair': new['id'], 'pair_note': new, 'pair_same': True, 'fingerprint': fingerprint, 'files': [], 'note': old,
+                    'permitted': permitted(old, ['replaced'], True, True)})
+    return out
+
+
+def _active_notes(root, domains):
+    from .repository import inventory
+    notes = {}
+    for d in domains:
+        try:
+            for n in inventory(d, root):
+                notes[f"{d}:{n['id']}"] = dict(n, domain=d)
+        except (OSError, ValueError):
+            continue
+    return notes
+
+
+def prune_queue(root, cfg):
+    """Drop the queued pairs that are no longer valid (a retired, missing or distinct note). Not part of the read-only preview."""
+    ms.queue_drop(root, queued_pairs(root, _active_notes(root, cfg['domains']), set(cfg['domains']))[1])
+
+
+BACKFILL_SECONDS = 45
+
+
+def backfill_related(root, cfg, now=None, seconds=BACKFILL_SECONDS):
+    """Queue the pairs capture would have queued, for the notes already in the store: the same check and bar, run once. It scans the active decision,
+    policy and preference notes of the enabled domains for at most `seconds` and saves its place, so a large store finishes over several runs.
+    The later-created note of a pair is `new`. Returns the number of pairs added, or None when the backfill was already done."""
+    from .notes import scan_related, related_scan_ids, owed_pair
+    from .repository import inventory
+    progress = ms.queue(root)['backfill']
+    if progress['done']:
+        return None
+    plan, loaded = [], {}
+    for d in cfg['domains']:
+        try:
+            loaded[d] = inventory(d, root)
+        except (OSError, ValueError):
+            continue
+        plan += [(d, i) for i in related_scan_ids(d, root, loaded[d])]
+    stop, position, pairs = time.monotonic() + seconds, progress['next'], []
+    todo = plan[position:]
+    for d in dict.fromkeys(d for d, _ in todo):
+        by_id = {n['id']: n for n in loaded[d]}
+        for note, hits in scan_related(d, root, None, loaded[d], {i for dd, i in todo if dd == d}):
+            top = owed_pair(note, hits, d, root)
+            if top:
+                other = by_id.get(top['id'], note)
+                new, old = (note, other) if str(note.get('created') or '') >= str(other.get('created') or '') else (other, note)
+                pairs.append({'new': f"{d}:{new['id']}", 'old': f"{d}:{old['id']}"})
+            position += 1
+            if time.monotonic() >= stop:
+                break
+        if time.monotonic() >= stop:
+            break
+    added = ms.queue_add(root, pairs, now) if pairs else 0
+    ms.queue_backfill(root, position >= len(plan), position, now)
+    return added
 
 
 def next_cursor(cfg, selected):
@@ -287,7 +394,8 @@ def packet(root, cands, run_id):
             sid = new_id()
             evidence[sid] = {'candidate': ref, 'kind': 'note', 'ref': pref, 'revision': pair['revision'], 'role': 'successor'}
             successor_refs[pref] = pair['revision']
-            successors.append({'evidence_id': sid, 'ref': pref, 'revision': pair['revision'], 'title': pair.get('title'), 'type': _type(pair), 'body': pair.get('body', '')})
+            successors.append({'evidence_id': sid, 'ref': pref, 'revision': pair['revision'], 'title': pair.get('title'), 'type': _type(pair), 'created': pair.get('created'),
+                               'updated': pair.get('updated'), 'body': pair.get('body', '')})
         for f in cand['files'][:EXCERPTS]:
             fid = new_id()
             record = {'candidate': ref, 'kind': 'file', 'path': f['path'], 'state': f['state'], 'sha256': f['sha256'], 'abs': f['abs'], 'lines': None}
@@ -316,6 +424,7 @@ def packet(root, cands, run_id):
         manifest['evidence'].update(evidence)
         manifest['candidates'][ref] = {'key': key, 'revision': cand['revision'], 'domain': cand['domain'], 'kinds': cand['kinds'], 'pair_same': cand['pair_same'], 'permitted': permits,
                                        'evidence_ids': list(evidence), 'successors': successor_refs, 'fingerprint': cand['fingerprint'],
+                                       'pair': next(iter(successor_refs), None) if 'replaced' in cand['kinds'] else None,
                                        'files': {f['path']: {'state': f['state'], 'sha256': f['sha256'], 'kind': f['kind']} for f in cand['files']},
                                        'currency_state': (cand['currency'] or {}).get('state'), 'type': cand['type']}
     text = json.dumps({'run_id': run_id}, separators=(',', ':'))[:-1] + ',"candidates":[' + ','.join(blocks) + ']}' if blocks else ''
@@ -420,7 +529,8 @@ def _decide(root, run, ref, dec, manifest, now, deadline, clock):
             return end('skipped', 'stale_revision')
         if note.get('status', 'active') != 'active' or note['revision'] != cand['revision']:
             return end('skipped', 'stale_revision')
-        if _excluded(note):
+        replaced = 'replaced' in cand['kinds']
+        if _excluded(note) and not replaced:   # a queued pair's older note may be read and recorded distinct; permitted() holds the rest back
             return end('rejected', 'protected_type', True)
         if action not in permitted(note, cand['kinds'], cand['pair_same'], bool(cand['successors'])):
             return end('rejected', refusal(note, action), True)
@@ -457,6 +567,12 @@ def _decide(root, run, ref, dec, manifest, now, deadline, clock):
             if ok and _recheck(root, domain, {'kind': 'note', 'ref': successor, 'revision': cand['successors'][successor]}, bindings):
                 return end('skipped', 'stale_revision')
             values = {'superseded_by': successor.partition(':')[2]} if ok else {}
+        elif action == 'distinct':
+            successor = next(iter(cand['successors']), None) if len(cand['successors']) == 1 else None
+            why = ' '.join(redact(dec['reason'])[0].split())[:200]
+            ok = replaced and successor is not None and dec['successor'] in (None, successor) and len(why) >= 8
+            if ok and _recheck(root, domain, {'kind': 'note', 'ref': successor, 'revision': cand['successors'][successor]}, bindings):
+                return end('skipped', 'stale_revision')
         elif action == 'confirm':
             ok = full and not dec['patches']
             if ok and t in ('map', 'brief'):
@@ -491,8 +607,15 @@ def _decide(root, run, ref, dec, manifest, now, deadline, clock):
                     marks.append({'kind': 'file', 'path': ev['path'], 'sha256': ev['sha256']})
             retirement = {'rule': rule, 'reason': redact(dec['reason'])[0][:agent.REASON_MAX], 'evidence': marks[:agent.EVIDENCE_MAX], 'run_id': run['id'],
                           'operation_id': op} if retire else None
-            changes, expected, _ = notes._change_set(note_id, domain, action, root, cand['revision'], rehash=bool(tracked) and full, actor='maintenance',
-                                                     retirement=retirement, **values)
+            if action == 'distinct':
+                # The record lives on the newer note, so the older one is left exactly as it is.
+                newer_id = successor.partition(':')[2]
+                newer = notes.find_note(newer_id, domain, root)[1]
+                changes, expected, _ = notes._change_set(newer_id, domain, 'update', root, cand['successors'][successor], actor='maintenance',
+                                                         distinct_from=notes.distinct_with(newer, domain, note_id, why, 'maintenance'))
+            else:
+                changes, expected, _ = notes._change_set(note_id, domain, action, root, cand['revision'], rehash=bool(tracked) and full, actor='maintenance',
+                                                         retirement=retirement, **values)
             if action == 'update':
                 rel = Path(note['path']).relative_to(root).as_posix()
                 after = notes.parse_changed(changes[rel], note)
@@ -524,6 +647,19 @@ def _counts(results):
     return counts
 
 
+def _settle_pairs(root, manifest, results):
+    """A queued pair the reviewer decided (superseded, recorded distinct, or kept as it is) leaves the queue; a deferred, rejected or skipped one stays."""
+    gone = []
+    for r in results:
+        info = manifest['candidates'].get(r['ref'])
+        if info and info.get('pair') and (r['result'] == 'kept' or r['result'] in ('applied', 'already_applied') and r['action'] in ('supersede', 'distinct')):
+            gone.append((info['pair'], r['ref']))
+    try:
+        ms.queue_drop(root, gone)
+    except (OSError, ValueError, TimeoutError):
+        pass   # the next run's prune drops it
+
+
 def apply(root, run, report, manifest, cfg=None, now=None, deadline=None):
     """Execute a report. Returns {ok, results, counts, warnings}; a structurally invalid report changes nothing. Each decision is atomic on its
     own; one already recorded for this run is never applied twice."""
@@ -546,6 +682,7 @@ def apply(root, run, report, manifest, cfg=None, now=None, deadline=None):
             results.append(_decide(root, run, dec['ref'], dec, manifest, now, deadline, clock))
         except (OSError, TimeoutError, ms.Unavailable) as exc:
             results.append({'ref': dec['ref'], 'action': dec['action'], 'result': 'skipped', 'reason_code': 'apply_failed', 'error': str(exc)[:200]})
+    _settle_pairs(root, manifest, results)
     return {'ok': True, 'results': results, 'counts': _counts([r for r in results if r['result'] != 'already_applied']),
             'warnings': [f"{r['ref']}: {r['warning']}" for r in results if r.get('warning')]}
 
@@ -579,6 +716,12 @@ def run(root, dry_run=False, adapter=None, now=None, allow_disabled=False, domai
             verdict = ms.eligibility(root, start, cfg)
             if not verdict['eligible']:
                 return _skipped(verdict['skip_reason'], verdict['next_eligible_at'])
+            try:
+                backfill_related(root, cfg, start)
+                prune_queue(root, cfg)
+            except Exception as exc:   # advice for the reviewer; a failure here never stops the run
+                from .logs import swallowed
+                swallowed('maintenance.queue', exc, root)
             st = ms.state(root, start)
             remaining = cfg['max_notes_per_day'] - st['reviewed'] - st['reserved_notes']
             selected = candidates(root, cfg, st, start, min(remaining, agent.BATCH_MAX))

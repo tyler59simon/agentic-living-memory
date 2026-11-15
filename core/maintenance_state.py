@@ -489,6 +489,79 @@ def recover_runs(root, now=None):
     return done
 
 
+# ---- queue of possible replacements
+
+QUEUE = 'maintenance/related-queue.json'
+QUEUE_MAX = 200
+
+
+def _blank_queue():
+    return {'version': 1, 'backfill': {'done': False, 'next': 0, 'at': None}, 'pairs': []}
+
+
+def _pair_ok(p):
+    return (isinstance(p, dict) and all(isinstance(p.get(k), str) and re.fullmatch(r'[^:\s]+:[^:\s]+', p[k]) for k in ('new', 'old'))
+            and p['new'] != p['old'] and isinstance(p.get('at'), str))
+
+
+def queue(root):
+    """The queue of possible replacements as {version, backfill: {done, next, at}, pairs: [{new, old, at}]}: `new` and `old` are domain:id refs, and
+    the reviewer reads the pair (UX-C9). A missing or damaged file reads as empty; it is advice, never state anything depends on."""
+    try:
+        value = read_json(Path(root) / QUEUE, None)
+    except (OSError, ValueError):
+        value = None
+    out = _blank_queue()
+    if isinstance(value, dict):
+        back = value.get('backfill')
+        if isinstance(back, dict):
+            out['backfill'] = {'done': back.get('done') is True, 'next': back['next'] if type(back.get('next')) is int and back['next'] >= 0 else 0,
+                               'at': back.get('at') if isinstance(back.get('at'), str) else None}
+        out['pairs'] = [{'new': p['new'], 'old': p['old'], 'at': p['at']} for p in value.get('pairs') or [] if _pair_ok(p)]
+    return out
+
+
+def _queue_write(root, edit):
+    """Read, edit and write the queue under the store lock (the atomic write leaves the old file when interrupted)."""
+    from .common import atomic_write
+    with store_lock(root):
+        current = queue(root)
+        edit(current)
+        current['pairs'] = current['pairs'][-QUEUE_MAX:]
+        atomic_write(Path(root) / QUEUE, canonical_json(current))
+        return current
+
+
+def queue_add(root, pairs, now=None):
+    """Append {new, old} pairs not already queued (the newest QUEUE_MAX are kept). Returns the number added."""
+    stamp = _iso(_aware(now))
+    added = []
+
+    def edit(q):
+        have = {(p['new'], p['old']) for p in q['pairs']}
+        for p in pairs:
+            if (p['new'], p['old']) not in have:
+                have.add((p['new'], p['old']))
+                q['pairs'].append({'new': p['new'], 'old': p['old'], 'at': stamp})
+                added.append(p)
+    _queue_write(root, edit)
+    return len(added)
+
+
+def queue_drop(root, keys):
+    """Remove the pairs named by (new, old) tuples."""
+    gone = set(keys)
+    if not gone:
+        return
+    _queue_write(root, lambda q: q.update(pairs=[p for p in q['pairs'] if (p['new'], p['old']) not in gone]))
+
+
+def queue_backfill(root, done, next_index, now=None):
+    """Record the backfill's progress: the index of the next note to scan, and whether the scan finished."""
+    stamp = _iso(_aware(now))
+    _queue_write(root, lambda q: q.update(backfill={'done': bool(done), 'next': int(next_index), 'at': stamp if done else q['backfill'].get('at')}))
+
+
 # ---- worker lock
 
 @contextmanager
