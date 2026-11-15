@@ -380,14 +380,18 @@ class TurnTools(StopFixture):
                               'memory command': [bash('a', 'alm search x', True), EDIT, bash('b', 'alm search x')],
                               'grep finds nothing, then finds it': [bash('a', 'grep -n foo src/app.py', True), EDIT, bash('b', 'grep -n foo src/app.py')],
                               'the edit failed': [bash('a', 'pytest', True), use('e', 'Edit', file_path='a.py'), result('e', 'old_string not found', True), bash('b', 'pytest')],
-                              'only a read-only command between': [bash('a', 'pytest', True), bash('r', 'git status'), bash('b', 'pytest')]}.items():
+                              'only a read-only command between': [bash('a', 'pytest', True), bash('r', 'git status'), bash('b', 'pytest')],
+                              'only a diagnostic between': [bash('a', 'pytest', True), bash('d', 'python -c "print(1)" 2>&1'), bash('b', 'pytest')],
+                              'another test run between': [bash('a', 'pytest', True), bash('n', 'npm test > /dev/null'), bash('b', 'pytest')]}.items():
             with self.subTest(case=case):
                 self.write(*entries)
                 self.assertEqual(self.stop(self.edit), '')
 
     def test_a_shell_edit_counts_as_the_edit(self):
-        self.write(bash('a', 'pytest', True), bash('s', "sed -i 's/a/b/' src/app.py"), bash('b', 'pytest'))
-        self.assertIn('(`pytest`)', self.stop(self.edit))
+        for edit in ("sed -i 's/a/b/' src/app.py", 'echo x >> src/app.py', 'pip install requests', 'Set-Content -Path a.txt -Value x'):
+            with self.subTest(edit=edit):
+                self.write(bash('a', 'pytest', True), bash('s', edit), bash('b', 'pytest'))
+                self.assertIn('(`pytest`)', self.stop(self.edit))
 
     def test_a_receipt_settles_it(self):
         from core.capture import finalize

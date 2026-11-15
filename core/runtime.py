@@ -2077,6 +2077,13 @@ def stop_pending(root,bindings,state,session,turns,domain=None,cwd=None,planning
 
 EDIT_TOOLS={'edit','write','multiedit','notebookedit','apply_patch'}
 MEMORY_COMMANDS={'alm','living_memory.py'}
+# Positive evidence that a shell command wrote a file (a guess either way, so only what plainly writes counts): in-place
+# editors, a redirect to a file, file moves and package installs. A diagnostic or test run that merely is not provably
+# read-only is no edit.
+SHELL_WRITE=re.compile(r"\b(?:sed|perl)\s+(?:-\w+\s+)*-\w*i|(?<![\d&])>{1,2}\s*(?!&|/dev/null|\$null|nul\b)[\w./\\~\"'$-]"
+                       r"|\b(?:tee|mv|cp|rm|touch|patch|truncate)\s|\bgit\s+(?:apply|am|checkout\s+--|restore|stash|cherry-pick|revert|merge|rebase|reset)\b"
+                       r"|\b(?:npm|pnpm|yarn|pip|uv|cargo|go)\s+(?:install|add|i|get|sync)\b"
+                       r"|\b(?:set-content|add-content|out-file|new-item|remove-item|move-item|copy-item|rename-item)\b",re.I)
 # Commands whose nonzero exit means "not found" or "differs", not a failure: grep finding nothing, then finding it after an edit, is no fix.
 PROBE_COMMANDS={'grep','egrep','fgrep','rg','findstr','select-string','sls','diff','cmp','test','[','which','where','command','get-command','test-path'}
 LEADING_CD=re.compile(r'^cd\s+(?:"[^"]*"|\'[^\']*\'|[^\s;&]+)\s*(?:&&|;)\s*')
@@ -2094,8 +2101,8 @@ def command_key(text):
 
 def verified_fix(tools):
     """The command key of a shell command that failed, then (after an edit) passed, in one turn's tool calls; else None.
-    An edit is an edit tool that did not fail, or a successful shell command that is not read-only (`sed -i`, `npm install`)
-    and is not one of the failed commands. Memory commands and results with no exit code are ignored."""
+    An edit is an edit tool that did not fail, or a successful shell command that plainly writes (SHELL_WRITE: `sed -i`, a
+    redirect to a file, `npm install`) and is not one of the failed commands. Memory commands and results with no exit code are ignored."""
     from .recall import _command_text
     failed=set();ready=set()
     for tool in tools:
@@ -2110,7 +2117,7 @@ def verified_fix(tools):
         if not key or key.split()[0] in MEMORY_COMMANDS or key.split()[0].lower() in PROBE_COMMANDS or 'living_memory.py' in text:continue
         if not tool['ok']:failed.add(key);ready.discard(key)
         elif key in ready:return key
-        elif key not in failed and not readonly_shell(text):ready|=failed
+        elif key not in failed and SHELL_WRITE.search(text):ready|=failed
     return None
 
 def approved_decision(tools):
