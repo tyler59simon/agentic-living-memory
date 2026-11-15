@@ -498,6 +498,7 @@ def _carry_pointers(body,files,old_notes,dest):
     merged=clean_files(mine+more)
     return body,(merged or files),[re.sub(r'^(?:[-*+]|\d+\.)\s+','',l) for l in links],[f for f in merged if f not in mine]
 
+NORMATIVE_TYPES=frozenset({'policy','preference'})   # never read by the maintenance model (maintenance.EXCLUDED), so never queued as a pair
 RELATED_GROUPS={'decision':'decision','policy':'decision','preference':'decision'}   # one subject often moves between these
 
 def _related_hits(note,domain,root,skip,domains=None):
@@ -537,12 +538,13 @@ def _related_listing(hits,domain):
     return [{'ref':f"{domain}:{h['id']}",'title':h['title'],'type':h['type']} for h in hits[:3]]
 
 def owed_pair(note,hits,domain,root):
-    """The top hit when it may be a replacement of `note`: it passes owed_bar, lies in the note's own domain, and the pair is not marked distinct. Else None."""
+    """The top hit when it may be a replacement of `note`: it passes owed_bar, lies in the note's own domain, neither note is normative (a policy or
+    preference, which the maintenance model never reads), and the pair is not marked distinct. Else None."""
     top=hits[0] if hits else None
-    if not top or not top.get('owed_bar') or top['domain']!=domain:return None
+    if not top or not top.get('owed_bar') or top['domain']!=domain or effective_type(note) in NORMATIVE_TYPES:return None
     try:other=find_note(top['id'],domain,root)[1]
     except ValueError:return None
-    return None if distinct(note,other) else top
+    return None if effective_type(other) in NORMATIVE_TYPES or distinct(note,other) else top
 
 def related_scan_ids(domain,root,notes=None):
     """The ids, in scan order, of the active decision, policy and preference notes of a domain (what scan_related visits)."""

@@ -64,7 +64,7 @@ def permitted(note, kinds=(), pair_same=False, has_successor=False):
 
 def _replaced_permitted(note, has_successor):
     """The actions for the older note of a queued pair: it may be recorded as distinct from the newer one, and superseded by it where the policy table
-    allows a supersede (never a pinned note or a limited or normative type, which the reviewer may still read and record distinct)."""
+    allows a supersede (never a pinned or limited note, which the reviewer may still record distinct). Normative notes never get here: queued_pairs drops them."""
     if not has_successor:
         return ['keep', 'defer']
     out = ['keep', 'defer', 'distinct']
@@ -235,7 +235,8 @@ def queued_pairs(root, notes, domains):
         if new_domain not in domains and old_domain not in domains:
             continue
         new, old = notes.get(p['new']), notes.get(p['old'])
-        if new_domain != old_domain or new is None or old is None or new.get('status', 'active') != 'active' or old.get('status', 'active') != 'active' or distinct(new, old):
+        if (new_domain != old_domain or new is None or old is None or new.get('status', 'active') != 'active' or old.get('status', 'active') != 'active'
+                or _excluded(new) or _excluded(old) or distinct(new, old)):
             invalid.append((p['new'], p['old']))
         else:
             valid.append((p, old, new))
@@ -530,7 +531,7 @@ def _decide(root, run, ref, dec, manifest, now, deadline, clock):
         if note.get('status', 'active') != 'active' or note['revision'] != cand['revision']:
             return end('skipped', 'stale_revision')
         replaced = 'replaced' in cand['kinds']
-        if _excluded(note) and not replaced:   # a queued pair's older note may be read and recorded distinct; permitted() holds the rest back
+        if _excluded(note):
             return end('rejected', 'protected_type', True)
         if action not in permitted(note, cand['kinds'], cand['pair_same'], bool(cand['successors'])):
             return end('rejected', refusal(note, action), True)

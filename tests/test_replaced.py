@@ -94,14 +94,21 @@ class Decisions(Pairs):
         res=self.replaced(old,new)
         self.assertEqual((self.one(res)['result'],self.one(res)['reason_code']),('rejected',code));self.assertEqual(self.get(old)['status'],'active')
         self.assertIn(self.pair(old,new),self.queue())   # a refusal is not a decision: the pair stays
-    def test_supersede_is_refused_for_a_policy_older_note(self):self.refused('protected_type',old_type='policy')
+    def normative(self,**kw):
+        # The maintenance model never reads normative notes (EXCLUDED), so neither capture nor a stale queue entry hands one over.
+        old,new=self.old_new(**kw)
+        self.assertNotIn(self.pair(old,new),self.queue())
+        ms.queue_add(self.root,[{'new':self.ref(new),'old':self.ref(old)}])
+        self.assertNotIn(self.ref(old),[c['ref'] for c in self.cands()])
+        maintenance.prune_queue(self.root,self.cfg);self.assertNotIn(self.pair(old,new),self.queue())
+    def test_a_policy_older_note_is_never_queued_nor_offered(self):self.normative(old_type='policy')
+    def test_a_preference_newer_note_is_never_queued_nor_offered(self):self.normative(new_type='preference')
     def test_supersede_is_refused_for_a_pinned_older_note(self):self.refused('pinned',pinned=True)
     def offered(self,**kw):
         old,new=self.old_new(**kw);cand=next(c for c in self.cands() if c['ref']==self.ref(old))
         self.assertEqual(cand['permitted'],['keep','defer','distinct'])
         self.go((old,'distinct',{'reason':'Both are still true for different reasons.','evidence':['own','successor']}))
         self.assertTrue(notes.distinct(self.get(old),self.get(new)));self.assertEqual(self.queue(),[])
-    def test_a_policy_older_note_is_offered_distinct_but_not_supersede(self):self.offered(old_type='policy')
     def test_a_pinned_older_note_is_offered_distinct_but_not_supersede(self):self.offered(pinned=True)
     def test_distinct_writes_the_record_on_the_newer_note_and_the_pair_never_returns(self):
         old,new=self.old_new();before=self.get(old)
