@@ -1890,6 +1890,9 @@ def _process(harness,event,payload,root=None,info=None):
         _record_last_session(root,domain,session,state)
         turns=list(dict.fromkeys(list(state.get('open_turns',[]))+([turn] if turn else [])))
         _record_ledger(root,domain,session,state,cwd,turns)
+        # A plan approved inside this turn (ExitPlanMode) is raised at this Stop, so the next prompt is not a second exit from plan mode.
+        stop_mode=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()
+        if stop_mode and state.get('last_mode') and stop_mode!=state['last_mode']:_update(root,session,lambda s:s.update(last_mode=stop_mode))
         def close(s):
             for key in TURN_STATE:s.pop(key,None)
             if left or s.get('docs_left'):s['docs_left']=left
@@ -2071,6 +2074,8 @@ def stop_pending(root,bindings,state,session,turns,domain=None,cwd=None,planning
 
 EDIT_TOOLS={'edit','write','multiedit','notebookedit','apply_patch'}
 MEMORY_COMMANDS={'alm','living_memory.py'}
+# Commands whose nonzero exit means "not found" or "differs", not a failure: grep finding nothing, then finding it after an edit, is no fix.
+PROBE_COMMANDS={'grep','egrep','fgrep','rg','findstr','select-string','sls','diff','cmp','test','[','which','where','command','get-command','test-path'}
 LEADING_CD=re.compile(r'^cd\s+(?:"[^"]*"|\'[^\']*\'|[^\s;&]+)\s*(?:&&|;)\s*')
 ENV_ASSIGN=re.compile(r'^[A-Za-z_]\w*=\S*\s+')
 
@@ -2096,7 +2101,7 @@ def verified_fix(tools):
         args=tool.get('input') or {}
         text=_command_text(args.get('command',args.get('cmd')))
         key=command_key(text)
-        if not key or key.split()[0] in MEMORY_COMMANDS or 'living_memory.py' in text:continue
+        if not key or key.split()[0] in MEMORY_COMMANDS or key.split()[0].lower() in PROBE_COMMANDS or 'living_memory.py' in text:continue
         if not tool['ok']:failed.add(key);ready.discard(key)
         elif key in ready:return key
     return None
@@ -2272,7 +2277,7 @@ def follow_pending(root,state,bindings=None,domain=None,changed=None):
 def _stop_part(kind,data,session):
     if kind in BLOCKING_SIGNALS:
         said,hint=SIGNAL_TEXT[kind]
-        return (f"The user {said}{' (files changed too)' if data.get('files') else ''}. "
+        return (f"The user {said}{' (approved: '+data['plan']+')' if data.get('plan') else ''}{' (files changed too)' if data.get('files') else ''}. "
                 f"Durable: update its note or CMD capture --session {session} {hint} --title '...' --summary '...'.")
     if kind=='fix':
         return (f"A command failed and then passed after an edit (`{data['command']}`). If the cause was not obvious, "

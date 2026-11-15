@@ -377,7 +377,8 @@ class TurnTools(StopFixture):
                               'other command': [bash('a', 'pytest', True), EDIT, bash('b', 'ruff check')],
                               'still failing': [bash('a', 'pytest', True), EDIT, bash('b', 'pytest', True)],
                               'edit before the failure': [EDIT, bash('a', 'pytest', True), bash('b', 'pytest')],
-                              'memory command': [bash('a', 'alm search x', True), EDIT, bash('b', 'alm search x')]}.items():
+                              'memory command': [bash('a', 'alm search x', True), EDIT, bash('b', 'alm search x')],
+                              'grep finds nothing, then finds it': [bash('a', 'grep -n foo src/app.py', True), EDIT, bash('b', 'grep -n foo src/app.py')]}.items():
             with self.subTest(case=case):
                 self.write(*entries)
                 self.assertEqual(self.stop(self.edit), '')
@@ -414,6 +415,15 @@ class TurnTools(StopFixture):
         self.assertEqual(self.diary_kinds(), ['decision'])
         self.write(plan, result('p', "The user doesn't want to proceed", True))
         self.assertEqual(self.stop(), '')
+
+    def test_a_plan_approved_in_the_turn_is_not_raised_again_at_the_next_prompt(self):
+        self.write(use('p', 'ExitPlanMode', plan='# Move billing to invoices'), result('p', 'User has approved your plan'))
+        runtime.process('claude', 'user-prompt', {**self.payload, 'prompt': 'plan billing', 'permission_mode': 'plan'}, self.root)
+        stopped = runtime.process('claude', 'stop', {**self.payload, 'permission_mode': 'default'}, self.root)
+        self.assertIn('(approved: Move billing to invoices)', stopped.get('continue_reason', ''))
+        self.write(claude_line('user', 'thanks, carry on'))
+        self.payload.update(prompt='thanks, carry on', permission_mode='default')
+        self.assertEqual(self.turn(), {})
 
     def test_an_answered_question_arms_a_decision(self):
         self.write(use('q', 'AskUserQuestion', questions=[{'question': 'Which store?'}]), result('q', 'Which store? -> sqlite'))
