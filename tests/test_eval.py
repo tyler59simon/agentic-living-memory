@@ -111,6 +111,19 @@ class RealStoreMode(StoreFixture):
         after = {p.name: p.read_bytes() for p in turns.glob('usage-*.jsonl')}
         self.assertEqual(before, after)
 
+    def test_a_second_run_on_the_same_store_measures_the_same(self):
+        fixture = self.mapped()
+        first = EVAL.evaluate(fixture, self.root, hooked=True)['retrieval']['false_injection_by_kind']
+        second = EVAL.evaluate(fixture, self.root, hooked=True)['retrieval']['false_injection_by_kind']
+        self.assertEqual({k: v['rate'] for k, v in first.items()}, {k: v['rate'] for k, v in second.items()})
+        self.assertEqual(list((self.root / '.turns').glob('*.current.json')), [])   # no eval session state is left behind
+
+    def test_session_start_runs_first_so_listed_titles_suppress_the_overview(self):
+        capture('Gateway timeout', 'Raise the gateway timeout for uploads.', TAGS, 'demo', self.root)
+        fixture = {'domain': 'demo', 'cwd': str(self.base / 'project'), 'retrieval': [{'prompt': 'write a haiku about autumn leaves', 'expect': []}]}
+        kinds = EVAL.evaluate(fixture, self.root, hooked=True)['retrieval']['false_injection_by_kind']
+        self.assertEqual(kinds['overview']['rate'], 0.0)
+
     def test_by_kind_is_not_measured_in_place(self):
         report = EVAL.evaluate(self.mapped(), self.root)
         self.assertIsNone(report['retrieval']['false_injection_by_kind'])

@@ -82,13 +82,16 @@ def _case_cwd(case,cwd):
     if not here:return cwd
     return str(Path(cwd)/here[len('@project'):].lstrip('/\\')) if here.startswith('@project') else here
 
-def _hooked(cwd,prompt,root,number,first=True):
-    """{kind: [refs]} the real UserPromptSubmit hook injected for one prompt in a fresh session (KINDS: notes, maps, brief,
-    linked = notes listed under a map or brief, overview, sources). Only for a temporary store: the hook writes session state
-    and usage diary rows. The diary is put back after the case, so the eval's own injections never reinforce later cases."""
-    sid=f'eval-hook-{number}';turns=Path(root)/'.turns'
+def _hooked(cwd,prompt,root,first=True):
+    """{kind: [refs]} the real UserPromptSubmit hook injected for one prompt in a new session that began with the real
+    SessionStart hook, as every session does (it marks the titles it lists as shown). KINDS: notes, maps, brief, linked =
+    notes listed under a map or brief, overview, sources. Only for a temporary store: the hooks write session state and usage
+    diary rows. The diary is put back and the session state removed after the case, so cases and repeated runs stay independent."""
+    import uuid
+    sid=f'eval-hook-{uuid.uuid4().hex}';turns=Path(root)/'.turns'
     before={p:p.stat().st_size for p in turns.glob('usage-*.jsonl')}
     try:
+        runtime.process('claude','session-start',{'cwd':cwd,'session_id':sid,'source':'startup'},root)
         if not first:runtime.process('claude','user-prompt',{'cwd':cwd,'session_id':sid,'turn_id':'t0','prompt':'Hello, let us start.'},root)
         sizes={p:p.stat().st_size for p in turns.glob('usage-*.jsonl')}
         text=runtime.process('claude','user-prompt',{'cwd':cwd,'session_id':sid,'turn_id':'t1','prompt':prompt},root).get('context') or ''
@@ -101,6 +104,8 @@ def _hooked(cwd,prompt,root,number,first=True):
             if path in before:
                 with open(path,'r+b') as handle:handle.truncate(before[path])
             else:path.unlink()
+        pointer=runtime._pointer(Path(root),sid)
+        for path in (pointer,pointer.with_suffix('.lock')):path.unlink(missing_ok=True)
     got={}
     for row in rows:
         kind=HOOK_KINDS.get(row.get('k'))
@@ -113,9 +118,9 @@ def _hooked(cwd,prompt,root,number,first=True):
 def _by_kind(fixture,root,cwd):
     """The retrieval cases through the whole prompt hook: per kind, the share of negatives that got it, and which."""
     rows=[]
-    for number,case in enumerate(fixture.get('retrieval',[])):
+    for case in fixture.get('retrieval',[]):
         if case.get('expect'):continue
-        got=_hooked(_case_cwd(case,cwd),case['prompt'],root,number,case.get('first_prompt',True))
+        got=_hooked(_case_cwd(case,cwd),case['prompt'],root,case.get('first_prompt',True))
         rows.append({'prompt':case['prompt'],'got':got})
     out={kind:{'rate':_ratio(sum(1 for r in rows if kind in r['got']),len(rows)),'prompts':[{'prompt':r['prompt'],'injected':r['got'][kind]} for r in rows if kind in r['got']]} for kind in KINDS}
     out['any']={'rate':_ratio(sum(1 for r in rows if r['got']),len(rows)),'prompts':[r['prompt'] for r in rows if r['got']]}
@@ -235,7 +240,8 @@ def evaluate_sessions(fixture,root,cwd,domain,resolve):
 
 def evaluate(fixture,root,cwd=None,domain=None,keys=None,harness='claude',hooked=False):
     """Metrics for one fixture against the store at root. hooked (a temporary store only) also runs the retrieval
-    negatives through the whole prompt hook for false_injection_by_kind, last, after every other measurement."""
+    negatives through the whole prompt hook for false_injection_by_kind, after every read-only measurement and before
+    the session cases, which edit notes."""
     root=Path(root).resolve();cwd=cwd or fixture.get('cwd');domain=domain or fixture.get('domain')
     if not cwd or not domain:raise ValueError('Fixture needs "cwd" and "domain"')
     resolve=_resolver(domain,root,keys or {})
@@ -318,8 +324,9 @@ def evaluate(fixture,root,cwd=None,domain=None,keys=None,harness='claude',hooked
     neutral=[s for s in signals if not s['kind']]
     extra={}
     if fixture.get('units'):extra['units']=evaluate_units(fixture,root,cwd,domain,resolve)
-    if fixture.get('sessions'):extra['sessions']=evaluate_sessions(fixture,root,cwd,domain,resolve)   # last: it edits notes
+    # After the read-only measurements (its diary rows are put back) and before the session cases, which edit notes.
     by_kind=_by_kind(fixture,root,cwd) if hooked else None
+    if fixture.get('sessions'):extra['sessions']=evaluate_sessions(fixture,root,cwd,domain,resolve)   # last: it edits notes
     return {**extra,
         'retrieval':{
             'cases':len(cases),'positive':len(positive),'negative':len(negative),
