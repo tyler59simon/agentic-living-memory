@@ -500,21 +500,47 @@ def _carry_pointers(body,files,old_notes,dest):
 
 RELATED_GROUPS={'decision':'decision','policy':'decision','preference':'decision'}   # one subject often moves between these
 
-def _related(note,domain,root,skip):
-    """Up to 3 active notes of the same type group the new note may replace: one search over its title and summary through the
-    relevance gate (semantic matching joins through RRF when installed). Advisory: never raises, and digests and keyed types get none."""
+def _related_hits(note,domain,root,skip,domains=None):
+    """The active notes of the same type group the new note may replace, as hit dicts (best first, no cap) with the signals a reminder
+    would weigh: domain, rank (1-based after filtering), gate, coverage, similarity (None without a semantic model), pair_score (title
+    score), strong and owed_bar (rank 1, strong, and a second signal: pair_score >= 0.5 or a similarity well above the model's threshold;
+    body coverage alone never counts). One search over the note's title and summary through the relevance gate in `domains` (default
+    [domain]). Advisory: never raises, and digests and keyed types get none."""
     kind=note.get('type');group=RELATED_GROUPS.get(kind,kind)
     if kind in KEYED_TYPES or note.get('sources'):return []
     try:
-        from .search import search_domains,relevance_gate
+        from .search import search_domains,relevance_gate,strong,STRONG_MARGIN
+        from .semantic import threshold
+        domains=list(domains or [domain]);near=threshold(root)
         query=f"{note['title']} {summary_text(note.get('body') or '') or ''}"
-        hits=search_domains(query,[domain],6,root,keep=relevance_gate(query,root))
-        found=[h for h in hits if h['id']!=note['id'] and h['id'] not in skip and not h.get('sources') and h.get('type') not in KEYED_TYPES
-               and RELATED_GROUPS.get(h.get('type'),h.get('type'))==group]
-        return [{'ref':f"{domain}:{h['id']}",'title':h['title'],'type':h['type']} for h in found[:3]]
+        hits=search_domains(query,domains,6+3*(len(domains)-1),root,keep=relevance_gate(query,root))
+        found=[h for h in hits if not (h['domain']==domain and h['id']==note['id']) and not (h['domain']==domain and h['id'] in skip)
+               and not h.get('sources') and h.get('type') not in KEYED_TYPES and RELATED_GROUPS.get(h.get('type'),h.get('type'))==group]
+        scorers={};out=[]
+        for rank,h in enumerate(found,1):
+            if h['domain'] not in scorers:scorers[h['domain']]=TitleScorer([n for n in inventory(h['domain'],root) if n.get('status','active')=='active'])
+            pair=pair_score(scorers[h['domain']],note['title'],h['title'],kind,h.get('type'))
+            sim=h.get('similarity');is_strong=bool(strong(h,root))
+            second=pair>=0.5 or (near is not None and sim is not None and sim>=near+STRONG_MARGIN)
+            out.append({**h,'rank':rank,'gate':h.get('gate'),'coverage':h.get('coverage'),'similarity':sim,'pair_score':round(pair,3),
+                        'strong':is_strong,'owed_bar':rank==1 and is_strong and bool(second)})
+        return out
     except Exception as exc:
         from .logs import swallowed
         swallowed('notes.related',exc,root);return []
+
+def _related(note,domain,root,skip):
+    """Up to 3 active notes of the same type group the new note may replace (see _related_hits). Advisory: never raises."""
+    return [{'ref':f"{domain}:{h['id']}",'title':h['title'],'type':h['type']} for h in _related_hits(note,domain,root,skip)[:3]]
+
+def related_domains(domain,root):
+    """The domains the related check could widen to: the domain, its parents and children, and the global domains, deduplicated.
+    A global domain searches only the global domains."""
+    from .common import global_domains,load_bindings
+    from .runtime import scope_domains
+    globals_=global_domains(root)
+    if domain in globals_:return list(dict.fromkeys([domain,*globals_]))
+    return list(dict.fromkeys([domain,*scope_domains(domain,load_bindings(root)),*globals_]))
 
 USER_BRIEF_MIN_PREFS=2
 

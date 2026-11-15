@@ -33,6 +33,19 @@ class CaptureErgonomics(StoreFixture):
         self.assertEqual({r['type'] for r in new['related']},{'decision','policy'})
         self.assertIn(f"supersede REF --by demo:{new['id']}",new['related_hint']);self.assertNotIn(f"demo:{new['id']}",[r['ref'] for r in new['related']])
         self.assertNotIn('related',self.note('Unrelated billing rounding','Invoices round half up to cents.',type='decision'))
+    def test_related_hits_carry_the_signals_a_reminder_would_weigh(self):
+        from core.notes import _related_hits,related_domains
+        old=self.note('Index storage engine','We keep the search index in SQLite FTS5 files, one per domain.',type='decision')
+        new=self.note('Search index moves to one shared file','The search index moves from per-domain SQLite FTS5 files to one shared SQLite FTS5 file.',type='decision')
+        note=find_note(new['id'],'demo',self.root)[1]
+        hits=_related_hits(note,'demo',self.root,set())
+        self.assertEqual([h['id'] for h in hits],[old['id']])
+        hit=hits[0]
+        for key in ('domain','rank','gate','coverage','similarity','pair_score','strong','owed_bar'):self.assertIn(key,hit)
+        self.assertEqual((hit['domain'],hit['rank']),('demo',1));self.assertIsNone(hit['similarity'])   # no semantic model in the test store
+        self.assertFalse(hit['owed_bar'] and hit['pair_score']<0.5)   # coverage alone never owes
+        self.assertEqual(_related_hits(note,'demo',self.root,{old['id']}),[])
+        self.assertEqual(related_domains('demo',self.root)[0],'demo');self.assertEqual(len(set(related_domains('demo',self.root))),len(related_domains('demo',self.root)))
     def test_extra_values_after_one_detail_flag_are_refused_not_read_as_title_or_domain(self):
         base=('--domain','demo','capture','--title','Cache policy','--summary','The cache is rebuilt nightly.','--detail','**A:** one')
         for extra in (['**B:** two'],['**B:** two','**C:** three'],['**B:** two','**C:** three','**D:** four']):
