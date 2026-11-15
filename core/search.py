@@ -15,6 +15,10 @@ going go goes issue issues problem problems still need needs look looking make s
 run now just get got know think want like help some thing things also then has have had ok okay yes no thanks thank right
 current currently state latest again more much very really'''.split())
 MAX_TERMS=32
+# Resolved bugs and risks the prompt hook and file hints still offer (their fix is the point), at this share of their fused score.
+RESOLVED_TYPES=('bug','risk');RESOLVED_FACTOR=0.5
+# A relevance-gate verdict is strong (search.strong) when the title matched, or coverage / similarity clears these bars; tuned on tests/fixtures/eval_cross.json.
+STRONG_COVERAGE=0.75;STRONG_MARGIN=0.1
 SNIPPET=450
 # A word found in this share of a domain's notes says nothing about which note is meant ("project", "status").
 COMMON_SHARE=0.4
@@ -128,12 +132,12 @@ def file_notes(path,domains,root=None,limit=2,ensure_fresh=True):
     matched row whose canonical file changed since the index was built is skipped rather than trusted."""
     return _file_hits([path],domains,root,limit,ensure_fresh)[path]
 
-def files_notes(paths,domains,root=None,per_file=2):
+def files_notes(paths,domains,root=None,per_file=2,resolved=False):
     """{path: file_notes(path)} for many files in one scan of each domain's index rows (a hook, so never rebuilt): Stop looks up
     every file a shell command or a long edit list touched, which one file_notes call per path would read the index for each time."""
-    return _file_hits(list(dict.fromkeys(paths)),domains,root,per_file,False)
+    return _file_hits(list(dict.fromkeys(paths)),domains,root,per_file,False,resolved)
 
-def _file_hits(paths,domains,root,limit,ensure_fresh):
+def _file_hits(paths,domains,root,limit,ensure_fresh,resolved=False):
     from .notes import is_interim
     root=Path(root or memory_root()).resolve();ranked={p:[] for p in paths}
     for domain in dict.fromkeys(domains):
@@ -148,16 +152,17 @@ def _file_hits(paths,domains,root,limit,ensure_fresh):
         try:
             db=sqlite3.connect(db_path.as_uri()+'?mode=ro',uri=True)
             try:
-                try:rows=db.execute("SELECT id,title,type,updated,files,body,path,revision,sources,file_hashes FROM notes WHERE status='active'").fetchall()
+                live="status='active'"+(" OR (status='resolved' AND type IN ('bug','risk'))" if resolved else '')
+                try:rows=db.execute(f"SELECT id,title,type,updated,files,body,path,revision,sources,file_hashes,status FROM notes WHERE {live}").fetchall()
                 except sqlite3.OperationalError:
-                    try:rows=[r+('',) for r in db.execute("SELECT id,title,type,updated,files,body,path,revision,sources FROM notes WHERE status='active'")]   # an index from before file hashes
-                    except sqlite3.OperationalError:rows=[r+('','') for r in db.execute("SELECT id,title,type,updated,files,body,path,revision FROM notes WHERE status='active'")]   # an index from before digests
+                    try:rows=[r[:9]+('',r[9]) for r in db.execute(f"SELECT id,title,type,updated,files,body,path,revision,sources,status FROM notes WHERE {live}")]   # an index from before file hashes
+                    except sqlite3.OperationalError:rows=[r[:8]+('','',r[8]) for r in db.execute(f"SELECT id,title,type,updated,files,body,path,revision,status FROM notes WHERE {live}")]   # an index from before digests
             finally:db.close()
         except sqlite3.Error:continue
         from .learning import published
         try:manifests,servable=published(root,domain)
         except (ValueError,OSError):manifests,servable={},set()
-        for note_id,title,kind,updated,files,body,note_path,revision,digested,hashed in rows:
+        for note_id,title,kind,updated,files,body,note_path,revision,digested,hashed,state in rows:
             if note_id in manifests and note_id not in servable:continue
             try:listed=json.loads(files or '[]');digest_sources=json.loads(digested or '[]');file_hashes=json.loads(hashed or '[]')
             except ValueError:listed=[];digest_sources=[];file_hashes=[]
@@ -175,12 +180,13 @@ def _file_hits(paths,domains,root,limit,ensure_fresh):
                      'match':'files' if group==0 else 'body','snippet':snippet(body,terms(path))}
                 if digest_sources:hit['sources']=digest_sources
                 if file_hashes:hit['file_hashes']=file_hashes
+                if state=='resolved':hit['status']='resolved'
                 if is_interim({'type':kind,'title':title,'body':body}):hit['interim']=True
                 if note_id in manifests:hit.update(procedure_id=manifests[note_id]['id'],procedure_version=manifests[note_id]['current_version'])
                 ranked[path].append((group,str(updated or ''),hit))
     out={}
     for path,found in ranked.items():
-        found.sort(key=lambda r:r[1],reverse=True);found.sort(key=lambda r:r[0])
+        found.sort(key=lambda r:r[1],reverse=True);found.sort(key=lambda r:(r[0],r[2].get('status')=='resolved'))   # a resolved note follows the active ones in its group
         out[path]=[hit for _,_,hit in found[:max(1,limit)]]
     return out
 def _embedding_text(note):
@@ -359,7 +365,7 @@ def vocabulary(domains,root=None,wanted=None):
         total+=count;df.update(dict(rows))
     return total,dict(df)
 
-def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False):
+def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False,resolved=False):
     from .notes import is_interim
     root=Path(root or memory_root()).resolve();tokens=query_terms(query)
     domain=canonical_domain(domain,root)
@@ -370,7 +376,8 @@ def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False):
         if filters and not fresh:raise ValueError('stale_filtered_index: rebuild required before filtered search')
         from .learning import approved_notes
         notes=approved_notes(root,domain,notes,actionable=True)
-        active=[n for n in notes if n.get('status','active')=='active']
+        # resolved: a resolved bug or risk stays a candidate (the prompt hook's lookup); everything else retired stays out
+        active=[n for n in notes if n.get('status','active')=='active' or (resolved and n.get('status')=='resolved' and n.get('type') in RESOLVED_TYPES)]
         if filters:
             # Filters narrow the active notes; retired ones need an explicit status filter.
             active=[n for n in (notes if 'status' in filters else active) if all((v in n.get('tags',[]) if k=='tag' else file_matches(n.get('files'),v) if k=='file' else n.get(k)==v) for k,v in filters.items())]
@@ -501,7 +508,7 @@ def _fuse(ranked,similarity,ids):
     order=sorted(fused,key=lambda i:(-round(fused[i],12),lexical.get(i,len(ranked)+1),i))
     return [(notes[i],fused[i]) for i in order]
 
-def search_domains(query,domains,limit=3,root=None,filters=None,rebuild=False,weights=None,keep=None):
+def search_domains(query,domains,limit=3,root=None,filters=None,rebuild=False,weights=None,keep=None,resolved=False):
     """Rank-fused results across domains; the first domain counts double unless weights say otherwise.
     keep filters each domain's hits before the merge, so weak local hits cannot crowd out a strong
     match from another domain before relevance is judged."""
@@ -513,9 +520,9 @@ def search_domains(query,domains,limit=3,root=None,filters=None,rebuild=False,we
             wanted=filters['file'].get(domain,filters['file'].get('*'))
             if wanted is None:continue
             mine={**filters,'file':wanted}
-        found=search_domain(query,domain,max(20,limit),root,mine,rebuild)
+        found=search_domain(query,domain,max(20,limit),root,mine,rebuild,resolved)
         for hit in keep(found) if keep else found:
-            hit['score']=weight/(60+hit['rank']);hits.append(hit)
+            hit['score']=weight/(60+hit['rank'])*(RESOLVED_FACTOR if hit.get('status')=='resolved' else 1);hits.append(hit)
     from . import usage
     if usage.USE_STRENGTH and hits:
         # Reinforcement breaks near-ties: notes in use recently and repeatedly rise a little.
@@ -543,6 +550,7 @@ def relevance_gate(query,root,trace=None,body=True,least=0):
             # Same meaning in other words ("laid out" for "layout"): only a close semantic match counts.
             elif near is not None and hit.get('similarity',0)>=near:gate='kept:semantic'
             else:gate='dropped:weak'
+            hit['gate']=gate
             if gate.startswith('kept'):kept.append(hit)
             if isinstance(trace,list):
                 # keep runs before search_domains replaces score with the fused rank score
@@ -551,8 +559,17 @@ def relevance_gate(query,root,trace=None,body=True,least=0):
                               'relevance':hit.get('relevance'),'similarity':hit.get('similarity'),'gate':gate})
         return kept
     return relevant
+def strong(hit,root):
+    """True when the relevance gate kept this hit on a clear match: its title, most of the query's words, or a similarity well above the model's threshold."""
+    gate=hit.get('gate')
+    if gate=='kept:title':return True
+    if gate=='kept:coverage':return hit.get('coverage',0)>=STRONG_COVERAGE
+    if gate=='kept:semantic':
+        from .semantic import threshold
+        near=threshold(root);return near is not None and hit.get('similarity',0)>=near+STRONG_MARGIN
+    return False
 def note_hits(refs,root=None,query=None):
-    """Search-shaped hits for these 'domain:id' refs, active notes only, in the order given, with their units scored
+    """Search-shaped hits for these 'domain:id' refs, active notes and resolved bugs and risks, in the order given, with their units scored
     against query when a model is installed. Read-only: from the derived indexes, never a rebuild. For a follow-up
     prompt ("why?") whose topic is the notes the previous prompt found."""
     from . import semantic,vectors
@@ -568,9 +585,9 @@ def note_hits(refs,root=None,query=None):
             db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)
             try:
                 fingerprint=db.execute('SELECT fingerprint FROM metadata').fetchone()[0]
-                marks=','.join('?'*len(ids))
-                try:rows=db.execute(f"SELECT id,title,type,updated,body,revision,tags,sources,file_hashes FROM notes WHERE status='active' AND id IN ({marks})",ids).fetchall()
-                except sqlite3.OperationalError:rows=[r+('','') for r in db.execute(f"SELECT id,title,type,updated,body,revision,tags FROM notes WHERE status='active' AND id IN ({marks})",ids)]   # an index from before digests or file hashes
+                marks=','.join('?'*len(ids));live="(status='active' OR (status='resolved' AND type IN ('bug','risk')))"
+                try:rows=db.execute(f"SELECT id,title,type,updated,body,revision,tags,sources,file_hashes,status FROM notes WHERE {live} AND id IN ({marks})",ids).fetchall()
+                except sqlite3.OperationalError:rows=[r[:7]+('','',r[7]) for r in db.execute(f"SELECT id,title,type,updated,body,revision,tags,status FROM notes WHERE {live} AND id IN ({marks})",ids)]   # an index from before digests or file hashes
             finally:db.close()
         except (ValueError,sqlite3.Error,TypeError):continue
         # The same publication rule as search: a learned runbook that is suspended, retired or no longer supported is not served.
@@ -582,8 +599,8 @@ def note_hits(refs,root=None,query=None):
         try:units=index.units(wanted,[r[0] for r in rows]) if index is not None else {}
         finally:
             if index is not None:index.close()
-        for note_id,title,kind,updated,body,revision,tags,digested,hashed in rows:
-            hit={'id':note_id,'domain':domain,'title':title,'type':kind or 'knowledge','updated':str(updated or '')[:10],'status':'active',
+        for note_id,title,kind,updated,body,revision,tags,digested,hashed,state in rows:
+            hit={'id':note_id,'domain':domain,'title':title,'type':kind or 'knowledge','updated':str(updated or '')[:10],'status':state or 'active',
                  'revision':revision,'snippet':snippet(body,[]),'engine':'topic','units':units.get(note_id,[])}
             try:digest_sources=json.loads(digested or '[]');file_hashes=json.loads(hashed or '[]')
             except ValueError:digest_sources=[];file_hashes=[]

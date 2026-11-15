@@ -234,6 +234,58 @@ class SecretScreening(StoreFixture):
             capture('Database', 'Use DB_PASSWORD=hunter2hunter2 locally.', TAGS, 'demo', self.root)
 
 
+class ResolvedNotes(StoreFixture):
+    """UX-C6: a resolved bug or risk still answers a prompt and a file edit; nothing else retired does."""
+    def prompt(self, text, session='s'):
+        payload = {'cwd': str(self.base / 'project'), 'session_id': session, 'prompt': text}
+        return runtime.process('claude', 'user-prompt', payload, self.root)['context']
+
+    def resolve(self, note):
+        from core.notes import change
+        change(note['id'], 'demo', 'resolve', self.root)
+
+    def test_a_resolved_bug_is_injected_labelled(self):
+        bug = capture('Zebra gateway timeout', 'ERR_ZEBRA_GATEWAY fixed by raising the proxy timeout.', TAGS, 'demo', self.root, type='bug')
+        self.resolve(bug)
+        self.assertEqual(search_domain('ERR_ZEBRA_GATEWAY', 'demo', 5, self.root), [])   # CLI search stays active-only
+        context = self.prompt('ERR_ZEBRA_GATEWAY zebra gateway timeout')
+        line = next(l for l in context.splitlines() if 'Zebra gateway timeout' in l)
+        self.assertIn('[resolved] ', line)
+        self.assertIn('demo:' + bug['id'][:8], line)
+
+    def test_a_resolved_plan_is_not_injected(self):
+        plan = capture('Zebra gateway rollout', 'ERR_ZEBRA_GATEWAY rollout steps for the proxy.', TAGS, 'demo', self.root, type='plan')
+        self.resolve(plan)
+        self.assertNotIn('Zebra gateway rollout', self.prompt('ERR_ZEBRA_GATEWAY zebra gateway rollout') or '')
+
+    def test_an_active_note_outranks_a_resolved_one_on_the_same_words(self):
+        old = capture('Zebra gateway timeout', 'ERR_ZEBRA_GATEWAY fixed by raising the proxy timeout.', TAGS, 'demo', self.root, type='bug')
+        self.resolve(old)
+        capture('Zebra gateway timeout again', 'ERR_ZEBRA_GATEWAY returns when the proxy timeout is low.', TAGS, 'demo', self.root, type='bug')
+        lines = [l for l in self.prompt('ERR_ZEBRA_GATEWAY zebra gateway timeout').splitlines() if 'Zebra gateway' in l]
+        self.assertEqual(len(lines), 2)
+        self.assertIn('again', lines[0])
+        self.assertIn('[resolved] ', lines[1])
+
+    def test_a_follow_up_finds_the_resolved_note(self):
+        from core.search import note_hits
+        bug = capture('Zebra gateway timeout', 'ERR_ZEBRA_GATEWAY fixed by raising the proxy timeout.', TAGS, 'demo', self.root, type='bug')
+        self.resolve(bug)
+        hits = note_hits(['demo:' + bug['id']], self.root, 'why')
+        self.assertEqual([(h['id'], h['status']) for h in hits], [(bug['id'], 'resolved')])
+
+    def test_file_hint_shows_a_resolved_bug_and_stop_owes_nothing(self):
+        (self.base / 'project' / 'core').mkdir(parents=True)
+        bug = capture('Parser crash on empty input', 'Fixed in the loop.', TAGS, 'demo', self.root, type='bug', files=['core/parser.py'])
+        self.resolve(bug)
+        payload = {'cwd': str(self.base / 'project'), 'session_id': 'f1', 'prompt': 'go', 'scratchpad_dir': str(self.base / 'scratch')}
+        runtime.process('claude', 'user-prompt', payload, self.root)
+        hint = runtime.process('claude', 'pre-tool-use', {**payload, 'tool_name': 'Edit', 'tool_input': {'file_path': 'core/parser.py'}}, self.root)
+        line = next(l for l in hint['context'].splitlines() if 'Parser crash' in l)
+        self.assertIn('[resolved] ', line)
+        self.assertEqual(runtime.process('claude', 'stop', payload, self.root), {})   # a resolved note is not an owed update
+
+
 if __name__ == '__main__':
     import unittest
     unittest.main()

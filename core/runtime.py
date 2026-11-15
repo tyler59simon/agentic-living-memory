@@ -571,7 +571,7 @@ def file_hints(paths,state,root,domain,bindings,session=None,trace=None,follow=N
         from .search import file_matches
         from . import digests
         seen=set(state.get('file_hints',[]));wanted=[p for p in paths if p not in seen][:HINT_FILES_PER_CALL]
-        blocks=[];refs=[];found=scoped_file_hits(wanted,domain,bindings,root,HINT_NOTES_PER_FILE)
+        blocks=[];refs=[];found=scoped_file_hits(wanted,domain,bindings,root,HINT_NOTES_PER_FILE,True)   # a resolved bug's fix is still worth knowing before the file is changed
         for path in wanted:
             hits=found.get(path)
             if hits:
@@ -581,7 +581,7 @@ def file_hints(paths,state,root,domain,bindings,session=None,trace=None,follow=N
                 blocks.append(f'Living Memory notes about {path}:\n'+'\n'.join(hit_line(h) for h in hits))
                 refs+=[f"{h['domain']}:{h['id']}" for h in hits]
                 if isinstance(follow,dict):
-                    owed=[f"{h['domain']}:{h['id']}" for h in hits if h.get('match')=='files' or h.get('type') in FOLLOW_BODY_TYPES]
+                    owed=[f"{h['domain']}:{h['id']}" for h in hits if h.get('status')!='resolved' and (h.get('match')=='files' or h.get('type') in FOLLOW_BODY_TYPES)]   # a resolved note is finished: nothing to update
                     if owed:follow[path]=owed
         if refs:
             from .usage import record
@@ -1166,13 +1166,17 @@ def signal_nudge(signal,session,kinds=None,notes=None):
         line+=f" It may change {names}; update that note instead of capturing a new one."
     return line
 
+def hit_marks(hit):
+    """Where a hit came from or stands: `[from DOMAIN] ` for a sibling project's portable note (context), `[resolved] ` for a finished bug or risk."""
+    return (f"[from {hit['domain']}] " if hit.get('sibling') else '')+('[resolved] ' if hit.get('status')=='resolved' else '')
+
 def hit_line(hit,width=HIT_SNIPPET):
     snippet=hit.get('snippet','')
     if len(snippet)>width:
         cut=snippet.rfind(' ',0,width);snippet=snippet[:cut if cut>0 else width]+' …'
     from .notes import short_ref
     stale=f"{hit['stale']} — " if hit.get('stale') else ''   # a digest whose source file changed (core/digests.py)
-    mark=f"UNCONFIRMED (as of {hit.get('updated','')}): " if hit.get('interim') else ''   # notes.is_interim
+    mark=hit_marks(hit)+(f"UNCONFIRMED (as of {hit.get('updated','')}): " if hit.get('interim') else '')   # notes.is_interim
     line=f"- [{str(hit.get('type','note')).upper()} {hit.get('updated','')}] {short_ref(hit['domain'],hit['id'])} {mark}{hit['title']} — {stale}{snippet}"
     if hit.get('procedure_id'):
         from .learning import use_hint
@@ -1318,12 +1322,12 @@ def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=N
         # Each query has its own relevance gate; a note any query finds counts once, at its best rank.
         trace['queries']=len(queries);best={}
         for text,(body,least,limit) in queries.items():
-            for h in search_domains(text,domains,limit,root,weights=weights,keep=relevance_gate(text,root,trace['candidates'],body,least)):
+            for h in search_domains(text,domains,limit,root,weights=weights,keep=relevance_gate(text,root,trace['candidates'],body,least),resolved=True):
                 key=(h['domain'],h['id'])
                 if key not in best or h['score']>best[key]['score']:best[key]=h
         # Rank-one notes of different items tie on score; the better covered one goes first.
         found=sorted(best.values(),key=lambda h:(-h['score'],-h.get('relevance',0) if items else 0,h['domain'],h['id']))
-    else:found=search_domains(prompt,domains,10,root,weights=weights,keep=relevant)
+    else:found=search_domains(prompt,domains,10,root,weights=weights,keep=relevant,resolved=True)
     if not found and scope.get('foreign_domains'):found=search_domains(prompt,scope['foreign_domains'],10,root,keep=relevant)
     from .search import LAST_SEMANTIC
     # Which vector backend served each domain and why not native (debug log; counts and codes only).
@@ -1451,15 +1455,15 @@ def child_path(shown,domain,child,bindings):
     except (OSError,ValueError):pass
     return None
 
-def scoped_file_hits(paths,domain,bindings,root,per_file):
+def scoped_file_hits(paths,domain,bindings,root,per_file,resolved=False):
     """{path: notes about it} from the domain, its parents and its child domains (a child's notes name files relative to the child's folder:
     child_path rewrites the path for them, and each such hit carries it as 'file'). Reads the index without refreshing it, like every hook lookup."""
     from .search import files_notes
-    paths=list(dict.fromkeys(paths));out=files_notes(paths,[domain]+parent_domains(domain,bindings),root,per_file)
+    paths=list(dict.fromkeys(paths));out=files_notes(paths,[domain]+parent_domains(domain,bindings),root,per_file,resolved)
     for child in child_domains(domain,bindings):
         mapped={c:p for p in paths if (c:=child_path(p,domain,child,bindings))}
         if not mapped:continue
-        for c,hits in files_notes(list(mapped),[child],root,per_file).items():
+        for c,hits in files_notes(list(mapped),[child],root,per_file,resolved).items():
             for h in hits:h['file']=c
             out[mapped[c]]=out[mapped[c]]+hits
     for p,hits in out.items():out[p]=sorted(sorted(hits,key=lambda h:h.get('updated',''),reverse=True),key=lambda h:h.get('match')!='files')[:per_file]

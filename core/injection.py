@@ -161,7 +161,8 @@ def line(hit,unit,level,width):
     if level=='pointer' or (unit is None and level!='expanded'):return hit_line(hit,width)
     from .notes import short_ref
     stale=f"{hit['stale']} — " if hit.get('stale') else ''
-    mark=f"UNCONFIRMED (as of {hit.get('updated','')}): " if hit.get('interim') else ''
+    from .runtime import hit_marks
+    mark=hit_marks(hit)+(f"UNCONFIRMED (as of {hit.get('updated','')}): " if hit.get('interim') else '')
     head=f"- [{str(hit.get('type','note')).upper()} {hit.get('updated','')}] {short_ref(hit['domain'],hit['id'])} {mark}{hit['title']}"
     hint=''
     if hit.get('procedure_id'):
