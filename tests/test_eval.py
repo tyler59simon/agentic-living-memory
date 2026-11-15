@@ -124,6 +124,15 @@ class RealStoreMode(StoreFixture):
         kinds = EVAL.evaluate(fixture, self.root, hooked=True)['retrieval']['false_injection_by_kind']
         self.assertEqual(kinds['overview']['rate'], 0.0)
 
+    def test_session_start_does_not_auto_resolve_notes_during_the_measurement(self):
+        from unittest.mock import patch
+        from core import runtime
+        calls = []
+        with patch.object(runtime, 'auto_resolve', side_effect=lambda *a, **k: calls.append(a) or []):
+            # the eval's own patch wins inside each case, so the real one is never reached
+            EVAL.evaluate(self.mapped(), self.root, hooked=True)
+        self.assertEqual(calls, [])
+
     def test_by_kind_is_not_measured_in_place(self):
         report = EVAL.evaluate(self.mapped(), self.root)
         self.assertIsNone(report['retrieval']['false_injection_by_kind'])

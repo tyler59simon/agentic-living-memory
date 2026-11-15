@@ -86,12 +86,16 @@ def _hooked(cwd,prompt,root,first=True):
     """{kind: [refs]} the real UserPromptSubmit hook injected for one prompt in a new session that began with the real
     SessionStart hook, as every session does (it marks the titles it lists as shown). KINDS: notes, maps, brief, linked =
     notes listed under a map or brief, overview, sources. Only for a temporary store: the hooks write session state and usage
-    diary rows. The diary is put back and the session state removed after the case, so cases and repeated runs stay independent."""
-    import uuid
+    diary rows. The diary is put back and the session state removed after the case, so cases and repeated runs stay independent.
+    SessionStart runs without auto-resolve and without background work: resolving a finished note would change the notes
+    every later case and the session cases see."""
+    import os,uuid
+    from unittest.mock import patch
     sid=f'eval-hook-{uuid.uuid4().hex}';turns=Path(root)/'.turns'
     before={p:p.stat().st_size for p in turns.glob('usage-*.jsonl')}
     try:
-        runtime.process('claude','session-start',{'cwd':cwd,'session_id':sid,'source':'startup'},root)
+        with patch.object(runtime,'auto_resolve',return_value=[]),patch.dict(os.environ,{'LIVING_MEMORY_NO_BACKGROUND':'1'}):
+            runtime.process('claude','session-start',{'cwd':cwd,'session_id':sid,'source':'startup'},root)
         if not first:runtime.process('claude','user-prompt',{'cwd':cwd,'session_id':sid,'turn_id':'t0','prompt':'Hello, let us start.'},root)
         sizes={p:p.stat().st_size for p in turns.glob('usage-*.jsonl')}
         text=runtime.process('claude','user-prompt',{'cwd':cwd,'session_id':sid,'turn_id':'t1','prompt':prompt},root).get('context') or ''
