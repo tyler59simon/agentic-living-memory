@@ -207,6 +207,23 @@ def memory_subcommand(text,grammar=None):
     found={_subcommand(words) for words in parsed}
     return found.pop() if len(found)==1 else None
 
+# Hivemind sets HIVEMIND_SESSION for every program it starts in a terminal. Agents there write plans; only the user applies or undoes them.
+HIVEMIND_GOVERNED={'apply','undo','recover'}   # `setup --apply-plan` also applies a plan; `plan` and the other *-plan commands only write one
+
+def hivemind_governed(text,grammar):
+    """True when a shell command applies or undoes a plan: apply, undo, recover or setup --apply-plan. Exact invocations are read by
+    word; text that cannot be parsed (chained, redirected, expanded) is refused when it names living_memory or a standalone `alm`
+    together with a governed word as a separate token."""
+    def flag(word):
+        name=word.partition('=')[0];return len(name)>=3 and name.startswith('--') and '--apply-plan'.startswith(name)
+    parsed=_parsed(text,grammar)
+    subs=[_subcommand(words) for words in parsed or []]
+    if parsed and all(sub and not sub.startswith('-') for sub in subs):   # an option in the subcommand slot (--domain=x, --dom x) is not a subcommand: read the tokens
+        return any(sub in HIVEMIND_GOVERNED or (sub=='setup' and any(flag(w) for w in words)) for sub,words in zip(subs,parsed))
+    tokens=[t for t in re.split(r'''[\s;&|()"'`{}<>=,]+''',text) if t]
+    named=any(t.lower().endswith(('living_memory.py','living_memory')) or re.split(r'[\\/]',t)[-1].lower() in ('alm','alm.exe','alm.cmd') for t in tokens)
+    return named and any(t in HIVEMIND_GOVERNED or flag(t) for t in tokens)
+
 # Options that read a file into a note. Auto-approval covers only files the session could already see.
 FILE_OPTIONS=('--content-file','--body-file','--payload-file')
 
@@ -1651,6 +1668,17 @@ def _process(harness,event,payload,root=None,info=None):
         synced=_sync_vaults(root,'session end');backup=_daily_backup(root);pruned=_prune_journals(root)
         detail['housekeeping']={'synced':len(synced.get('results',[])) if isinstance(synced,dict) else None,'backup':bool(backup),'pruned':pruned is not None}
         return {}
+    if event=='pre-tool-use' and os.environ.get('HIVEMIND_SESSION'):
+        # Before the unbound-project return: an agent in a Hivemind terminal may not apply or undo a plan whatever its working directory.
+        args=payload.get('tool_input',payload.get('toolArgs',payload.get('toolArguments',{})))
+        if isinstance(args,str):
+            try:args=json.loads(args)
+            except json.JSONDecodeError:pass
+        name=str(payload.get('tool_name') or payload.get('toolName') or '').lower();text=shell_command(args) if name in SHELL_TOOLS else ''
+        if text and hivemind_governed(text,shell_grammar(name)):
+            detail['tool']=name;detail['decision']='deny:hivemind'
+            result['deny']='Memory plans are applied and undone by you in Hivemind, not by an agent. Write the plan; the user applies it.'
+            return result
     if not domain:
         if event=='stop':detail['reason']='unbound'
         if event=='session-start' and session!='unknown':
@@ -1886,7 +1914,8 @@ def _process(harness,event,payload,root=None,info=None):
             try:args=json.loads(args)
             except json.JSONDecodeError:pass
         detail['tool']=name
-        # Shell text is not checked: a regex over commands is trivially bypassed and blocks harmless reads.
+        # Shell text is not regex-checked: a regex over commands is trivially bypassed and blocks harmless reads. The one narrow exception
+        # is the Hivemind guard below, which reuses memory_subcommand() and fails closed on text it cannot parse.
         rule=next((r for r in (protected_rule(p,cwd,root) for p in raw_paths(args)) if r),None) if name not in READ_TOOLS and name not in SHELL_TOOLS else None
         if rule:
             detail['decision']='deny:protected:'+rule

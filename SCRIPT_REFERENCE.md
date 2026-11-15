@@ -131,6 +131,6 @@ Mutation plans snapshot all touched files and require their exact digest. `undo`
 
 With `--session`, capture and update refuse text that repeats a `<private>` span from the session's prompts, with a `private_content` conflict (see PROTOCOL.md).
 
-Error exit codes: invalid=2, conflict=5, stale=6. The code comes from the message's own wording, the text before any quoted value or `: detail`. A note title, tag or path quoted in a message never changes it. Native host event wrappers fail with their adapter's bounded output contract.
+Error exit codes: invalid=2, conflict=5, stale=6. A process that has `HIVEMIND_SESSION` set (every program Hivemind starts in an agent terminal) is refused `apply`, `undo`, `recover` and `setup --apply-plan`, also through `batch` and `serve`, with code `hivemind` and exit 2; the pre-tool-use hook refuses the same commands earlier. The code comes from the message's own wording, the text before any quoted value or `: detail`. A note title, tag or path quoted in a message never changes it. Native host event wrappers fail with their adapter's bounded output contract.
 
 `scripts/safe_write.py DOMAIN notes/FILENAME --content-file FILE --expected-revision HASH` returns an approved update plan, not a direct write.
