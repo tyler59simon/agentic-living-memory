@@ -435,6 +435,46 @@ class ReviewFixes(StoreFixture):
         self.assertIn('Child parser note', [h['title'] for h in hits])
 
 
+class GateMeaning(StoreFixture):
+    """EVAL-1: with a semantic model, body coverage needs a meaning score near the threshold, and a meaning-only keep needs a clear margin."""
+    QUERY = 'how do I reverse a list in python?'
+
+    def verdict(self, threshold=0.45, **hit):
+        hit = {'id': 'x', 'domain': 'demo', 'queryTerms': 3, 'titleOverlap': 0, 'titleTerms': 8, 'coverage': 0.0, **hit}
+        with patch('core.semantic.threshold', return_value=threshold):
+            relevance_gate(self.QUERY, self.root)([hit])
+        return hit['gate']
+
+    def test_coverage_far_from_the_meaning_is_dropped(self):
+        self.assertEqual(self.verdict(coverage=1.0, similarity=0.30, similarityScored=True), 'dropped:off_meaning')
+        self.assertEqual(self.verdict(coverage=1.0, similarity=0.42, similarityScored=True), 'kept:coverage')
+
+    def test_a_note_the_model_never_scored_keeps_the_word_test(self):
+        self.assertEqual(self.verdict(coverage=1.0, similarity=0.0, similarityScored=False), 'kept:coverage')
+        self.assertEqual(self.verdict(coverage=1.0, similarity=0.0), 'kept:coverage')
+
+    def test_a_title_match_survives_the_meaning_floor(self):
+        self.assertEqual(self.verdict(coverage=1.0, titleOverlap=2, similarity=0.10, similarityScored=True), 'kept:title')
+
+    def test_a_meaning_only_match_needs_a_clear_margin(self):
+        self.assertEqual(self.verdict(similarity=0.50, similarityScored=True), 'dropped:weak')
+        self.assertEqual(self.verdict(similarity=0.56, similarityScored=True), 'kept:semantic')
+
+    def test_without_a_model_the_word_tests_are_unchanged(self):
+        self.assertEqual(self.verdict(threshold=None, coverage=1.0, similarity=0.10, similarityScored=True), 'kept:coverage')
+        self.assertEqual(self.verdict(threshold=None, similarity=0.99, similarityScored=True), 'dropped:weak')
+
+    def test_search_marks_which_hits_the_model_scored(self):
+        note = capture('Reverse a list', 'Use reversed() or slicing in python.', ['subject/project', 'concern/decision'], 'demo', self.root)
+        with patch('core.search._semantic', return_value=({note['id']: 0.7}, {}, {'backend': 'native'})):
+            hits = search_domain(self.QUERY, 'demo', 5, self.root)
+        self.assertTrue(hits and hits[0]['similarityScored'])
+        with patch('core.search._semantic', return_value=({}, {}, {'backend': 'native'})):
+            hits = search_domain(self.QUERY, 'demo', 5, self.root)
+        self.assertTrue(hits)
+        self.assertFalse(hits[0]['similarityScored'])
+
+
 if __name__ == '__main__':
     import unittest
     unittest.main()

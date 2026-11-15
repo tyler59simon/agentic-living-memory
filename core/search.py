@@ -19,6 +19,9 @@ MAX_TERMS=32
 RESOLVED_TYPES=('bug','risk');RESOLVED_FACTOR=0.5;RESOLVED_DEMOTION=1   # a strong match is demoted by rank places instead (search_domains)
 # A relevance-gate verdict is strong (search.strong) when the title matched, or coverage / similarity clears these bars; tuned on tests/fixtures/eval_cross.json.
 STRONG_COVERAGE=0.75;STRONG_MARGIN=0.1
+# Body coverage also needs a meaning score no lower than the model's threshold minus this (EVAL-1, tuned on the real-store
+# fixture 2026-11-15: wrongly kept hits scored 0.17 to 0.35, every expected note 0.44 or more).
+COVERAGE_FLOOR_MARGIN=0.05
 SNIPPET=450
 # A word found in this share of a domain's notes says nothing about which note is meant ("project", "status").
 COMMON_SHARE=0.4
@@ -427,7 +430,7 @@ def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False,reso
             if is_interim(note):output[-1]['interim']=True
             if note.get('learning_procedure'):
                 output[-1].update(procedure_id=note['learning_procedure'],procedure_version=note['learning_version'],evidence_status=note.get('learning_state'))
-            if similarity is not None:output[-1]['similarity']=round(similarity.get(note['id'],0.0),4)
+            if similarity is not None:output[-1].update(similarity=round(similarity.get(note['id'],0.0),4),similarityScored=note['id'] in similarity)
             output[-1]['backend']=semantic_info['backend']
             if semantic_info.get('reason'):output[-1]['backendReason']=semantic_info['reason']
             # Scored units, best first: the prompt hook picks its evidence from them; the CLI shows their headings.
@@ -483,7 +486,7 @@ def sibling_search(query,domain,root=None,limit=5):
                        'status':'active','snippet':snippet(body,tokens),'score':score,'rank':len(output)+1,'engine':'fts5+semantic' if similarity is not None else 'fts5','revision':note['revision'],
                        'sourceScope':'active','coverage':coverage[note['id']],'titleOverlap':len(wanted&title),'titleTerms':len(title),'queryTerms':len(wanted),'relevance':round(coverage[note['id']],2),'backend':info['backend']})
         if is_interim({'type':note['type'],'title':note['title'],'body':body}):output[-1]['interim']=True
-        if similarity is not None:output[-1]['similarity']=round(similarity.get(note['id'],0.0),4)
+        if similarity is not None:output[-1].update(similarity=round(similarity.get(note['id'],0.0),4),similarityScored=note['id'] in similarity)
     return output
 
 _queries={}
@@ -616,10 +619,15 @@ def relevance_gate(query,root,trace=None,body=True,least=0):
             if not informative:gate='dropped:no_informative'   # only words that appear in most notes
             # One-word prompts ("continue", "yes") inject only on a title hit.
             elif informative==1:gate='kept:title' if overlap else 'dropped:one_word_no_title'
-            elif body and hit.get('coverage',0)>=0.5 and (informative<4 or hit.get('coverage',0)>0.5) and round(hit.get('coverage',0)*informative)>=least:gate='kept:coverage'
+            elif body and hit.get('coverage',0)>=0.5 and (informative<4 or hit.get('coverage',0)>0.5) and round(hit.get('coverage',0)*informative)>=least:
+                # Generic words ("python", "query", "file") sit in many bodies; with a model, the note's meaning must not be far off.
+                # A hit the model never scored (a note with no vectors yet) keeps the word test alone.
+                off=near is not None and hit.get('similarityScored') and hit.get('similarity',0)<near-COVERAGE_FLOOR_MARGIN
+                gate='kept:title' if off and (overlap>=2 or (title and overlap/title>=0.5)) else 'dropped:off_meaning' if off else 'kept:coverage'
             elif overlap>=2 or (title and overlap/title>=0.5):gate='kept:title'
-            # Same meaning in other words ("laid out" for "layout"): only a close semantic match counts.
-            elif near is not None and hit.get('similarity',0)>=near:gate='kept:semantic'
+            # Same meaning in other words ("laid out" for "layout"): only a clear semantic match counts. Just above the
+            # threshold, a generic prompt ("a good name for this python variable") matches notes that merely share its topic.
+            elif near is not None and hit.get('similarity',0)>=near+STRONG_MARGIN:gate='kept:semantic'
             else:gate='dropped:weak'
             hit['gate']=gate
             if gate.startswith('kept'):kept.append(hit)
