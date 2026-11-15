@@ -579,20 +579,25 @@ def search_domains(query,domains,limit=3,root=None,filters=None,rebuild=False,we
             mine={**filters,'file':wanted}
         found=search_domain(query,domain,max(20,limit),root,mine,rebuild,resolved)
         for hit in keep(found) if keep else found:
-            hit['score']=weight/(60+hit['rank'])*(RESOLVED_FACTOR if hit.get('status')=='resolved' else 1);hits.append(hit)
+            placed=hit.get('status')=='resolved' and strong(hit,root)
+            hit['score']=weight/(60+hit['rank'])*(RESOLVED_FACTOR if hit.get('status')=='resolved' and not placed else 1);hits.append(hit)
+    # Fused scores sit close together (rank 1 is 2/61, rank 10 is 2/70; the strength nudge below is worth several places), so the half
+    # score sinks a resolved note below every kept active hit. One that strongly matches is scored in full and merged by domain weight;
+    # its position there, before reinforcement (a retired note gathers none), plus RESOLVED_DEMOTION is where it goes in the final order.
+    order=sorted(hits,key=lambda h:(-h['score'],h['domain'],h['id']))
+    placed=[(i,h) for i,h in enumerate(order) if h.get('status')=='resolved' and strong(h,root)]
+    hits=[h for h in hits if not any(h is p for _,p in placed)]
     from . import usage
     if usage.USE_STRENGTH and hits:
         # Reinforcement breaks near-ties: notes in use recently and repeatedly rise a little.
         power=usage.strength_map(Path(root or memory_root()),{h['domain'] for h in hits});top=max(power.values(),default=0) or 1
         for hit in hits:hit['score']*=1+usage.STRENGTH_NUDGE*power.get(f"{hit['domain']}:{hit['id']}",0)/top
     ranked=sorted(hits,key=lambda h:(-h['score'],h['domain'],h['id']))
-    # Fused scores sit close together (rank 1 is 2/61, rank 10 is 2/70; the strength nudge is worth several places), so the half
-    # score sinks a resolved note below every kept active hit. One that strongly matches is placed by position instead: RESOLVED_DEMOTION
-    # places below its own rank, with a score between its new neighbours so a later sort by score keeps it there.
-    for hit in sorted((h for h in ranked if h.get('status')=='resolved' and strong(h,root)),key=lambda h:h['rank']):
-        ranked.remove(hit);at=min(len(ranked),hit['rank']-1+RESOLVED_DEMOTION)
+    for position,hit in placed:
+        at=min(position+RESOLVED_DEMOTION,len(ranked))
+        # a score between its new neighbours (or just below the last), so a later merge by score keeps the place
         if 0<at<len(ranked):hit['score']=(ranked[at-1]['score']+ranked[at]['score'])/2
-        elif at and ranked:hit['score']=min(hit['score'],ranked[-1]['score'])
+        elif at and ranked:hit['score']=ranked[-1]['score']*(1-1e-6)
         ranked.insert(at,hit)
     return ranked[:limit]
 def relevance_gate(query,root,trace=None,body=True,least=0):

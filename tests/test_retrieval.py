@@ -11,7 +11,7 @@ from core.cli import main as cli
 from core.init_domain import init_domain
 from core.notes import capture, similar_title, title_similarity, find_note
 from core.repository import find_secret
-from core.search import search_domain, search_domains, snippet
+from core.search import search_domain, search_domains, snippet, relevance_gate
 
 TAGS = ['subject/project', 'concern/decision']
 
@@ -260,6 +260,28 @@ class ResolvedNotes(StoreFixture):
         self.resolve(capture('Zebra gateway timeout drops uploads', 'ERR_ZEBRA_GATEWAY: the zebra gateway timeout drops uploads; fixed by raising it.', TAGS, 'demo', self.root, type='bug'))
         context = self.prompt('zebra gateway timeout drops uploads')
         self.assertIn('[resolved] Zebra gateway timeout drops uploads', context)
+
+    def test_a_resolved_hit_is_placed_from_its_merged_position(self):
+        # A parent's resolved bug counts at its domain's weight: it is not lifted over the primary domain's hits by its own rank.
+        init_domain('other', [str(self.base / 'other')], self.root)
+        for i in range(3):
+            capture(f'Zebra gateway note {i}', f'Zebra gateway timeout notes {i}.', TAGS, 'demo', self.root, type='knowledge', allow_similar=True)
+        self.resolve_in('other', capture('Zebra gateway timeout', 'Zebra gateway timeout fixed by raising it.', TAGS, 'other', self.root, type='bug'))
+        q = 'zebra gateway timeout'
+        hits = search_domains(q, ['demo', 'other'], 10, self.root, weights={'demo': 2, 'other': 1}, keep=relevance_gate(q, self.root), resolved=True)
+        self.assertEqual([h['domain'] for h in hits], ['demo', 'demo', 'demo', 'other'])
+
+    def test_a_resolved_hit_placed_last_keeps_a_neighbouring_score(self):
+        self.resolve(capture('Zebra gateway timeout', 'Zebra gateway timeout fixed by raising it.', TAGS, 'demo', self.root, type='bug'))
+        capture('Gateway sizing', 'Zebra gateway sizing.', TAGS, 'demo', self.root, type='knowledge')
+        q = 'zebra gateway timeout'
+        hits = search_domains(q, ['demo'], 10, self.root, keep=relevance_gate(q, self.root), resolved=True)
+        self.assertEqual([h['status'] for h in hits], ['active', 'resolved'])
+        self.assertGreater(hits[1]['score'], 0.9 * hits[0]['score'])   # not the half score: a later merge by score keeps its place
+
+    def resolve_in(self, domain, note):
+        from core.notes import change
+        change(note['id'], domain, 'resolve', self.root)
 
     def test_a_resolved_plan_is_not_injected(self):
         plan = capture('Zebra gateway rollout', 'ERR_ZEBRA_GATEWAY rollout steps for the proxy.', TAGS, 'demo', self.root, type='plan')
