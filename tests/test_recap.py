@@ -44,6 +44,17 @@ class Recap(Base):
         self.assertEqual((m['runs'],m['retired'],m['charged_usd']),(1,1,'0.001'));self.assertEqual(m['reviewed'],len(real[0]['selected']))
         with patch('core.maintenance._recent',return_value=[other]):m=self.recap()['maintenance']
         self.assertEqual((m['runs'],m['reviewed'],m['retired']),(0,0,0))
+    def test_pairs_marked_distinct_are_listed_with_both_titles_the_reason_and_who(self):
+        old=self.mk('Phase 4: how it is being built','Phase 4 is built as a detached worker that scans the store.',type='decision')
+        new=self.mk('Phase 5: how it is being built','Phase 5 is built as a recap section that lists decisions.',type='decision')
+        self.go((old,'distinct',{'reason':'Two numbered phases of one plan; both hold.','evidence':['own','successor']}))
+        self.at=self.now+timedelta(hours=1)
+        r=self.recap();self.assertEqual(len(r['distinct']),1);p=r['distinct'][0]
+        self.assertEqual((p['new_title'],p['old_title'],p['by']),('Phase 5: how it is being built','Phase 4: how it is being built','maintenance'));self.assertIn('numbered phases',p['why'])
+        self.assertIn('## Marked distinct',r['markdown']);self.assertIn('Phase 5: how it is being built and Phase 4: how it is being built (maintenance): Two numbered',r['markdown'])
+        self.assertEqual(recap_mod.recap(self.root,['demo'],days=7,now=self.at+timedelta(days=30))['distinct'],[])
+    def test_the_distinct_section_is_left_out_when_nothing_was_marked(self):
+        r=self.recap();self.assertEqual(r['distinct'],[]);self.assertNotIn('## Marked distinct',r['markdown'])
     def test_open_work_and_review(self):
         r=self.recap();self.assertEqual((r['open_work']['notes'],r['open_work']['items']),(1,2))
         self.assertEqual((r['open_work']['top'][0]['title'],r['open_work']['top'][0]['open']),('Rollout plan',2))

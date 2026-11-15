@@ -48,6 +48,22 @@ def _maintenance(root,domains,low,high):
     for item in out['retired_notes']:item['title']=titles.get(item['ref'])
     return out
 
+def _distinct(root,domains,low,high):
+    """Pairs marked distinct in the window (by maintenance or by hand), newest first: both titles, the reason and who marked them. The record lives on the newer note."""
+    from .repository import inventory
+    from .common import parse_iso
+    found=[];titles=_titles(root,domains)
+    for d in domains:
+        try:notes=inventory(d,root,retired=True)
+        except (OSError,ValueError):continue
+        for n in notes:
+            for e in n.get('distinct_from') or []:
+                try:when=parse_iso(e['at']);when=when.replace(tzinfo=timezone.utc) if when.tzinfo is None else when
+                except (KeyError,TypeError,ValueError):continue
+                if low<=when<=high:
+                    found.append({'new':f"{d}:{n['id']}",'new_title':n.get('title'),'old':e['ref'],'old_title':titles.get(e['ref']),'why':e.get('why'),'by':e.get('by'),'at':e['at']})
+    return sorted(found,key=lambda f:f['at'],reverse=True)
+
 def _sessions(rows):
     by={}
     for r in rows:by[r['harness']]=by.get(r['harness'],0)+1
@@ -56,7 +72,7 @@ def _sessions(rows):
 def _more(items):
     return [f'- and {len(items)-MAX_LISTED} more'] if len(items)>MAX_LISTED else []
 
-def _markdown(since,until,counts,changes,maint,sessions,work,review):
+def _markdown(since,until,counts,changes,maint,sessions,work,review,distinct=()):
     summary=f"{sum(counts.values())} change(s)"+(': '+', '.join(f'{n} {e}' for e,n in counts.items()) if counts else '')+f". {maint['runs']} maintenance run(s), {sessions['count']} session(s), {work['notes']} note(s) with open work, {review['due']} due for review."
     lines=[f'# Recap: {since[:10]} to {until[:10]}','','## Summary','',summary]
     for g in GROUPS:
@@ -68,6 +84,9 @@ def _markdown(since,until,counts,changes,maint,sessions,work,review):
     else:
         lines.append(f"{maint['runs']} run(s) reviewed {maint['reviewed']} note(s): {maint['updated']} updated, {maint['confirmed']} confirmed, {maint['retired']} retired, {maint['kept']} kept, {maint['deferred']} deferred. Charged {maint['charged_usd']} USD for these runs (every domain they covered).")
         lines+=[f"- {r['title'] or r['ref']} ({r['action']}): "+': '.join(str(r[k]) for k in ('rule','reason') if r.get(k)) for r in maint['retired_notes'][:MAX_LISTED]]+_more(maint['retired_notes'])
+    if distinct:
+        lines+=['','## Marked distinct','']
+        lines+=[f"- {p['new_title'] or p['new']} and {p['old_title'] or p['old']} ({p['by']}): {p['why']}" for p in distinct[:MAX_LISTED]]+_more(distinct)
     lines+=['','## Sessions','']
     lines.append(f"{sessions['count']} session(s) ("+', '.join(f'{h} {n}' for h,n in sessions['by_harness'].items())+f"), {sessions['notes_saved']} note(s) saved." if sessions['count'] else 'No sessions.')
     lines+=['','## Open work','']
@@ -86,10 +105,10 @@ def recap(root,domains,days=7,project=None,now=None):
     notes=[r for r in rows if r['event']!='session'];sessions=_sessions([r for r in rows if r['event']=='session'])
     counts={}
     for r in notes:counts[r['event']]=counts.get(r['event'],0)+1
-    changes=_changes(notes);maint=_maintenance(root,domains,low,high)
+    changes=_changes(notes);maint=_maintenance(root,domains,low,high);distinct=_distinct(root,domains,low,high)
     tags=[f'project/{project}'] if project else []
     found=open_work(domains,root,tags)
     work={'notes':len(found),'items':sum(len(i) for _,_,i in found),'top':[{'ref':f"{d}:{n['id']}",'title':n['title'],'open':len(i)} for d,n,i in sorted(found,key=lambda f:-len(f[2]))[:TOP_OPEN]]}   # the most open items first; ties stay newest first
     wl=worklist(root,domains,cheap=True,tags=tags or None);review={'due':wl['total'],'by_kind':{k:v for k,v in wl['counts'].items() if v}}
-    return {'ok':True,'since':since,'until':until,'days':days,'domains':domains,'counts':counts,'changes':changes,'maintenance':maint,'sessions':sessions,'open_work':work,'review':review,
-            'markdown':_markdown(since,until,counts,changes,maint,sessions,work,review)}
+    return {'ok':True,'since':since,'until':until,'days':days,'domains':domains,'counts':counts,'changes':changes,'maintenance':maint,'distinct':distinct,'sessions':sessions,'open_work':work,'review':review,
+            'markdown':_markdown(since,until,counts,changes,maint,sessions,work,review,distinct)}
