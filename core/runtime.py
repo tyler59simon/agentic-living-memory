@@ -1383,6 +1383,7 @@ def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=N
     return (f'No lexical match. {heading} for semantic consideration:\n'+'\n'.join(f"- {short_ref(n['domain'],n['id'])} {n['title']}" for n in overview),[],True)
 
 SIBLING_DOMAINS=4   # sibling projects searched for a portable note
+SIBLING_LEAST_TERMS=2   # a one-word prompt never crosses projects: one matching title word is too little to say another project's note applies
 
 def _own_scope(active,bindings,root):
     """The domains a prompt searches as its own: the active one, its parents and children, the global domains and the foreign fallback."""
@@ -1406,7 +1407,7 @@ def sibling_hit(prompt,root,bindings,skip,body=True):
                 swallowed('runtime.sibling_hit',exc,root);continue
             for h in hits:
                 h['score']=2/(60+h['rank'])
-                if strong(h,root) and (best is None or (h.get('relevance',0),h['score'])>(best.get('relevance',0),best['score'])) and _unchanged(h['path'],h['revision']):best=h
+                if h.get('queryTerms',0)>=SIBLING_LEAST_TERMS and strong(h,root) and (best is None or (h.get('relevance',0),h['score'])>(best.get('relevance',0),best['score'])) and _unchanged(h['path'],h['revision']):best=h
         if best:best['sibling']=True
         return best
     except Exception as exc:

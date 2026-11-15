@@ -323,6 +323,10 @@ class SiblingNotes(StoreFixture):
         self.assertNotIn('[from a]', context)
         self.assertNotIn('Quokka', context)
 
+    def test_a_one_word_prompt_never_crosses_projects(self):
+        capture('Wombat', 'Wombat feeding schedule for the shared stables.', TAGS, 'a', self.root, type='knowledge')
+        self.assertNotIn('[from a]', self.prompt('wombat') or '')
+
     def test_a_strong_local_hit_suppresses_the_lookup(self):
         capture('Zebra proxy timeout local', 'Local timeout notes.', TAGS, 'demo', self.root, type='knowledge', allow_similar=True)
         self.assertNotIn('[from a]', self.prompt('zebra proxy timeout'))
