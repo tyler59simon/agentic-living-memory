@@ -392,7 +392,7 @@ def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False,reso
                     match=joiner.join('"'+t+'"' for t in tokens)
                     batch=db.execute('SELECT n.id,bm25(notes_fts,5.0,3.0,1.0),n.rowid FROM notes_fts JOIN notes n ON n.rowid=notes_fts.rowid WHERE notes_fts MATCH ? ORDER BY bm25(notes_fts,5.0,3.0,1.0)',(match,)).fetchall()
                     found+=[row for row in batch if row[0] in ids and row[0] not in listed];listed|={row[0] for row in batch}
-                    if len(found)>=limit or len(tokens)==1:break
+                    if sum(ids[r[0]].get('status','active')=='active' for r in found)>=limit or len(tokens)==1:break   # resolved notes fill no slot
                 rows=found;ranked=[(ids[note_id],-score) for note_id,score,_ in rows]
                 per_row,informative,common=_coverage_fts(db,tokens)
                 coverage={note_id:per_row.get(rowid,0)/max(1,len(informative)) for note_id,_,rowid in rows} if informative else {note_id:0.0 for note_id,_,_ in rows}
@@ -407,8 +407,14 @@ def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False,reso
         else:
             ranked=_fallback(tokens,active);common=_common_fallback(tokens,notes)
         wanted={stem(t) for t in tokens if t not in common}
-        output=[]
-        for note,score in ranked[:max(1,min(100,limit))]:
+        output=[];room=max(1,min(100,limit))
+        if resolved:   # a resolved note never takes an active note's slot: each kind keeps up to `limit` hits, in ranked order
+            spent={'active':0,'resolved':0};kept=[]
+            for note,score in ranked:
+                kind='resolved' if note.get('status','active')=='resolved' else 'active'
+                if spent[kind]<room:spent[kind]+=1;kept.append((note,score))
+            ranked=kept;room=2*room
+        for note,score in ranked[:room]:
             title=stems(note['title'])
             if note['id'] not in coverage:coverage[note['id']]=len(wanted&(title|stems(note['body'])))/len(wanted) if wanted else 0.0
             field='title' if wanted&title else 'tags' if wanted&stems(' '.join(note.get('tags',[]))) else 'body'
@@ -434,6 +440,7 @@ def sibling_search(query,domain,root=None,limit=5):
     from its search.sqlite3 alone: nothing is parsed and nothing is rebuilt, so a hook can afford a few of these. A missing index
     gives []; a stale one may name a note that changed since, which the caller checks (_unchanged). Hits are search_domain's hits
     (gate keys included) for the same query, without units, sources or learned runbooks (those are left out)."""
+    from .notes import is_interim
     root=Path(root or memory_root()).resolve();tokens=query_terms(query)
     try:path=domain_dir(domain,root)/'search.sqlite3'
     except ValueError:return []
@@ -475,6 +482,7 @@ def sibling_search(query,domain,root=None,limit=5):
         output.append({'id':note['id'],'domain':domain,'path':note['path'],'title':note['title'],'type':note['type'],'updated':str(note['updated'] or '')[:10],'tags':tags,
                        'status':'active','snippet':snippet(body,tokens),'score':score,'rank':len(output)+1,'engine':'fts5+semantic' if similarity is not None else 'fts5','revision':note['revision'],
                        'sourceScope':'active','coverage':coverage[note['id']],'titleOverlap':len(wanted&title),'titleTerms':len(title),'queryTerms':len(wanted),'relevance':round(coverage[note['id']],2),'backend':info['backend']})
+        if is_interim({'type':note['type'],'title':note['title'],'body':body}):output[-1]['interim']=True
         if similarity is not None:output[-1]['similarity']=round(similarity.get(note['id'],0.0),4)
     return output
 

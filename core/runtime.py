@@ -1300,6 +1300,9 @@ def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=N
     if role:
         from .search import note_hits
         topic_hits=note_hits(list(topic)[:injection.TOPIC_REFS],root,prompt);trace['follow_up']=role
+        own=_own_scope(active,bindings,root)
+        for h in topic_hits:
+            if h['domain'] not in own:h['sibling']=True   # a note the last prompt took from another project stays a labelled pointer
     if not query and not topic_hits:trace['path']='no_terms';return None,[],False
     if not query:
         return _deliver(prompt,root,topic_hits,[],shown,delivered,trace,session_delivered,units_out,role,False,set(),room)
@@ -1380,6 +1383,11 @@ def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=N
     return (f'No lexical match. {heading} for semantic consideration:\n'+'\n'.join(f"- {short_ref(n['domain'],n['id'])} {n['title']}" for n in overview),[],True)
 
 SIBLING_DOMAINS=4   # sibling projects searched for a portable note
+
+def _own_scope(active,bindings,root):
+    """The domains a prompt searches as its own: the active one, its parents and children, the global domains and the foreign fallback."""
+    scope=bindings.get('search_scope',{})
+    return {active,*scope_domains(active,bindings),*(canonical_domain(d,root) for d in scope.get('global_domains',['_global'])),*(scope.get('foreign_domains') or ())}
 
 def sibling_hit(prompt,root,bindings,skip,body=True):
     """The one strong, portable note another bound project holds for a prompt this project answers weakly (UX-C7), marked
@@ -1501,7 +1509,7 @@ def scoped_file_hits(paths,domain,bindings,root,per_file,resolved=False):
         for c,hits in files_notes(list(mapped),[child],root,per_file,resolved).items():
             for h in hits:h['file']=c
             out[mapped[c]]=out[mapped[c]]+hits
-    for p,hits in out.items():out[p]=sorted(sorted(hits,key=lambda h:h.get('updated',''),reverse=True),key=lambda h:h.get('match')!='files')[:per_file]
+    for p,hits in out.items():out[p]=sorted(sorted(hits,key=lambda h:h.get('updated',''),reverse=True),key=lambda h:(h.get('match')!='files',h.get('status')=='resolved'))[:per_file]
     return out
 
 def process(harness,event,payload,root=None):

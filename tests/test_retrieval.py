@@ -11,7 +11,7 @@ from core.cli import main as cli
 from core.init_domain import init_domain
 from core.notes import capture, similar_title, title_similarity, find_note
 from core.repository import find_secret
-from core.search import search_domain, snippet
+from core.search import search_domain, search_domains, snippet
 
 TAGS = ['subject/project', 'concern/decision']
 
@@ -344,6 +344,49 @@ class SiblingNotes(StoreFixture):
         self.prompt('zebra proxy timeout')
         refs = {r['ref'] for r in usage.events(self.root) if r['e'] == 'inject' and r.get('k') == 'prompt'}
         self.assertIn('a:' + self.fix['id'], refs)
+
+class ReviewFixes(StoreFixture):
+    """Review fixes for UX-C6 and UX-C7."""
+    def prompt(self, text, session='s'):
+        payload = {'cwd': str(self.base / 'project'), 'session_id': session, 'prompt': text}
+        return runtime.process('claude', 'user-prompt', payload, self.root)['context']
+
+    def test_a_follow_up_keeps_the_sibling_label_and_stays_a_pointer(self):
+        init_domain('a', [str(self.base / 'a')], self.root)
+        capture('Zebra proxy timeout', 'Raise the zebra proxy timeout to stop dropped uploads.\n\n## Why\n\nA low zebra proxy timeout cuts long uploads off, so every large upload failed.',
+                TAGS, 'a', self.root, type='knowledge')
+        capture('Gateway notes', 'The zebra proxy sits behind the gateway.', TAGS, 'demo', self.root, type='knowledge')
+        self.assertIn('[from a] ', self.prompt('zebra proxy timeout'))
+        context = self.prompt('why is that? repeat that')
+        line = next((l for l in (context or '').splitlines() if 'Zebra proxy timeout' in l), '')
+        self.assertIn('[from a] ', line)
+        self.assertNotIn('§', line)
+
+    def test_many_resolved_bugs_do_not_push_out_an_active_match(self):
+        for i in range(24):
+            self.resolve(capture(f'Quokka burrow collapse {i}', f'Quokka burrow collapse number {i}: burrow depth fixed.', TAGS, 'demo', self.root, type='bug', allow_similar=True))
+        active = capture('Burrow depth guide', 'Measure quokka depth with the probe.', TAGS, 'demo', self.root, type='knowledge', allow_similar=True)
+        hits = search_domains('quokka burrow collapse depth', ['demo'], 20, self.root, resolved=True)
+        self.assertIn(active['id'], [h['id'] for h in hits])
+
+    def resolve(self, note):
+        from core.notes import change
+        change(note['id'], 'demo', 'resolve', self.root)
+
+    def test_a_sibling_hypothesis_keeps_its_unconfirmed_mark(self):
+        init_domain('a', [str(self.base / 'a')], self.root)
+        capture('Zebra proxy timeout', 'Hypothesis: the zebra proxy timeout is too low for dropped uploads.', TAGS, 'a', self.root, type='knowledge')
+        capture('Gateway notes', 'The zebra proxy sits behind the gateway.', TAGS, 'demo', self.root, type='knowledge')
+        line = next(l for l in self.prompt('zebra proxy timeout').splitlines() if '[from a] ' in l)
+        self.assertIn('UNCONFIRMED (as of', line)
+
+    def test_a_childs_active_hint_is_not_crowded_out_by_resolved_ones(self):
+        init_domain('child', [str(self.base / 'project' / 'child')], self.root)
+        capture('Child parser note', 'Parser keeps order.', TAGS, 'child', self.root, type='knowledge', files=['core/x.py'])
+        for i in range(2):
+            self.resolve(capture(f'Parser crash {i}', f'Crash {i} fixed.', TAGS, 'demo', self.root, type='bug', files=['child/core/x.py'], allow_similar=True))
+        hits = runtime.scoped_file_hits(['child/core/x.py'], 'demo', runtime.load_bindings(self.root), self.root, 2, True)['child/core/x.py']
+        self.assertIn('Child parser note', [h['title'] for h in hits])
 
 
 if __name__ == '__main__':
