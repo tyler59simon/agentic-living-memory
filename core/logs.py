@@ -81,7 +81,7 @@ _refused=set()
 def content_state(root):
     """'off', 'on' or 'refused'. Text is logged only for a store marked {"sandbox": true} in sandbox.json that
     is not the configured data root, and only when LIVING_MEMORY_LOG_CONTENT asks for it. Only the simulation
-    harness writes the marker; a marker copied into the real store still does nothing."""
+    harness (scripts/simulate.py) writes the marker; a marker copied into the real store still does nothing."""
     if os.environ.get(CONTENT_ENV,'').strip().lower() not in {'1','true','yes','on'}:return 'off'
     try:
         root=Path(root).resolve();marker=json.loads((root/MARKER).read_text(encoding='utf-8'))

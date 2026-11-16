@@ -46,7 +46,7 @@ ACTION_TYPES = frozenset({'plan', 'bug', 'risk'})
 TYPE_SECTIONS = {
     'decision': ('Why', 'Alternatives considered'),
     'bug': ('Cause', 'Fix', 'How to check'),
-    'runbook': ('When to use', 'When not to use', 'Steps', 'Check', 'Roll back', 'If it fails'),
+    'runbook': ('When to use', 'When not to use', 'Steps', 'Check', 'Roll back'),
     'research': ('Findings', 'Sources', 'Open questions'),
 }
 # Where each kind of section sits: typed and custom sections (rank 2) come before Details.

@@ -4,7 +4,7 @@ A note is read cold, often months later, by an agent or a person who was not the
 
 The rules below adapt two sources to memory notes: [humanizer](https://github.com/blader/humanizer) v4.0.0 (MIT) and Wikipedia's [Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing). Both describe how model text drifts toward the most likely phrasing for the widest audience, so it comes out generic and inflated. Notes are reference text, so they stay neutral and plain: no humor, no opinions, no asides.
 
-`capture` and `update` check for most of these habits and return `style:` and `shape:` lines in `quality_warnings`. The warnings are advisory: the note is saved either way.
+`capture` and `update` check for most of these habits and return `style:` and `shape:` lines in `quality_warnings`. The warnings are advisory: the note is saved either way. A runbook without a "When not to use" section gets a `shape:` warning, because a runbook without one gets applied where it does not fit; say there what to do instead.
 
 ## The summary
 
@@ -98,7 +98,7 @@ living_memory.py inspect-plan PLAN_ID --full
 living_memory.py apply PLAN_ID --expected-plan-sha256 DIGEST
 ```
 
-`rewrite.json` is a list of `{"ref": "domain:id", "revision": "...", "body": "..."}`, with the revision each new body was written from. A rewrite keeps each note's `updated` and `review_by`, because the facts did not change. Maps, briefs and learned runbooks are refused: maps and briefs keep their labels, and learned runbooks change through learning review.
+`rewrite.json` is a list of `{"ref": "domain:id", "revision": "...", "body": "..."}`, with the revision each new body was written from. A rewrite keeps each note's `updated` and `review_by`, because the facts did not change. Maps and briefs are refused, because they keep their labels.
 
 ## What counts as checking a note
 

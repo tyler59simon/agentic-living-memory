@@ -18,7 +18,7 @@
     {"q": "How are the Obsidian vault copies kept in sync with the canonical notes and what happens on a conflict?", "expect": ["core/sync.py", "OBSIDIAN.md"]},
     {"q": "How does the usage diary record which notes were shown and which were actually used?", "expect": ["core/usage.py", "MAINTENANCE.md"]},
     {"q": "How are repeated Read, Glob and Grep tool calls answered quickly without loading the whole runtime?", "expect": ["core/hookfast.py"]},
-    {"q": "How does a proposed runbook get approved and versioned in reviewed learning?", "expect": ["core/learning.py", "LEARNING.md"]},
+    {"q": "How does automatic note maintenance pick notes to review and what is it allowed to change?", "expect": ["core/maintenance.py", "NOTE_MAINTENANCE.md"]},
     {"q": "How can the agent search the session transcript for details that compaction summarized away?", "expect": ["core/recall.py", "ARCHITECTURE.md"]}
   ]
 }

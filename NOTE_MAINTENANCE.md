@@ -9,7 +9,7 @@ A model reviews a small batch of candidate notes and recommends one action for e
 Maintenance does not:
 
 - delete any note. Retired notes move to `archive/` (or are resolved or superseded) and can be brought back.
-- touch preference or policy notes or learned procedures, or retire a pinned note (a pinned note can still be confirmed or get a factual update). The one exception to reading them is a queued pair (see Possible replacements): the reviewer may read such an older note and record the pair as distinct, but never change or supersede it.
+- touch preference or policy notes, or retire a pinned note (a pinned note can still be confirmed or get a factual update). The one exception to reading them is a queued pair (see Possible replacements): the reviewer may read such an older note and record the pair as distinct, but never change or supersede it.
 - retire maps, briefs or runbooks. These can be kept, deferred, confirmed or updated.
 - merge, retag, remap, change the taxonomy or edit configuration. Those still need an approved plan.
 - retire a note only because it is noisy (retrieved often but never used). Usage, age and review dates are signals, never proof.
@@ -48,7 +48,7 @@ Not sent: file contents beyond those excerpts, the repository tree, environment 
 
 ## The policy in plain words
 
-- Pinned notes and protected types are never retired. Preference and policy notes and learned procedures are not reviewed at all. Maps, briefs and runbooks are never retired.
+- Pinned notes and protected types are never retired. Preference and policy notes are not reviewed at all. Maps, briefs and runbooks are never retired.
 - Status notes: may be archived once their review date has passed and they hold no unique current instruction or unresolved work.
 - Plan, bug and risk notes: resolved when every action item is checked and the body keeps nothing that is not covered elsewhere; archived only when current evidence shows the work was cancelled or is obsolete. Inactivity or unchecked items alone are not evidence.
 - Knowledge, decision, context and research notes: archived only when current evidence shows the content is obsolete; superseded when an active successor covers all its useful content. An old decision that still explains a current constraint stays.

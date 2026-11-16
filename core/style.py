@@ -81,7 +81,8 @@ def style_warnings(note):
         if _BULLET.match(line) and count > LONG:
             found.append(f'style: a bullet has {count} words ("' + ' '.join(line.split())[:50] + '..."); one fact per bullet')
             break
-    found += shape_warnings(note_type, body, found_sections)
+    # A file digest's layout is written by ingest, not by the agent.
+    found += shape_warnings(note_type, body, found_sections, generated=bool(note.get('sources')))
     return found
 
 
@@ -99,9 +100,12 @@ _SAYS_WHY = re.compile(r'(?i)\b(?:because|since|so that|to avoid|in order to|why
 _SAYS_CAUSE = re.compile(r'(?i)\b(?:caus(?:e|es|ed)|because|fix(?:es|ed)?|workaround|hypothes[ie]s|root cause)\b')
 
 
-def shape_warnings(note_type, body, found_sections=None):
+def shape_warnings(note_type, body, found_sections=None, generated=False):
     found_sections = found_sections if found_sections is not None else sections(body)
     text = prose(body)
+    # Without this section a runbook gets applied where it does not fit.
+    if note_type == 'runbook' and not generated and not _has(body, found_sections, 'when not to use', 'do not use when'):
+        return ["shape: a runbook says when not to use it and what to do instead: add --section 'When not to use' '...'"]
     if note_type == 'decision' and not (_has(body, found_sections, 'why', 'rationale', 'reason') or _SAYS_WHY.search(text)):
         return ["shape: a decision note says why: add --section 'Why' '...'"]
     if note_type == 'bug' and not (_has(body, found_sections, 'cause', 'root cause', 'hypothesis', 'fix', 'workaround')

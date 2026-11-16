@@ -18,6 +18,15 @@ class Quality(StoreFixture):
         self.assertTrue(any('test counts' in w for w in quality_warnings({'body': 'Full suite: 144 tests passed.'})))
         self.assertTrue(any('git' in w for w in quality_warnings({'body': 'Shipped in commit 0a56b9f.'})))
 
+    def test_a_runbook_without_when_not_to_use_is_flagged(self):
+        said = "shape: a runbook says when not to use it"
+        bare = {'type': 'runbook', 'title': 'Rebuild the index', 'body': 'Rebuild the index when search is stale.\n\n## Steps\n1. Run reindex.'}
+        self.assertTrue(any(said in w for w in quality_warnings(bare)))
+        full = dict(bare, body=bare['body'] + '\n\n## When not to use\nThe note file is missing: restore it from a backup instead.')
+        self.assertFalse(any(said in w for w in quality_warnings(full)))
+        # Ingest writes a file digest's layout; the agent cannot add the section to it.
+        self.assertFalse(any(said in w for w in quality_warnings(dict(bare, sources=[{'path': 'README.md'}]))))
+
     def test_lasting_knowledge_has_no_warnings(self):
         result = capture('Use the venv interpreter', 'System Python lacks pytest; run tests with .venv/Scripts/python.exe.', TAGS, 'demo', self.root)
         self.assertNotIn('quality_warnings', result)

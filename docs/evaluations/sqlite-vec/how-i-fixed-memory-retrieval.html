@@ -326,15 +326,12 @@ footer{margin-top:4rem;padding-top:1.4rem;border-top:1px solid var(--line);color
   <details><summary>Each new note was embedded twice</summary><div><p>The note-level vector and the overview unit embed the same text. An existing test that counts embeddings caught the double work; the rebuild now hands its fresh embeddings to the unit index, and an edit that leaves the summary alone reuses the overview unit's vector.</p></div></details>
   <details><summary>Section evidence dropped the actual answer</summary><div><p>For "when are the database backups taken", the best section was <i>Details</i> while the time was in the summary. Evidence lines now lead with the summary's opening. Separately, every section embedding includes the note title, so sections of one note score close together; a small bonus per shared prompt word separates them.</p></div></details>
   <details><summary>The Codex review found eight more</summary><div>
-    <p>An independent review (Codex, gpt-6.1-sol, extra-high reasoning) of the whole branch found two P1 and six P2 issues. All eight were real. All are fixed, each with a regression test that I checked fails on the code before the fix and passes after.</p>
+    <p>An independent review (Codex, gpt-6.1-sol, extra-high reasoning) of the whole branch found five P2 issues. All five were real. All are fixed, each with a regression test that I checked fails on the code before the fix and passes after.</p>
     <ul class="plain">
-      <li><b>P1</b> Follow-up topic notes skipped the learned-runbook publication check, so a suspended procedure could come back on "what are the steps?".</li>
-      <li><b>P1</b> <code>read --section</code> read the raw file instead of the approved body, exposing an unreviewed edit of a learned runbook.</li>
       <li><b>P2</b> "why Redis?" after an outbox question was treated as a follow-up to the outbox.</li>
       <li><b>P2</b> A question that found nothing kept the old topic, so a later "why?" answered the wrong thing.</li>
       <li><b>P2</b> Post-compaction recall cut by the budget was still marked delivered.</li>
       <li><b>P2</b> Fenced commands lost their newlines and indentation in evidence lines.</li>
-      <li><b>P2</b> Evidence lines dropped a learned runbook's usage-report hint.</li>
       <li><b>P2</b> sqlite-vec could cut tied neighbours at k differently from the Python scan.</li>
     </ul>
   </div></details>

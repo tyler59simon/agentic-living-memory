@@ -43,7 +43,7 @@ def _type(note):
 
 
 def _excluded(note):
-    return _type(note) in EXCLUDED or bool(note.get('learning_procedure'))
+    return _type(note) in EXCLUDED
 
 
 def _completed(note):
@@ -77,7 +77,7 @@ def _permitted(note, kinds, pair_same, has_successor):
     from .note_format import ACTION_TYPES
     t = _type(note)
     out = ['keep', 'defer']
-    if t in EXCLUDED or note.get('learning_procedure'):
+    if t in EXCLUDED:
         return []
     out += ['confirm', 'update']
     if note.get('pinned') is True or t in LIMITED:
@@ -99,7 +99,7 @@ def _permitted(note, kinds, pair_same, has_successor):
 def refusal(note, action):
     """The reason code for an action the policy table does not allow."""
     t = _type(note)
-    if t in EXCLUDED or note.get('learning_procedure'):
+    if t in EXCLUDED:
         return 'protected_type'
     if action in ('resolve', 'archive', 'supersede'):
         if note.get('pinned') is True:

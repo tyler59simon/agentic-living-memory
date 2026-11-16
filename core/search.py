@@ -162,11 +162,7 @@ def _file_hits(paths,domains,root,limit,ensure_fresh,resolved=False):
                     except sqlite3.OperationalError:rows=[r[:8]+('','',r[8]) for r in db.execute(f"SELECT id,title,type,updated,files,body,path,revision,status FROM notes WHERE {live}")]   # an index from before digests
             finally:db.close()
         except sqlite3.Error:continue
-        from .learning import published
-        try:manifests,servable=published(root,domain)
-        except (ValueError,OSError):manifests,servable={},set()
         for note_id,title,kind,updated,files,body,note_path,revision,digested,hashed,state in rows:
-            if note_id in manifests and note_id not in servable:continue
             try:listed=json.loads(files or '[]');digest_sources=json.loads(digested or '[]');file_hashes=json.loads(hashed or '[]')
             except ValueError:listed=[];digest_sources=[];file_hashes=[]
             entries=listed+[s['path'] for s in digest_sources+file_hashes];plain=None;intact=None
@@ -185,7 +181,6 @@ def _file_hits(paths,domains,root,limit,ensure_fresh,resolved=False):
                 if file_hashes:hit['file_hashes']=file_hashes
                 if state=='resolved':hit['status']='resolved'
                 if is_interim({'type':kind,'title':title,'body':body}):hit['interim']=True
-                if note_id in manifests:hit.update(procedure_id=manifests[note_id]['id'],procedure_version=manifests[note_id]['current_version'])
                 ranked[path].append((group,str(updated or ''),hit))
     out={}
     for path,found in ranked.items():
@@ -377,8 +372,6 @@ def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False,reso
         notes=inventory(domain,root,retired=True);fresh=_fresh(domain,root,notes)
         if not fresh and rebuild:rebuild_index(domain,root);fresh=True
         if filters and not fresh:raise ValueError('stale_filtered_index: rebuild required before filtered search')
-        from .learning import approved_notes
-        notes=approved_notes(root,domain,notes,actionable=True)
         # resolved: a resolved bug or risk stays a candidate (the prompt hook's lookup); everything else retired stays out
         active=[n for n in notes if n.get('status','active')=='active' or (resolved and n.get('status')=='resolved' and n.get('type') in RESOLVED_TYPES)]
         if filters:
@@ -428,8 +421,6 @@ def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False,reso
             if note.get('sources'):output[-1]['sources']=note['sources']
             if note.get('file_hashes'):output[-1]['file_hashes']=note['file_hashes']
             if is_interim(note):output[-1]['interim']=True
-            if note.get('learning_procedure'):
-                output[-1].update(procedure_id=note['learning_procedure'],procedure_version=note['learning_version'],evidence_status=note.get('learning_state'))
             if similarity is not None:output[-1].update(similarity=round(similarity.get(note['id'],0.0),4),similarityScored=note['id'] in similarity)
             output[-1]['backend']=semantic_info['backend']
             if semantic_info.get('reason'):output[-1]['backendReason']=semantic_info['reason']
@@ -442,21 +433,18 @@ def sibling_search(query,domain,root=None,limit=5):
     """search_domain for another project's portable notes (knowledge, bug and runbook notes that are active and have no project/ tag),
     from its search.sqlite3 alone: nothing is parsed and nothing is rebuilt, so a hook can afford a few of these. A missing index
     gives []; a stale one may name a note that changed since, which the caller checks (_unchanged). Hits are search_domain's hits
-    (gate keys included) for the same query, without units, sources or learned runbooks (those are left out)."""
+    (gate keys included) for the same query, without units or sources."""
     from .notes import is_interim
     root=Path(root or memory_root()).resolve();tokens=query_terms(query)
     try:path=domain_dir(domain,root)/'search.sqlite3'
     except ValueError:return []
     if not tokens or not path.exists():return []
-    from .learning import published
-    try:manifests,_=published(root,domain)
-    except (ValueError,OSError):manifests={}
     try:
         db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)
         try:
             ids={}
             for note_id,title,kind,updated,note_path,revision in db.execute("SELECT id,title,type,updated,path,revision FROM notes WHERE status='active' AND type IN ('knowledge','bug','runbook') AND tags NOT LIKE '%\"project/%'"):
-                if note_id not in manifests:ids[note_id]={'id':note_id,'title':title,'type':kind,'updated':updated,'path':note_path,'revision':revision,'status':'active'}
+                ids[note_id]={'id':note_id,'title':title,'type':kind,'updated':updated,'path':note_path,'revision':revision,'status':'active'}
             if not ids:return []
             found=[];listed=set()
             for joiner in (' AND ',' OR '):   # as search_domain: notes with every term first, then notes with some
@@ -669,11 +657,6 @@ def note_hits(refs,root=None,query=None):
                 except sqlite3.OperationalError:rows=[r[:7]+('','',r[7]) for r in db.execute(f"SELECT id,title,type,updated,body,revision,tags,status FROM notes WHERE {live} AND id IN ({marks})",ids)]   # an index from before digests or file hashes
             finally:db.close()
         except (ValueError,sqlite3.Error,TypeError):continue
-        # The same publication rule as search: a learned runbook that is suspended, retired or no longer supported is not served.
-        from .learning import published
-        try:manifests,servable=published(root,domain)
-        except (ValueError,OSError):manifests,servable={},set()
-        rows=[r for r in rows if r[0] not in manifests or r[0] in servable]
         index,_=vectors.open_index(domain,root,fingerprint,identity,model.dim if model else 0)
         try:units=index.units(wanted,[r[0] for r in rows]) if index is not None else {}
         finally:
@@ -685,7 +668,6 @@ def note_hits(refs,root=None,query=None):
             except ValueError:digest_sources=[];file_hashes=[]
             if digest_sources:hit['sources']=digest_sources
             if file_hashes:hit['file_hashes']=file_hashes
-            if note_id in manifests:hit.update(procedure_id=manifests[note_id]['id'],procedure_version=manifests[note_id]['current_version'])
             if is_interim({'type':kind,'title':title,'body':body}):hit['interim']=True
             found[f'{domain}:{note_id}']=hit
     return [found[r] for r in refs if r in found]

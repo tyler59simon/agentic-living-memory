@@ -318,12 +318,7 @@ def sync(domain,vault,root=None,trigger=None):
                     if 'commands' in updated:
                         updated['commands']=clean_commands(updated['commands'])
                         if not updated['commands']:updated.pop('commands')
-                    updated['body']=proposed_note['body'];updated=normalize(updated);proposal=None
-                    if note.get('learning_procedure'):
-                        from .learning import stage_edit
-                        if updated['body']!=note['body'] or updated['title']!=note['title']:
-                            proposal=stage_edit(root,domain,note,dict(title=updated['title'],body=updated['body']))
-                        updated=dict(note)
+                    updated['body']=proposed_note['body'];updated=normalize(updated)
                     if serialize({**updated,'updated':''})!=serialize({**normalize(note),'updated':''}):
                         if serialize({**updated,'updated':'','pinned':False})!=serialize({**normalize(note),'updated':'','pinned':False}):   # a pin-only edit keeps `updated`, as update --pin does
                             keep_baseline(updated) if updated['body']==note['body'] else None   # a cosmetic vault edit keeps the verification baseline
@@ -345,11 +340,6 @@ def sync(domain,vault,root=None,trigger=None):
                         after_rel=note_rel(domain,canonical_target.name);after_source=new_hash
                         after_hash=place(note_id,old_rel,after_rel,new_text,overlay_text,overlay_hash);copied+=1
                         conflict=None
-                        if proposal and proposal.get('candidate_id'):
-                            # Approved procedures change only through review: the vault shows the approved version again.
-                            conflict={'message':f"Learned procedure: your edit was saved as review proposal {proposal['candidate_id'][:8]}; "
-                                                'the approved version stays published until it is approved (Hivemind Review → Learning).',
-                                      'staged':f'domains/{domain}/staged/{note_id}-{overlay_hash[:12]}.md'}
                 except ValueError as exc:
                     pending=True;staged+=1
                     entry={**{k:v for k,v in entry.items() if k not in ('pending_plan','pending_action','conflict')},'pending_hash':overlay_hash,'pending_error':str(exc)}
@@ -496,8 +486,7 @@ def _template(note_type):
     """Frontmatter and section skeleton in the note layout; sections left unfilled are dropped at capture."""
     meta={'title':'{{title}}','type':note_type,'status':'active','tags':['subject/project','concern/knowledge'],'context':''}
     parts=[TITLE_MARK+'{{title}}',TEMPLATE_PROMPTS[note_type],CALLOUT+' ']
-    # The type's own sections (a learned runbook's "If it fails" is written by learning, not by hand).
-    parts+=['## '+heading for heading in TYPE_SECTIONS.get(note_type,()) if heading!='If it fails']
+    parts+=['## '+heading for heading in TYPE_SECTIONS.get(note_type,())]
     if note_type not in TYPE_SECTIONS and note_type!='knowledge':parts.append('## '+HEADINGS['details']+'\n- ')
     parts.append('## '+HEADINGS['links']+'\n- ')
     if note_type in ACTION_TYPES:parts.append('## '+HEADINGS['actions']+'\n- [ ] ')

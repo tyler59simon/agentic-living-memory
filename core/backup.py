@@ -18,7 +18,7 @@ INTERVAL_HOURS=24
 STALE_HOURS=48
 # Hooks skip automatic snapshots of very large stores; doctor already flags that size.
 AUTO_MAX_NOTES=1500
-TOP_LEVEL=('bindings.json','tag_taxonomy.json','projects.json','systems.json','sources.json','changes.json','views.json','schema-version.json','learning.json')
+TOP_LEVEL=('bindings.json','tag_taxonomy.json','projects.json','systems.json','sources.json','changes.json','views.json','schema-version.json')
 # ledger/ is append-only history with no other copy (journals do not hold it), so a snapshot saves it and a restore only adds to it.
 LEDGER=re.compile(r'ledger/sessions-\d{4}\.jsonl')
 MAINT=re.compile(r'maintenance\.json|maintenance/(?:state\.json|runs/\d{4}-\d{2}-\d{2}/[A-Za-z0-9_-]{1,100}\.json)')
@@ -38,12 +38,6 @@ def canonical_files(root):
             base=domain/folder
             if base.is_dir() and not base.is_symlink():
                 found+=sorted(p.relative_to(root).as_posix() for p in base.rglob('*.md') if p.is_file() and not p.is_symlink())
-        learning=domain/'learning'
-        if learning.is_dir() and not learning.is_symlink():
-            for p in sorted(learning.rglob('*.json')):
-                rel=p.relative_to(root).as_posix()
-                confined(root,rel)
-                if _allowed(rel):found.append(rel)
     return found
 
 def _maintenance_files(root):
@@ -56,8 +50,7 @@ def _maintenance_files(root):
     return found
 
 def _allowed(name):
-    learning=re.fullmatch(r'domains/[A-Za-z0-9_.-]+/learning/(?:tasks|attempts|evidence|candidates|procedures|versions|uses|feedback)/[a-f0-9.-]+\.json',name)
-    return (name in TOP_LEVEL or bool(MEMBER.fullmatch(name)) or bool(LEDGER.fullmatch(name)) or bool(MAINT.fullmatch(name)) or bool(learning)) and '..' not in name.split('/')
+    return (name in TOP_LEVEL or bool(MEMBER.fullmatch(name)) or bool(LEDGER.fullmatch(name)) or bool(MAINT.fullmatch(name))) and '..' not in name.split('/')
 
 def snapshots(root):
     """Existing snapshots, newest first: by timestamp, then by same-second sequence (lm-T.zip, lm-T-1.zip, ...)."""

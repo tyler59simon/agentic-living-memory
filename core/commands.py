@@ -210,11 +210,7 @@ def command_notes(text,domains,root=None,limit=2):
             finally:db.close()
         except sqlite3.Error:continue
         if not rows:continue
-        from .learning import published
-        try:manifests,servable=published(root,domain)
-        except (ValueError,OSError):manifests,servable={},set()
         for note_id,title,kind,updated,commands,body,note_path,revision,digested,hashed in rows:
-            if note_id in manifests and note_id not in servable:continue
             try:listed=[c for c in json.loads(commands) if isinstance(c,str)]
             except ValueError:continue
             best=None
@@ -232,7 +228,6 @@ def command_notes(text,domains,root=None,limit=2):
                 try:found=json.loads(raw or '[]')
                 except ValueError:found=[]
                 if found:hit[name]=found
-            if note_id in manifests:hit.update(procedure_id=manifests[note_id]['id'],procedure_version=manifests[note_id]['current_version'])
             ranked.append(hit)
     ranked.sort(key=lambda h:h['updated'],reverse=True)
     ranked.sort(key=lambda h:(h['match']!='exact',TYPE_ORDER.get(h['type'],1)))

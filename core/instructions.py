@@ -30,8 +30,7 @@ def usage(session='SESSION'):
             f"\nKeep current: CMD update REF --session {session} --section 'Heading' 'Text', --drop-section 'Heading', --set-detail '**Label:** new fact' or --add-detail/--add-link/--add-action '...' (--detail/--link/--action/--body overwrite) [--title '...']; replaced: capture ... --supersedes REF; still true: CMD confirm REF; due notes: CMD review (confirm, update or supersede them; propose its plans, never apply)."
             "\nHistory: CMD log [--project P] [--since DATE]."
             f"\nResuming: CMD open first; tick a done item: CMD check REF 'item' --session {session}; finished: CMD resolve REF."
-            f'\nNo per-turn receipt unless Stop asks (then: CMD capture-finalize --session {session}).'
-            '\nLearning: for a checked, recurring fix see CMD learn.')
+            f'\nNo per-turn receipt unless Stop asks (then: CMD capture-finalize --session {session}).')
 
 def static_protocol(harness):
     """Machine-independent protocol text for instruction files: no interpreter paths, domains or sessions."""

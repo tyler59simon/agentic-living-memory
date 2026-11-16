@@ -161,8 +161,6 @@ def doctor(root,cwd,explicit=None,domain=None):
         if directory.is_dir():
             counts[directory.name]=sum(1 for _ in (directory/'notes').rglob('*.md'))+sum(1 for _ in (directory/'archive').rglob('*.md'))
             found=problems(directory.name,root)
-            from .learning import problems as learning_problems
-            found+=learning_problems(root,directory.name)
             if found:unreadable[directory.name]=found
     if (root/'improvement').is_dir():warnings.append('improvement/ holds data from a removed feature; nothing reads it and it is safe to delete')
     warnings+=[f'{name}: {count} notes; capture and freshness checks scale linearly and may slow hooks' for name,count in counts.items() if count>1500]
@@ -507,7 +505,7 @@ HELP={'setup':'Choose or move the shared memory folder','bind':'Bind a domain to
  'project-plan':'Plan a project registry change','projects':'List projects','system-plan':'Plan a system registry change','systems':'List systems','source-plan':'Plan a knowledge-base source change','sources':'List knowledge-base sources',
  'source-sync':'Re-index knowledge-base sources','ingest-scan':'Scan for files to ingest','ingest-skip':'Skip an ingest candidate','ask':'Ask a question about the project','change-plan':'Plan a tracked change',
  'changes':'List tracked changes','views':'Saved views','batch':'Run several commands from a JSON file','retag-plan':'Plan retagging notes','remap-plan':'Plan moving notes between domains','promote-plan':'Plan promoting notes to the global domain',
- 'recall':'Search this session transcript','off':'Turn Living Memory off for this session','on':'Turn Living Memory back on for this session','status':'Whether Living Memory is on for this session','capture-finalize':'Record which notes a turn saved','list':'List notes','learn':'Learned procedures','domains':'List domains','links':'Links between notes',
+ 'recall':'Search this session transcript','off':'Turn Living Memory off for this session','on':'Turn Living Memory back on for this session','status':'Whether Living Memory is on for this session','capture-finalize':'Record which notes a turn saved','list':'List notes','domains':'List domains','links':'Links between notes',
  'version':'Version and command list','serve':'JSON-lines server on stdin and stdout','sync':'Sync a domain with an Obsidian vault','overlay-build':'Build the Obsidian overlay','overlay-teardown-plan':'Plan removing the overlay','overlay-sync-all':'Sync every domain with the vault'}
 
 def build_parser():
@@ -543,7 +541,6 @@ def build_parser():
     p=sub('timeline');p.add_argument('reference',nargs='?',help='Anchor note; default: the newest note');p.add_argument('--date',help='YYYY-MM-DD: anchor at the first note on or after this date');p.add_argument('--before',type=int,default=5);p.add_argument('--after',type=int,default=5);p.add_argument('--type',choices=NOTE_TYPES,action='append');p.add_argument('--by',choices=['updated','created'],default='updated');p.add_argument('--all',action='store_true',help='Include superseded, archived and resolved notes')
     p=sub('ingest-plan');p.add_argument('--source',type=Path,help="Auto-memory folder; default: Claude Code's folder for --cwd");p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of skipping the file");p.add_argument('--allow-similar',action='store_true')
     p=sub('export');p.add_argument('--out',type=Path,required=True,help='New .zip file, outside the store');p.add_argument('--type',choices=NOTE_TYPES,action='append');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)');p.add_argument('--all',action='store_true',help='Include superseded, archived and resolved notes')
-    p.add_argument('--include-learning',action='store_true',help='Include procedure evidence and history; imports require fresh review')
     p=sub('import-plan');p.add_argument('file',type=Path)
     p=sub('confirm');p.add_argument('reference');p.add_argument('--session');p.add_argument('--turn')
     for name in ('resolve','reopen'):p=sub(name);p.add_argument('reference',help='A plan, bug or risk note');p.add_argument('--session');p.add_argument('--turn')
@@ -605,17 +602,6 @@ def build_parser():
     for name in sorted(SWITCH):p=sub(name);p.add_argument('--session',help='Session ID; default: $CLAUDE_CODE_SESSION_ID, which Claude Code sets for shell commands')
     p=sub('capture-finalize');p.add_argument('--session',required=True);p.add_argument('--turn',help='Defaults to the latest prompt of the session');p.add_argument('--note',action='append',default=[])
     p=sub('list');p.add_argument('--status',choices=['active','resolved','archived','superseded','any'],default='active');p.add_argument('--type',choices=NOTE_TYPES,action='append');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)');p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--with-summary',action='store_true',help='Add summary, files and actions {open, done} to each row');p.add_argument('--offset',type=int,default=0);p.add_argument('--limit',type=int,default=200)
-    from .learning import ENTITIES,RESULTS,METHODS,OUTCOMES,USAGES,CONTRIBUTIONS
-    p=sub('learn');p.add_argument('entity',nargs='?',choices=ENTITIES,help='Omit for the guide');p.add_argument('action',nargs='?');p.add_argument('reference',nargs='?')
-    p.add_argument('--payload-file',type=Path,help='JSON payload; without flags, the payload is read from stdin');p.add_argument('--all-domains',action='store_true')
-    for flag in ('objective','family','project','key','task','attempt','retry-of','observer','excerpt','limitations','source','reason',
-                 'expected-revision','procedure','deviations','use','target','title','summary','fallback','session','kind'):p.add_argument('--'+flag)
-    for flag in ('criterion','evidence','tag','use-when','do-not-use-when','step','done-when'):p.add_argument('--'+flag,action='append')
-    p.add_argument('--result',choices=RESULTS);p.add_argument('--method',choices=METHODS);p.add_argument('--outcome',choices=OUTCOMES)
-    p.add_argument('--usage',choices=USAGES);p.add_argument('--contribution',choices=CONTRIBUTIONS)
-    p.add_argument('--version',dest='learn_version',type=int,help='Procedure version (default: current)');p.add_argument('--days',type=int)
-    p.add_argument('--enable',dest='enabled',action='store_const',const=True);p.add_argument('--disable',dest='enabled',action='store_const',const=False)
-    p.add_argument('--global',dest='global_',action='store_const',const=True)
     p=sub('domains')
     p=sub('links');p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--status',choices=['active','any'],default='active',help='any: include archived, resolved and superseded notes')
     p=sub('version')
@@ -666,12 +652,8 @@ def main(argv=None):
             # Snapshots exist to repair a damaged store, so restoring must not depend on readable bindings.
             if cmd not in {'restore-plan','inspect-plan','apply','backup','history'}:raise
             domain=None
-        if cmd=='learn':
-            from .learning import is_read
-            learning_read=is_read(args.entity,args.action)
-        else:learning_read=False
-        if args.actor=='subagent' and cmd not in READ_ONLY and not learning_read:raise ValueError('Subagents are read-only; return mutation proposals to the main agent')
-        if args.actor=='viewer' and cmd not in VIEWER and not learning_read:raise ValueError('Viewers are read-only; run changes as --actor main')
+        if args.actor=='subagent' and cmd not in READ_ONLY:raise ValueError('Subagents are read-only; return mutation proposals to the main agent')
+        if args.actor=='viewer' and cmd not in VIEWER:raise ValueError('Viewers are read-only; run changes as --actor main')
         if cmd=='views' and (args.action or 'list')!='list' and args.actor in {'subagent','viewer'} and not (args.action=='render' and args.format=='json' and not args.out):
             raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' are read-only: views list and render --format json (no --out) are allowed; run the rest as --actor main')
         if cmd=='maintenance' and args.action not in {'status','preview','history'} and args.actor in {'subagent','viewer'}:
@@ -837,8 +819,7 @@ def main(argv=None):
                 swallowed('cli.read.currency',exc,root)
             if args.section:
                 # One section, as the prompt hook's evidence lines name it: "Why", or a path like "Notes > Deeper detail".
-                # The text comes from the note as served (an approved learned runbook's approved body, not an unreviewed edit of
-                # its file); file line numbers are given only when the file still holds exactly that body.
+                # File line numbers are given only when the file still holds exactly the body served.
                 from .units import extract,_norm,_sections,role_of
                 from .repository import parse_text
                 wanted=_norm(args.section);body=note['body']
@@ -853,9 +834,6 @@ def main(argv=None):
                 result.update(section={'heading':' > '.join(path_),'role':role_of(heading),'lines':[span[0],span[0]+last-rows[0][0]] if span else None},
                               body=text[:max(0,min(64000,args.max_chars))],truncated=len(text)>args.max_chars)
             elif not args.metadata_only:result.update(body=note['body'][:max(0,min(64000,args.max_chars))],truncated=len(note['body'])>args.max_chars)
-            if note.get('learning_procedure') and note.get('learning_state')=='active':
-                from .learning import use_hint
-                result['hint']=use_hint(note['learning_procedure'],note.get('learning_version'))
             if args.actor!='viewer':
                 from .usage import record
                 record(root,'read',[f'{d}:{n}'])
@@ -870,21 +848,7 @@ def main(argv=None):
             elif domain:domains=[domain]
             else:raise ValueError('unbound_project')
             result=note_links(root,domains,args.status)
-        elif cmd=='version':result={'ok':True,'api':SERVE_API,'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'learning':1,'restore':1,'pin':1,'history':3,'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']}}}
-        elif cmd=='learn':
-            from .learning import dispatch,flag_payload
-            payload={}
-            if not learning_read:
-                flags=flag_payload(args.entity,args.action,vars(args))
-                # A JSON payload comes from --payload-file, or from stdin when no flags were given (the stdio bridge).
-                if args.payload_file:payload=_payload(args)
-                elif not flags and sys.stdin and not sys.stdin.isatty():
-                    raw=sys.stdin.read()
-                    if len(raw.encode())>1024*1024:raise ValueError('Payload exceeds 1 MiB')
-                    payload=json.loads(raw) if raw.strip() else {}
-                if not isinstance(payload,dict):raise ValueError('Learning payload must be a JSON object')
-                payload.update(flags)
-            result=dispatch(root,domain,args.entity,args.action,args.reference,payload,args.all_domains)
+        elif cmd=='version':result={'ok':True,'api':SERVE_API,'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'restore':1,'pin':1,'history':3,'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']}}}
         elif cmd=='update':
             from .notes import change
             d,n=_reference(args.reference,domain,root)
@@ -1026,7 +990,7 @@ def main(argv=None):
         elif cmd=='export':
             from .bundle import export
             if not domain:raise ValueError('unbound_project')
-            result=export(root,domain,args.out,args.type or (),args.tag,args.all,args.include_learning)
+            result=export(root,domain,args.out,args.type or (),args.tag,args.all)
         elif cmd=='import-plan':
             from .bundle import import_plan
             # The bundle's own domain unless --domain names another; the cwd binding does not choose it.

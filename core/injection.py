@@ -155,8 +155,7 @@ def _block(text):
     return text.replace('\n','\n    ')
 
 def line(hit,unit,level,width):
-    """One hit as an injected line. A pointer is the line format the hook used before units (runtime.hit_line). A learned
-    runbook keeps its usage-report hint whatever the level."""
+    """One hit as an injected line. A pointer is the line format the hook used before units (runtime.hit_line)."""
     from .runtime import hit_line
     if level=='pointer' or (unit is None and level!='expanded'):return hit_line(hit,width)
     from .notes import short_ref
@@ -164,20 +163,16 @@ def line(hit,unit,level,width):
     from .runtime import hit_marks
     mark=hit_marks(hit)+(f"UNCONFIRMED (as of {hit.get('updated','')}): " if hit.get('interim') else '')
     head=f"- [{str(hit.get('type','note')).upper()} {hit.get('updated','')}] {short_ref(hit['domain'],hit['id'])} {mark}{hit['title']}"
-    hint=''
-    if hit.get('procedure_id'):
-        from .learning import use_hint
-        hint=f" ({use_hint(hit['procedure_id'],hit.get('procedure_version'))})"
     if unit is None:
         body=_cut((next((u for u in hit.get('units') or [] if u.get('role')=='overview'),{}) or {}).get('excerpt') or hit.get('snippet',''),EXPANDED)
-        return f"{head}{hint} — {stale}{_block(body)}"
+        return f"{head} — {stale}{_block(body)}"
     label=LABELS.get(unit.get('role'))
     lines=unit.get('lines')
     where=f" (lines {lines[0]}-{lines[1]})" if lines and lines[0] else ''
     text=_cut(unit.get('excerpt',''),EXPANDED if level=='expanded' else EVIDENCE)
     # The summary's opening leads: it is what the note decided or states, which a section's reasons or options qualify.
     summary=_cut(' '.join(((next((u for u in hit.get('units') or [] if u.get('role')=='overview'),{}) or {}).get('excerpt','')).split()),SUMMARY)
-    return f"{head}{hint} — {stale}{summary+' ' if summary else ''}§ {unit.get('heading') or 'Summary'}{' ['+label+']' if label else ''}{where}: {_block(text)}"
+    return f"{head} — {stale}{summary+' ' if summary else ''}§ {unit.get('heading') or 'Summary'}{' ['+label+']' if label else ''}{where}: {_block(text)}"
 
 def novel(hit,key,level,delivered,shown,again):
     """True unless this session already has this unit of this revision at this level or more. A different section, a

@@ -160,10 +160,9 @@ class Policy(Base):
         res=self.go((pin,'archive',{'rule':'obsolete_content'}),(rb,'archive',{'rule':'obsolete_content'}))
         self.assertEqual({r['reason_code'] for r in res['results']},{'pinned','protected_type'})
         self.assertEqual([self.get(x)['status'] for x in (pin,rb,pol)],['active']*3)
-    def test_16_normative_and_learned_notes_have_no_actions(self):
-        self.assertEqual(maintenance.permitted({'type':'knowledge','learning_procedure':'x'}),[])
+    def test_16_normative_notes_have_no_actions(self):
         self.assertEqual(maintenance.permitted({'type':'preference'}),[]);self.assertEqual(maintenance.permitted({'type':'policy'}),[])
-        self.assertTrue(maintenance._excluded({'type':'knowledge','learning_procedure':'x'}))
+        self.assertTrue(maintenance._excluded({'type':'policy'}))
     def test_17_an_oversized_note_is_deferred_with_a_note_too_large_code(self):
         big=self.mk('Huge note','Word '+'filler text goes on and on. '*1000,review_by=OLD)
         self.assertGreater(len(self.get(big)['body'].encode()),maintenance.BODY_MAX)
