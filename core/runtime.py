@@ -285,6 +285,9 @@ READONLY_SIMPLE={'ls','dir','cat','type','head','tail','wc','grep','egrep','fgre
  'nl','comm','paste','rev','fold','column','md5sum','sha1sum','sha256sum','jq','seq'}
 READONLY_GIT={'status','log','diff','show','ls-files','ls-tree','rev-parse','blame','describe','shortlog','grep','cat-file','rev-list','merge-base','name-rev',
  'for-each-ref','show-ref','ls-remote','count-objects'}
+VARIABLE_PARAMETER=re.compile(r'-(?:outvariable|ov|pipelinevariable|pv|errorvariable|ev|warningvariable|wv|informationvariable|iv)(?::.*)?',re.I)
+# Properties of Select-String matches and file items: reading one runs no method.
+FOREACH_PROPERTIES={'line','linenumber','path','filename','name','fullname','matches','length','count','basename','extension','directoryname'}
 FIND_WRITERS={'-delete','-exec','-execdir','-ok','-okdir','-fprint','-fprintf','-fls','-fprint0'}
 NULL_SINKS={'/dev/null','nul','$null'}
 # Control-flow words wrap a command without running anything themselves: `for f in *; do cat $f; done`.
@@ -365,8 +368,13 @@ def _readonly_segment(words):
     first=words[0].strip('"\'').replace('\\','/').rsplit('/',1)[-1].lower()
     first=first[:-4] if first.endswith('.exe') else first
     args=[w.strip('"\'') for w in words[1:]]
+    # A PowerShell common parameter that stores output in a variable hands it to a later statement: `-OutVariable f; Remove-Item $f`.
+    # Only Verb-Noun cmdlets: `grep -iv` is ignore-case and invert, not -InformationVariable.
+    if '-' in first and any(VARIABLE_PARAMETER.fullmatch(a) for a in args):return False
     if first in READONLY_SIMPLE:return True
     if first.startswith('get-'):return True  # PowerShell getters only read
+    # ForEach-Object NAME reads a property, but calls a method of that name (`ForEach-Object Delete`); script blocks run anything.
+    if first in {'foreach-object','%','foreach'}:return len(args)==1 and args[0].lower() in FOREACH_PROPERTIES
     if first=='find':return not FIND_WRITERS.intersection(args)
     if first=='rg':return not any(a=='--pre' or a.startswith('--pre=') for a in args)
     if first=='sort':return not any(a.startswith('-o') or a.startswith('--output') for a in args)
@@ -393,31 +401,60 @@ def _readonly_segment(words):
     if first=='npm':return bool(args) and args[0] in {'ls','list','view','--version','-v'}
     return False
 
-def readonly_shell(text):
-    """True only if a shell command is provably read-only. Anything doubtful returns False.
-    This only decides whether the turn needs a memory reminder; it is not a security check
-    (the PreToolUse deny path deliberately does not parse shell text)."""
-    if not text or re.search(r'[`\r\n]|\$\(|<\(',text):return False
+def _shell_pipelines(text):
+    """[[(words, redirects, words_read_only)]]: the pipelines of a shell command line (split on ; && || outside
+    parentheses), each a list of its simple commands (split on |, & and parentheses). A single & stays inside the
+    pipeline: it is PowerShell's call operator (`Get-Item a | & Remove-Item`). redirects holds the redirection operators
+    and targets that may write. None when the text cannot be split (backticks, newlines, $( ), <( ), >( ), unbalanced quotes)."""
+    if not text or re.search(r'[`\r\n]|\$\(|[<>]\(',text):return None
     try:
         lexer=shlex.shlex(text,posix=False,punctuation_chars=True);lexer.whitespace_split=True
+        lexer.commenters=''   # `#` inside a word (sed s/#a/b/) is literal; a real comment only adds words, which is conservative
         tokens=list(lexer)
-    except ValueError:return False
-    words=[];index=0
+    except ValueError:return None
+    pipelines=[[]];words=[];redirects=[];depth=0;index=0
     while index<len(tokens):
         token=tokens[index]
         if token and set(token)<=set(';&|<>()') and not token.startswith(('"',"'")):
             if set(token)&set('<>'):
                 # Only discard-to-null and fd duplication (2>&1) are harmless redirections.
                 nxt=tokens[index+1].strip('"\'').lower() if index+1<len(tokens) else ''
-                if '<' in token:return False
-                if token.endswith('&') and nxt.isdigit():index+=2;continue
+                if '<' not in token and token.endswith('&') and nxt.isdigit():index+=2;continue
                 if token in {'>','>>'} and nxt in NULL_SINKS:index+=2;continue
-                return False
-            # ; & | and subshell parentheses only separate commands; each command is judged on its own.
-            if not _readonly_segment(words):return False
-            words=[];index+=1;continue
+                redirects+=tokens[index:index+2];index+=2;continue
+            # Each simple command is judged on its own; only ; && || outside parentheses end a pipeline, since a
+            # group feeds the writer after it: `(printf a; printf b) | xargs rm`.
+            pipelines[-1].append((words,redirects,_readonly_segment(words)));words=[];redirects=[];index+=1
+            depth=max(0,depth+token.count('(')-token.count(')'))
+            if not depth and (';' in token or '&&' in token or '||' in token):pipelines.append([])
+            continue
         words.append(token);index+=1
-    return _readonly_segment(words)
+    pipelines[-1].append((words,redirects,_readonly_segment(words)))
+    return pipelines
+
+def readonly_shell(text):
+    """True only if a shell command is provably read-only. Anything doubtful returns False.
+    This only decides whether the turn needs a memory reminder; it is not a security check
+    (the PreToolUse deny path deliberately does not parse shell text)."""
+    pipelines=_shell_pipelines(text)
+    return pipelines is not None and all(ok and not redirects for pipeline in pipelines for _,redirects,ok in pipeline)
+
+def writing_shell_text(text):
+    """The parts of a shell command that may write: every pipeline with a command that is not provably read-only
+    (whole, since a writer may act on what an earlier command names: `Get-Item a.md | Remove-Item`), and the
+    redirection targets of the others. A file named only in a read-only pipeline (`Select-String -Path a.md; cp b c`,
+    the input of `grep x a.md > out.txt`) is not an edit. The whole text when it cannot be split."""
+    pipelines=_shell_pipelines(text)
+    if pipelines is None:return text
+    # Control flow carries names across commands (`for f in a.md; do sed -i ... "$f"; done`, `foreach (...) { ... }`): a write anywhere keeps them all.
+    flow=any(words and (words[0].strip('"\'').lower() in SHELL_KEYWORDS|SHELL_CLOSERS|{'for','foreach'} or any(w.startswith('{') for w in words))
+             for pipeline in pipelines for words,_,_ in pipeline)
+    if flow and not all(ok and not redirects for pipeline in pipelines for _,redirects,ok in pipeline):return text
+    parts=[]
+    for pipeline in pipelines:
+        whole=not all(ok for _,_,ok in pipeline)
+        parts+=[' '.join((words if whole else [])+redirects) for words,redirects,_ in pipeline if whole or redirects]
+    return ' '.join(parts)
 
 def _sync_vaults(root,trigger,min_interval=0):
     """Pull Obsidian edits into memory and refresh every managed vault. Never fails the hook."""
@@ -533,13 +570,19 @@ MAX_TOUCHED_SESSION=200
 def touched_paths(args,payload,cwd,root,domain,bindings,shell=False):
     """Files a write tool targets, as notes name them (see display_path). Paths only, never content.
     Scratchpad and memory-store paths are skipped. Shell text yields loose matches (URLs, flags), so
-    for shell tools only files inside the bound project count."""
+    for shell tools only files inside the bound project count, only from the commands that may write
+    (writing_shell_text), and a comma-joined list (`-Path a,b`) counts as separate paths."""
     from .common import domain_prefixes,display_path
     try:
         scratch=payload.get('scratchpad_dir') or payload.get('scratchpadDir')
         base=Path(scratch).resolve() if scratch else None
         prefixes=domain_prefixes(domain,bindings);store=Path(root).resolve();found=[]
-        for raw in raw_paths(args):
+        # Only a command line is split; an argv list (["rm", "a", "b"]) keeps every element.
+        text=args.get('command',args.get('cmd')) if shell and isinstance(args,dict) else None
+        text=text if isinstance(text,str) else ''
+        raws=raw_paths(writing_shell_text(text)) if text else raw_paths(args)
+        if shell:raws=[part for raw in raws for part in re.split(r',(?=[A-Za-z]:[\\/]|/)',raw)]
+        for raw in raws:
             if raw.strip().lower() in NULL_SINKS:continue
             try:
                 p=Path(os.path.expandvars(raw.strip())).expanduser()

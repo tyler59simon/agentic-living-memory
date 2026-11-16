@@ -38,6 +38,51 @@ class Provenance(StoreFixture):
         target=self.project/'core'/'cli.py';target.write_text('x')
         self.tool('Bash',{'command':f'cp a.txt "{target}" && curl https://example.com/api /dev/null'})
         self.assertEqual(self.state()['touched'],['core/cli.py'])
+    def test_files_a_read_only_command_names_are_not_edits(self):
+        # PROV-1: one opaque command made the whole PowerShell line mutating, and the Select-String targets were recorded as edited.
+        a,b=self.project/'core'/'a.md',self.project/'core'/'b.md'
+        self.tool('PowerShell',{'command':f"$CMD='python.exe'; & $CMD x.py --help 2>&1 | Select-Object -First 60; Select-String -Path {a},{b} -Pattern 'x|y' | Select-Object -First 6 | ForEach-Object Line"})
+        state=self.state();self.assertTrue(state['mutating']);self.assertEqual(state.get('touched',[]),[])
+        self.tool('Bash',{'command':f'sed -n 1,5p "{a}" | cut -c1-80; python fix.py'})
+        self.assertEqual(self.state().get('touched',[]),[])
+    def test_a_writer_in_the_pipeline_keeps_the_files_named_before_it(self):
+        a,b,c=(self.project/'core'/n for n in ('a.md','b.md','c.ini'))
+        self.tool('PowerShell',{'command':f"Get-Item '{a}' | Remove-Item"})
+        self.tool('Bash',{'command':f'grep -l x "{b}" | xargs rm; sed -i s/#on/on/ {c}'})
+        self.assertEqual(self.state()['touched'],['core/a.md','core/b.md','core/c.ini'])
+    def test_call_operators_groups_and_process_substitution_keep_their_paths(self):
+        a,b,c,d=(self.project/'core'/n for n in ('a.md','b.md','c.md','d.md'))
+        self.tool('PowerShell',{'command':f"Get-Item '{a}' | & Remove-Item"})
+        self.tool('Bash',{'command':f"(printf '%s ' {b}; printf '%s ' {c}) | xargs rm"})
+        self.tool('Bash',{'command':f'printf x > >(tee "{d}")'})
+        self.assertEqual(self.state()['touched'],['core/a.md','core/b.md','core/c.md','core/d.md'])
+    def test_argv_lists_and_output_variables_keep_their_paths(self):
+        a,b,c=(self.project/'core'/n for n in ('a.md','b.md','c.md'))
+        self.tool('Bash',{'command':['rm',str(a),str(b)]})
+        self.tool('PowerShell',{'command':f"Get-Item '{c}' -OutVariable f; Remove-Item -LiteralPath $f.FullName"})
+        self.assertEqual(self.state()['touched'],['core/a.md','core/b.md','core/c.md'])
+    def test_control_flow_keeps_every_path_when_anything_writes(self):
+        a,b,c=(self.project/'core'/n for n in ('a.md','b.md','c.md'))
+        self.tool('Bash',{'command':f'for f in {a} {b}; do sed -i s/x/y/ "$f"; done'})
+        self.tool('PowerShell',{'command':f"if (Test-Path '{c}') {{ Remove-Item '{c}' }}"})
+        self.assertEqual(self.state()['touched'],['core/a.md','core/b.md','core/c.md'])
+    def test_writing_commands_keep_their_paths_and_comma_lists_split(self):
+        a,b,c=(self.project/'core'/n for n in ('a.md','b.md','c.md'))
+        self.tool('PowerShell',{'command':f"Select-String -Path {a} -Pattern x; Set-Content -Path {b},{c} -Value y"})
+        self.assertEqual(self.state()['touched'],['core/b.md','core/c.md'])
+        self.tool('Bash',{'command':f'grep foo "{a}" > "{self.project/"core"/"out.txt"}"'})
+        self.assertEqual(self.state()['touched'],['core/b.md','core/c.md','core/out.txt'])
+    def test_shell_segments_judge_each_command(self):
+        self.assertEqual([[ok for _,_,ok in p] for p in runtime._shell_pipelines('cat a | tee b; ls')],[[True,False],[True]])
+        self.assertIsNone(runtime._shell_pipelines('echo $(rm x)'))
+        self.assertEqual(runtime.writing_shell_text('cat a > b && grep x c; cp d e'),'> b cp d e')
+        self.assertEqual(runtime.writing_shell_text('cat a | tee b || ls c'),'cat a tee b')
+        self.assertTrue(runtime.readonly_shell('Select-String -Path a -Pattern x | % Line'))
+        self.assertTrue(runtime.readonly_shell('grep -iv x a'));self.assertFalse(runtime.readonly_shell('Get-Item a -ov f'))
+        for writer in ('Get-ChildItem | ForEach-Object Delete','Get-Item a | ForEach-Object { Remove-Item $_ }','Get-Item a | % Line Path'):
+            self.assertFalse(runtime.readonly_shell(writer),writer)
+        self.assertFalse(runtime.readonly_shell('cat a > b'));self.assertTrue(runtime.readonly_shell('cat a 2>&1 > /dev/null'))
+        self.assertEqual(runtime.writing_shell_text('echo `rm x`'),'echo `rm x`')
     def test_subagent_and_plan_mode_record_nothing(self):
         self.tool('Edit',{'file_path':'core/a.py'},agent_id='sub')
         self.tool('Edit',{'file_path':'core/b.py'},permission_mode='plan')
