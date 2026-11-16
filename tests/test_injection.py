@@ -149,6 +149,30 @@ class ReviewFindings(Base):
         text=self.prompt('show me the exact steps to recreate the queue config on the broker host')
         self.assertIn('cat <<EOF > /etc/q.conf\n      retention: 7d\n    EOF',text)   # indented under the hit line, inner indent kept
 
+    def test_a_long_first_code_block_is_left_out_with_a_pointer(self):
+        # HOOK-4b: a first fence was kept whole however long, and _block's indent was not counted, so one hit could reach 4,000+ characters.
+        fence='`'*3
+        long=fence+'bash\n'+'true\n'*700+fence+'\nThen restart the broker.'
+        out=injection._cut(long,injection.EXPANDED,injection.BLOCK_INDENT,'demo:ab12')
+        self.assertIn('(a 700-line code block is left out; read demo:ab12 for it)',out)
+        self.assertNotIn(fence,out);self.assertIn('Then restart the broker.',out)
+        capture('Index rebuild procedure','Rebuild the search index.\n\n## Steps\n'+long,TAGS,'demo',self.root,type='runbook',allow_similar=True)
+        text=self.prompt('show me the exact steps for the index rebuild procedure')
+        line=text[text.index('- [RUNBOOK'):]
+        line=line[:line.index('\n- [')] if '\n- [' in line else line
+        self.assertLessEqual(len(line),injection.LINE_MAX);self.assertIn('code block is left out',line)
+
+    def test_the_indent_counts_against_the_width(self):
+        fence='`'*3
+        code=fence+'\n'+'xxxx\n'*40+fence   # 212 characters as stored, 380 once indented under the hit line
+        self.assertEqual(injection._cut(code+'\nmore',300),code+'\nmore')
+        self.assertIn('code block is left out',injection._cut(code+'\nmore',300,injection.BLOCK_INDENT))
+        prose='First sentence is here. Second sentence goes on and on and on.'
+        self.assertEqual(injection._cut(prose,40,injection.BLOCK_INDENT),injection._cut(prose,40))
+
+    def test_the_first_hit_fits_the_reserve(self):
+        self.assertLessEqual(len(injection.HEADING)+1+injection.LINE_MAX+1,runtime.HIT_RESERVE)
+
     def test_recall_cut_by_the_budget_stays_eligible(self):
         self.start(source='compact')
         with patch('core.recall.auto',return_value=('x'*5000,[1,2])),patch.object(runtime,'RECALL_HARNESSES',{'claude'}):

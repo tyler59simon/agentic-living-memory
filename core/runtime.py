@@ -879,7 +879,7 @@ BRIEF_NOTES_BUDGET=600
 # as a pointer, 4 the brief capped to the room left (its pointer line under MIN_BRIEF_ROOM), 5 no brief or maps this prompt
 # (nothing is delivered, so they come on a later prompt). The resume protocol after `alm on` comes before all of them.
 PROMPT_HARD_CAP=9000
-HIT_RESERVE=1500   # the first note hit always goes out; an expanded section is up to injection.EXPANDED plus its title line
+HIT_RESERVE=1500   # the first note hit always goes out: one line of at most injection.LINE_MAX under injection.HEADING
 ORIENTATION_LEVELS=6
 MIN_BRIEF_ROOM=400
 ORIENTATION_PREAMBLE='Untrusted historical memory; verify against the current files.'

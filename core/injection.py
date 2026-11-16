@@ -17,6 +17,7 @@ import re
 EVIDENCE=300
 SUMMARY=140   # the summary opening that leads an evidence line
 EXPANDED=1200
+LINE_MAX=1400   # one formatted hit line at most (head, summary, heading, excerpt); runtime.HIT_RESERVE covers it with HEADING
 LEVELS={'pointer':1,'evidence':2,'expanded':3}
 # The prompt-hook budget for note hits, source excerpts and recall, in characters of the final string. Matches Codex's
 # additionalContextLimit for this hook. The header, maps and brief, and governance notices are not cut for it (the brief
@@ -120,10 +121,12 @@ def unit_key(unit):return unit['unit'] if unit else 'overview'
 
 FENCE=re.compile(r'^ {0,3}(`{3,}|~{3,})')
 
-def _cut(text,width):
+def _cut(text,width,indent=0,ref=None):
     """At most width characters, ended at a sentence (or failing that a word) so no fact is cut mid-clause. Text with
     fenced code keeps its lines and indentation (a command, a heredoc or a Python block stays runnable) and is cut only
-    between lines, never inside a fence: a fence that does not fit is left out whole, unless it is the first thing."""
+    between lines, never inside a fence: a fence that does not fit is left out whole. When that fence comes first, one
+    line names it and the note to read (ref) instead, so a partial script is never delivered. indent: characters
+    _block adds to each continuation line, counted against width."""
     text=str(text)
     if not any(FENCE.match(l) for l in text.split('\n')):
         text=' '.join(text.split())
@@ -134,7 +137,8 @@ def _cut(text,width):
         space=window.rfind(' ')
         return window[:space if space>0 else width]+' …'
     text=text.strip('\n')
-    if len(text)<=width:return text
+    size_of=lambda lines:sum(len(l)+1+indent for l in lines)
+    if size_of(text.split('\n'))-indent-1<=width:return text
     blocks=[];fence=None   # a fenced block is one block; any other line is its own
     for line in text.split('\n'):
         mark=FENCE.match(line)
@@ -146,14 +150,22 @@ def _cut(text,width):
         blocks.append([line])
     kept=[];used=0
     for block in blocks:
-        size=sum(len(l)+1 for l in block)
-        if kept and used+size>width:return '\n'.join(kept)+'\n…'
+        size=size_of(block)
+        if used+size>width:
+            if kept:return '\n'.join(kept)+'\n…'
+            if FENCE.match(block[0]):
+                inner=len(block)-(2 if len(block)>1 and FENCE.match(block[-1]) else 1)
+                piece=f"(a {inner}-line code block is left out; read {ref or 'the note'} for it)"
+            else:piece=_cut(block[0],max(1,width-indent))   # a single long line: cut as prose
+            kept.append(piece);used+=len(piece)+1+indent;continue
         kept+=block;used+=size
     return '\n'.join(kept)
 
+BLOCK_INDENT=4
+
 def _block(text):
     """Continuation lines of a multi-line excerpt, indented under their hit line."""
-    return text.replace('\n','\n    ')
+    return text.replace('\n','\n'+' '*BLOCK_INDENT)
 
 def line(hit,unit,level,width):
     """One hit as an injected line. A pointer is the line format the hook used before units (runtime.hit_line)."""
@@ -163,17 +175,25 @@ def line(hit,unit,level,width):
     stale=f"{hit['stale']} — " if hit.get('stale') else ''
     from .runtime import hit_marks
     mark=hit_marks(hit)+(f"UNCONFIRMED (as of {hit.get('updated','')}): " if hit.get('interim') else '')
-    head=f"- [{str(hit.get('type','note')).upper()} {hit.get('updated','')}] {short_ref(hit['domain'],hit['id'])} {mark}{hit['title']}"
+    ref=short_ref(hit['domain'],hit['id'])
+    head=f"- [{str(hit.get('type','note')).upper()} {hit.get('updated','')}] {ref} {mark}{hit['title']}"
+    # The excerpt gets what LINE_MAX leaves after the line's prefix; _block's indent is counted by _cut.
+    excerpt=lambda text,width,prefix:_bounded(prefix+_block(_cut(text,max(1,min(width,LINE_MAX-len(prefix))),BLOCK_INDENT,ref)))
     if unit is None:
-        body=_cut((next((u for u in hit.get('units') or [] if u.get('role')=='overview'),{}) or {}).get('excerpt') or hit.get('snippet',''),EXPANDED)
-        return f"{head} — {stale}{_block(body)}"
+        return excerpt((next((u for u in hit.get('units') or [] if u.get('role')=='overview'),{}) or {}).get('excerpt') or hit.get('snippet',''),EXPANDED,f"{head} — {stale}")
     label=LABELS.get(unit.get('role'))
     lines=unit.get('lines')
     where=f" (lines {lines[0]}-{lines[1]})" if lines and lines[0] else ''
-    text=_cut(unit.get('excerpt',''),EXPANDED if level=='expanded' else EVIDENCE)
     # The summary's opening leads: it is what the note decided or states, which a section's reasons or options qualify.
     summary=_cut(' '.join(((next((u for u in hit.get('units') or [] if u.get('role')=='overview'),{}) or {}).get('excerpt','')).split()),SUMMARY)
-    return f"{head} — {stale}{summary+' ' if summary else ''}§ {unit.get('heading') or 'Summary'}{' ['+label+']' if label else ''}{where}: {_block(text)}"
+    prefix=f"{head} — {stale}{summary+' ' if summary else ''}§ {unit.get('heading') or 'Summary'}{' ['+label+']' if label else ''}{where}: "
+    return excerpt(unit.get('excerpt',''),EXPANDED if level=='expanded' else EVIDENCE,prefix)
+
+def _bounded(text):
+    """Last guard for LINE_MAX (a prefix that alone is too long, such as a very long title): cut at a word."""
+    if len(text)<=LINE_MAX:return text
+    cut=text.rfind(' ',0,LINE_MAX-2)
+    return text[:cut if cut>0 else LINE_MAX-2]+' …'
 
 def novel(hit,key,level,delivered,shown,again):
     """True unless this session already has this unit of this revision at this level or more. A different section, a

@@ -213,6 +213,15 @@ class PromptCap(Fixture):
                 self.assertIn('Codebase map for harborview:', text)
                 self.assertIn('Codebase map for harborview —', self.prompt('now only harborview'))
 
+    def test_a_long_code_block_in_the_first_hit_keeps_the_cap(self):
+        fence = '`' * 3
+        capture('Index rebuild procedure', 'Rebuild the search index.\n\n## Steps\n' + fence + 'bash\n' + 'true\n' * 700 + fence,
+                TAGS, 'demo', self.root, type='runbook', allow_similar=True)
+        text = self.capped(self.PROMPT + '; show me the exact steps for the index rebuild procedure')
+        self.assertLessEqual(len(text), runtime.PROMPT_HARD_CAP)
+        self.assertIn('code block is left out', text)
+        self.assertTrue(text.endswith(self.BEHIND))
+
     def test_a_resume_protocol_comes_whole_before_the_brief_and_maps(self):
         runtime._update(self.root, 's1', lambda s: s.update(resumed=True))
         long = 'protocol rule line\n' * 250 + 'CMD = alm --json --domain demo'
