@@ -1,6 +1,7 @@
 """Repo briefing: one-line summaries of a repo's decisions, bugs, runbooks and policies after its map or its brief
 (core/maps.repo_notes, runtime.prompt_maps and prompt_briefs)."""
 import contextlib, io, json, unittest
+from unittest.mock import patch
 
 from test_core import StoreFixture
 from core import runtime, usage
@@ -12,7 +13,7 @@ from core.notes import capture, short_ref
 TAGS = ['subject/project', 'concern/decision']
 
 
-class RepoNotes(StoreFixture):
+class Fixture(StoreFixture):
     def setUp(self):
         super().setUp()
         (self.root / 'tag_taxonomy.json').write_text(json.dumps({'tags': ['subject/project', 'concern/architecture', 'concern/decision', 'concern/knowledge']}))
@@ -52,6 +53,8 @@ class RepoNotes(StoreFixture):
     def prompt(self, text):
         return self.hook('user-prompt', prompt=text).get('context', '')
 
+
+class RepoNotes(Fixture):
     def test_lists_notes_whose_files_fall_inside_the_repo(self):
         inside = self.save('Money is BigDecimal', 'Amounts use BigDecimal with scale 4. Never double.', files=['suite/src/money.py'])
         bug = self.save('Parser drops a trailing newline', 'The parser loses the last newline. Pad the input.', 'bug', files=['suite'])
@@ -150,6 +153,87 @@ class RepoNotes(StoreFixture):
         self.assertNotIn('Unlinked decision', text)
         refs = [r['ref'] for r in usage.events(self.root) if r['e'] == 'inject' and r['k'] == 'map-brief']
         self.assertCountEqual(refs, [linked, in_map, only_brief])
+
+
+class PromptCap(Fixture):
+    """HOOK-4: the brief and two maps with their note lists would pass Claude Code's 10,000-character hook limit; the prompt
+    hook trims them to runtime.PROMPT_HARD_CAP, summaries first, then maps to pointer lines, and never cuts governance lines."""
+    REPOS = ('ledgerbook', 'harborview')
+    BEHIND = 'Dashboard "Fix backlog" is behind its note.'
+
+    @staticmethod
+    def details(label, count):
+        out = []
+        for i in range(count):
+            out += ['--detail', f'**{label} {i}:** ' + ' '.join(f'part{i}-{j} of the text' for j in range(20))]
+        return out
+
+    def setUp(self):
+        super().setUp()
+        for repo in self.REPOS:
+            (self.project / repo / '.git').mkdir(parents=True)
+            for i in range(6):
+                self.save(f'{repo} decision {i}', 'A summary sentence that runs long enough to fill the list of notes about the repo.', files=[repo])
+            code, result = self.cli('--domain', 'demo', 'capture', '--type', 'map', '--file', str(self.project / repo), '--title', f'{repo} codebase map',
+                                    '--summary', f'The {repo} repo.', *self.details('Layout', 9))
+            self.assertEqual(code, 0, result)
+        code, brief = self.cli('--domain', 'demo', 'capture', '--type', 'brief', '--file', '.', '--title', 'project brief', '--summary', 'Two repos.',
+                               *self.details('Goals', 7), '--link', '[[ledgerbook decision 0]]')
+        self.assertEqual(code, 0, brief)
+        self.hook('session-start')
+
+    def capped(self, text):
+        with patch('core.views.behind', lambda *a, **k: [('fix-backlog', self.BEHIND)]):
+            return self.prompt(text)
+
+    PROMPT = 'change ledgerbook and harborview together'
+
+    def test_two_maps_and_a_brief_stay_under_the_cap_with_governance_last(self):
+        text = self.capped(self.PROMPT)
+        self.assertLessEqual(len(text), runtime.PROMPT_HARD_CAP)
+        self.assertTrue(text.endswith(self.BEHIND), text[-200:])
+        self.assertIn('Project brief —', text)
+        self.assertIn('Codebase map for ledgerbook —', text)   # the first named map stays whole
+        self.assertIn('Codebase map for harborview:', text)    # the second is a pointer
+        self.assertIn('before exploring further', text)
+        self.assertNotIn('Notes about this repo', text)   # the summaries go first
+
+    def test_a_trimmed_map_comes_with_the_tool_hint_and_in_full_on_a_later_prompt(self):
+        self.capped(self.PROMPT)
+        hint = self.hook('pre-tool-use', tool_name='Read', tool_input={'file_path': str(self.project / 'harborview' / 'src' / 'x.py')}).get('context', '')
+        self.assertIn('Codebase map for harborview:', hint)
+        self.assertIn('Codebase map for harborview —', self.prompt('now only harborview'))
+
+    def test_a_pointer_map_is_not_used_up_by_a_note_hit_on_its_title(self):
+        for prompt in ('change the ledgerbook codebase map and the harborview codebase map',
+                       'remind me of the ledgerbook codebase map and the harborview codebase map'):   # a recall bypasses the shown check
+            with self.subTest(prompt=prompt):
+                self.hook('session-start')
+                text = self.capped(prompt)
+                self.assertIn('Codebase map for harborview:', text)
+                self.assertIn('Codebase map for harborview —', self.prompt('now only harborview'))
+
+    def test_a_resume_protocol_comes_whole_before_the_brief_and_maps(self):
+        runtime._update(self.root, 's1', lambda s: s.update(resumed=True))
+        long = 'protocol rule line\n' * 250 + 'CMD = alm --json --domain demo'
+        with patch.object(runtime, 'protocol', lambda *a, **k: long):
+            text = self.capped(self.PROMPT)
+        self.assertLessEqual(len(text), runtime.PROMPT_HARD_CAP)
+        self.assertIn('CMD = alm --json --domain demo', text)
+        self.assertTrue(text.endswith(self.BEHIND))
+
+    def test_a_resume_with_a_huge_protocol_still_fits_and_keeps_governance(self):
+        (self.project / 'quarrystone' / '.git').mkdir(parents=True)
+        runtime._update(self.root, 's1', lambda s: s.update(resumed=True))
+        with patch.object(runtime, 'protocol', lambda *a, **k: 'protocol line\n' * 1000):
+            text = self.capped(self.PROMPT + ' and quarrystone')
+        self.assertLessEqual(len(text), runtime.PROMPT_HARD_CAP)
+        self.assertTrue(text.endswith(self.BEHIND))
+        self.assertNotIn('Codebase map for', text)   # no room for the brief or maps this prompt
+        # Nothing was delivered, so the maps and the unmapped-repo notice come on the next prompt.
+        later = self.prompt('now ledgerbook and quarrystone')
+        self.assertIn('Codebase map for ledgerbook —', later)
+        self.assertIn('quarrystone has no codebase map yet', later)
 
 if __name__ == '__main__':
     unittest.main()

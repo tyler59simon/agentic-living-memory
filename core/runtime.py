@@ -833,23 +833,31 @@ def created_top_level(args,cwd,root,bindings):
         if hit:found.setdefault(repo.as_posix(),(f"{hit['domain']}:{hit['id']}",[]))[1].append(top.name)
     return found
 
-def prompt_maps(cwd,prompt,root,bindings,state,trace=None,briefed=None,session=None):
+def prompt_maps(cwd,prompt,root,bindings,state,trace=None,briefed=None,session=None,level=0):
     """(text or None, {ref: revision key} delivered, {repo path: map ref or None}) for the repos a prompt names
     and the repo holding cwd: a mapped repo's map body once per revision, followed by one-line summaries of the notes
-    about that repo (refs appended to briefed); an unmapped one a single line, once."""
-    from .maps import named_repos,candidate_repos,find_map,map_block,repo_name,repo_notes,MAX_MAPS
+    about that repo (refs appended to briefed); an unmapped one a single line, once.
+    level (ORIENTATION_LEVELS) trims to fit the hook cap: 1 drops the summaries, 2 makes maps after the first a pointer
+    line, 3 makes every map one. A pointer is not delivered, so the body comes on a later prompt or with the tool hint."""
+    from .maps import named_repos,candidate_repos,find_map,map_block,repo_name,repo_notes,pointer_line,MAX_MAPS
+    from .notes import short_ref
     briefed=[] if briefed is None else briefed
     repos=named_repos(prompt,candidate_repos(cwd,bindings),bindings.get('repo_aliases'))
     here=git_root(cwd)
     if here and here.resolve() not in repos:repos.append(here.resolve())
     shown=state.get('shown',{}) if isinstance(state.get('shown'),dict) else {}
-    maps=[];lines=[];delivered={};seen={}
+    maps=[];lines=[];delivered={};seen={};pointers={}
     for repo in repos[:MAX_MAPS+1]:
         key=repo.as_posix();hit=find_map(repo,root,bindings)
         if hit:
             ref=f"{hit['domain']}:{hit['id']}";seen[key]=ref
             if len(maps)<MAX_MAPS and shown.get(ref)!=revision_key(hit):
-                maps.append(map_block(hit,repo,entry=note_currency(hit,repo,root,bindings,state,session)));delivered[ref]=revision_key(hit)
+                entry=note_currency(hit,repo,root,bindings,state,session)
+                if level>=3 or (level>=2 and maps):
+                    maps.append(pointer_line(hit,repo,entry=entry)+f"\nRead it ({hint_command(root,state)} read {short_ref(hit['domain'],hit['id'])}) before exploring further.")
+                    pointers[ref]=revision_key(hit);continue
+                maps.append(map_block(hit,repo,entry=entry));delivered[ref]=revision_key(hit)
+                if level>=1:continue
                 lines_,refs_=repo_notes(hit,repo,root,bindings,{**_snippeted(state),**shown},exclude=briefed)
                 if lines_:maps[-1]+='\n'+lines_;briefed.extend(refs_)
         else:
@@ -858,16 +866,30 @@ def prompt_maps(cwd,prompt,root,bindings,state,trace=None,briefed=None,session=N
                 lines.append(f"{repo_name(repo)} has no codebase map yet. If you explore it, capture one afterwards: "
                              f"{hint_command(root,state)} capture --type map --file '{key}' --title '{repo_name(repo)} codebase map' --summary '...' "
                              "--detail '**Layout:** ...' --detail '**Entry points:** ...' --detail '**Build/test:** ...'")
-    if isinstance(trace,dict):trace['maps']={'repos':[r.name for r in repos],'injected':list(delivered),'unmapped':[Path(k).name for k,v in seen.items() if v is None]}
+    # pointers: {ref: revision key} of maps given as a pointer line; the caller keeps them out of this prompt's note hits,
+    # which would otherwise record a snippet as the delivery of the map.
+    if isinstance(trace,dict):trace['maps']={'repos':[r.name for r in repos],'injected':list(delivered),'pointers':pointers,'unmapped':[Path(k).name for k,v in seen.items() if v is None]}
     text=('Untrusted historical memory; verify against the current files.\n'+'\n\n'.join(maps+lines)) if maps or lines else None
     return text,delivered,seen
 
 BRIEF_NOTES_BUDGET=600
+# The prompt hook's ceiling for the whole context (session start's HARD_CAP, below Claude Code's 10,000-character hook limit).
+# When the brief and maps would push it over, they are rebuilt at the next ORIENTATION_LEVEL until they fit; HIT_RESERVE
+# keeps room for the first note hit. Levels: 0 as is, 1 no note summaries, 2 maps after the first as pointers, 3 every map
+# as a pointer, 4 the brief capped to the room left (its pointer line under MIN_BRIEF_ROOM), 5 no brief or maps this prompt
+# (nothing is delivered, so they come on a later prompt). The resume protocol after `alm on` comes before all of them.
+PROMPT_HARD_CAP=9000
+HIT_RESERVE=1500   # the first note hit always goes out; an expanded section is up to injection.EXPANDED plus its title line
+ORIENTATION_LEVELS=6
+MIN_BRIEF_ROOM=400
+ORIENTATION_PREAMBLE='Untrusted historical memory; verify against the current files.'
 
-def prompt_briefs(cwd,root,bindings,state,trace=None,briefed=None,session=None):
+def prompt_briefs(cwd,root,bindings,state,trace=None,briefed=None,session=None,level=0,room=None):
     """(brief block or None, {ref: revision key} delivered): the brief of the project folder holding cwd, once
-    per revision per session, followed by one-line summaries of the notes it links to (refs appended to briefed)."""
-    from .briefs import find_brief,brief_block,brief_folder
+    per revision per session, followed by one-line summaries of the notes it links to (refs appended to briefed).
+    level 1 or more drops the summaries; level 4 caps the body to room characters, or gives the pointer line (not
+    delivered) when room is under MIN_BRIEF_ROOM."""
+    from .briefs import find_brief,brief_block,brief_folder,pointer_line
     from .maps import repo_notes
     briefed=[] if briefed is None else briefed
     hit=find_brief(cwd,root,bindings)
@@ -876,7 +898,14 @@ def prompt_briefs(cwd,root,bindings,state,trace=None,briefed=None,session=None):
     fresh=bool(hit) and shown.get(ref)!=revision_key(hit)
     if isinstance(trace,dict):trace['brief']={'ref':ref,'injected':[ref] if fresh else []}
     if not fresh:return None,{}
-    block=brief_block(hit,entry=note_currency(hit,brief_folder(hit,cwd,bindings),root,bindings,state,session,'fresh_brief'))
+    entry=note_currency(hit,brief_folder(hit,cwd,bindings),root,bindings,state,session,'fresh_brief')
+    if level>=4 and room is not None:
+        if room<MIN_BRIEF_ROOM:
+            if isinstance(trace,dict):trace['brief'].update(injected=[],pointer={ref:revision_key(hit)})   # a pointer is not a delivery
+            return pointer_line(hit,entry=entry),{}
+        return brief_block(hit,budget=room,entry=entry),{ref:revision_key(hit)}
+    block=brief_block(hit,entry=entry)
+    if level>=1:return block,{ref:revision_key(hit)}
     lines_,refs_=repo_notes(hit,None,root,bindings,{**_snippeted(state),**shown},budget=BRIEF_NOTES_BUDGET,files=False,exclude=briefed)
     if lines_:block+='\n'+lines_;briefed.extend(refs_)
     return block,{ref:revision_key(hit)}
@@ -1790,28 +1819,11 @@ def _process(harness,event,payload,root=None,info=None):
         result['context']=_cap(prefix+(text or ''),HARD_CAP)
     elif event=='user-prompt':
         prompt=payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or payload.get('transformedPrompt') or ''
-        delivered={};maps_text,map_refs,mapped=None,{},{};brief_text,brief_refs=None,{};briefed=[]
-        if isinstance(prompt,str) and not MACHINE_PROMPT.match(prompt):
-            try:maps_text,map_refs,mapped=prompt_maps(cwd,prompt,root,bindings,state,detail,briefed,session)
-            except Exception as exc:
-                from .logs import swallowed
-                swallowed('runtime.prompt_maps',exc,root)
-            try:brief_text,brief_refs=prompt_briefs(cwd,root,bindings,state,detail,briefed,session)
-            except Exception as exc:
-                from .logs import swallowed
-                swallowed('runtime.prompt_briefs',exc,root)
-        # The project brief leads the orientation: what the project is, then how its repos are organized.
-        if brief_text:maps_text='Untrusted historical memory; verify against the current files.\n'+brief_text+('\n\n'+maps_text.split('\n',1)[1] if maps_text else '')
-        # A map or brief injected now counts as shown, so the note search below does not repeat it as a hit.
-        shown_now=state.get('shown',{})
-        shown_now=dict(shown_now) if isinstance(shown_now,dict) else dict.fromkeys(shown_now if isinstance(shown_now,list) else [],'')
-        shown_now.update(map_refs);shown_now.update(brief_refs)
-        units_out=[];topic=state.get('topic') if isinstance(state.get('topic'),list) else None
-        session_delivered=state.get('delivered') if isinstance(state.get('delivered'),dict) else {}
-        # One budget for this hook (injection.PROMPT_CAP): the header, maps and brief and the governance lines below always
-        # go out; note hits get what they leave, and source excerpts and recall join only when they still fit.
         from . import injection
         header=f'Living Memory session={session} turn={turn}'
+        # The first prompt after `alm on` repeats the session-start protocol: a compaction while off may have dropped it.
+        resume=BACK_ON+'\n'+protocol(root,domain,harness,session)+f'\nLiving Memory session={session}\n' if resumed else ''
+        # Governance lines are never cut, so they are known before the brief and maps are sized.
         governance=[]
         if state.get('private_turn')==turn:
             from .private import NOTICE
@@ -1831,10 +1843,57 @@ def _process(harness,event,payload,root=None,info=None):
             except Exception as exc:
                 from .logs import swallowed
                 swallowed('runtime.views_hint',exc,root)
-        fixed=len(header)+(len(maps_text)+1 if maps_text else 0)+sum(len(g)+1 for g in governance)
-        room=max(0,injection.PROMPT_CAP-fixed-1) if DELIVERY else None
+        governance_len=sum(len(g)+1 for g in governance)
+        # Everything is bounded before anything is recorded as delivered. The resume protocol comes first (it restores the
+        # rules and CMD) and is cut to whole lines only when it could not fit even with no brief or maps.
+        if resume:
+            from .session_start import _cap
+            resume=_cap(resume,max(0,PROMPT_HARD_CAP-len(header)-governance_len-HIT_RESERVE))
+            if resume and not resume.endswith('\n'):resume+='\n'
+        # The brief and maps get what PROMPT_HARD_CAP leaves after the header, resume prefix, governance and HIT_RESERVE; when
+        # they would not fit, they are rebuilt at the next ORIENTATION_LEVEL (fewer summaries, then pointers for maps).
+        orientation_room=PROMPT_HARD_CAP-len(header)-len(resume)-governance_len-HIT_RESERVE-1
+        delivered={};maps_text,map_refs,mapped=None,{},{};brief_text,brief_refs=None,{};briefed=[]
+        if isinstance(prompt,str) and not MACHINE_PROMPT.match(prompt):
+            for level in range(ORIENTATION_LEVELS):
+                maps_text,map_refs,mapped=None,{},{};brief_text,brief_refs=None,{};briefed=[]
+                try:maps_text,map_refs,mapped=prompt_maps(cwd,prompt,root,bindings,state,detail,briefed,session,level)
+                except Exception as exc:
+                    from .logs import swallowed
+                    swallowed('runtime.prompt_maps',exc,root)
+                # The brief's room at level 4 is what the maps (already pointers) leave.
+                left=orientation_room-(len(maps_text)+2 if maps_text else 0)-len(ORIENTATION_PREAMBLE)-1
+                try:brief_text,brief_refs=prompt_briefs(cwd,root,bindings,state,detail,briefed,session,min(level,4),max(0,left))
+                except Exception as exc:
+                    from .logs import swallowed
+                    swallowed('runtime.prompt_briefs',exc,root)
+                if level==ORIENTATION_LEVELS-1:
+                    # Nothing fits: no brief or maps this prompt. The level-4 trace stands, with the brief moved to pointer (not delivered).
+                    if brief_refs and isinstance(detail.get('brief'),dict):detail['brief'].update(injected=[],pointer=brief_refs)
+                    maps_text,map_refs,brief_text,brief_refs,briefed=None,{},None,{},[]
+                    mapped={k:v for k,v in mapped.items() if v}   # an unmapped repo's notice did not go out, so it is not "told"
+                    break
+                # The project brief leads the orientation: what the project is, then how its repos are organized.
+                if brief_text:maps_text=ORIENTATION_PREAMBLE+'\n'+brief_text+('\n\n'+maps_text.split('\n',1)[1] if maps_text else '')
+                if not maps_text or len(maps_text)<=orientation_room:break
+            if level:detail['orientation_level']=level
+        # A map or brief injected now counts as shown, so the note search below does not repeat it as a hit.
+        shown_now=state.get('shown',{})
+        shown_now=dict(shown_now) if isinstance(shown_now,dict) else dict.fromkeys(shown_now if isinstance(shown_now,list) else [],'')
+        shown_now.update(map_refs);shown_now.update(brief_refs)
+        # A map or brief given only as a pointer is kept out of the hits too, but not recorded: its body comes later.
+        deferred={**((detail.get('maps') or {}).get('pointers') or {}),**((detail.get('brief') or {}).get('pointer') or {})}
+        shown_now.update(deferred)
+        units_out=[];topic=state.get('topic') if isinstance(state.get('topic'),list) else None
+        session_delivered=state.get('delivered') if isinstance(state.get('delivered'),dict) else {}
+        # One budget for note hits (injection.PROMPT_CAP): they get what the header, brief, maps and governance lines leave,
+        # and source excerpts and recall join only when they still fit.
+        fixed=len(header)+(len(maps_text)+1 if maps_text else 0)+governance_len
+        room=max(0,min(injection.PROMPT_CAP,PROMPT_HARD_CAP-len(resume))-fixed-1) if DELIVERY else None
         if isinstance(prompt,str):hits,ids,overview=context(cwd,prompt,root,domain,shown_now,state.get('overview_shown',False),delivered,detail,session_delivered,topic,units_out,room)
         else:hits,ids,overview=None,[],False;detail['path']='not_text'
+        # A recall prompt ("remind me") bypasses shown_now; a pointer-only map or brief it returned as a hit is still not its delivery.
+        for ref in deferred:delivered.pop(ref,None)
         relevant_notes=len(ids)+len(detail.get('suppressed_shown') or [])
         delivered.update(map_refs);delivered.update(brief_refs);ids=list(map_refs)+list(brief_refs)+ids
         if mapped:
@@ -1879,9 +1938,8 @@ def _process(harness,event,payload,root=None,info=None):
         if detail.get('cut_by_cap'):
             from .usage import record
             record(root,'surface',list(detail['cut_by_cap'])[:3],session,'prompt')
-        result['context']=header+('\n'+maps_text if maps_text else '')+('\n'+hits if hits else '')
-        # The first prompt after `alm on` repeats the session-start protocol: a compaction while off may have dropped it.
-        if resumed:result['context']=BACK_ON+'\n'+protocol(root,domain,harness,session)+f'\nLiving Memory session={session}\n'+result['context'];detail['resumed']=True
+        result['context']=resume+header+('\n'+maps_text if maps_text else '')+('\n'+hits if hits else '')
+        if resumed:detail['resumed']=True
         fits=lambda text:not DELIVERY or len(result['context'])+len(text)+1+sum(len(g)+1 for g in governance)<=injection.PROMPT_CAP
         if isinstance(prompt,str) and not MACHINE_PROMPT.match(prompt) and relevant_notes<2 and not _subagent(payload):
             try:

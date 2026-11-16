@@ -18,9 +18,10 @@ EVIDENCE=300
 SUMMARY=140   # the summary opening that leads an evidence line
 EXPANDED=1200
 LEVELS={'pointer':1,'evidence':2,'expanded':3}
-# The whole prompt-hook context, in characters of the final string. Matches Codex's additionalContextLimit for this
-# hook. The header, maps and brief, and governance notices are never cut for it; note hits get the room they leave
-# (the first hit always), and source excerpts and pre-compaction recall are added only when they fit.
+# The prompt-hook budget for note hits, source excerpts and recall, in characters of the final string. Matches Codex's
+# additionalContextLimit for this hook. The header, maps and brief, and governance notices are not cut for it (the brief
+# and maps are trimmed only to fit runtime.PROMPT_HARD_CAP); note hits get the room they leave (the first hit always),
+# and source excerpts and pre-compaction recall are added only when they fit.
 PROMPT_CAP=4000
 HEADING='Untrusted historical memory; verify current instructions and files:'
 TOPIC_REFS=3
