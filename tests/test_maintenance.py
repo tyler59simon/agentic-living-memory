@@ -1,5 +1,5 @@
 import json,unittest
-from datetime import datetime,timedelta,timezone
+from datetime import datetime,time,timedelta,timezone
 from pathlib import Path
 from core import maintenance,maintenance_state as ms,notes,digests
 from core.note_format import render,action_items
@@ -19,6 +19,10 @@ class Base(StoreFixture):
         ms.set_config(self.root,self.cfg)
         self.project=self.base/'project';(self.project/'src').mkdir(parents=True)
     def tick(self):self.now+=timedelta(hours=1)
+    def same_utc_day(self,hours):
+        """Move self.now forward past UTC midnight when the next `hours` of ticks would cross it, so a test's runs share one allowance day."""
+        end=self.now+timedelta(hours=hours)
+        if end.date()!=self.now.date():self.now=datetime.combine(end.date(),time(0,1),timezone.utc)
     def mk(self,title,body='A fact about the project.',**kw):
         kw.setdefault('allow_similar',True)
         return notes.capture(title,body,TAGS,'demo',self.root,**kw)
@@ -438,6 +442,7 @@ class Service(Base):
         n=self.mk('Sprint status','Done.',type='status',review_by=OLD)
         r=maintenance.run(self.root,adapter=lambda req:out,now=self.now);self.assertEqual(self.get(n)['status'],'active');return r
     def test_a_timeout_charges_the_whole_reservation(self):
+        self.same_utc_day(2)
         r=self.fail_with({'ok':False,'reason_code':'timeout','usage_micro':None})
         stored=self.read_run(r['id']);self.assertEqual((r['status'],r['reason_code'],stored['state'],stored['cost_complete']),('failed','timeout','failed',False))
         self.assertEqual(stored['charged_micro'],stored['reserved_micro']);self.assertEqual(maintenance.run(self.root,adapter=self.specs_adapter(),now=self.now+timedelta(hours=1))['skip_reason'],'daily_budget')

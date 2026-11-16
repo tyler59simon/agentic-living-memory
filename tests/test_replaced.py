@@ -91,6 +91,7 @@ class Candidates(Pairs):
         self.assertEqual(self.cands(),[])
         self.assertEqual(self.queue(),[self.pair(old,new)])
     def test_the_budget_is_shared_with_the_other_kinds(self):
+        self.same_utc_day(3)
         self.cfg=ms.validate({**self.cfg,'max_notes_per_day':2});ms.set_config(self.root,self.cfg)
         due=self.mk('Money decision','Money is long cents.',type='decision',review_by=OLD);old,new=self.old_new()
         res=self.go()
