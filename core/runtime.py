@@ -1691,11 +1691,9 @@ def _process(harness,event,payload,root=None,info=None):
             shashes=list(dict.fromkeys(hashed(s) for _,s in kinds)) if signal and hashed else []
             from . import private
             detail.update(signal=signal,signals=[k for k,_ in kinds],private_spans=len(private.spans(text)) if isinstance(text,str) and not MACHINE_PROMPT.match(text) else 0)
-            heads=repo_heads(cwd,state)
             def opened(s):
                 if not s.get('open_turns'):
-                    s['turn_started']=time.time()  # the turn's first prompt: shell edits are found by mtime
-                    s['heads']=heads  # ...and a shell commit by HEAD moving
+                    s['turn_started']=time.time()  # the turn's first prompt (shell edits are found by mtime from the first writing shell command)
                 s['turn']=turn;s['open_turns']=(list(s.get('open_turns',[]))+[turn])[-20:]
                 if mode:s['last_mode']=mode
                 if signal:
@@ -2074,10 +2072,21 @@ def _process(harness,event,payload,root=None,info=None):
             # Decision documents (ADRs, changelogs, boards) changed this turn; Stop asks for a note about them.
             from .triggers import decision_docs
             docs=decision_docs(paths,bindings);detail['docs']=len(docs)
-            if not state.get('mutating') or set(paths)-set(state.get('touched',[])) or looked or (name in SHELL_TOOLS and not state.get('shell')):
+            # The repos this command may change, with HEAD now: Stop asks git about these only (PROV-2).
+            repos=shell_repos(text,cwd,bindings,state) if name in SHELL_TOOLS else []
+            new_repos=[k for k in repos if k not in (state.get('shell_repos') or [])]
+            new_heads={k:h for k in new_repos if (h:=head_oid(Path(k)))}
+            if not state.get('mutating') or set(paths)-set(state.get('touched',[])) or looked or (name in SHELL_TOOLS and not state.get('shell')) or new_repos:
                 def touch(s):
                     s['mutating']=True;s['edited']=True   # edited outlives the turn: read-only sessions get no housekeeping reminders
-                    if name in SHELL_TOOLS:s['shell']=True   # shell edits often use relative paths no hook can see; Stop asks git
+                    if name in SHELL_TOOLS:   # shell edits often use relative paths no hook can see; Stop asks git
+                        if not s.get('shell'):s['shell_started']=time.time()
+                        s['shell']=True
+                        known=list(s.get('shell_repos') or [])
+                        heads=s.get('heads') if isinstance(s.get('heads'),dict) else {}
+                        for key in repos:
+                            if key not in known and key in new_heads:heads[key]=new_heads[key]
+                        s['heads']=heads;s['shell_repos']=list(dict.fromkeys(known+repos))[:MAX_SHELL_REPOS]
                     if docs:s['docs']=list(dict.fromkeys(list(s.get('docs',[]))+docs))[:MAX_DOCS]
                     if follow:
                         hinted={p:r for p,r in (s.get('hinted') or {}).items() if p not in follow};hinted.update(follow)
@@ -2212,7 +2221,7 @@ def map_sentence(key,kind,data,session):
             f"(CMD read {short}, then CMD update {short} --session {session} --set-detail '**Layout:** ...' for each bullet that changed).")
 
 # Per-turn state a Stop clears (reminded keeps `touched` for a capture that answers it).
-TURN_STATE=('open_turns','mutating','signal','signal_hash','signal_hashes','signal_words','touched','unlooked','docs','shell','turn_started','heads')
+TURN_STATE=('open_turns','mutating','signal','signal_hash','signal_hashes','signal_words','touched','unlooked','docs','shell','shell_started','shell_repos','turn_started','heads')
 MAP_KINDS=('unmapped','grown','stale')
 BRIEF_KINDS=('unbriefed','brief')
 # Kinds that name their own reminder in the usage diary; the map kinds report as 'explored' or 'grown'.
@@ -2256,7 +2265,7 @@ def stop_pending(root,bindings,state,session,turns,domain=None,cwd=None,planning
     if (state.get('mutating') or state.get('docs_left')) and domain and not dismissed:
         memo=[]
         def changed():   # the shell-changed files, asked of git once for both reminders
-            if not memo:memo.append(turn_changed(root,bindings,state,domain,cwd))
+            if not memo:memo.append(turn_changed(root,bindings,state,domain,cwd,session))
             return memo[0]
         for name,find in (('doc',lambda:doc_pending(root,bindings,state,domain,cwd,changed)),('follow',lambda:follow_pending(root,state,bindings,domain,changed) if state.get('mutating') else [])):
             try:found=[(kind,data) for kind,data in find() if not (kind=='doc' and saved and covered_by(root,saved,data['path']))]
@@ -2408,19 +2417,46 @@ def doc_notes(root,bindings,domain,path,file):
     for h in hits:found.setdefault(f"{h['domain']}:{h['id']}",{'ref':f"{h['domain']}:{h['id']}",'short':short_ref(h['domain'],h['id']),'title':_title(h['title'])})
     return list(found.values())[:STOP_NOTES]
 
-def _turn_repos(cwd,state):
-    """The repos a turn's shell edits may have changed: the one holding cwd, then those explored so far (at most 3)."""
+MAX_SHELL_REPOS=3
+OTHER_SESSION_HOURS=12
+
+def shell_repos(text,cwd,bindings,state):
+    """The repos a writing shell command may change, as resolved posix paths: the one holding cwd and those the command
+    text names. When it names none and cwd is in no repo, the repo the session explored last (the user's choice, PROV-2):
+    every explored repo would pick up a parallel session's edits."""
+    from .maps import named_repos,candidate_repos
     here=git_root(cwd) if cwd else None
-    return list(dict.fromkeys(([here] if here else [])+[Path(k) for k in _repos(state)]))[:3]
+    try:named=named_repos(text,candidate_repos(cwd,bindings),bindings.get('repo_aliases')) if text else []
+    except (OSError,ValueError):named=[]
+    found=[p.as_posix() for p in ([here] if here else [])+list(named)]
+    if not found and _repos(state):found=[list(_repos(state))[-1]]
+    return list(dict.fromkeys(found))
 
-def repo_heads(cwd,state):
-    """{repo path: HEAD commit} for _turn_repos, read from the .git files (no subprocess)."""
-    from .common import head_oid
-    return {r.as_posix():h for r in _turn_repos(cwd,state) if (h:=head_oid(r))}
+def _turn_repos(cwd,state):
+    """The repos a turn's shell edits may have changed: those its writing shell commands named (shell_repos); for a state
+    written before shell_repos existed, the one holding cwd. At most MAX_SHELL_REPOS."""
+    if 'shell_repos' in state:return [Path(k) for k in state.get('shell_repos') or []][:MAX_SHELL_REPOS]
+    here=git_root(cwd) if cwd else None
+    return [here] if here else []
 
-def turn_changed(root,bindings,state,domain,cwd):
+def others_touched(root,session):
+    """Files other sessions active in the last OTHER_SESSION_HOURS hours named in write tool calls (their touched_session),
+    as notes name them. A parallel session's edits show up in this session's git status; they are not this session's work."""
+    mine=_pointer(root,session) if session else None;cutoff=time.time()-OTHER_SESSION_HOURS*3600;found=set()
+    try:pointers=list((Path(root)/'.turns').glob('*.current.json'))
+    except OSError:return found
+    for pointer in pointers:
+        try:
+            if pointer==mine or pointer.stat().st_mtime<cutoff:continue
+        except OSError:continue
+        other=read_json(pointer,{})
+        if isinstance(other,dict):found.update(p for p in other.get('touched_session') or [] if isinstance(p,str))
+    return found
+
+def turn_changed(root,bindings,state,domain,cwd,session=None):
     """({shown name: absolute path}, pulled, edited) for files a shell command changed this turn, which no hook can name (relative paths): the files
-    git reports changed since the turn began, or committed since HEAD was recorded at its first prompt, inside the domain's bound folders.
+    git reports changed since the turn's first writing shell command, or committed since HEAD was recorded when that command first named the repo,
+    inside the domain's bound folders and the repos the turn's shell commands named, less the files other sessions edited (others_touched).
     pulled is True when HEAD moved by more than CHANGE_GUARD_COMMITS commits or more than CHANGE_GUARD_FILES files changed: a pull or checkout, not the agent's work.
     edited is the set of shown names of existing files the moved HEAD modified (empty unless pulled): what doc_pending leaves out after a pull."""
     from .common import domain_prefixes,display_path,head_oid
@@ -2433,8 +2469,9 @@ def turn_changed(root,bindings,state,domain,cwd):
         return display_path(p,prefixes),p
     if state.get('shell') and cwd:
         heads=state.get('heads') if isinstance(state.get('heads'),dict) else {}
+        since=state.get('shell_started') or state.get('turn_started');theirs=others_touched(root,session)
         for repo in _turn_repos(cwd,state):
-            found=changed_since(repo,state['turn_started']) if state.get('turn_started') else []
+            found=changed_since(repo,since) if since else []
             start=heads.get(repo.as_posix());head=head_oid(repo) if start else None
             if start and head and head!=start:
                 found+=committed_since(repo,start,head);moved.append((repo,start,head))
@@ -2442,7 +2479,7 @@ def turn_changed(root,bindings,state,domain,cwd):
             total+=len(found)
             for path in found:
                 name,p=show(path)
-                if name:files[name]=p
+                if name and name not in theirs:files[name]=p
     pulled=pulled or total>CHANGE_GUARD_FILES
     return files,pulled,({show(p)[0] for repo,start,head in moved for p in committed_since(repo,start,head,edited=True)} - {None}) if pulled else set()
 

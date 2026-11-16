@@ -173,9 +173,9 @@ class ShellFallback(DocFixture):
         self.old=self.project/'docs'/'adr'/'ADR-001-old.md';self.old.write_text('# ADR-001\n',encoding='utf-8')
         os.utime(self.old,(time.time()-3600,time.time()-3600))                        # changed before the turn: not this turn's
     def test_relative_shell_edits_are_found_through_git_status_and_mtime(self):
-        self.prompt();time.sleep(0.05)
+        self.prompt()
+        self.tool('Bash',{'command':'echo "# ADR-005" > docs/adr/ADR-005-ids.md'});time.sleep(0.05)   # PreToolUse runs before the command writes
         (self.project/'docs'/'adr'/'ADR-005-ids.md').write_text('# ADR-005: Identifiers\n',encoding='utf-8')
-        self.tool('Bash',{'command':'echo "# ADR-005" > docs/adr/ADR-005-ids.md'})
         state=self.state();self.assertTrue(state['shell']);self.assertNotIn('docs',state)   # no absolute path for the hook to see
         reason=self.stop()['continue_reason']
         self.assertIn('You changed docs/adr/ADR-005-ids.md',reason);self.assertNotIn('ADR-001-old',reason)
@@ -186,10 +186,10 @@ class ShellFallback(DocFixture):
     def test_a_doc_written_and_committed_through_the_shell_in_one_turn_is_found_by_head(self):
         self.prompt()
         before=subprocess.run(['git','-C',str(self.project),'rev-parse','HEAD'],capture_output=True,text=True).stdout.strip()
-        self.assertEqual(list(self.state()['heads'].values()),[before])
         new=self.project/'docs'/'adr'/'ADR-009-queues.md';new.write_text('# ADR-009: Queues\n',encoding='utf-8')
         os.utime(new,(time.time()-3600,time.time()-3600))                             # older than the turn: mtime cannot find it
         self.tool('Bash',{'command':'git add docs && git commit -m "adr 9"'})
+        self.assertEqual(list(self.state()['heads'].values()),[before])               # HEAD recorded when the first writing shell command named the repo
         subprocess.run(['git','-C',str(self.project),'add','docs/adr/ADR-009-queues.md'],check=True);subprocess.run(['git','-C',str(self.project),'commit','-qm','adr 9'],check=True)
         self.assertIn('You changed docs/adr/ADR-009-queues.md',self.stop()['continue_reason'])
 
@@ -237,6 +237,56 @@ class ShellFallback(DocFixture):
         from unittest.mock import patch
         self.prompt();self.tool('Bash',{'command':'touch docs/adr/x.md'})
         with patch('core.triggers.subprocess.run',side_effect=subprocess.TimeoutExpired('git',2)):self.assertEqual(self.stop(),{})
+
+@unittest.skipUnless(shutil.which('git'),'needs git')
+class ParallelSessions(DocFixture):
+    """PROV-2: the bound folder is not a repo and holds two; another session edits files while this one works.
+    Stop asks git only about the repos this session's shell commands named, from its first writing shell command,
+    and leaves out the files another session's write tools named."""
+    def setUp(self):
+        super().setUp()
+        for name in ('app-alpha','app-beta'):
+            repo=self.project/name;(repo/'docs'/'adr').mkdir(parents=True);(repo/'src.py').write_text('x=1\n',encoding='utf-8')
+            subprocess.run(['git','init','-q',str(repo)],check=True)
+            for key in ('user.email','user.name'):subprocess.run(['git','-C',str(repo),'config',key,'t'],check=True)
+            subprocess.run(['git','-C',str(repo),'add','-A'],check=True);subprocess.run(['git','-C',str(repo),'commit','-qm','init'],check=True)
+    def adr(self,repo,name):
+        path=self.project/repo/'docs'/'adr'/name;path.write_text('# '+path.stem+'\n',encoding='utf-8');return f'{repo}/docs/adr/{name}'
+    def read(self,repo):self.tool('Read',{'file_path':str(self.project/repo/'src.py')})
+    def changed(self):
+        files,_,_=runtime.turn_changed(self.root,load_bindings(self.root),self.state(),'demo',self.cwd,'s1');return sorted(files)
+
+    def test_a_repo_the_session_only_read_is_not_asked_about(self):
+        self.prompt();self.read('app-beta')
+        self.tool('Bash',{'command':'cd app-alpha && python -m pytest'});time.sleep(0.05)
+        mine=self.adr('app-alpha','ADR-020-mine.md');theirs=self.adr('app-beta','ADR-021-theirs.md')
+        self.assertEqual(self.changed(),[mine])
+        reason=self.stop()['continue_reason'];self.assertIn('You changed '+mine,reason);self.assertNotIn('ADR-021',reason)
+
+    def test_a_command_that_names_no_repo_asks_only_about_the_repo_explored_last(self):
+        self.prompt();self.read('app-alpha');self.read('app-beta')
+        self.tool('Bash',{'command':'python -m pytest'});time.sleep(0.05)
+        self.adr('app-alpha','ADR-022-theirs.md');mine=self.adr('app-beta','ADR-023-mine.md')
+        self.assertEqual(self.changed(),[mine])
+
+    def test_files_another_session_wrote_are_left_out(self):
+        other={**self.payload,'session_id':'s2','prompt':'their work'}
+        runtime.process('claude','user-prompt',other,self.root)
+        self.prompt();self.tool('Bash',{'command':'cd app-alpha && make'});time.sleep(0.05)
+        theirs=self.adr('app-alpha','ADR-030-theirs.md');mine=self.adr('app-alpha','ADR-031-mine.md')
+        runtime.process('claude','pre-tool-use',{**other,'tool_name':'Write','tool_input':{'file_path':str(self.project/theirs)}},self.root)
+        self.assertEqual(self.changed(),[mine])
+
+    def test_a_file_changed_before_the_first_shell_command_is_not_this_sessions(self):
+        self.prompt();self.read('app-alpha');self.adr('app-alpha','ADR-040-theirs.md');time.sleep(0.05)
+        self.tool('Bash',{'command':'cd app-alpha && make'});self.assertEqual(self.changed(),[])
+        self.assertEqual(self.stop(),{})
+
+    def test_a_second_command_naming_another_repo_adds_it(self):
+        self.prompt();self.tool('Bash',{'command':'cd app-alpha && make'});self.tool('Bash',{'command':'cd app-beta && make'});time.sleep(0.05)
+        a=self.adr('app-alpha','ADR-050-a.md');b=self.adr('app-beta','ADR-051-b.md')
+        self.assertEqual(self.changed(),[a,b])
+        self.assertEqual(set(self.state()['heads']),{(self.project/r).resolve().as_posix() for r in ('app-alpha','app-beta')})
 
 
 class SupersedeKeepsPointers(DocFixture):
