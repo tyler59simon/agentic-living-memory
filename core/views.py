@@ -14,7 +14,7 @@ from .common import atomic_write
 from .repository import read_json,canonical_json,store_lock,transaction,now
 
 # Bump when the page changes, so views rendered by an older version count as stale.
-RENDERER=2
+RENDERER=3
 TARGETS=('local','artifact')
 RELOAD_SECONDS=15
 URL=re.compile(r'https?://[^\s<>"\']+')
@@ -128,9 +128,11 @@ def missing_model(entry):
 
 # ---- the page ----
 
-DARK='''color-scheme:dark;--bg:#1b0626;--bg-alt:#251332;--bg-hover:#341848;--fg:#f6f1fa;--muted:#b7a6c6;--border:#3a224c;--accent:#c884f4;--accent-soft:#442558;--error:#ff7a90;--mark:#5c4712;--bg-sidebar:#190621;--bg-topbar:#1b0727;--bg-input:#200c2c;--bg-code:#170d24;--bg-active:#4c2d64;--border-soft:#291738;--border-strong:#6d5188;--border-lilac:#d2aee7;--accent-strong:#8048b0;--primary:#019871;--teal:#01dca4;--success:#04cf8a;--success-soft:#03473e;--warn:#f7ae3a;--warn-fg:#fde329;--warn-bg:#44281c;--warn-border:#b99a2a;--sub:#e9def2;--chip-bg:#391e48;--p3-bg:#2b2136;--ok-bg:#192b30;--ok-border:#165848;--ok-fg:#7df3c6;--next-bg:#3a1f55;--next-border:#8a5bc0;--next-fg:#e0c2fb;'''
-# Light counterpart for artifacts: the Hivemind accents (purple #8048b0, teal #018a68) on pale lilac steps, text at 4.5:1 or better.
-LIGHT='''color-scheme:light;--bg:#faf7fd;--bg-alt:#ffffff;--bg-hover:#f1e9f8;--fg:#241530;--muted:#675777;--border:#e3d8ec;--accent:#8048b0;--accent-soft:#eadcf5;--error:#bf2447;--mark:#fbe9a8;--bg-sidebar:#f3edf8;--bg-topbar:#faf7fd;--bg-input:#ffffff;--bg-code:#f3edf8;--bg-active:#e2d0f0;--border-soft:#eee6f4;--border-strong:#a68dbb;--border-lilac:#8048b0;--accent-strong:#8048b0;--primary:#018a68;--teal:#018a68;--success:#018a68;--success-soft:#d8f1e9;--warn:#a86a00;--warn-fg:#6b4700;--warn-bg:#fdf1d6;--warn-border:#d8a733;--sub:#3d2c4d;--chip-bg:#efe4f7;--p3-bg:#f0eaf4;--ok-bg:#dff3ec;--ok-border:#7cc9b0;--ok-fg:#0a5d46;--next-bg:#eadcf5;--next-border:#a982cf;--next-fg:#5a2d85;'''
+# Hivemind's Emerald Enterprise theme (src/App.css, [data-theme="emerald"]): sage surfaces, emerald green for accents and approved items,
+# mint (--done) for completion. Chip tokens follow Hivemind's badge, chip, chip-ok and chip-next colours.
+DARK='''color-scheme:dark;--bg:#002d2a;--bg-alt:#0c3835;--bg-hover:#194441;--fg:#f5f5f5;--muted:#a7b9b7;--border:#1b4340;--accent:#7ecf1c;--accent-soft:#23462b;--error:#ff8f8f;--mark:#5a4a14;--bg-sidebar:#002420;--bg-topbar:#002926;--bg-input:#002522;--bg-code:#001f1c;--bg-active:#214846;--border-soft:#103532;--border-strong:#426461;--border-lilac:#a7b9b7;--accent-strong:#3b6a12;--primary:#7ecf1c;--done:#62d6a2;--success:#62d6a2;--success-soft:#0e4436;--warn:#f2b54a;--warn-fg:#f7d65e;--warn-bg:#3a3218;--warn-border:#a88b2a;--sub:#c8d2d2;--chip-bg:#123d3a;--p3-bg:#0c3835;--ok-bg:#1b3a1c;--ok-border:#4f8a1a;--ok-fg:#b1ee2c;--next-bg:#214846;--next-border:#6f908d;--next-fg:#e3ecea;'''
+# Hivemind's Emerald Enterprise Light theme (src/App.css, [data-theme="emerald-light"]), mapped to the same tokens as DARK.
+LIGHT='''color-scheme:light;--bg:#f5f5f5;--bg-alt:#ffffff;--bg-hover:#e9ecec;--fg:#002d2a;--muted:#426461;--border:#c8d2d2;--accent:#3b6a12;--accent-soft:#e3f2cf;--error:#b3261e;--mark:#fbe7a1;--bg-sidebar:#002d2a;--bg-topbar:#ffffff;--bg-input:#ffffff;--bg-code:#e9ecec;--bg-active:#dfe8e6;--border-soft:#dde4e4;--border-strong:#5e7f7c;--border-lilac:#426461;--accent-strong:#7ecf1c;--primary:#7ecf1c;--done:#16794c;--success:#16794c;--success-soft:#dcf3e8;--warn:#8a5700;--warn-fg:#6b4a00;--warn-bg:#fdf3d6;--warn-border:#d9a92e;--sub:#2b4a47;--chip-bg:#e9ecec;--p3-bg:#ffffff;--ok-bg:#e8f6d6;--ok-border:#7ecf1c;--ok-fg:#2f5a0c;--next-bg:#e9ecec;--next-border:#a7b9b7;--next-fg:#2b4a47;'''
 
 CSS='''
 :root{--font-sans:"Plus Jakarta Sans Variable","Segoe UI",system-ui,-apple-system,sans-serif;--font-mono:"JetBrains Mono Variable",ui-monospace,"Cascadia Code",Consolas,monospace;font-family:var(--font-sans);font-size:clamp(14px,1.2vw,18px);line-height:1.5;color:var(--fg);background:var(--bg)}
@@ -163,7 +165,7 @@ pre code{background:none;border:none;padding:0}
 .callout p{margin:0}
 .progress-line{display:flex;align-items:center;gap:.7rem}
 .progress{display:block;flex:1;min-width:4rem;height:.4rem;border-radius:999px;background:var(--bg-hover);overflow:hidden}
-.progress>span{display:block;height:100%;background:var(--teal);border-radius:999px}
+.progress>span{display:block;height:100%;background:var(--done);border-radius:999px}
 .lib-bar{display:flex;align-items:flex-end;flex-wrap:wrap;gap:.4rem 1rem;border-bottom:1px solid var(--border)}
 .lib-bar .line-tabs{border-bottom:none;flex:1}
 .line-tabs{display:flex;gap:.3rem;border-bottom:1px solid var(--border)}
@@ -182,13 +184,13 @@ span.chip{display:inline-block;border:1px solid var(--border-strong);vertical-al
 .work-list{display:flex;flex-direction:column;gap:.6rem}
 .work-group{border:1px solid var(--border);border-left-width:1px;border-radius:.5rem;padding:.5rem .8rem;background:var(--bg-alt);display:flex;flex-direction:column;gap:.25rem}
 .work-group.has-detail:hover{background:var(--bg-hover)}
-.work-group.expanded{border-left:.22rem solid var(--teal)}
+.work-group.expanded{border-left:.22rem solid var(--done)}
 .work-head{display:flex;align-items:flex-start;gap:.7rem;width:100%;text-align:left;justify-content:flex-start}
 button.work-head{border:none;border-radius:.3rem;padding:0;background:none}
 button.work-head:hover{background:none}
 .work-group.done .work-main{opacity:.6}
 .work-mark{flex:none;display:inline-flex;margin-top:.15rem;color:var(--muted)}
-.work-group.done .work-mark{color:var(--teal)}
+.work-group.done .work-mark{color:var(--done)}
 .work-main{flex:1;min-width:0;display:flex;flex-direction:column}
 .work-text{font-weight:600;overflow-wrap:anywhere}
 .work-tags{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:.35rem;max-width:45%}

@@ -125,14 +125,19 @@ class Page(Fixture):
     def test_theme_contract(self):
         model=dict(views.view_model(fake()),view_title='Hook plan');local=views.render_html(model,'local');artifact=views.render_html(model,'artifact')
         self.assertIn('<title>Hook plan</title>',artifact);self.assertIn('<meta name="viewport"',artifact)
-        self.assertRegex(artifact,r':root\{color-scheme:light;--bg:#faf7fd')
-        self.assertIn('@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#1b0626',artifact)
-        self.assertIn(':root[data-theme="dark"]{color-scheme:dark;--bg:#1b0626',artifact);self.assertIn('body{margin:0;background:var(--bg)',artifact)
+        self.assertRegex(artifact,r':root\{color-scheme:light;--bg:#f5f5f5')
+        self.assertIn('@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#002d2a',artifact)
+        self.assertIn(':root[data-theme="dark"]{color-scheme:dark;--bg:#002d2a',artifact);self.assertIn('body{margin:0;background:var(--bg)',artifact)
         self.assertIn('data-target="artifact"',artifact);self.assertIn('data-target="local"',local)
-        self.assertNotIn('prefers-color-scheme',local);self.assertRegex(local,r':root\{color-scheme:dark;--bg:#1b0626')
+        self.assertNotIn('prefers-color-scheme',local);self.assertRegex(local,r':root\{color-scheme:dark;--bg:#002d2a')
         # Both carry the reload code (one script), but only a local page arms it.
         self.assertIn("getAttribute('data-target')==='local'",artifact);self.assertIn('15000',local)
-        self.assertIn('--accent-strong:#8048b0',local);self.assertIn('--teal:#01dca4',local);self.assertIn('--teal:#018a68',artifact)
+        self.assertIn('--accent:#7ecf1c',local);self.assertIn('--done:#62d6a2',local);self.assertIn('--done:#16794c',artifact)
+        # Both palettes define the same tokens, and every token the page uses is defined.
+        import re
+        names=lambda palette:set(re.findall(r'(--[\w-]+):',palette))
+        self.assertEqual(names(views.DARK),names(views.LIGHT))
+        self.assertLessEqual(set(re.findall(r'var\((--[\w-]+)',views.CSS))-{'--font-sans','--font-mono'},names(views.DARK))
 
     def test_summary_links_and_roadmap_statuses(self):
         from core.note_format import render
