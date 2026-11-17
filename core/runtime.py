@@ -249,8 +249,12 @@ def views_write(text,grammar):
         if not rest:continue
         action=next((w for w in rest if not w.startswith('-')),'list')
         if action in {'add','remove','published'}:return True
-        if action=='render' and (_option_values(rest,('--out',)) or 'json' not in _option_values(rest,('--format',))):return True
+        if action=='render' and (_option_values(rest,('--out',)) or not _json_format(rest)):return True
     return False
+
+def _json_format(words):
+    """True when these words end up as `--format json`: argparse keeps the last value, so `--format json --format html` is html."""
+    return _option_values(words,('--format',))[-1:]==['json']
 
 def wiki_write(text,grammar):
     """True when a `wiki` command writes a file: anything but `--format json` with no --out."""
@@ -259,7 +263,7 @@ def wiki_write(text,grammar):
         while index<len(words) and words[index]!='wiki':index+=2 if words[index] in GLOBAL_OPTIONS else 1
         if index>=len(words):continue
         rest=words[index+1:]
-        if _option_values(rest,('--out',)) or 'json' not in _option_values(rest,('--format',)):return True
+        if _option_values(rest,('--out',)) or not _json_format(rest):return True
     return False
 
 def maintenance_write(text,grammar):

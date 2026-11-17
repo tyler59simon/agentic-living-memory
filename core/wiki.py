@@ -9,7 +9,7 @@ same model natively (`wiki --format json`). The page is rendered on demand only:
 The page needs no network: styles, script, font and logo are inline, and the data is a JSON block that the script
 turns into elements with textContent only. Note text is agent-written, so it is never put into markup unescaped."""
 from __future__ import annotations
-import html,json
+import hashlib,html,json,os
 from datetime import datetime,timezone
 from pathlib import Path
 from .common import atomic_write
@@ -44,16 +44,25 @@ def section_of(note,files):
     if files:return 'code'
     return 'architecture' if 'concern/architecture' in (note.get('tags') or []) else 'reference'
 
-def _repo_path(value,repos):
-    """A file path as <repo folder>/<path inside it>: absolute paths under a registered repo are made relative to the
-    repo's parent folder; anything else is returned with slashes normalised and leading ./ removed."""
+def _locate(value,prefixes,repos):
+    """(display path, owning repo or None, is_dir) for one stored file path. Relative paths resolve against the domain's
+    bound folders, as capture stored them. The owner is the registered repo (longest first) whose full path holds the file,
+    so two repos with the same folder name stay apart; the display path is <repo folder>/<path inside it>. A path that
+    exists says whether it is a folder; otherwise a last segment with no dot is taken as a folder."""
     text=str(value).strip().replace('\\','/')
-    folded=text.casefold()
-    for repo in repos:
-        base=repo.replace('\\','/').rstrip('/');parent=base.rsplit('/',1)[0].casefold()+'/'
-        if folded==base.casefold() or folded.startswith(base.casefold()+'/'):return text[len(parent):]
     while text.startswith('./'):text=text[2:]
-    return text.strip('/')
+    text=text.rstrip('/') or '.'
+    raw=Path(text);candidates=[raw] if raw.is_absolute() else [prefix/text for prefix in prefixes]
+    path=next((c for c in candidates if c.exists()),candidates[0] if candidates else None)
+    shown,owner=('' if text=='.' else text),None   # '.' (the bound folder) shows only when a repo owns it
+    if path is not None:
+        full=Path(os.path.normpath(path)).as_posix().rstrip('/');folded=full.casefold()
+        for repo in repos:
+            base=repo.replace('\\','/').rstrip('/')
+            if folded==base.casefold() or folded.startswith(base.casefold()+'/'):
+                shown,owner=(base.rsplit('/',1)[-1]+full[len(base):]).strip('/'),repo;break
+    last=shown.rsplit('/',1)[-1]
+    return shown,owner,(path.is_dir() if path is not None and path.exists() else '.' not in last)
 
 def _split_lead(body,summary):
     """The body without its leading summary paragraph, which the page shows as the lead."""
@@ -83,18 +92,23 @@ def wiki_model(domain,root,archived=False):
         projects.append({'slug':p['slug'],'name':p.get('name') or p['slug'],'description':p.get('description') or '','aliases':list(p.get('aliases') or []),
                          'repos':[Path(r).name for r in p.get('repos') or []],'repo_paths':list(p.get('repos') or []),'status':p.get('status') or 'active',
                          'tag':registry.tag(p['slug']),'charter':charter.split(':',1)[1] if charter.startswith(domain+':') else None})
-    by_tag={p['tag']:p for p in projects};repo_project={r:p['slug'] for p in projects for r in p['repos']}
-    all_repos=[r for p in projects for r in p['repo_paths']]
+    by_tag={p['tag']:p for p in projects};repo_project={r:p['slug'] for p in projects for r in p['repo_paths']}
+    repos=sorted(repo_project,key=len,reverse=True)
+    from .common import domain_prefixes,load_bindings
+    prefixes=domain_prefixes(domain,load_bindings(root))
+    # The pseudo-project for unassigned notes takes the first free slug, so a registered project named general keeps its own.
+    registered={p['slug'] for p in projects};general=next(s for s in ('general',*(f'general-{i}' for i in range(2,100))) if s not in registered)
 
-    notes=[]
+    notes=[];where={}
     for n in raw:
         summary=next((text for key,_,text in parts(n.get('body') or '') if key=='summary'),'')
-        files=[f for f in (_repo_path(v,all_repos) for v in n.get('files') or []) if f]
-        first=files[0].split('/')[0] if files else None
+        located=[l for l in (_locate(v,prefixes,repos) for v in n.get('files') or []) if l[0]]
+        files=[l[0] for l in located];owner=repo_project.get(located[0][1]) if located else None
+        if located:where[n['id']]=located[0]
         tagged=[by_tag[t]['slug'] for t in n.get('tags') or [] if t in by_tag]
-        if len(tagged)>1 and repo_project.get(first) in tagged:project=repo_project[first]
+        if len(tagged)>1 and owner in tagged:project=owner
         elif tagged:project=tagged[0]
-        else:project=repo_project.get(first,'general')
+        else:project=owner or general
         status=n.get('status') or 'active'
         notes.append({'id':n['id'],'ref':n['id'][:8],'title':n.get('title') or '','type':n.get('type') or '','status':status,'retired':status!='active',
                       'tags':list(n.get('tags') or []),'files':files,'updated':str(n.get('updated') or '')[:10],'created':str(n.get('created') or '')[:10],
@@ -102,7 +116,7 @@ def wiki_model(domain,root,archived=False):
                       'out':out.get(n['id'],[]),'backlinks':back.get(n['id'],[]),
                       'project':project,'section':section_of(n,files),'folder':None,'filename':''})
     by_id={n['id']:n for n in notes};used={n['project'] for n in notes}
-    projects=[p for p in projects if p['slug'] in used]+([dict(GENERAL)] if 'general' in used else [])
+    projects=[p for p in projects if p['slug'] in used]+([dict(GENERAL,slug=general)] if general in used else [])
 
     # The code tree: one folder per path prefix and project; a note sits in the folder of its first file.
     folders=[];index={}
@@ -114,10 +128,11 @@ def wiki_model(domain,root,archived=False):
             if len(segs)>1:parent=folder(project,segs[:-1]);node['parent']=parent['id'];parent['folders'].append(node['id'])
         return index[key]
     for n in notes:
-        if not n['files']:continue
-        segs=[s for s in n['files'][0].split('/') if s]
-        if segs[0] not in repo_project:segs=[OTHER]+segs[-1:]
-        is_file='.' in segs[-1] and len(segs)>1
+        if n['id'] not in where:continue
+        shown,owner,is_dir=where[n['id']];segs=[s for s in shown.split('/') if s]
+        if not segs:continue
+        if owner is None:segs=[OTHER]+segs[-1:]
+        is_file=not is_dir and len(segs)>1
         node=folder(n['project'],segs[:-1] if is_file else segs)
         node['notes'].append(n['id']);n['folder']=node['id'];n['filename']=segs[-1] if is_file else ''
     live={f['id']:f for f in folders}
@@ -130,6 +145,14 @@ def wiki_model(domain,root,archived=False):
             for c in f['folders']:live[c]['parent']=f['id']
             for i in f['notes']:by_id[i]['folder']=f['id']
     folders=[f for f in folders if f['id'] in live]
+    # Final ids hash the project and the shown path, so a folder keeps its address when other notes are added or a chain
+    # stops collapsing (Hivemind keeps the route across refreshes).
+    rename={f['id']:'c-'+hashlib.sha1(f"{f['project']}/{f['path']}".encode()).hexdigest()[:10] for f in folders}
+    for f in folders:
+        f['id']=rename[f['id']];f['parent']=rename.get(f['parent']);f['folders']=[rename[c] for c in f['folders']]
+    for n in notes:
+        if n['folder']:n['folder']=rename[n['folder']]
+    live={f['id']:f for f in folders}
     def total(f):return len(f['notes'])+sum(total(live[c]) for c in f['folders'])
     for f in folders:
         f['count']=total(f)
@@ -152,7 +175,7 @@ def wiki_model(domain,root,archived=False):
         p.update(sections=sections,count=len(mine),updated=max((n['updated'] for n in mine),default=''),
                  briefs=[n['id'] for n in mine if n['type']=='brief'],maps=[n['id'] for n in mine if n['type']=='map'])
         if p['charter'] not in by_id:p['charter']=None
-    projects.sort(key=lambda p:(p['slug']=='general',-p['count']))
+    projects.sort(key=lambda p:(p['slug']==general,-p['count']))
     return {'domain':domain,'generated':datetime.now(timezone.utc).strftime('%Y-%m-%d'),'renderer':WIKI_RENDERER,'archived':bool(archived),
             'notes':notes,'projects':projects,'folders':folders,'sections':[{'key':k,'label':l,'blurb':b} for k,l,b in SECTIONS],'external':external}
 
@@ -410,7 +433,9 @@ JS=r'''
 'use strict';
 var D=JSON.parse(document.getElementById('wiki-data').textContent);
 var ICONS=@@ICONS@@;
-var N={},R={},T={},P={},F={},S={};
+var N={},R={},T={},P={},F={},S={},X={};
+// External targets keyed the way links are looked up here (the model's keys are Python casefold, which differs for titles like Straße).
+Object.keys(D.external).forEach(function(k){var x=D.external[k];X[x.title.trim().toLowerCase()]=x});
 D.notes.forEach(function(n){N[n.id]=n;R[n.ref]=n;var k=n.title.trim().toLowerCase();if(!T[k]||T[k].retired&&!n.retired)T[k]=n});
 D.projects.forEach(function(p){P[p.slug]=p});
 D.folders.forEach(function(f){F[f.id]=f});
@@ -451,7 +476,7 @@ function wikilink(raw){
   var hash=target.indexOf('#'),title=(hash>=0?target.slice(0,hash):target).trim(),label=alias||(hash>=0?title+' \u203a '+target.slice(hash+1):title);
   var n=T[title.toLowerCase()];
   if(n){var a=link(nh(n),'wikilink',label);a.title=n.type+': '+n.title;return a}
-  var x=D.external[title.toLowerCase()];
+  var x=X[title.toLowerCase()];
   if(x){var s=el('span','wikilink external',label);s.appendChild(el('small',null,x.domain));s.title='In the '+x.domain+' domain, not part of this wiki';return s}
   var u=el('span','wikilink unresolved',label);u.title='No page has this title yet';return u;
 }
@@ -490,7 +515,7 @@ function markdown(text,heads){
         break}
       continue}
     var p=el('p'),first=true;
-    while(i<lines.length&&lines[i].trim()&&!/^\s*(```|#{1,6}\s|>|\|)/.test(lines[i])&&!isList(lines[i])){if(!first)p.appendChild(document.createTextNode(' '));inline(p,lines[i].trim());first=false;i++}
+    while(i<lines.length&&lines[i].trim()&&(first||!/^\s*(```|#{1,6}\s|>|\|)/.test(lines[i])&&!isList(lines[i]))){if(!first)p.appendChild(document.createTextNode(' '));inline(p,lines[i].trim());first=false;i++}
     box.appendChild(p);
   }
   return box;

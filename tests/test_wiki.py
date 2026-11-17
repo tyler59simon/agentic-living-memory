@@ -81,6 +81,48 @@ class Model(Fixture):
         retired={n['id']:n for n in wiki.wiki_model('demo',self.root,archived=True)['notes']}[ids['bug']]
         self.assertEqual((retired['status'],retired['retired']),('resolved',True))
 
+    def test_paths_stored_relative_to_a_repo_binding(self):
+        # A domain bound to the repo itself stores `src/app.ts` and `.` (capture makes paths relative to the binding).
+        from core.init_domain import init_domain
+        init_domain('hivedom',[str(self.hive)],self.root)
+        brief=self.add('Hive brief','The hive app.',type='brief',domain='hivedom',files=['.'])
+        app=self.add('src/app.ts: root','The root component.',domain='hivedom',files=['src/app.ts'])
+        m=wiki.wiki_model('hivedom',self.root);notes={n['id']:n for n in m['notes']};folders={f['id']:f for f in m['folders']}
+        self.assertEqual([p['slug'] for p in m['projects']],['hive'])   # untagged, owned by the hive repo
+        self.assertEqual((notes[brief]['files'],folders[notes[brief]['folder']]['path']),(['hive'],'hive'))
+        self.assertEqual((notes[app]['files'],folders[notes[app]['folder']]['path']),(['hive/src/app.ts'],'hive/src'))
+
+    def test_repos_with_the_same_folder_name_stay_apart(self):
+        a,b=self.base/'work'/'service',self.base/'home'/'service'
+        for p in (a,b):p.mkdir(parents=True)
+        (self.root/'projects.json').write_text(json.dumps({'version':1,'projects':[
+            {'slug':'work','name':'Work','status':'active','repos':[SLASH(a)]},{'slug':'home','name':'Home','status':'active','repos':[SLASH(b)]}]}))
+        one=self.add('service/main.py: work','In the work repo.',files=[SLASH(a/'main.py')])
+        self.assertEqual({n['id']:n['project'] for n in wiki.wiki_model('demo',self.root)['notes']},{one:'work'})
+
+    def test_files_and_folders_are_told_apart_on_disk(self):
+        (self.hive/'Dockerfile').write_text('FROM x');(self.hive/'.github').mkdir()
+        docker=self.add('hive/Dockerfile: image','The image.',files=['hive/Dockerfile'])
+        github=self.add('hive/.github: workflows','CI.',files=['hive/.github'])
+        m=wiki.wiki_model('demo',self.root);notes={n['id']:n for n in m['notes']};folders={f['id']:f for f in m['folders']}
+        self.assertEqual((notes[docker]['filename'],folders[notes[docker]['folder']]['path']),('Dockerfile','hive'))
+        self.assertEqual((notes[github]['filename'],folders[notes[github]['folder']]['path']),('','hive/.github'))   # About this folder
+
+    def test_a_registered_general_project_keeps_its_page(self):
+        (self.root/'projects.json').write_text(json.dumps({'version':1,'projects':[{'slug':'general','name':'General Co','status':'active','repos':[]}]}))
+        (self.root/'tag_taxonomy.json').write_text(json.dumps({'tags':BASE+['project/general']}))
+        self.add('Company fact','Tagged with the registered project.',['project/general']);self.add('Loose fact','Belongs to no project.')
+        projects=wiki.wiki_model('demo',self.root)['projects']
+        self.assertEqual([(p['slug'],p['name']) for p in projects],[('general','General Co'),('general-2','General')])
+
+    def test_folder_ids_survive_new_notes(self):
+        self.add('hive/src/lib/util.ts: helpers','Helpers.',['project/hive'],files=['hive/src/lib/util.ts'])
+        before={f['path']:f['id'] for f in wiki.wiki_model('demo',self.root)['folders']}
+        self.add('hive/aaa/first.ts: sorts first','A new folder.',['project/hive'],files=['hive/aaa/first.ts'])
+        after={f['path']:f['id'] for f in wiki.wiki_model('demo',self.root)['folders']}
+        self.assertEqual(after['hive/src/lib'],before['hive/src/lib'])
+        for i in after.values():self.assertRegex(i,r'^c-[0-9a-f]{10}$')
+
     def test_empty_domain(self):
         m=wiki.wiki_model('demo',self.root);self.assertEqual((m['notes'],m['projects'],m['folders']),([],[],[]))
         self.assertIn('id="wiki-data"',wiki.render_html(m))
@@ -94,6 +136,20 @@ class Page(Fixture):
         data=json.loads(re.search(r'<script type="application/json" id="wiki-data">(.*?)</script>',page,re.S)[1])
         self.assertEqual(data['notes'][0]['title'],'Plan '+EVIL)
         self.assertEqual(page.count('.innerHTML='),1)   # only the fixed icon shapes
+
+    @unittest.skipUnless(__import__('shutil').which('node'),'needs node')
+    def test_markdown_always_consumes_a_line(self):
+        # Lines no block rule takes (an indented heading or # comment, a lone pipe) once looped forever and froze the page.
+        import subprocess
+        js=wiki.JS[wiki.JS.index('function markdown('):wiki.JS.index('// ---- building blocks')]
+        stub=("var node=function(){return {appendChild:function(){},querySelector:function(){return null},lastChild:null}};"
+              "var document={createDocumentFragment:node,createTextNode:node};var el=node,inline=function(){};")
+        run=stub+js+"markdown('  # indented heading\\n    # a comment\\n| not a table\\nplain text');console.log('done')"
+        self.assertEqual(subprocess.run(['node','-e',run],capture_output=True,text=True,timeout=20).stdout.strip(),'done')
+
+    def test_external_links_match_the_way_the_page_looks_them_up(self):
+        # The model keys external titles with Python casefold (Straße -> strasse); the page must not look them up by that key.
+        self.assertNotIn('D.external[title',wiki.JS);self.assertIn('X[x.title.trim().toLowerCase()]=x',wiki.JS)
 
     def test_single_child_folders_collapse(self):
         self.add('hive/src/lib/util.ts: helpers','Small helpers.',['project/hive'],files=['hive/src/lib/util.ts'])
@@ -147,10 +203,14 @@ class Command(Fixture):
         import sys
         base=f'"{sys.executable}" "{runtime.SCRIPT}" --root "{self.root}" --domain demo wiki'
         self.assertIn('wiki',runtime.ALLOWED_SUBCOMMANDS)
-        for extra,writes in (('',True),(' --format json',False),(' --format json --out x.json',True),(' --archived --out x.html',True)):
+        for extra,writes in (('',True),(' --format json',False),(' --format json --out x.json',True),(' --archived --out x.html',True),
+                             (' --format json --format html',True),(' --format html --format json',False)):   # argparse keeps the last --format
             self.assertEqual(runtime.wiki_write(base+extra,'posix'),writes,extra)
             payload={'cwd':str(self.base/'project'),'session_id':'h','tool_name':'Bash','tool_input':{'command':base+extra}}
             self.assertIn('allow',runtime.process('claude','pre-tool-use',payload,self.root),extra)
             self.assertEqual('deny' in runtime.process('claude','pre-tool-use',{**payload,'agent_id':'sub-1'},self.root),writes,extra)
+        views=f'"{sys.executable}" "{runtime.SCRIPT}" --root "{self.root}" --domain demo views render x'
+        self.assertTrue(runtime.views_write(views+' --format json --format html','posix'))
+        self.assertFalse(runtime.views_write(views+' --format html --format json','posix'))
 
 if __name__=='__main__':unittest.main()
