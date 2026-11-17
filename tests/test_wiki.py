@@ -92,6 +92,24 @@ class Model(Fixture):
         self.assertEqual((notes[brief]['files'],folders[notes[brief]['folder']]['path']),(['hive'],'hive'))
         self.assertEqual((notes[app]['files'],folders[notes[app]['folder']]['path']),(['hive/src/app.ts'],'hive/src'))
 
+    def test_the_bound_folder_without_a_registered_repo_keeps_its_page(self):
+        loose=self.add('About this project','The bound folder.',files=['.'])   # demo is bound to base/project, which no project registers
+        n={n['id']:n for n in wiki.wiki_model('demo',self.root)['notes']}[loose]
+        self.assertEqual((n['files'],n['filename'],n['project']),(['project'],'','general'));self.assertIsNotNone(n['folder'])
+
+    def test_unreadable_paths_do_not_stop_the_wiki(self):
+        from unittest.mock import patch
+        self.add('hive/src/app.ts: root','The root.',['project/hive'],files=['hive/src/app.ts'])
+        exists,is_dir,repo=Path.exists,Path.is_dir,SLASH(self.hive)
+        def denied(real):   # paths inside the repo cannot be probed; the store itself stays readable
+            def check(path,*a,**kw):
+                if SLASH(path).startswith(repo):raise PermissionError('denied')
+                return real(path,*a,**kw)
+            return check
+        with patch('pathlib.Path.exists',denied(exists)),patch('pathlib.Path.is_dir',denied(is_dir)):
+            m=wiki.wiki_model('demo',self.root)
+        self.assertEqual(m['notes'][0]['files'],['hive/src/app.ts'])
+
     def test_repos_with_the_same_folder_name_stay_apart(self):
         a,b=self.base/'work'/'service',self.base/'home'/'service'
         for p in (a,b):p.mkdir(parents=True)
@@ -149,7 +167,7 @@ class Page(Fixture):
 
     def test_external_links_match_the_way_the_page_looks_them_up(self):
         # The model keys external titles with Python casefold (Straße -> strasse); the page must not look them up by that key.
-        self.assertNotIn('D.external[title',wiki.JS);self.assertIn('X[x.title.trim().toLowerCase()]=x',wiki.JS)
+        self.assertNotIn('D.external[title',wiki.JS);self.assertIn('X[k]=x;X[x.title.trim().toLowerCase()]=x',wiki.JS)
 
     def test_single_child_folders_collapse(self):
         self.add('hive/src/lib/util.ts: helpers','Small helpers.',['project/hive'],files=['hive/src/lib/util.ts'])

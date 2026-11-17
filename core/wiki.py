@@ -48,13 +48,18 @@ def _locate(value,prefixes,repos):
     """(display path, owning repo or None, is_dir) for one stored file path. Relative paths resolve against the domain's
     bound folders, as capture stored them. The owner is the registered repo (longest first) whose full path holds the file,
     so two repos with the same folder name stay apart; the display path is <repo folder>/<path inside it>. A path that
-    exists says whether it is a folder; otherwise a last segment with no dot is taken as a folder."""
+    exists says whether it is a folder; otherwise a last segment with no dot is taken as a folder. A path the wiki may not
+    probe (a PermissionError, say) counts as missing."""
+    def probe(path,test):
+        try:return test(path)
+        except (OSError,ValueError):return False
     text=str(value).strip().replace('\\','/')
     while text.startswith('./'):text=text[2:]
     text=text.rstrip('/') or '.'
     raw=Path(text);candidates=[raw] if raw.is_absolute() else [prefix/text for prefix in prefixes]
-    path=next((c for c in candidates if c.exists()),candidates[0] if candidates else None)
-    shown,owner=('' if text=='.' else text),None   # '.' (the bound folder) shows only when a repo owns it
+    path=next((c for c in candidates if probe(c,Path.exists)),candidates[0] if candidates else None)
+    # '.' is the bound folder itself: shown by its folder name (the repo's, when a registered repo owns it).
+    shown,owner=((prefixes[0].name if prefixes else '') if text=='.' else text),None
     if path is not None:
         full=Path(os.path.normpath(path)).as_posix().rstrip('/');folded=full.casefold()
         for repo in repos:
@@ -62,7 +67,8 @@ def _locate(value,prefixes,repos):
             if folded==base.casefold() or folded.startswith(base.casefold()+'/'):
                 shown,owner=(base.rsplit('/',1)[-1]+full[len(base):]).strip('/'),repo;break
     last=shown.rsplit('/',1)[-1]
-    return shown,owner,(path.is_dir() if path is not None and path.exists() else '.' not in last)
+    exists=path is not None and probe(path,Path.exists)
+    return shown,owner,(probe(path,Path.is_dir) if exists else '.' not in last)
 
 def _split_lead(body,summary):
     """The body without its leading summary paragraph, which the page shows as the lead."""
@@ -434,8 +440,8 @@ JS=r'''
 var D=JSON.parse(document.getElementById('wiki-data').textContent);
 var ICONS=@@ICONS@@;
 var N={},R={},T={},P={},F={},S={},X={};
-// External targets keyed the way links are looked up here (the model's keys are Python casefold, which differs for titles like Straße).
-Object.keys(D.external).forEach(function(k){var x=D.external[k];X[x.title.trim().toLowerCase()]=x});
+// External targets by the model's Python casefold key (Straße is strasse) and by lowercased title, which is how links are looked up here.
+Object.keys(D.external).forEach(function(k){var x=D.external[k];X[k]=x;X[x.title.trim().toLowerCase()]=x});
 D.notes.forEach(function(n){N[n.id]=n;R[n.ref]=n;var k=n.title.trim().toLowerCase();if(!T[k]||T[k].retired&&!n.retired)T[k]=n});
 D.projects.forEach(function(p){P[p.slug]=p});
 D.folders.forEach(function(f){F[f.id]=f});
