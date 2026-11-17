@@ -852,7 +852,7 @@ def _tag_text(tags):
     return ', '.join(str(t) for t in tags) if isinstance(tags, list) else str(tags or '')
 
 
-def reconcile(domain, root=None, sync_overlay=True):
+def reconcile(domain, root=None, sync_overlay=True, skipped=None):
     from .search import rebuild_index
     root = Path(root or memory_root()).resolve()
     with store_lock(root):
@@ -863,7 +863,7 @@ def reconcile(domain, root=None, sync_overlay=True):
             text = f"# {'Retired' if retired else 'Active'} Memory\n\n"
             text += "\n".join(f"- [{n['title']}]({Path(n['path']).relative_to(directory).as_posix()}) — {_tag_text(n.get('tags'))}" for n in selected) + "\n"
             atomic_write(directory / name, text)
-        rebuild_index(domain, root)
+        rebuild_index(domain, root, skipped)
         atomic_write(directory / ".derived-dirty", "clean\n")
         state = read_json(directory / "sync-state.json", {})
         if sync_overlay and state.get("vault"):

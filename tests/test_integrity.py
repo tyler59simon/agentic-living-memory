@@ -79,10 +79,20 @@ class Integrity(StoreFixture):
                 Path(bad['path']).write_bytes(raw.replace(old, new, 1))
                 result = rebuild('demo', self.root)
                 self.assertTrue(result['ok'], result)
-                self.assertEqual(len(result['warnings']), 1)
+                self.assertTrue(result['warnings'] and all(w.endswith(bad['path']) for w in result['warnings']), result)
                 self.assertEqual([h['id'] for h in search_domain('cache', 'demo', root=self.root)], [good['id']])
                 Path(bad['path']).unlink()
                 rebuild('demo', self.root)
+
+    def test_rebuild_names_a_note_the_index_left_out_even_when_it_validates(self):
+        good = self.note()
+        bad = self.note('Upload pipeline', 'The upload pipeline retries on 307.')
+        raw = Path(bad['path']).read_bytes()
+        Path(bad['path']).write_bytes(raw.replace(b'created: "', b'created: [1]\nx_created: "', 1))
+        result = rebuild('demo', self.root)
+        self.assertEqual(result['indexed'], 1, result)
+        self.assertTrue(any(w.startswith('Left out of the search index') and w.endswith(bad['path']) for w in result['warnings']), result)
+        self.assertEqual([h['id'] for h in search_domain('cache', 'demo', root=self.root)], [good['id']])
 
     def test_duplicate_id_keeps_domain_usable(self):
         n = self.note()

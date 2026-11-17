@@ -22,7 +22,9 @@ def reconcile(domain,root=None):
     root=Path(root or memory_root()).resolve()
     issues=validate_domain(domain,root)
     if not (root/'domains'/domain/'notes').is_dir():return {'ok':False,'domain':domain,'issues':issues,'indexed':0}
-    refresh(domain,root)
-    result={'ok':True,'domain':domain,'indexed':len(inventory(domain,root))}
+    skipped=[];refresh(domain,root,skipped=skipped)
+    issues+=[f'Left out of the search index ({error}): {path}' for path,error in skipped]
+    left_out={path for path,_ in skipped}
+    result={'ok':True,'domain':domain,'indexed':sum(1 for n in inventory(domain,root) if n.get('path') not in left_out)}
     if issues:result['warnings']=issues
     return result

@@ -38,6 +38,17 @@ class SemanticCase(StoreFixture):
 
     def install(self):return semantic.install(self.root,'tiny',self.source)
 
+    def test_a_note_left_out_of_the_index_is_left_out_of_semantic_search_too(self):
+        from core.validate import reconcile
+        self.install()
+        good=self.note('Cache rebuild','The cache is rebuildable.')
+        bad=self.note('Cache layout','The cache layout note.')
+        raw=Path(bad['path']).read_bytes()
+        Path(bad['path']).write_bytes(raw.replace(b'tags: ["concern/architecture", "subject/project"]',b'tags: [123]',1))
+        result=reconcile('demo',self.root)
+        self.assertEqual(result['indexed'],1,result)
+        self.assertEqual([h['id'] for h in search_domain('cache layout','demo',root=self.root)],[good['id']])
+
     def test_tokenizer_splits_punctuation_strips_accents_and_continues_words(self):
         model=semantic.Model(self.source);self.addCleanup(model.close);vocab=model.vocab
         self.assertEqual(model.tokenize('Rebuildable, CAFÉ!'),[vocab['rebuild'],vocab['##able'],vocab[','],vocab['cafe'],vocab['!']])

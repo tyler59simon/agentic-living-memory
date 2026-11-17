@@ -239,7 +239,9 @@ def _index_note(db,domain,n,model,kept,reuse,fresh):
     if blob:db.execute('INSERT INTO vectors VALUES(?,?)',(cursor.lastrowid,blob))
     return words
 
-def rebuild_index(domain,root=None):
+def rebuild_index(domain,root=None,skipped=None):
+    """Rebuild the domain's search index; returns how many notes it holds. A note it cannot hold is left out and,
+    when skipped is a list, appended to it as (path, error)."""
     from . import semantic
     root=Path(root or memory_root()).resolve(); directory=domain_dir(domain,root);directory.mkdir(parents=True,exist_ok=True)
     with store_lock(root):
@@ -255,7 +257,7 @@ def rebuild_index(domain,root=None):
             db.execute("CREATE VIRTUAL TABLE notes_fts USING fts5(title,tags,body,tokenize='porter unicode61')")
             db.execute('CREATE TABLE metadata(fingerprint TEXT,vectors TEXT)')
             if model:db.execute('CREATE TABLE vectors(rowid INTEGER PRIMARY KEY,vec BLOB NOT NULL)')
-            df=Counter();db.execute('BEGIN')   # one transaction: each note's savepoint below must not commit on its own
+            indexed=[];df=Counter();db.execute('BEGIN')   # one transaction: each note's savepoint below must not commit on its own
             for n in notes:
                 # A note whose metadata the index cannot hold (tags: null, status: [1], ...) is left out, not fatal:
                 # validate lists it, and rebuilding search for every other note matters more (GOV-3).
@@ -264,9 +266,10 @@ def rebuild_index(domain,root=None):
                     words=_index_note(db,domain,n,model,kept,reuse,fresh)
                 except (TypeError,AttributeError,ValueError,sqlite3.Error) as exc:
                     db.execute('ROLLBACK TO note');db.execute('RELEASE note')
+                    if skipped is not None:skipped.append((n.get('path'),f'{type(exc).__name__}: {exc}'))
                     from .logs import swallowed
                     swallowed('search.rebuild_index',exc,root);continue
-                db.execute('RELEASE note');df.update(words)
+                db.execute('RELEASE note');df.update(words);indexed.append(n)
             db.executemany('INSERT INTO vocab VALUES(?,?)',df.items())
             fingerprint=_fingerprint(notes,_vector_identity(root))
             db.execute('INSERT INTO metadata VALUES(?,?)',(fingerprint,identity));db.commit();db.close();os.replace(name,directory/'search.sqlite3')
@@ -276,11 +279,11 @@ def rebuild_index(domain,root=None):
         # The unit index follows the note index; a failure costs section-level matches, never the write.
         try:
             from . import vectors
-            vectors.update(domain,root,notes,model,identity,fingerprint,fresh)
+            vectors.update(domain,root,indexed,model,identity,fingerprint,fresh)   # only notes with a row: search maps hits to rows
         except Exception as exc:
             from .logs import swallowed
             swallowed('search.unit_index',exc,root)
-    return len(notes)
+    return len(indexed)
 def _fresh(domain,root,notes):
     path=domain_dir(domain,root)/'search.sqlite3'
     if not path.exists():return False
