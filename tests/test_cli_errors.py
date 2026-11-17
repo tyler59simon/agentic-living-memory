@@ -30,6 +30,10 @@ class CliErrors(StoreFixture):
         self.assertEqual(code,2);self.assertTrue(error['message'].startswith('unbound_project: '))
         self.assertIn('--domain',error['next'])
 
+    def fail_with_root(self,root,*argv):
+        with contextlib.redirect_stdout(io.StringIO()),contextlib.redirect_stderr(io.StringIO()) as err:cli.main(['--root',str(root),*argv])
+        return json.loads(err.getvalue())['error']
+
     def test_a_root_that_is_not_a_store_fails_and_creates_nothing(self):   # STO-2
         missing,empty=self.base/'stroe',self.base/'empty';empty.mkdir()
         for argv in (('status',),('--domain','demo','search','cache'),('--domain','demo','capture','--type','knowledge','--title','Typo root','--summary','Nothing.')):
@@ -40,6 +44,9 @@ class CliErrors(StoreFixture):
                     error=json.loads(err.getvalue())['error']
                     self.assertEqual(code,2);self.assertTrue(error['message'].startswith('no_store: '),error);self.assertIn('bind',error['next'])
         self.assertFalse(missing.exists());self.assertEqual(list(empty.iterdir()),[])
+        journal_root=self.base/'harness-home';(journal_root/'.operations').mkdir(parents=True)   # RECOVERY.md: history and recover run on journal roots
+        with contextlib.redirect_stdout(io.StringIO()):self.assertEqual(cli.main(['--root',str(journal_root),'history']),0)
+        self.assertEqual(self.fail_with_root(missing,'history')['message'][:9],'no_store:')
         with contextlib.redirect_stdout(io.StringIO()):self.assertEqual(cli.main(['--root',str(empty),'bind','fresh',str(self.base/'fresh')]),0)   # bind starts a store in an empty folder
         self.assertTrue((empty/'bindings.json').is_file())
 
