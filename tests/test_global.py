@@ -71,6 +71,28 @@ class Bindings(GlobalFixture):
         self.assertFalse(any('global_domains' in w for w in doctor(self.root, str(self.base / 'project'))['warnings']))
 
 
+    def test_doctor_warns_about_a_bound_folder_that_no_longer_exists(self):
+        project = str(self.base / 'project');(self.base / 'project').mkdir(exist_ok=True)
+        self.assertFalse([w for w in doctor(self.root, project)['warnings'] if w.startswith('bindings:')])
+        init_domain('moved', [str(self.base / 'gone')], self.root)
+        warned = [w for w in doctor(self.root, project)['warnings'] if w.startswith('bindings:')]
+        self.assertEqual(len(warned), 1);self.assertIn("domain 'moved'", warned[0]);self.assertIn('bind moved NEW_PATH', warned[0])   # BIND-RENAME
+        old = str((self.base / 'gone').resolve());self.assertIn(f'unbind moved --prefix {old}', warned[0])
+        (self.base / 'moved-here').mkdir();self.assertEqual(self.cli('bind', 'moved', str(self.base / 'moved-here'))[0], 0)
+        code, out = self.cli('unbind', 'moved', '--prefix', old);self.assertEqual((code, out['status'], out['prefix']), (0, 'prefix_removed', old))
+        self.assertFalse([w for w in doctor(self.root, project)['warnings'] if w.startswith('bindings:')])
+        self.assertEqual(load_bindings(self.root)['domains']['moved']['prefixes'], [str((self.base / 'moved-here').resolve())])
+
+    def test_unbind_prefix_refuses_an_unknown_folder_and_the_last_folder(self):
+        capture('Keep me', 'A note in the domain.', TAGS, 'demo', self.root)
+        only = load_bindings(self.root)['domains']['demo']['prefixes']
+        code, out = self.cli('unbind', 'demo', '--prefix', str(self.base / 'elsewhere'));self.assertEqual(code, 2);self.assertIn('is not bound to', out['error']['message'])
+        if len(only) == 1:
+            code, out = self.cli('unbind', 'demo', '--prefix', only[0]);self.assertEqual(code, 2);self.assertIn('last folder', out['error']['message'])
+        self.assertEqual(load_bindings(self.root)['domains']['demo']['prefixes'], only)
+        for actor in ('subagent', 'viewer'):self.assertEqual(self.cli('--actor', actor, 'unbind', 'demo', '--prefix', only[0])[0], 2)
+
+
 class AcrossDomains(GlobalFixture):
     def test_an_exact_copy_of_a_global_note_is_a_duplicate(self):
         g = capture('Prefer forward slashes', 'Use forward slashes.', TAGS, '_global', self.root)

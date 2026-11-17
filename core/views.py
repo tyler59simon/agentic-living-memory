@@ -14,7 +14,7 @@ from .common import atomic_write
 from .repository import read_json,canonical_json,store_lock,transaction,now
 
 # Bump when the page changes, so views rendered by an older version count as stale.
-RENDERER=1
+RENDERER=2
 TARGETS=('local','artifact')
 RELOAD_SECONDS=15
 URL=re.compile(r'https?://[^\s<>"\']+')
@@ -48,12 +48,13 @@ def view_path(root,entry,target='local'):
 # ---- the view model ----
 
 _BRACKET=re.compile(r'\[([^\[\]]*)\](?!\()\s*')
-_ID=re.compile(r'[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*')
+_ID=re.compile(r'[A-Z][A-Z0-9]*(?:-[A-Z0-9]+[a-z]?)*')
 _BOLD_LABEL=re.compile(r'^\s*(?:[-*+]\s+)?\*\*[^*]+?\*\*\s*:?\s*')
 
 def parse_item(text):
     """(groups, id, text) from an action item's text: leading [bracket groups] (each split on commas), then an ID
-    such as CUR-1 or HM-P4 (capitals, digits and hyphens, with a hyphen or a digit), then the rest."""
+    such as CUR-1, HM-P4 or OPS-1b (capitals, digits and hyphens, with a hyphen or a digit; a segment may end in one
+    lowercase letter), then the rest."""
     groups=[];rest=(text or '').strip()
     while True:
         found=_BRACKET.match(rest)
@@ -278,7 +279,8 @@ function save(){
 // Chips: every tag belongs to one of three facets, by what it is: priority (P1, P2, ...), status (approved, next, failed, ...) or
 // anything else (an area such as ALM). An item passes when, for every facet with chips selected, it has at least one of that
 // facet's selected tags: OR within a facet, AND across facets. (Bracket position is not used: it shifts when a group is left out.)
-var STATUS={approved:1,active:1,succeeded:1,next:1,proposed:1,busy:1,running:1,waiting:1,paused:1,deprecated:1,failed:1,blocked:1,done:1};
+var STATUS={approved:1,active:1,succeeded:1,next:1,proposed:1,busy:1,running:1,waiting:1,paused:1,deprecated:1,failed:1,blocked:1,done:1,
+  deferred:1,later:1,idea:1,conditional:1,check:1};
 function kind(t){return /^P\\d$/i.test(t)?0:(STATUS.hasOwnProperty(t.toLowerCase())?1:2)}
 var facet=new Map();
 items.forEach(function(it){it.tags.forEach(function(t){facet.set(t,kind(t))})});
@@ -303,10 +305,10 @@ function ordered(list){
 function badge(tag){
   var k=tag.toLowerCase(),c='';
   if(k==='p1'||k==='failed'||k==='blocked')c='bad';
-  else if(k==='p2'||k==='waiting'||k==='paused'||k==='deprecated')c='warn';
+  else if(k==='p2'||k==='waiting'||k==='paused'||k==='deprecated'||k==='deferred'||k==='later')c='warn';
   else if(k==='p3')c='p3';
   else if(k==='approved'||k==='active'||k==='succeeded')c='ok';
-  else if(k==='next'||k==='proposed'||k==='busy'||k==='running')c='next';
+  else if(k==='next'||k==='proposed'||k==='busy'||k==='running'||k==='idea'||k==='conditional'||k==='check')c='next';
   return el('span','status-chip'+(c?' '+c:''),tag);
 }
 function card(it){
@@ -356,6 +358,7 @@ function draw(){
   if(!shown.length)list.appendChild(el('p','empty-state muted',items.length?'No items match the filters.':'No items.'));
 }
 function build(){
+  var sub=document.getElementById('summary');if(sub&&D.summary){sub.textContent='';inline(sub,D.summary)}
   if(D.important){var c=document.getElementById('important');c.hidden=false;c.appendChild(markdown(D.important))}
   var notes=document.getElementById('notes');
   if((D.sections||[]).length)notes.appendChild(el('div','eyebrow','Notes'));
@@ -414,7 +417,7 @@ def render_html(model,target='local'):
             f'<title>{esc(short)}</title><style>{_css(target)}</style></head><body><main class="page">'
             f'<div class="brand"><span class="brand-logo" aria-hidden="true"></span><span>Hivemind</span></div>'
             f'<header class="page-head"><div class="page-title"><div class="eyebrow">{esc(eyebrow)}</div><h1>{esc(model["title"] or short)}</h1>'
-            +(f'<p class="page-sub">{esc(model["summary"])}</p>' if model['summary'] else '')+'</div>'
+            +(f'<p class="page-sub" id="summary">{esc(model["summary"])}</p>' if model['summary'] else '')+'</div>'
             +(f'<div class="page-date muted small">Updated {esc(updated)}</div>' if updated else '')+'</header>'
             +(f'<div class="banner" role="status">{esc(banner)}</div>' if banner else '')
             +'<div class="callout" id="important" hidden></div>'+progress+bar+'<div id="notes" class="notes"></div>'

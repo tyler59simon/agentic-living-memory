@@ -175,6 +175,12 @@ def doctor(root,cwd,explicit=None,domain=None):
             # warns, because migration-plan points it at _global.
             if kind=='global_domains' and canonical==GLOBAL:missing=False
             if missing:warnings.append(f"search_scope.{kind} names '{name}', which has no domain folder; {effect}")
+    from .common import _entries
+    for name,_,prefixes in _entries(config):   # BIND-RENAME: a renamed bound folder silently stops resolving to its domain
+        for raw in prefixes:
+            try:folder=Path(os.path.expandvars(str(raw))).expanduser().resolve()
+            except (OSError,ValueError):continue
+            if not folder.is_dir():warnings.append(f"bindings: domain '{name}' is bound to {folder}, which does not exist; if the folder moved, run bind {name} NEW_PATH, then unbind {name} --prefix {folder}")
     from .backup import staleness_warning
     from .maintenance import doctor_warnings
     try:warnings+=['maintenance: '+w for w in doctor_warnings(root)]
@@ -560,6 +566,7 @@ def build_parser():
     p=sub('setup');p.add_argument('--location',type=Path);p.add_argument('--non-interactive',action='store_true');p.add_argument('--source',type=Path);p.add_argument('--apply-plan');p.add_argument('--inspect-plan');p.add_argument('--expected-plan-sha256')
     p=sub('bind');p.add_argument('name');p.add_argument('prefix',nargs='+')
     p=sub('unbind');p.add_argument('name',help='A bound domain with no notes left (move them with remap-plan first)')
+    p.add_argument('--prefix',help='Remove only this folder from the binding and keep the domain and its notes (after a bound folder moved)')
     # Legacy forms keep working but are left out of help: --tags, --prefix and a third positional (tags).
     p=sub('capture');p.add_argument('items',nargs='*',metavar='TITLE BODY',help='Title and body; or use --title and --summary');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='',help=argparse.SUPPRESS);p.add_argument('--prefix',help=argparse.SUPPRESS);p.add_argument('--type',choices=NOTE_TYPES,help='Note type (default: knowledge)');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help="REF of a note this one replaces; it is retired in the same transaction, and its links and files are carried over (see --drop-links)");p.add_argument('--drop-links',action='store_true',help='With --supersedes: do not carry the links and files of the replaced note over');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk/map/runbook/brief notes get a default');p.add_argument('--pin',action='store_true',help=PIN_HELP)
     for facet in CAPTURE_FACETS:p.add_argument('--'+facet,action='append',default=[])
@@ -719,8 +726,9 @@ def main(argv=None):
             from .init_domain import init_domain
             init_domain(args.name,args.prefix,root);result={'ok':True,'domain':args.name,'status':'bound'}
         elif cmd=='unbind':
-            from .init_domain import unbind_domain
-            result={'ok':True,'domain':unbind_domain(args.name,root),'status':'unbound'}
+            from .init_domain import unbind_domain,unbind_prefix
+            if args.prefix:result={'ok':True,'domain':args.name,'prefix':unbind_prefix(args.name,args.prefix,root),'status':'prefix_removed'}
+            else:result={'ok':True,'domain':unbind_domain(args.name,root),'status':'unbound'}
         elif cmd=='capture':
             from .notes import capture
             structured=any(getattr(args,k) for k in SECTION_ARGS)

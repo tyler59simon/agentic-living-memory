@@ -39,6 +39,24 @@ def unbind_domain(name,root=None):
         transaction(root,{'bindings.json':canonical_json(settings)},'unbind_domain')
         return name
 
+def unbind_prefix(name,prefix,root=None):
+    """Drop one folder from a domain's binding and keep the domain and its notes (BIND-RENAME: after a bound folder is renamed, `bind`
+    adds the new folder and this removes the old one). Refused for an unknown domain, a folder the domain is not bound to, and the
+    domain's last folder (use `unbind NAME` for that)."""
+    root=Path(root or memory_root()).resolve();name=safe_domain(name)
+    with store_lock(root):
+        settings=read_json(root/'bindings.json',{})
+        if not isinstance(settings,dict) or not isinstance(settings.get('domains',{}),dict):raise ValueError('Invalid bindings preserved')
+        entry=settings.get('domains',{}).get(name)
+        if not isinstance(entry,dict):raise ValueError(f'{name} is not a bound domain')
+        held=[str(p) for p in entry.get('prefixes',[])];target=str(Path(prefix).expanduser().resolve())
+        kept=[p for p in held if p!=target and str(Path(p).expanduser().resolve())!=target]
+        if len(kept)==len(held):raise ValueError(f"{name} is not bound to {target}; its folders are: {', '.join(held) or 'none'}")
+        if not kept:raise ValueError(f'{target} is the last folder bound to {name}; bind the new folder first, or use unbind {name} to remove the whole binding')
+        entry['prefixes']=kept
+        transaction(root,{'bindings.json':canonical_json(settings)},'unbind_prefix')
+        return target
+
 def main(argv=None):
     p=argparse.ArgumentParser();p.add_argument('name');p.add_argument('prefix',nargs='+');p.add_argument('--root',type=Path,default=memory_root());a=p.parse_args(argv);print(init_domain(a.name,a.prefix,a.root));return 0
 if __name__=='__main__':raise SystemExit(main())

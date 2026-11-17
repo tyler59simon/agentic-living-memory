@@ -50,6 +50,9 @@ class Parsing(unittest.TestCase):
         self.assertEqual(views.parse_item('HM-P4 Retry'),([],'HM-P4','Retry'))
         self.assertEqual(views.parse_item('MAP-REKEY: Rekey'),([],'MAP-REKEY','Rekey'))
         self.assertEqual(views.parse_item('UX-Q2')[1],'UX-Q2')
+        self.assertEqual(views.parse_item('[P3] [ALM] OPS-1b Prune plan files'),([['P3'],['ALM']],'OPS-1b','Prune plan files'))   # VIEW-3
+        self.assertEqual(views.parse_item('HOOK-1b: Exclude')[1],'HOOK-1b')
+        for text in ('OPS-1bc x','Ops-1 x','OPS-b x'):self.assertIsNone(views.parse_item(text)[1],text)
 
     def test_what_is_not_an_id_or_a_tag(self):
         self.assertEqual(views.parse_item('API gateway work'),([],None,'API gateway work'))      # capitals alone
@@ -85,6 +88,11 @@ class Model(Fixture):
         self.assertEqual([s['heading'] for s in model['sections']],['Details','Links']);self.assertIn('Notes',views.render_html(model))
         named=fake('A finding.\n\n## Findings\nIt is slow.\n\n## Open questions\nWhy?',type='research')
         self.assertEqual([s['heading'] for s in views.view_model(named)['sections']],['Findings','Open questions'])
+
+    def test_an_id_with_a_lowercase_suffix_gets_its_detail(self):
+        text=body(actions=['[P3] [ALM] OPS-1b Prune plan files'],details=['**OPS-1b:** the install folder keeps old plans'])
+        model=views.view_model(fake(text));self.assertEqual(model['items'][0]['detail'],'the install folder keeps old plans')
+        self.assertNotIn('OPS-1b',' '.join(s['text'] for s in model['sections']))
 
     def test_duplicate_detail_label_goes_to_the_first_item_only(self):
         text=body(actions=['[P1] AA-1 one','[P1] AA-1 two'],details=['**AA-1:** the detail'])
@@ -125,6 +133,15 @@ class Page(Fixture):
         # Both carry the reload code (one script), but only a local page arms it.
         self.assertIn("getAttribute('data-target')==='local'",artifact);self.assertIn('15000',local)
         self.assertIn('--accent-strong:#8048b0',local);self.assertIn('--teal:#01dca4',local);self.assertIn('--teal:#018a68',artifact)
+
+    def test_summary_links_and_roadmap_statuses(self):
+        from core.note_format import render
+        model=views.view_model(fake(render('See [[Feature roadmap]] for features.',(),(),('[ALM] [deferred] MEM-1 Review',),(),'','')))
+        page=views.render_html(model,'local')
+        self.assertIn('<p class="page-sub" id="summary">See [[Feature roadmap]] for features.</p>',page)   # VIEW-1: the no-script text
+        self.assertIn("inline(sub,D.summary)",page)   # the script renders [[links]] as chips, as in details
+        statuses=re.search(r'var STATUS=\{(.*?)\};',page,re.S)[1]   # VIEW-2: roadmap statuses are a status facet, not an area
+        for word in ('deferred','later','idea','conditional','check','approved'):self.assertIn(word+':1',statuses)
 
     def test_status_banners(self):
         base=views.view_model(fake(status='superseded',superseded_by='deadbeef-0000'))

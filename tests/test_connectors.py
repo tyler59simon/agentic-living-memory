@@ -309,9 +309,9 @@ class NoNetwork(Wiki):
     def test_plain_source_sync_and_rebuild_only_reindex_the_cache(self):
         with patch.object(connectors,'pull',side_effect=AssertionError('network pull')):
             for argv in (('source-sync',),('source-sync','--rebuild')):self.assertEqual(self.cli(*argv)[0],0)
-        self.assertEqual(self.fake.log,[]);self.cache().joinpath('refund-policy-100.html').write_text('<p>changed pelican</p>',encoding='utf-8');self.assertTrue(sources.stale(self.root,'demo'))
+        self.assertEqual(self.fake.log,[]);self.cache().joinpath('refund-policy-100.html').write_text('<p>changed pelican</p>',encoding='utf-8');self.assertTrue(sources.stale(self.root,'demo',limit=10))   # FLAKY-1: the 0.1 s cap can run out under a loaded suite
     def test_a_source_never_pulled_does_not_break_the_startup_check(self):
-        self.register(name='fresh',space='OTHER');self.assertTrue(sources.stale(self.root,'demo'));self.assertEqual(self.cli('source-sync')[0],0);self.assertEqual(self.fake.log,[])
+        self.register(name='fresh',space='OTHER');self.assertTrue(sources.stale(self.root,'demo',limit=10));self.assertEqual(self.cli('source-sync')[0],0);self.assertEqual(self.fake.log,[])
     def test_only_a_named_remote_source_or_all_remote_pulls(self):
         self.assertEqual(self.sync('wiki')[0],0);self.assertTrue(self.fake.log);self.fake.log.clear()
         self.assertEqual(self.cli('source-sync','--all-remote')[0],0);self.assertTrue(self.fake.log)
