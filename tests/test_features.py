@@ -129,13 +129,13 @@ class ClaudeIntegrationFixes(StoreFixture):
         prompt=self.run_hook('user-prompt',self.payload(prompt='thanks'))['context']
         self.assertTrue(prompt.startswith('Living Memory session=s1 turn='));self.assertNotIn('Subagents',prompt)
     def test_session_start_is_short_only_with_the_current_instruction_block(self):
-        from core.instructions import instruction_block
+        from core.instructions import FALLBACK_PROTOCOL,instruction_block
         home=Path(os.environ['CLAUDE_HOME']);home.mkdir(parents=True,exist_ok=True)
         (home/'CLAUDE.md').write_text('# mine\n\n'+instruction_block('claude')+'\n',encoding='utf-8')
         short=self.run_hook('session-start',self.payload())['context']
-        self.assertNotIn(runtime.PROTOCOL,short);self.assertIn('CMD = ',short);self.assertIn('Living Memory session=s1',short)
+        self.assertNotIn(FALLBACK_PROTOCOL,short);self.assertIn('CMD = ',short);self.assertIn('Living Memory session=s1',short)
         (home/'CLAUDE.md').write_text(instruction_block('claude').replace('Read relevant','Read any'),encoding='utf-8')
-        self.assertIn(runtime.PROTOCOL,self.run_hook('session-start',self.payload())['context'])   # stale block: full injection
+        self.assertIn(FALLBACK_PROTOCOL,self.run_hook('session-start',self.payload())['context'])   # stale block: fallback injection
     def test_subagents_cannot_run_memory_writes(self):
         for rest in ("capture --session s1 --type knowledge --subject project --concern knowledge 'T' 'B'",'capture-finalize --session s1',"update demo:x --body 'B'"):
             with self.subTest(rest=rest):

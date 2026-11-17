@@ -117,8 +117,10 @@ class TitleLookup(StoreFixture):
         self.assertEqual(json.loads(out.getvalue())['id'], n['id'])
 
     def test_protocol_asks_for_titles_with_the_user(self):
-        self.assertIn('Name notes to the user by title', runtime.PROTOCOL)
-        self.assertIn('update REF (still true: confirm REF)', runtime.PROTOCOL)
+        from core.instructions import FALLBACK_PROTOCOL, PROTOCOL
+        for text in (PROTOCOL, FALLBACK_PROTOCOL):   # the instruction-file block and the hook fallback
+            self.assertIn('Name notes to the user by title', text)
+            self.assertIn('update REF (still true: confirm REF)', text)
 
 
 if __name__ == '__main__':

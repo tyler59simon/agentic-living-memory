@@ -76,12 +76,14 @@ class Quality(StoreFixture):
         self.assertIn('quality_warnings', change(n['id'], 'demo', 'update', self.root, body='Awaiting the rebuild.'))
 
     def test_protocol_and_reminder_steer_away_from_moment_notes(self):
-        self.assertIn('Count what you found yourself, not only what the user said', runtime.PROTOCOL)
-        self.assertIn('a turn that produced none saves nothing', runtime.PROTOCOL)
-        self.assertIn('Skip progress snapshots, test counts', runtime.PROTOCOL)
-        self.assertIn('concise note that points to the source', runtime.PROTOCOL)
-        self.assertIn('--link', runtime.PROTOCOL)
-        self.assertIn('mark an unconfirmed cause as a hypothesis', runtime.PROTOCOL)
+        from core.instructions import FALLBACK_PROTOCOL, PROTOCOL
+        for text in (PROTOCOL, FALLBACK_PROTOCOL):   # the instruction-file block and the hook fallback
+            self.assertIn('Count what you found yourself, not only what the user said', text)
+            self.assertIn('a turn that produced none saves nothing', text)
+            self.assertIn('Skip progress snapshots, test counts', text)
+            self.assertIn('concise note that points to the source', text)
+            self.assertIn('--link', text)
+            self.assertIn('mark an unconfirmed cause as a hypothesis', text)
         payload = {'cwd': str(self.base / 'project'), 'session_id': 'q', 'prompt': 'remember that we edit in place'}
         runtime.process('claude', 'user-prompt', payload, self.root)
         runtime.process('claude', 'pre-tool-use', {**payload, 'tool_name': 'Edit', 'tool_input': {'file_path': str(self.base / 'project/x.py')}}, self.root)

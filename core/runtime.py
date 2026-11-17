@@ -9,7 +9,7 @@ from .capture import status as capture_status,turn_key
 from .note_types import NOTE_TYPES
 
 from .launcher import active
-from .instructions import PROTOCOL,AUTO_MEMORY,usage,installed
+from .instructions import FALLBACK_PROTOCOL,AUTO_MEMORY,fallback_usage,installed
 SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 # Tools that cannot change files; anything else marks the turn as mutating.
 READ_TOOLS={'read','read_file','glob','grep','search','view_image','view','ls','list','webfetch','websearch','web_fetch','web_search','todowrite','task','agent','toolsearch','askuserquestion','exitplanmode','enterplanmode'}
@@ -51,14 +51,14 @@ def _tag_summary(root):
 
 def protocol(root,domain=None,harness='',session='SESSION'):
     """SessionStart context (re-fires after compaction). When the harness's instruction file carries the
-    current static block, only per-session data is injected; otherwise the full protocol, so the agent
-    never sees zero copies or two differing copies of the rules."""
+    current static block, only per-session data is injected; otherwise the shorter fallback protocol (it fits Codex's
+    4,000-character hook limit), so the agent never sees zero copies or two differing copies of the rules."""
     cmd=command(root,domain)
     dynamic=(f'CMD = {cmd}'+('' if cmd.startswith('alm ') else '   (Bash: CMD as is; PowerShell: & CMD ...)')+
              f"\nTags (pick the closest; --platform/--technology optional): {_tag_summary(root)}")
     if installed(harness):
         return f'Living Memory is active for domain {domain}; follow the Living Memory section of your instructions.\n'+dynamic
-    text=PROTOCOL+'\n'+dynamic+'\n'+usage(session)
+    text=FALLBACK_PROTOCOL+'\n'+dynamic+'\n'+fallback_usage(session)
     if harness=='claude':text+='\n'+AUTO_MEMORY
     return text
 

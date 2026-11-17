@@ -41,7 +41,7 @@ Hook handlers hold the absolute path of the Python that ran `setup.py`. After up
 
 ## Upgrading the instruction block
 
-The managed block in `CLAUDE.md`, `AGENTS.md` and `copilot-instructions.md` was shortened and the cut detail moved to `alm help TOPIC`. Until the block is rewritten, SessionStart injects the full protocol. Re-run `integrations/setup.py HARNESS --hooks` from the installed package for each harness and apply the plan. If you hand-edited the block, setup refuses the whole plan: delete the block between its `agentic-living-memory:begin` and `agentic-living-memory:end` markers, then re-run setup.
+When the managed block in `CLAUDE.md`, `AGENTS.md` or `copilot-instructions.md` changes in a release, SessionStart injects the shorter fallback protocol until the block is rewritten. Re-run `integrations/setup.py HARNESS --hooks` from the installed package for each harness and apply the plan. If you hand-edited the block, setup refuses the whole plan: delete the block between its `agentic-living-memory:begin` and `agentic-living-memory:end` markers, then re-run setup.
 
 ## Relocating existing memory
 
