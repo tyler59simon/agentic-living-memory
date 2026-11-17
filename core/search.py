@@ -221,6 +221,24 @@ def note_commands(note):
         from .logs import swallowed
         swallowed('search.note_commands',exc,None);return explicit
 
+def _index_note(db,domain,n,model,kept,reuse,fresh):
+    """Insert one note into a new search index (row, full-text row and vector); return its stems for the vocabulary."""
+    from . import semantic
+    values=(domain,n['id'],n.get('prefix','NOTE'),n['title'],n.get('type','knowledge'),n.get('status','active'),n.get('created'),n.get('updated'),n.get('review_by'),n.get('context',''),json.dumps(n.get('tags',[])),n['body'],n['path'],n['digest'],n['revision'],n.get('schema_version',1),json.dumps(n.get('files') or []),json.dumps(note_commands(n)),n.get('repo') or '',json.dumps(n.get('sources') or []),json.dumps(n.get('file_hashes') or []),n.get('checked') or '')
+    cursor=db.execute('INSERT INTO notes VALUES('+','.join('?'*22)+')',values)
+    words=stems(n['title']+' '+n['body']) if n.get('status','active')=='active' else []
+    db.execute('INSERT INTO notes_fts(rowid,title,tags,body) VALUES(?,?,?,?)',(cursor.lastrowid,n['title'],' '.join(n.get('tags',[])),n['body']))
+    if not model:return words
+    blob=kept.get((n['id'],n['revision']))
+    if blob is None:
+        text=_embedding_text(n);vector=reuse(text)   # same text, same model: the overview unit's embedding
+        if vector is None:
+            vector=model.embed(text)
+            if vector:fresh[hashlib.sha256(text.encode('utf-8')).hexdigest()]=vector   # the unit index reuses it below
+        blob=semantic.to_blob(vector) if vector else None
+    if blob:db.execute('INSERT INTO vectors VALUES(?,?)',(cursor.lastrowid,blob))
+    return words
+
 def rebuild_index(domain,root=None):
     from . import semantic
     root=Path(root or memory_root()).resolve(); directory=domain_dir(domain,root);directory.mkdir(parents=True,exist_ok=True)
@@ -237,21 +255,18 @@ def rebuild_index(domain,root=None):
             db.execute("CREATE VIRTUAL TABLE notes_fts USING fts5(title,tags,body,tokenize='porter unicode61')")
             db.execute('CREATE TABLE metadata(fingerprint TEXT,vectors TEXT)')
             if model:db.execute('CREATE TABLE vectors(rowid INTEGER PRIMARY KEY,vec BLOB NOT NULL)')
-            df=Counter()
+            df=Counter();db.execute('BEGIN')   # one transaction: each note's savepoint below must not commit on its own
             for n in notes:
-                values=(domain,n['id'],n.get('prefix','NOTE'),n['title'],n.get('type','knowledge'),n.get('status','active'),n.get('created'),n.get('updated'),n.get('review_by'),n.get('context',''),json.dumps(n.get('tags',[])),n['body'],n['path'],n['digest'],n['revision'],n.get('schema_version',1),json.dumps(n.get('files') or []),json.dumps(note_commands(n)),n.get('repo') or '',json.dumps(n.get('sources') or []),json.dumps(n.get('file_hashes') or []),n.get('checked') or '')
-                cursor=db.execute('INSERT INTO notes VALUES('+','.join('?'*22)+')',values)
-                if n.get('status','active')=='active':df.update(stems(n['title']+' '+n['body']))
-                db.execute('INSERT INTO notes_fts(rowid,title,tags,body) VALUES(?,?,?,?)',(cursor.lastrowid,n['title'],' '.join(n.get('tags',[])),n['body']))
-                if not model:continue
-                blob=kept.get((n['id'],n['revision']))
-                if blob is None:
-                    text=_embedding_text(n);vector=reuse(text)   # same text, same model: the overview unit's embedding
-                    if vector is None:
-                        vector=model.embed(text)
-                        if vector:fresh[hashlib.sha256(text.encode('utf-8')).hexdigest()]=vector   # the unit index reuses it below
-                    blob=semantic.to_blob(vector) if vector else None
-                if blob:db.execute('INSERT INTO vectors VALUES(?,?)',(cursor.lastrowid,blob))
+                # A note whose metadata the index cannot hold (tags: null, status: [1], ...) is left out, not fatal:
+                # validate lists it, and rebuilding search for every other note matters more (GOV-3).
+                db.execute('SAVEPOINT note')
+                try:
+                    words=_index_note(db,domain,n,model,kept,reuse,fresh)
+                except (TypeError,AttributeError,ValueError,sqlite3.Error) as exc:
+                    db.execute('ROLLBACK TO note');db.execute('RELEASE note')
+                    from .logs import swallowed
+                    swallowed('search.rebuild_index',exc,root);continue
+                db.execute('RELEASE note');df.update(words)
             db.executemany('INSERT INTO vocab VALUES(?,?)',df.items())
             fingerprint=_fingerprint(notes,_vector_identity(root))
             db.execute('INSERT INTO metadata VALUES(?,?)',(fingerprint,identity));db.commit();db.close();os.replace(name,directory/'search.sqlite3')

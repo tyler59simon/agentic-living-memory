@@ -67,6 +67,23 @@ class Integrity(StoreFixture):
         self.assertEqual([h['id'] for h in search_domain('cache', 'demo', root=self.root)], [good['id']])
         self.assertEqual([h['id'] for h in search_domain('upload pipeline', 'demo', root=self.root)], [bad['id']])
 
+    def test_rebuild_survives_metadata_the_index_cannot_hold(self):
+        for old, new in ((b'tags: ["concern/architecture", "subject/project"]', b'tags: null'),
+                         (b'tags: ["concern/architecture", "subject/project"]', b'tags: [123]'),
+                         (b'status: "active"', b'status: [1]')):
+            with self.subTest(new=new):
+                good = self.note()
+                bad = self.note('Upload pipeline', 'The upload pipeline retries on 307.')
+                raw = Path(bad['path']).read_bytes()
+                self.assertIn(old, raw)
+                Path(bad['path']).write_bytes(raw.replace(old, new, 1))
+                result = rebuild('demo', self.root)
+                self.assertTrue(result['ok'], result)
+                self.assertEqual(len(result['warnings']), 1)
+                self.assertEqual([h['id'] for h in search_domain('cache', 'demo', root=self.root)], [good['id']])
+                Path(bad['path']).unlink()
+                rebuild('demo', self.root)
+
     def test_duplicate_id_keeps_domain_usable(self):
         n = self.note()
         source = Path(n['path'])

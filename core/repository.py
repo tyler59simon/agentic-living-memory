@@ -484,7 +484,7 @@ def validate(note, domain, root=None, new=False, extra_tags=()):
         raise ValueError("Note requires a stable ID")
     if not note.get("title", "").strip() or not note.get("body", "").strip():
         raise ValueError("Note title and body are required")
-    if note.get("domain") != domain or note.get("status") not in STATUSES:
+    if note.get("domain") != domain or not isinstance(note.get("status"), str) or note["status"] not in STATUSES:
         raise ValueError("Invalid domain or lifecycle status")
     if new or note.get('schema_version') == 3:
         from .note_types import prefix_for
@@ -847,6 +847,11 @@ def recover(root, operation_id, direction="forward"):
         return {"ok": True, "operation_id": operation_id, "state": final_state, "idempotent": False}
 
 
+def _tag_text(tags):
+    """A note's tags for INDEX.md; malformed tags (null, a string, numbers) still list, so one damaged note cannot stop a rebuild."""
+    return ', '.join(str(t) for t in tags) if isinstance(tags, list) else str(tags or '')
+
+
 def reconcile(domain, root=None, sync_overlay=True):
     from .search import rebuild_index
     root = Path(root or memory_root()).resolve()
@@ -856,7 +861,7 @@ def reconcile(domain, root=None, sync_overlay=True):
         for retired, name in ((False, "INDEX.md"), (True, "ARCHIVE.md")):
             selected = [n for n in all_notes if (n.get("status", "active") != "active") == retired]
             text = f"# {'Retired' if retired else 'Active'} Memory\n\n"
-            text += "\n".join(f"- [{n['title']}]({Path(n['path']).relative_to(directory).as_posix()}) — {', '.join(n.get('tags', []))}" for n in selected) + "\n"
+            text += "\n".join(f"- [{n['title']}]({Path(n['path']).relative_to(directory).as_posix()}) — {_tag_text(n.get('tags'))}" for n in selected) + "\n"
             atomic_write(directory / name, text)
         rebuild_index(domain, root)
         atomic_write(directory / ".derived-dirty", "clean\n")
