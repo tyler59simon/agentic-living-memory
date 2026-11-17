@@ -54,6 +54,19 @@ class Integrity(StoreFixture):
         self.assertEqual(found, {'broken.md': 'unreadable frontmatter', 'template-a.md': 'missing id', 'template-b.md': 'missing id'})
         self.assertEqual(len(validate_domain('demo', self.root)), 3)
 
+    def test_rebuild_indexes_every_note_and_lists_issues_as_warnings(self):
+        good = self.note()
+        bad = self.note('Upload pipeline', 'The upload pipeline retries on 307.')
+        self.rewrite(bad, lambda raw: raw.replace(b'concern/architecture', b'concern/not-a-tag'))
+        (self.root / 'domains/demo/notes/broken.md').write_text('no frontmatter at all', encoding='utf-8')
+        self.assertEqual(len(validate_domain('demo', self.root)), 2)
+        result = rebuild('demo', self.root)
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['indexed'], 2)
+        self.assertEqual(len(result['warnings']), 2)
+        self.assertEqual([h['id'] for h in search_domain('cache', 'demo', root=self.root)], [good['id']])
+        self.assertEqual([h['id'] for h in search_domain('upload pipeline', 'demo', root=self.root)], [bad['id']])
+
     def test_duplicate_id_keeps_domain_usable(self):
         n = self.note()
         source = Path(n['path'])

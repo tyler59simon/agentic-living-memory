@@ -342,8 +342,16 @@ def setup(location=None, non_interactive=False, source=None):
     if location is None:
         if non_interactive or not sys.stdin.isatty():
             raise ValueError('Unattended setup requires --location with an absolute local folder')
-        default = current if _read(config_path()) else Path.home() / 'LivingMemory'
-        print(f'Current store: {current or "none"}\nSuggested location: {default}', file=sys.stderr)
+        default, missing = current, None
+        if default is None:
+            configured = _read(config_path())
+            try:
+                missing = local_path(configured['data_root']) if isinstance(configured, dict) and isinstance(configured.get('data_root'), str) else None
+            except ValueError:
+                missing = None
+            default = missing or Path.home() / 'LivingMemory'
+        status = current or (f'none (the configured folder {missing} is missing; restore it or pick a location)' if missing else 'none')
+        print(f'Current store: {status}\nSuggested location: {default}', file=sys.stderr)
         location = input('Memory folder (Enter accepts suggestion): ').strip() or str(default)
     destination = local_path(location)
     if source:

@@ -57,6 +57,17 @@ class SharedStorage(StorageBase):
             result = storage.setup()
         self.assertEqual(result['root'], str(self.base / 'LivingMemory'))
 
+    def test_prompt_suggests_the_configured_folder_when_it_is_missing(self):
+        gone = self.base / 'moved away'
+        self.config.parent.mkdir(parents=True, exist_ok=True)
+        self.config.write_text(json.dumps({'version': 1, 'data_root': str(gone)}), encoding='utf-8')
+        err = io.StringIO()
+        with patch.object(Path, 'home', return_value=self.base), patch.object(sys.stdin, 'isatty', return_value=True), patch('builtins.input', return_value=''), contextlib.redirect_stderr(err):
+            result = storage.setup()
+        self.assertEqual(result['root'], str(gone))
+        self.assertIn(f'Suggested location: {gone}', err.getvalue())
+        self.assertIn('is missing', err.getvalue())
+
     def test_precedence_and_diagnostics(self):
         self.configure()
         a, b = self.base / 'override', self.base / 'old override'

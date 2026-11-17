@@ -17,6 +17,12 @@ def validate_domain(domain,root=None):
     return issues
 
 def reconcile(domain,root=None):
+    """Rebuild a domain's derived indexes and views from every note that parses; notes with issues are indexed too and
+    listed as warnings, so one bad note never turns search off (run validate to see them as errors)."""
+    root=Path(root or memory_root()).resolve()
     issues=validate_domain(domain,root)
-    if not issues:refresh(domain,root)
-    return {'ok':not issues,'domain':domain,'issues':issues,'indexed':len(inventory(domain,root)) if not issues else 0}
+    if not (root/'domains'/domain/'notes').is_dir():return {'ok':False,'domain':domain,'issues':issues,'indexed':0}
+    refresh(domain,root)
+    result={'ok':True,'domain':domain,'indexed':len(inventory(domain,root))}
+    if issues:result['warnings']=issues
+    return result
