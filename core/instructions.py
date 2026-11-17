@@ -37,7 +37,7 @@ TOPICS={
  'briefs':('Project brief contents',
   "One project brief (type brief) per project: goals, who owns what, current phase and blockers, key decisions with where they are recorded; read it at session start and update it when any of those change."),
  'ask':('Asking about the project',
-  "For a broad question about the project, run CMD ask before reading files. For several questions, CMD ask them together; each gets its own results."),
+  "Ask: CMD ask 'question' (notes, then cited excerpts from the project's docs and code). For a broad question about the project, run CMD ask before reading files. For several questions, CMD ask them together; each gets its own results."),
  'history':('Operation history',"History: CMD log [--project P] [--since DATE]."),
  'writing':('How to write a note',
   "Write notes as plain text for a reader with no context: lead with the fact or decision, say who decided and when, one name per thing, commands and paths exact in backticks; no em dashes, emoji, decorative bold, filler or significance claims (capture warns)."),
@@ -51,13 +51,13 @@ def help_topic(name=None):
 
 def usage(session='SESSION'):
     """Command shapes shared by the static block (SESSION placeholder) and the full fallback injection."""
-    return ("Search: CMD search 'query'. Read: CMD read REF (ref or exact title). Ask: CMD ask 'question' (notes, then cited excerpts from the project's docs and code)."
-            f"\nCapture: CMD capture --session {session} [--global] --type TYPE --title 'Title' --summary 'The fact or decision, one or two sentences' [--section 'Heading' 'Text' ...] [--detail 'Fact' ...] [--link '[[Note]] or URL' ...] [--file PATH]"
-            f"\n  Types: {', '.join(NOTE_TYPES)}."
+    return ("Search: CMD search 'query'. Read: CMD read REF (ref or exact title). Ask: CMD ask 'question'."
+            f"\nCapture: CMD capture --session {session} [--global] --type TYPE [--concern CONCERN] --title 'Title' --summary 'One or two sentences' [--section 'Heading' 'Text' ...] [--detail 'Fact' ...] [--link '[[Note]] or URL' ...] [--file PATH]"
+            f"\n  Types: {', '.join(NOTE_TYPES)}. Concerns such as constraint go in --concern. Decisions need --section 'Why'; bugs 'Cause', 'Fix'."
             "\n  Use single quotes, literal in Bash and PowerShell (write ' as '' in PowerShell, '\\'' in Bash). Long body: --content-file FILE."
             f"\nUpdate: CMD update REF --session {session} --set-detail '**Label:** new fact', --add-detail/--add-link/--add-action '...' or --section 'Heading' 'Text' (--detail/--link/--action/--body overwrite)."
             f"\nResuming: CMD open first; tick a done item: CMD check REF 'item' --session {session}; finished: CMD resolve REF."
-            f"\nNo per-turn receipt unless Stop asks. SessionStart and Stop say what else is needed; for the rest: CMD help TOPIC ({', '.join(TOPICS)}).")
+            f"\nNo per-turn receipt unless Stop asks. Hooks say what else is needed; more: CMD help TOPIC ({', '.join(TOPICS)}).")
 
 def static_protocol(harness):
     """Machine-independent protocol text for instruction files: no interpreter paths, domains or sessions."""

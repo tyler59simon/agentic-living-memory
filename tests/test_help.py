@@ -37,6 +37,9 @@ class ShortBlock(unittest.TestCase):
     def test_the_topic_list_in_the_block_is_the_topics(self):
         for text in (usage(),instruction_block('factory',False,'S')):
             listed=re.search(r'help TOPIC \(([^)]*)\)',text).group(1).split(', ');self.assertEqual(listed,list(TOPICS))
+    def test_the_block_keeps_the_concern_and_section_hints_agents_guessed_without(self):
+        # 2026-11-17 block A/B: without these lines Haiku agents passed --type constraint and invented --why.
+        text=usage();self.assertIn('[--concern CONCERN]',text);self.assertIn('go in --concern',text);self.assertIn("--section 'Why'",text)
     def test_hooks_still_say_what_was_cut(self):
         from core.style import shape_warnings
         source=(ROOT/'core/cli.py').read_text(encoding='utf-8')
