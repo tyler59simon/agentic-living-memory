@@ -68,7 +68,7 @@ A newer decision on the same subject does not retire the older one by itself, an
 
 ## Unavailable sources
 
-An unreadable or unavailable file or source is not proof that a note is wrong. The note is deferred, held for seven days, and looked at again when its revision or sources change. The exception is a digest whose source file is missing (deleted where its repo or folder is known): the reviewer may archive it as `obsolete_source_claim`, and the executor re-checks that the file is still gone before applying.
+An unreadable or unavailable file or source is not proof that a note is wrong. The note is deferred, held for seven days, and looked at again when its revision or sources change. The exception is a digest whose source file is missing (deleted, while the bound folder or registered source it lived in is still there): the reviewer may archive it as `obsolete_source_claim`, and the executor re-checks that the file is still gone and its folder still present before applying. A file whose folder is gone (moved, unmounted or deregistered) is unavailable, not missing.
 
 ## Dry runs and preview
 

@@ -558,5 +558,25 @@ class WholeFiles(Base):
         from core import maintenance_agent as agent
         for phrase in ('digest true','state missing','obsolete_source_claim, citing that file','whole true'):self.assertIn(phrase,agent.POLICY)
         self.assertNotIn('A missing, unreadable',agent.POLICY)
+    def test_a_source_whose_bound_folder_is_gone_is_unavailable_not_missing(self):
+        import shutil
+        self.digest('Digest of old.py','old.py','legacy = True\n');shutil.rmtree(self.project)
+        self.assertEqual(self.cands()[0]['files'][0]['state'],'unavailable')
+    def test_the_archive_is_deferred_when_the_bound_folder_goes_before_apply(self):
+        import shutil
+        n=self.digest('Digest of old.py','old.py','legacy = True\n');(self.project/'src'/'old.py').unlink()
+        run,manifest,_=self.prepare();dec=self.d(manifest,n,'archive',rule='obsolete_source_claim',evidence=['own','file'])
+        shutil.rmtree(self.project)
+        r=self.one(self.apply(run,manifest,[dec]))
+        self.assertEqual((r['result'],r['reason_code']),('deferred','source_unavailable'));self.assertEqual(self.get(n)['status'],'active')
+    def test_a_candidate_too_large_with_whole_files_is_sent_with_outlines_not_dropped(self):
+        texts={f'w{i}.md':'# Part\n'+'漢'*15000+'\n' for i in range(4)}
+        for name,text in texts.items():self.src(name,text)
+        n=self.mk('Digest of four files','Four parts.',sources=[{'path':f'src/{k}','sha256':sha(v)} for k,v in texts.items()])
+        for name,text in texts.items():self.src(name,text+'more\n')
+        _,manifest,text=self.prepare()
+        self.assertNotIn(f"demo:{n['id']}",manifest['dropped'])
+        files=[x for x in self.block(text,n)['evidence'] if x['kind']=='file']
+        self.assertEqual((len(files),{x['whole'] for x in files}),(4,{False}))
 
 if __name__=='__main__':unittest.main()

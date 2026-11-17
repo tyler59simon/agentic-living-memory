@@ -118,6 +118,19 @@ def refusal(note, action):
 
 # ---- source evidence
 
+def _root_present(root, domain, path, bindings):
+    """Whether the folder a stored source path lives in is there, so a file absent from it was really removed: every folder bound to the domain
+    for a relative path, the registered source's folder for a `name:rel` path. A moved, unmounted or deregistered root leaves the file unavailable."""
+    from . import digests
+    from .common import domain_prefixes
+    named = digests.NAMED.match(path)
+    if named:
+        spec = digests._specs(root, domain, bindings).get(named[1])
+        return bool(spec) and Path(spec['path']).is_dir()
+    prefixes = domain_prefixes(domain, bindings)
+    return bool(prefixes) and all(p.is_dir() for p in prefixes)
+
+
 def _file_entries(root, note, domain, bindings, currency):
     """Every file this note's currency depends on: tracked hashes and sources, and the cited files a map or brief reports as changed."""
     from . import digests, maps
@@ -129,7 +142,8 @@ def _file_entries(root, note, domain, bindings, currency):
             continue
         absolute, known = digests.locate(root, domain, path, bindings)
         sha = digests.file_sha256(absolute) if absolute else None
-        state = ('missing' if known else 'unavailable') if absolute is None else 'unavailable' if sha is None else 'current' if sha == item.get('sha256') else 'changed'
+        # missing means deleted (the reviewer may archive a digest for it), so the folder it lived in must still be there.
+        state = ('missing' if known and _root_present(root, domain, path, bindings) else 'unavailable') if absolute is None else 'unavailable' if sha is None else 'current' if sha == item.get('sha256') else 'changed'
         found[path] = {'path': path, 'state': state, 'sha256': sha, 'abs': str(absolute) if absolute else None, 'kind': 'tracked'}
     if _type(note) in KEYED_TYPES and currency:
         repo = maps.repo_of(note, domain, bindings)
@@ -396,7 +410,8 @@ def packet(root, cands, run_id):
     evidence id (E1, E2, ...) to the real note revision or file hash, and records what each candidate may do."""
     from .note_format import action_items
     manifest = {'version': 1, 'run_id': run_id, 'evidence': {}, 'candidates': {}, 'deferred': {}, 'dropped': [], 'keys': {}}
-    blocks, size, counter = [], 2 + RUN_ID_ROOM + 40, 0   # fixed room for the id, so a trial packet drops the same notes as the real one
+    empty = 2 + RUN_ID_ROOM + 40   # fixed room for the id, so a trial packet drops the same notes as the real one
+    blocks, size, counter = [], empty, 0
 
     def new_id():
         nonlocal counter
@@ -408,44 +423,52 @@ def packet(root, cands, run_id):
         if len(body.encode('utf-8')) > BODY_MAX:
             manifest['deferred'][ref] = {'reason_code': 'note_too_large', 'revision': cand['revision'], 'fingerprint': cand['fingerprint'], 'hold': cand.get('hold', ref)}
             continue
-        mark, evidence, entries = counter, {}, []
-        own = new_id()
-        evidence[own] = {'candidate': ref, 'kind': 'note', 'ref': ref, 'revision': cand['revision'], 'role': 'candidate'}
-        entries.append({'id': own, 'kind': 'note', 'role': 'candidate'})
-        successors, successor_refs = [], {}
-        pair = cand.get('pair_note')
-        if pair is not None and len(pair.get('body', '').encode('utf-8')) <= BODY_MAX and pair.get('status', 'active') == 'active':
-            pref = f"{cand['domain']}:{pair['id']}"
-            sid = new_id()
-            evidence[sid] = {'candidate': ref, 'kind': 'note', 'ref': pref, 'revision': pair['revision'], 'role': 'successor'}
-            successor_refs[pref] = pair['revision']
-            successors.append({'evidence_id': sid, 'ref': pref, 'revision': pair['revision'], 'title': pair.get('title'), 'type': _type(pair), 'created': pair.get('created'),
-                               'updated': pair.get('updated'), 'body': pair.get('body', '')})
-        for f in cand['files'][:EXCERPTS]:
-            fid = new_id()
-            record = {'candidate': ref, 'kind': 'file', 'path': f['path'], 'state': f['state'], 'sha256': f['sha256'], 'abs': f['abs'], 'lines': None}
-            entry = {'id': fid, 'kind': 'file', 'path': f['path'], 'state': f['state']}
-            text = _read_text(f['abs']) if f['abs'] and f['state'] in ('current', 'changed') else None
-            if text is not None:
-                if len(text) <= FILE_EXCERPT_CHARS:
-                    entry['excerpt'], first, last = text, 1, max(1, len(text.splitlines()))
-                    entry['whole'] = True
-                else:
-                    entry['excerpt'], first, last = _window(text, body)
-                    entry['whole'] = False
-                    entry['outline'] = _outline(text)
-                record['lines'] = entry['lines'] = [first, last]
-            evidence[fid] = record
-            entries.append(entry)
-        permits = permitted(note, cand['kinds'], cand['pair_same'], bool(successors))
-        key = f"C{len(manifest['keys']) + 1}"
-        block = {'key': key, 'title': note.get('title'), 'type': cand['type'], 'status': note.get('status', 'active'),
-                 'pinned': cand['pinned'], 'tags': note.get('tags') or [], 'created': note.get('created'), 'updated': note.get('updated'),
-                 'checked': note.get('checked'), 'confirmed': note.get('confirmed') or [], 'review_by': note.get('review_by'), 'files': note.get('files') or [],
-                 'body': body, 'action_items': [{'done': d, 'text': t} for d, t in action_items(body)], 'review_kinds': cand['kinds'],
-                 'digest': bool(note.get('sources')), 'review_reason': cand['reason'], 'currency': cand['currency'], 'permitted_actions': permits, 'evidence': entries, 'successors': successors}
-        text = json.dumps(_scrub(block), ensure_ascii=False, separators=(',', ':'))
-        if size + len(text.encode('utf-8')) + 1 > PACKET_MAX:
+        mark = counter
+        for whole_ok in (True, False):
+            counter = mark
+            evidence, entries = {}, []
+            own = new_id()
+            evidence[own] = {'candidate': ref, 'kind': 'note', 'ref': ref, 'revision': cand['revision'], 'role': 'candidate'}
+            entries.append({'id': own, 'kind': 'note', 'role': 'candidate'})
+            successors, successor_refs = [], {}
+            pair = cand.get('pair_note')
+            if pair is not None and len(pair.get('body', '').encode('utf-8')) <= BODY_MAX and pair.get('status', 'active') == 'active':
+                pref = f"{cand['domain']}:{pair['id']}"
+                sid = new_id()
+                evidence[sid] = {'candidate': ref, 'kind': 'note', 'ref': pref, 'revision': pair['revision'], 'role': 'successor'}
+                successor_refs[pref] = pair['revision']
+                successors.append({'evidence_id': sid, 'ref': pref, 'revision': pair['revision'], 'title': pair.get('title'), 'type': _type(pair), 'created': pair.get('created'),
+                                   'updated': pair.get('updated'), 'body': pair.get('body', '')})
+            for f in cand['files'][:EXCERPTS]:
+                fid = new_id()
+                record = {'candidate': ref, 'kind': 'file', 'path': f['path'], 'state': f['state'], 'sha256': f['sha256'], 'abs': f['abs'], 'lines': None}
+                entry = {'id': fid, 'kind': 'file', 'path': f['path'], 'state': f['state']}
+                text = _read_text(f['abs']) if f['abs'] and f['state'] in ('current', 'changed') else None
+                if text is not None:
+                    if whole_ok and len(text) <= FILE_EXCERPT_CHARS:
+                        entry['excerpt'], first, last = text, 1, max(1, len(text.splitlines()))
+                        entry['whole'] = True
+                    else:
+                        entry['excerpt'], first, last = _window(text, body)
+                        entry['whole'] = False
+                        entry['outline'] = _outline(text)
+                    record['lines'] = entry['lines'] = [first, last]
+                evidence[fid] = record
+                entries.append(entry)
+            permits = permitted(note, cand['kinds'], cand['pair_same'], bool(successors))
+            key = f"C{len(manifest['keys']) + 1}"
+            block = {'key': key, 'title': note.get('title'), 'type': cand['type'], 'status': note.get('status', 'active'),
+                     'pinned': cand['pinned'], 'tags': note.get('tags') or [], 'created': note.get('created'), 'updated': note.get('updated'),
+                     'checked': note.get('checked'), 'confirmed': note.get('confirmed') or [], 'review_by': note.get('review_by'), 'files': note.get('files') or [],
+                     'body': body, 'action_items': [{'done': d, 'text': t} for d, t in action_items(body)], 'review_kinds': cand['kinds'],
+                     'digest': bool(note.get('sources')), 'review_reason': cand['reason'], 'currency': cand['currency'], 'permitted_actions': permits, 'evidence': entries, 'successors': successors}
+            text = json.dumps(_scrub(block), ensure_ascii=False, separators=(',', ':'))
+            need = len(text.encode('utf-8')) + 1
+            # With whole files the block either fits now, or would fit a later packet (dropped, retried next run). Only a block too large for
+            # any packet is rebuilt with outlines and windows, so it is not dropped on every run.
+            if size + need <= PACKET_MAX or (whole_ok and empty + need <= PACKET_MAX):
+                break
+        if size + need > PACKET_MAX:
             counter = mark
             manifest['dropped'].append(ref)
             continue
@@ -523,7 +546,9 @@ def _recheck(root, domain, ev, bindings):
     if ev['abs']:
         return None if digests.file_sha256(ev['abs']) == ev['sha256'] else 'source_changed'
     absolute, _ = digests.locate(root, domain, ev['path'], bindings)
-    return 'source_changed' if absolute is not None else None
+    if absolute is not None:
+        return 'source_changed'
+    return None if _root_present(root, domain, ev['path'], bindings) else 'source_unavailable'
 
 
 def _skip_code(exc):
