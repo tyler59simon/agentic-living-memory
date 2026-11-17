@@ -3,9 +3,10 @@
 Event names and output keys follow the Copilot CLI hooks reference:
 https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-hooks-reference
 """
-import json,sys
+import sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+from hooks._io import emit,read_payload
 EVENTS={'sessionStart':'session-start','userPromptTransformed':'user-prompt','subagentStart':'subagent-start','preToolUse':'pre-tool-use','agentStop':'stop'}
 
 def handle(event,payload):
@@ -21,13 +22,10 @@ def handle(event,payload):
 
 def main():
     event=sys.argv[1] if len(sys.argv)>1 else ''
-    try:
-        raw=sys.stdin.buffer.read().decode('utf-8-sig')
-        payload=json.loads(raw) if raw.strip() else {}
-        if not isinstance(payload,dict):raise ValueError('Hook payload must be an object')
-        out=handle(event,payload)
-    except Exception as exc:  # Never break the host; make the failure visible on stderr.
-        sys.stderr.write('Living Memory unavailable: '+str(exc)[:300]+'\n');out={}
-    sys.stdout.write(json.dumps(out,ensure_ascii=False)+'\n');return 0
+    try:out=handle(event,read_payload())
+    except Exception as exc:  # Never break the host; context-bearing events show the failure on stderr.
+        if event in ('sessionStart','userPromptTransformed'):sys.stderr.write('Living Memory unavailable: '+str(exc)[:300]+'\n')
+        out={}
+    emit(out);return 0
 
 if __name__=='__main__':raise SystemExit(main())

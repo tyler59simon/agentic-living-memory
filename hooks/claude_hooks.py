@@ -1,7 +1,8 @@
 ﻿"""Native Claude Code lifecycle adapter; installed directly, without a plugin."""
-import json,sys
+import sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+from hooks._io import emit
 
 NAMES={'session-start':'SessionStart','user-prompt':'UserPromptSubmit','subagent-start':'SubagentStart','pre-tool-use':'PreToolUse','session-end':'SessionEnd','pre-compact':'PreCompact'}
 # Only context-bearing events report an unavailable store; per-tool banners would be noise.
@@ -27,14 +28,13 @@ def handle(event,payload,harness='claude'):
 def main(harness='claude'):
     event=sys.argv[1] if len(sys.argv)>1 else ''
     try:
-        raw=sys.stdin.buffer.read().decode('utf-8-sig')
-        payload=json.loads(raw) if raw.strip() else {}
-        if not isinstance(payload,dict):raise ValueError('Hook payload must be an object')
+        from hooks._io import read_payload
+        payload=read_payload()
         if event=='pre-tool-use':
             # Read, Glob and Grep reach this hook only to find codebase maps; once a repo needs nothing, skip the runtime.
             from core.hookfast import quick
             fast=quick(payload)
-            if fast is not None:sys.stdout.write(json.dumps(fast)+'\n');return 0
+            if fast is not None:emit(fast);return 0
         if event=='pre-compact':
             # PreCompact stdout is not a JSON reply: Claude Code hands it to the summarizer as instructions.
             from core.runtime import process
@@ -45,6 +45,6 @@ def main(harness='claude'):
     except Exception as exc:  # A memory failure must never break the host session.
         if event=='pre-compact':return 0  # any stdout would become summary instructions
         out={'systemMessage':'Living Memory unavailable: '+str(exc)[:300]} if event in REPORTING else {}
-    sys.stdout.write(json.dumps(out)+'\n');return 0
+    emit(out);return 0
 
 if __name__=='__main__':raise SystemExit(main())
