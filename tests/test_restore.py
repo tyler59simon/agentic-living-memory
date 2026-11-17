@@ -225,8 +225,9 @@ class Pin(StoreFixture):
         self.assertIs(after['pinned'], False)
         for key in ('updated', 'checked', 'confirmed', 'review_by', 'body'):
             self.assertEqual((before.get(key), pinned.get(key)), (before.get(key), after.get(key)), key)
-        with self.assertRaises(SystemExit):
-            self.cli('update', 'demo:' + plain['id'], '--pin', '--unpin')
+        code, error = self.cli('update', 'demo:' + plain['id'], '--pin', '--unpin')
+        self.assertEqual(code, 2)
+        self.assertTrue(error['error']['message'].startswith('bad_arguments: '), error)
 
     def test_a_pinned_note_still_archives_resolves_and_supersedes_by_hand(self):
         a = self.note('Pinned fact', 'It stays.', pinned=True)
