@@ -136,6 +136,21 @@ class ClaudeIntegrationFixes(StoreFixture):
         self.assertNotIn(FALLBACK_PROTOCOL,short);self.assertIn('CMD = ',short);self.assertIn('Living Memory session=s1',short)
         (home/'CLAUDE.md').write_text(instruction_block('claude').replace('Read relevant','Read any'),encoding='utf-8')
         self.assertIn(FALLBACK_PROTOCOL,self.run_hook('session-start',self.payload())['context'])   # stale block: fallback injection
+    def test_the_fallback_protocol_does_not_eat_the_briefing_budget(self):
+        # INST-9: with no instruction block the fallback rules (about 3,900 characters) were counted against BUDGET, so the briefing got MIN_BUDGET.
+        from unittest.mock import patch
+        from core import session_start
+        from core.instructions import instruction_block
+        budgets=[];real=session_start.build_context
+        def spy(cwd,root,budget,**kw):budgets.append(budget);return real(cwd,root,budget,**kw)
+        with patch.object(session_start,'build_context',spy):
+            fallback=self.run_hook('session-start',self.payload())['context']
+            home=Path(os.environ['CLAUDE_HOME']);home.mkdir(parents=True,exist_ok=True)
+            (home/'CLAUDE.md').write_text(instruction_block('claude')+'\n',encoding='utf-8')
+            self.run_hook('session-start',self.payload())
+        self.assertGreater(len(fallback),session_start.BUDGET)
+        self.assertGreater(budgets[0],session_start.BUDGET-500);self.assertGreater(budgets[1],session_start.BUDGET-1000)
+        self.assertLessEqual(len(fallback),session_start.HARD_CAP)
     def test_subagents_cannot_run_memory_writes(self):
         for rest in ("capture --session s1 --type knowledge --subject project --concern knowledge 'T' 'B'",'capture-finalize --session s1',"update demo:x --body 'B'"):
             with self.subTest(rest=rest):

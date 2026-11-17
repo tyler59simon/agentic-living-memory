@@ -126,9 +126,12 @@ class SessionContext(StoreFixture):
         capture('User brief', 'A terse developer on Windows.\n\n## Details\n- **Working style:** ' + 'Short answers first, ask before large refactors. ' * 30 + '\n- **Current focus:** The user brief.',
                 ['subject/project', 'concern/decision'], '_global', self.root, type='brief')
         text = self.start()
-        self.assertIn('User brief: _global:', text)   # the fallback protocol leaves the minimum body, so the brief is down to its pointer line
+        self.assertIn('User brief', text)
         body = text.split('Living Memory session=sess\n', 1)[1]
-        self.assertLessEqual(len(body), session_start.MIN_BUDGET)   # the brief takes its share of the body, never more than the budget
+        # The fallback rules are outside BUDGET (INST-9), so the body gets the normal budget, and the whole context stays inside HARD_CAP.
+        self.assertLessEqual(len(body), session_start.BUDGET)
+        self.assertGreater(len(body), session_start.MIN_BUDGET)
+        self.assertLessEqual(len(text), session_start.HARD_CAP)
 
     def test_guidance_notes_come_first(self):
         capture('Prefer small commits', 'Keep commits small.', TAGS, 'demo', self.root, type='preference')

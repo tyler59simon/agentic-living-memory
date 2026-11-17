@@ -1747,7 +1747,11 @@ def _process(harness,event,payload,root=None,info=None):
         # Codex has no SessionEnd: its session start does the end-of-session housekeeping.
         if harness=='codex':_sync_vaults(root,'session start',SESSION_START_SYNC_SECONDS);_daily_backup(root);_prune_journals(root)
         from .session_start import build_context,BUDGET,MIN_BUDGET,HARD_CAP,_cap
-        prefix=protocol(root,domain,harness,session)+f'\nLiving Memory session={session}'+'\n'
+        rules=protocol(root,domain,harness,session)
+        # The fallback protocol stands in for the instruction block, which BUDGET does not count either: without this the briefing got only
+        # MIN_BUDGET whenever the fallback was injected (INST-9). HARD_CAP still bounds the whole context.
+        rules_outside_budget=0 if installed(harness) else len(rules)
+        prefix=rules+f'\nLiving Memory session={session}'+'\n'
         # After a compaction the handoff goes first; the title index gives up the room.
         if source=='compact' and session!='unknown':
             handed=handoff(root,domain,session,state,harness);prefix+=handed;detail['handoff_chars']=len(handed)
@@ -1795,7 +1799,7 @@ def _process(harness,event,payload,root=None,info=None):
             swallowed('runtime.refresh_stale',exc,root)
         from .briefs import brief_folder
         resolved=[] if _subagent(payload) else auto_resolve(root,domain,bindings,session);detail['auto_resolved']=len(resolved)
-        text,shown,indexed=build_context(cwd,root,max(MIN_BUDGET,BUDGET-len(prefix)),session=session,trace=detail,resolved=resolved,
+        text,shown,indexed=build_context(cwd,root,max(MIN_BUDGET,BUDGET-(len(prefix)-rules_outside_budget)),session=session,trace=detail,resolved=resolved,
                                          currency=lambda hit:note_currency(hit,brief_folder(hit,cwd,bindings),root,bindings,state,session,'fresh_brief'))
         detail.update(shown=list(shown),indexed=indexed)
         if session!='unknown':
@@ -1814,8 +1818,8 @@ def _process(harness,event,payload,root=None,info=None):
             if shown:
                 from .usage import record
                 record(root,'inject',list(shown),session,'session')
-        # BUDGET is the target with the instruction block installed; the fallback protocol and a compaction
-        # handoff can exceed it, but never the harness's own limit.
+        # BUDGET is the target besides the rules; the fallback protocol and a compaction handoff can push the whole
+        # context past it, but never past HARD_CAP.
         result['context']=_cap(prefix+(text or ''),HARD_CAP)
     elif event=='user-prompt':
         prompt=payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or payload.get('transformedPrompt') or ''
