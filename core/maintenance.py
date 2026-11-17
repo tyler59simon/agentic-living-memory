@@ -23,6 +23,8 @@ BODY_MAX = 24 * 1024
 EXCERPTS = 4
 RUN_ID_ROOM = 100
 EXCERPT_CHARS = 1200
+FILE_EXCERPT_CHARS = 16000     # a file up to this size is sent whole
+OUTLINE_CHARS = 3000           # the outline of a larger file
 FILE_READ_MAX = 1 << 20
 EXCLUDED = ('preference', 'policy')            # normative: never reviewed by the model
 LIMITED = ('map', 'brief', 'runbook')          # kept, deferred, confirmed or updated; never retired
@@ -364,6 +366,22 @@ def _window(text, body):
     return '\n'.join(lines[lo:hi + 1])[:EXCERPT_CHARS], lo + 1, hi + 1
 
 
+OUTLINE_LINE = re.compile(r'\s*(?:(?:async\s+)?def\s|class\s|function\s|#{1,6}\s)')
+
+
+def _outline(text):
+    """Lines that start a definition or a Markdown heading, as 'N: line', at most OUTLINE_CHARS."""
+    out, size = [], 0
+    for n, line in enumerate(text.splitlines(), 1):
+        if OUTLINE_LINE.match(line):
+            item = f'{n}: {line.strip()[:120]}'
+            if size + len(item) + 1 > OUTLINE_CHARS:
+                break
+            out.append(item)
+            size += len(item) + 1
+    return '\n'.join(out)
+
+
 def _read_text(path):
     try:
         with open(path, 'rb') as f:
@@ -409,7 +427,13 @@ def packet(root, cands, run_id):
             entry = {'id': fid, 'kind': 'file', 'path': f['path'], 'state': f['state']}
             text = _read_text(f['abs']) if f['abs'] and f['state'] in ('current', 'changed') else None
             if text is not None:
-                entry['excerpt'], first, last = _window(text, body)
+                if len(text) <= FILE_EXCERPT_CHARS:
+                    entry['excerpt'], first, last = text, 1, max(1, len(text.splitlines()))
+                    entry['whole'] = True
+                else:
+                    entry['excerpt'], first, last = _window(text, body)
+                    entry['whole'] = False
+                    entry['outline'] = _outline(text)
                 record['lines'] = entry['lines'] = [first, last]
             evidence[fid] = record
             entries.append(entry)
@@ -419,7 +443,7 @@ def packet(root, cands, run_id):
                  'pinned': cand['pinned'], 'tags': note.get('tags') or [], 'created': note.get('created'), 'updated': note.get('updated'),
                  'checked': note.get('checked'), 'confirmed': note.get('confirmed') or [], 'review_by': note.get('review_by'), 'files': note.get('files') or [],
                  'body': body, 'action_items': [{'done': d, 'text': t} for d, t in action_items(body)], 'review_kinds': cand['kinds'],
-                 'review_reason': cand['reason'], 'currency': cand['currency'], 'permitted_actions': permits, 'evidence': entries, 'successors': successors}
+                 'digest': bool(note.get('sources')), 'review_reason': cand['reason'], 'currency': cand['currency'], 'permitted_actions': permits, 'evidence': entries, 'successors': successors}
         text = json.dumps(_scrub(block), ensure_ascii=False, separators=(',', ':'))
         if size + len(text.encode('utf-8')) + 1 > PACKET_MAX:
             counter = mark

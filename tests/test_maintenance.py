@@ -411,7 +411,7 @@ class PacketBounds(Base):
         for block in packed:
             files=[e for e in block['evidence'] if e['kind']=='file']
             self.assertLessEqual(len(files),maintenance.EXCERPTS)
-            for e in files:self.assertLessEqual(len(e.get('excerpt','')),maintenance.EXCERPT_CHARS+200)   # redaction markers can lengthen text
+            for e in files:self.assertLessEqual(len(e.get('excerpt','')),(maintenance.FILE_EXCERPT_CHARS if e.get('whole') else maintenance.EXCERPT_CHARS)+200)   # redaction markers can lengthen text
         evidence=[e for e in manifest['evidence'].values() if e['kind']=='file'];self.assertTrue(evidence);self.assertTrue(all(e['sha256'] and e['lines'] for e in evidence))
         self.assertEqual(sorted(manifest['evidence'],key=lambda i:int(i[1:]))[0],'E1')
 
@@ -509,5 +509,54 @@ class Gate(StoreFixture):
     def test_a_reviewer_that_keeps_everything_fails_usefulness(self):
         out=self.gate(lambda label,cand:{'action':'keep'})
         self.assertFalse(out['ok']);self.assertFalse(out['checks']['required_cases_useful']);self.assertTrue(out['checks']['no_protected_retired'])
+
+
+import hashlib
+def sha(text):return hashlib.sha256(text.encode()).hexdigest()
+
+class WholeFiles(Base):
+    def digest(self,title,name,text,body='The module reads its retry limit.'):
+        self.src(name,text)
+        return self.mk(title,body,sources=[{'path':f'src/{name}','sha256':sha(text)}])
+    def block(self,text,n):
+        return next(b for b in json.loads(text)['candidates'] if b['title']==self.get(n)['title'])
+    def test_a_small_file_is_sent_whole_with_its_line_span(self):
+        self.src('a.py','retry = 3\n'*3+'# end\n');n=self.mk('Retry limit','The retry limit is 3.',files=['src/a.py'])
+        self.src('a.py','retry = 4\n'*3+'# end\n')
+        _,_,text=self.prepare();e=[x for x in self.block(text,n)['evidence'] if x['kind']=='file'][0]
+        self.assertEqual((e['whole'],e['excerpt'],e['lines']),(True,'retry = 4\n'*3+'# end\n',[1,4]))
+        self.assertEqual(e['lines'],[1,4])
+    def test_a_large_file_is_sent_as_outline_and_window(self):
+        big=lambda v:'import os\n\ndef alpha():\n    return 1\n\n'+f'filler = {v}\n'*3000+'\nclass Beta:\n    pass\n'
+        self.src('big.py',big(1));n=self.mk('Big module','alpha and Beta live in big.py.',files=['src/big.py']);self.src('big.py',big(2))
+        run,manifest,text=self.prepare();e=[x for x in self.block(text,n)['evidence'] if x['kind']=='file'][0]
+        self.assertFalse(e['whole']);self.assertIn('3: def alpha():',e['outline']);self.assertLessEqual(len(e['outline']),maintenance.OUTLINE_CHARS)
+        self.assertLessEqual(len(e['excerpt']),maintenance.EXCERPT_CHARS);self.assertTrue(e['lines'])
+        self.assertEqual(manifest['evidence'][e['id']]['lines'],e['lines'])
+    def test_only_a_digest_carries_the_digest_marker(self):
+        d=self.digest('Digest of a.py','a.py','x = 1\n');self.src('a.py','x = 2\n')
+        self.src('b.py','y = 1\n');k=self.mk('Plain note','About b.',files=['src/b.py']);self.src('b.py','y = 2\n')
+        _,_,text=self.prepare()
+        self.assertIs(self.block(text,d)['digest'],True);self.assertIs(self.block(text,k)['digest'],False)
+    def test_a_confirm_citing_whole_file_evidence_for_every_tracked_file_is_applied(self):
+        n=self.digest('Digest of a.py','a.py','x = 1\n');self.src('a.py','x = 1  # same\n')
+        res=self.go((n,'confirm',{'evidence':['own','file']}))
+        self.assertEqual(res['confirmed'],1)
+    def test_a_digest_of_a_deleted_file_is_archived_and_restores(self):
+        n=self.digest('Digest of old.py','old.py','legacy = True\n');(self.project/'src'/'old.py').unlink()
+        c=self.cands()[0];self.assertEqual(c['files'][0]['state'],'missing')
+        res=self.go((n,'archive',{'rule':'obsolete_source_claim','evidence':['own','file']}))
+        self.assertEqual((res['archived'],self.get(n)['status']),(1,'archived'));self.assertTrue(self.get(n)['last_retirement'])
+        notes.change(n['id'],'demo','restore',self.root);self.assertEqual(self.get(n)['status'],'active')
+    def test_the_archive_is_deferred_when_the_file_reappears_before_apply(self):
+        n=self.digest('Digest of old.py','old.py','legacy = True\n');(self.project/'src'/'old.py').unlink()
+        run,manifest,_=self.prepare();dec=self.d(manifest,n,'archive',rule='obsolete_source_claim',evidence=['own','file'])
+        self.src('old.py','legacy = False\n')
+        res=self.apply(run,manifest,[dec]);r=self.one(res)
+        self.assertEqual((r['result'],r['reason_code']),('deferred','source_changed'));self.assertEqual(self.get(n)['status'],'active')
+    def test_the_prompt_lets_a_digest_with_a_missing_source_be_archived(self):
+        from core import maintenance_agent as agent
+        for phrase in ('digest true','state missing','obsolete_source_claim, citing that file','whole true'):self.assertIn(phrase,agent.POLICY)
+        self.assertNotIn('A missing, unreadable',agent.POLICY)
 
 if __name__=='__main__':unittest.main()

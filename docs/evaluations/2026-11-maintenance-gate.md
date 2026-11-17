@@ -64,3 +64,18 @@ Ten candidates, all stale code and doc digests. Decisions: 8 keep, 1 update, 1 d
 - A model that miscopies hashes this often wastes part of each batch. If `revision_mismatch` defers stay frequent in live runs, a short revision token in the packet would remove most of them.
 - The copied store's first ten candidates are all stale code and doc digests. With excerpts of at most 1200 characters the reviewer cannot confirm a whole digest, so it keeps or defers them (two runs: 8 keep, then 9 defer), and each defer holds that note for seven days. The first live days on sandbox will therefore make few changes until those digests are worked through.
 - The copied-store batch had only keeps, defers and one update, so the first live runs on sandbox are the first real test of archive and supersede on real notes. Check `maintenance history` after each and use `restore REF` for a wrong archive.
+
+## Follow-up: whole files and deleted digest sources (MAINT-DIGEST, 2026-11-17)
+
+The open point above came true. In the first three live runs on sandbox (2026-11-14 to 11-16), 22 of 30 decisions were defer, 8 keep, and nothing was retired or updated. Every candidate was a digest of one whole file, the reviewer deferred because the 1200-character excerpt showed only the file header, and the digests of `core/learning.py` and `LEARNING.md` (deleted when learn was retired) were deferred because a missing source was not proof.
+
+Change: a cited file of at most 16000 characters (`FILE_EXCERPT_CHARS`) is sent whole (`whole: true`); a larger one is sent as an outline of its definitions and headings plus the 1200-character window. Each candidate carries `digest: true` when it has `sources`. The prompt now lets the reviewer archive a digest whose source is `missing` (the file is gone where its repo or folder is known) with `obsolete_source_claim`; `unavailable` and unreadable sources still defer, and the executor still re-checks that the file is gone before applying.
+
+Gate runs on 2026-11-17 with the change:
+
+| Run | Result | Cost |
+| --- | --- | --- |
+| Fixture | all 12 checks pass; 1 archive, 1 resolve, 1 update, 2 supersede, 1 distinct, 3 keep, 1 defer | 0.037 USD |
+| Copied store (sandbox) | 1 archive, 5 confirm, 1 update, 3 defer; packet 84 KB of 128 KB, 0 dropped | 0.167 USD |
+
+On the copied store the archive is the `LEARNING.md` digest (source deleted). The five confirms cite whole files (OBSIDIAN.md, RECOVERY.md, `core/changes.py`, `core/logs.py`, `core/style.py`), and the update corrects the `core/validate.py` digest's claim about reconcile. Two of the three defers are the files over the cap (`core/digests.py` at 18747 and `core/session_start.py` at 23301 characters), which still get only an outline and a window; the third is the `core/commands.py` digest, which mentions learned procedures that are no longer in the file. A run now costs about 0.17 USD instead of 0.07 USD, within the 1 USD daily budget.

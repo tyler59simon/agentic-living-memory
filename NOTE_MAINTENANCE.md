@@ -42,9 +42,9 @@ A run reserves its notes and money before the model starts, and an unknown cost 
 
 ## What is sent to the model
 
-One packet on standard input to a single `claude -p` call: for each candidate a short key (C1, C2, ...), its title, type, tags, dates, the full note body (up to 24 KB), the review signals, the actions the policy allows, a few short excerpts (up to four, 1200 characters each) from the files and sources the note cites, and any active successor note it might be superseded by. The packet is redacted (credentials are replaced) and is capped at 128 KB. A note over 24 KB is deferred; notes that do not fit in the packet are left for a later run and cost no allowance.
+One packet on standard input to a single `claude -p` call: for each candidate a short key (C1, C2, ...), its title, type, tags, dates, the full note body (up to 24 KB), the review signals, the actions the policy allows, up to four of the files and sources the note cites (a file of 16000 characters or less whole; a larger one as an outline of its definitions or headings plus a 1200 character window), a digest flag for notes written from source files, and any active successor note it might be superseded by. The packet is redacted (credentials are replaced) and is capped at 128 KB. A note over 24 KB is deferred; notes that do not fit in the packet are left for a later run and cost no allowance.
 
-Not sent: file contents beyond those excerpts, the repository tree, environment variables, other notes, and session history. The call runs with no tools, no MCP servers, no hooks and no session, in a fresh temporary directory, so the model cannot read files or run commands; it can only return a structured answer. Text inside notes that tries to give the model orders is treated as data. The packet is deleted after the run; run records keep metadata, refs, hashes and short reasons, not note bodies or prompts.
+Not sent: file contents beyond those, the repository tree, environment variables, other notes, and session history. The call runs with no tools, no MCP servers, no hooks and no session, in a fresh temporary directory, so the model cannot read files or run commands; it can only return a structured answer. Text inside notes that tries to give the model orders is treated as data. The packet is deleted after the run; run records keep metadata, refs, hashes and short reasons, not note bodies or prompts.
 
 ## The policy in plain words
 
@@ -68,7 +68,7 @@ A newer decision on the same subject does not retire the older one by itself, an
 
 ## Unavailable sources
 
-A missing, unreadable or unavailable file or source is not proof that a note is wrong. The note is deferred, held for seven days, and looked at again when its revision or sources change.
+An unreadable or unavailable file or source is not proof that a note is wrong. The note is deferred, held for seven days, and looked at again when its revision or sources change. The exception is a digest whose source file is missing (deleted where its repo or folder is known): the reviewer may archive it as `obsolete_source_claim`, and the executor re-checks that the file is still gone before applying.
 
 ## Dry runs and preview
 
