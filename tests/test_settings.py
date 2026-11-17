@@ -72,6 +72,30 @@ class Config(StoreFixture):
         self.assertEqual((self.bindings().get('suggest_bind'),self.bindings().get('cross_project')),(False,False))   # both changes kept
         self.assertFalse(list((self.root/'.operations').glob('*/pending')))
 
+    def interrupted_set(self):
+        from unittest.mock import patch
+        from core import repository as repo
+        from core.settings import set_
+        real=repo._write
+        def crash(path,data):
+            if Path(path).name=='bindings.json':raise KeyboardInterrupt
+            return real(path,data)
+        with patch.object(repo,'_write',crash),self.assertRaises(KeyboardInterrupt):set_(self.root,'suggest_bind','false')
+        self.assertNotIn('suggest_bind',self.bindings())
+
+    def test_bind_and_unbind_keep_an_interrupted_change(self):   # BIND-STALE
+        from core.init_domain import init_domain,unbind_domain,unbind_prefix
+        first,second=self.root.parent/'bind-first',self.root.parent/'bind-second'
+        first.mkdir();second.mkdir()
+        self.interrupted_set();init_domain('other',[str(first)],self.root)
+        self.assertIs(self.bindings().get('suggest_bind'),False);self.assertIn('other',self.bindings()['domains'])
+        init_domain('other',[str(second)],self.root)
+        self.ok('set','suggest_bind','null');self.interrupted_set();unbind_prefix('other',str(second),self.root)
+        self.assertIs(self.bindings().get('suggest_bind'),False)
+        self.ok('set','suggest_bind','null');self.interrupted_set();unbind_domain('other',self.root)
+        self.assertIs(self.bindings().get('suggest_bind'),False);self.assertNotIn('other',self.bindings()['domains'])
+        self.assertFalse(list((self.root/'.operations').glob('*/pending')))
+
     def test_undo_restores_the_previous_file(self):
         before=(self.root/'bindings.json').read_text(encoding='utf-8')
         op=self.ok('set','cross_project','false')['operation_id']
