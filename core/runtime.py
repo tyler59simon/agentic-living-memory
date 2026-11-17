@@ -14,7 +14,7 @@ SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 # Tools that cannot change files; anything else marks the turn as mutating.
 READ_TOOLS={'read','read_file','glob','grep','search','view_image','view','ls','list','webfetch','websearch','web_fetch','web_search','todowrite','task','agent','toolsearch','askuserquestion','exitplanmode','enterplanmode'}
 SHELL_TOOLS={'bash','powershell','shell','run_shell_command','exec_command','local_shell','execute'}
-ALLOWED_SUBCOMMANDS={'ask','sources','source-sync','ingest-scan','search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','promote-plan','projects','systems','changes','views','resolve','reopen','restore','log','maintenance','recap','status','help'}
+ALLOWED_SUBCOMMANDS={'ask','sources','source-sync','ingest-scan','search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','promote-plan','projects','systems','changes','views','wiki','resolve','reopen','restore','log','maintenance','recap','status','help'}
 # Subagents are read-only: these are denied for them even though the main agent gets them auto-allowed.
 MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm','resolve','reopen','restore','off','on'}
 GLOBAL_OPTIONS={'--root','--domain','--cwd','--actor'}
@@ -250,6 +250,16 @@ def views_write(text,grammar):
         action=next((w for w in rest if not w.startswith('-')),'list')
         if action in {'add','remove','published'}:return True
         if action=='render' and (_option_values(rest,('--out',)) or 'json' not in _option_values(rest,('--format',))):return True
+    return False
+
+def wiki_write(text,grammar):
+    """True when a `wiki` command writes a file: anything but `--format json` with no --out."""
+    for words in _parsed(text,grammar) or []:
+        index=0
+        while index<len(words) and words[index]!='wiki':index+=2 if words[index] in GLOBAL_OPTIONS else 1
+        if index>=len(words):continue
+        rest=words[index+1:]
+        if _option_values(rest,('--out',)) or 'json' not in _option_values(rest,('--format',)):return True
     return False
 
 def maintenance_write(text,grammar):
@@ -2020,7 +2030,8 @@ def _process(harness,event,payload,root=None,info=None):
             return result
         writes_view=subcommand=='views' and views_write(text,grammar)
         writes_maintenance=subcommand=='maintenance' and maintenance_write(text,grammar)
-        if (subcommand in MUTATING_SUBCOMMANDS or writes_view or writes_maintenance) and _subagent(payload):
+        writes_wiki=subcommand=='wiki' and wiki_write(text,grammar)
+        if (subcommand in MUTATING_SUBCOMMANDS or writes_view or writes_maintenance or writes_wiki) and _subagent(payload):
             detail['decision']='deny:subagent'
             result['deny']='Living Memory: subagents are read-only. Return the proposed note to the main agent instead of running '+subcommand+'.'
             return result

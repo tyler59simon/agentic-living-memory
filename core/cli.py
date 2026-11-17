@@ -5,6 +5,7 @@ from pathlib import Path
 from .common import memory_root,load_bindings,resolve_domain,canonical_domain
 from .repository import read_json,inventory,parse,store_lock,canonical_json,now
 from .note_types import NOTE_TYPES
+from .links import note_links
 
 def _payload(args):
     if getattr(args,'payload_file',None):raw=args.payload_file.read_text(encoding='utf-8')
@@ -275,7 +276,7 @@ def _sectioned(args,body='',note_type=None):
 
 # source-sync writes only the derived knowledge-base index (as search --rebuild does the notes' one), so subagents and viewers may run it
 # (not for a remote source, which it would pull from the network: sources.sync refuses that for them).
-READ_ONLY={'help','config','status','search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','ask','sources','source-sync','ingest-scan','changes','views','log','maintenance','recap'}
+READ_ONLY={'help','config','status','search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','ask','sources','source-sync','ingest-scan','changes','views','wiki','log','maintenance','recap'}
 # Viewer: a human-facing app browsing the store. Read-only, and its reads are not usage evidence for the diary.
 VIEWER=READ_ONLY|{'taxonomy','review','diff','inspect-plan'}
 SERVE_API=2
@@ -316,46 +317,6 @@ def list_domains(root):
     scope=config.get('search_scope',{}) if isinstance(config.get('search_scope'),dict) else {}
     return {'ok':True,'domains':[{'name':n,'bound':n in bound,'prefixes':(bound.get(n) or {}).get('prefixes',[]),'active':count(n,'notes'),'archived':count(n,'archive')} for n in names],
             'aliases':config.get('domain_aliases',{}),'global_domains':scope.get('global_domains',['_global']),'foreign_domains':scope.get('foreign_domains',[])}
-
-def note_links(root,domains,status):
-    """The link graph of these domains: [[Title]] links (resolved like a title REF: the note's own domain, then its
-    parent domains, then the global domains; case-insensitive) and supersedes, with links that match no note."""
-    from .sync import WIKILINK
-    from .runtime import parent_domains
-    from .common import global_domains
-    config=load_bindings(root);globals_=global_domains(root);notes={};titles={}
-    def notes_of(d):
-        if d not in notes:notes[d]=inventory(d,root,retired=status!='active') if (root/'domains'/d/'notes').is_dir() else []
-        return notes[d]
-    def by_title(d):
-        if d not in titles:
-            # An active note wins a title over a retired one that shares it.
-            titles[d]={n['title'].strip().casefold():n for n in sorted(notes_of(d),key=lambda n:n.get('status','active')=='active')}
-        return titles[d]
-    nodes={};edges={};unresolved={}
-    def node(d,n):
-        ref=f"{d}:{n['id']}"
-        nodes.setdefault(ref,{'ref':ref,'id':n['id'],'domain':d,'title':n.get('title'),'type':n.get('type'),'status':n.get('status','active'),'tags':n.get('tags') or []})
-        return ref
-    for d in domains:
-        order=list(dict.fromkeys([d]+parent_domains(d,config)+globals_))
-        ids={n['id']:n for n in notes_of(d)}
-        for n in notes_of(d):
-            source=node(d,n)
-            for target in WIKILINK.findall(n.get('body','')):
-                key=target.strip().casefold()
-                hit=next(((o,by_title(o)[key]) for o in order if key in by_title(o)),None)
-                if hit is None:unresolved.setdefault((source,target.strip()),None);continue
-                found=node(*hit)
-                if found!=source:edges.setdefault((source,found),'link')
-            # Newer note -> the note it replaced, from either side of the pair; a link between the two wins.
-            pairs=[(n,ids.get(str(s).split(':')[-1])) for s in n.get('supersedes') or []]
-            pairs.append((ids.get(str(n.get('superseded_by') or '').split(':')[-1]),n))
-            for newer,older in pairs:
-                if newer and older and newer['id']!=older['id']:edges.setdefault((node(d,newer),node(d,older)),'supersedes')
-    return {'ok':True,'domains':domains,'nodes':sorted(nodes.values(),key=lambda r:r['ref']),
-            'edges':[{'from':a,'to':b,'kind':k} for (a,b),k in sorted(edges.items())],
-            'unresolved':[{'from':a,'target':t} for a,t in sorted(unresolved)]}
 
 def _note_hits(root,domain,query,scope,limit,rebuild,filters,config,globals_,primary,foreign,explain=False):
     """The search command's answer: relevance-gated notes across the active, parent and global domains (foreign ones as a fallback).
@@ -537,7 +498,7 @@ HELP={'setup':'Choose or move the shared memory folder','bind':'Bind a domain to
  'maintenance':'Automatic maintenance','semantic':'Semantic search settings','validate':'Check notes against the rules','query':'Query the store','taxonomy-plan':'Plan a tag taxonomy change','taxonomy':'Show the tag taxonomy',
  'project-plan':'Plan a project registry change','projects':'List projects','system-plan':'Plan a system registry change','systems':'List systems','source-plan':'Plan a knowledge-base source change','sources':'List knowledge-base sources',
  'source-sync':'Re-index knowledge-base sources','ingest-scan':'Scan for files to ingest','ingest-skip':'Skip an ingest candidate','ask':'Ask a question about the project','change-plan':'Plan a tracked change',
- 'changes':'List tracked changes','views':'Saved views','batch':'Run several commands from a JSON file','retag-plan':'Plan retagging notes','remap-plan':'Plan moving notes between domains','promote-plan':'Plan promoting notes to the global domain',
+ 'changes':'List tracked changes','views':'Saved views','wiki':'Domain wiki','batch':'Run several commands from a JSON file','retag-plan':'Plan retagging notes','remap-plan':'Plan moving notes between domains','promote-plan':'Plan promoting notes to the global domain',
  'recall':'Search this session transcript','off':'Turn Living Memory off for this session','on':'Turn Living Memory back on for this session','status':'Whether Living Memory is on for this session','capture-finalize':'Record which notes a turn saved','list':'List notes','domains':'List domains','config':'Show or change store settings','links':'Links between notes',
  'help':'Protocol details by topic','version':'Version and command list','serve':'JSON-lines server on stdin and stdout','sync':'Sync a domain with an Obsidian vault','overlay-build':'Build the Obsidian overlay','overlay-teardown-plan':'Plan removing the overlay','overlay-sync-all':'Sync every domain with the vault'}
 
@@ -547,7 +508,7 @@ HELP_GROUPS=(
  ('Maintenance',('review','maintenance','stats','history','diff','undo','recover','restore','doctor','validate','rebuild','semantic','backup','logs')),
  ('Governance (plans)',('plan','apply','inspect-plan','rewrite-plan','merge-plan','retag-plan','remap-plan','promote-plan','taxonomy-plan','note-type-plan','migration-plan','baseline-plan','restore-plan',
    'import-plan','ingest-plan','project-plan','system-plan','source-plan','change-plan','overlay-teardown-plan')),
- ('Admin',('setup','bind','unbind','config','domains','projects','systems','sources','source-sync','ingest-scan','ingest-skip','taxonomy','changes','views','export','query','batch','sync','overlay-build','overlay-sync-all','serve','version')))
+ ('Admin',('setup','bind','unbind','config','domains','projects','systems','sources','source-sync','ingest-scan','ingest-skip','taxonomy','changes','views','wiki','export','query','batch','sync','overlay-build','overlay-sync-all','serve','version')))
 
 def _grouped_commands():
     width=max(len(name) for _,names in HELP_GROUPS for name in names)+2
@@ -647,6 +608,8 @@ def build_parser():
     p.add_argument('--all-domains',action='store_true',help='list: every domain, not only --domain');p.add_argument('--title',help="add: the view's short title (default: the note title)")
     p.add_argument('--all',action='store_true',help='render: every registered view');p.add_argument('--target',choices=['local','artifact'],default='local',help="render: local (dark, reloads itself) or artifact (follows the viewer's theme)")
     p.add_argument('--format',choices=['html','json'],default='html',help='render: the page, or the view model as JSON');p.add_argument('--out',type=Path,help='render: write here instead of the standard path');p.add_argument('--url',help='published: where the artifact page lives')
+    p=sub('wiki');p.add_argument('--archived',action='store_true',help='Include retired notes')
+    p.add_argument('--format',choices=['html','json'],default='html',help='The page, or the wiki model as JSON (json without --out prints it)');p.add_argument('--out',type=Path,help='Write here instead of <store>/.views/<domain>/wiki.html')
     p=sub('batch');p.add_argument('--payload-file',type=Path)
     p=sub('retag-plan');p.add_argument('--payload-file',type=Path)
     p=sub('remap-plan');p.add_argument('--payload-file',type=Path)
@@ -722,6 +685,8 @@ def main(argv=None):
         if args.actor=='viewer' and cmd not in VIEWER:raise ValueError('Viewers are read-only; run changes as --actor main')
         if cmd=='views' and (args.action or 'list')!='list' and args.actor in {'subagent','viewer'} and not (args.action=='render' and args.format=='json' and not args.out):
             raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' are read-only: views list and render --format json (no --out) are allowed; run the rest as --actor main')
+        if cmd=='wiki' and (args.out or args.format!='json') and args.actor in {'subagent','viewer'}:
+            raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' are read-only: wiki --format json (no --out) is allowed; run the rest as --actor main')
         if cmd=='config' and args.action=='set' and args.actor in {'subagent','viewer'}:
             raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' are read-only: config get is allowed; run config set as --actor main')
         if cmd=='maintenance' and args.action not in {'status','preview','history'} and args.actor in {'subagent','viewer'}:
@@ -1314,6 +1279,11 @@ def main(argv=None):
                     rows=views.render(root,[entry],args.target,args.out,args.format)
                     result={'ok':True,'model':rows[0]['model']} if args.format=='json' else {'ok':True,'target':args.target}
                     if 'path' in rows[0]:result['path']=rows[0]['path']
+        elif cmd=='wiki':
+            from . import wiki
+            if not domain:raise ValueError(UNBOUND)
+            if args.format=='json' and not args.out:result={'ok':True,'model':wiki.wiki_model(domain,root,args.archived)}
+            else:result=wiki.export(domain,root,args.archived,args.out,args.format)
         elif cmd=='taxonomy':result=read_json(root/'tag_taxonomy.json',{'tags':[]})
         elif cmd=='batch':
             import contextlib,io
