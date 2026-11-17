@@ -1,5 +1,6 @@
 """config get and config set: validated, journaled changes to the settings in bindings.json (FEAT-5)."""
 import contextlib,io,json
+from pathlib import Path
 from test_core import StoreFixture
 from core import cli
 from core.governance import undo
@@ -56,6 +57,20 @@ class Config(StoreFixture):
             with self.subTest(actor=actor):
                 self.assertIn('read-only',self.error('set','auto_resolve','false',actor=actor)['message'])
                 self.assertEqual(self.run_cli('get',actor=actor)[0],0)
+
+    def test_an_interrupted_change_is_finished_before_the_next_set_reads(self):   # Codex review
+        from unittest.mock import patch
+        from core import repository as repo
+        from core.settings import set_
+        real=repo._write
+        def crash(path,data):
+            if Path(path).name=='bindings.json':raise KeyboardInterrupt   # the journal is durable, bindings.json is not written yet
+            return real(path,data)
+        with patch.object(repo,'_write',crash),self.assertRaises(KeyboardInterrupt):set_(self.root,'suggest_bind','false')
+        self.assertTrue(list((self.root/'.operations').glob('*/pending')));self.assertNotIn('suggest_bind',self.bindings())
+        self.ok('set','cross_project','false')
+        self.assertEqual((self.bindings().get('suggest_bind'),self.bindings().get('cross_project')),(False,False))   # both changes kept
+        self.assertFalse(list((self.root/'.operations').glob('*/pending')))
 
     def test_undo_restores_the_previous_file(self):
         before=(self.root/'bindings.json').read_text(encoding='utf-8')

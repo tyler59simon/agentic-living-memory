@@ -5,7 +5,7 @@ reverts it. Domain bindings and aliases are not settings: bind, unbind and remap
 import json
 from pathlib import Path
 from .common import load_bindings,safe_domain
-from .repository import canonical_json,read_json,store_lock,transaction
+from .repository import canonical_json,digest,read_json,roll_forward_pending,store_lock,transaction
 
 DEFAULTS={'search_scope':{'global_domains':['_global'],'foreign_domains':[]},'repo_aliases':{},
           'suggest_bind':True,'auto_resolve':True,'cross_project':True}
@@ -52,10 +52,11 @@ def set_(root,key,text):
     except ValueError:raise ValueError(f'invalid_value: {key} takes JSON, for example true, false or {json.dumps(DEFAULTS[key])}') from None
     value=validate(key,value);root=Path(root).resolve()
     with store_lock(root):
-        config=read_json(root/'bindings.json',None)
+        roll_forward_pending(root)   # an interrupted bind or config change is finished first, so this reads what it wrote
+        path=root/'bindings.json';read=path.read_bytes() if path.is_file() else b'';config=read_json(path,None)
         if not isinstance(config,dict):raise ValueError('Invalid bindings preserved')
         before=config.get(key,DEFAULTS[key]);old=canonical_json(config)
         if value is None:config.pop(key,None)
         else:config[key]=value
-        new=canonical_json(config);receipt=transaction(root,{'bindings.json':new},'config_set') if new!=old else {}   # an unchanged value writes nothing
+        new=canonical_json(config);receipt=transaction(root,{'bindings.json':new},'config_set',expected={'bindings.json':digest(read)}) if new!=old else {}   # an unchanged value writes nothing
     return {'ok':True,'setting':key,'value':config.get(key,DEFAULTS[key]),'default':key not in config,'previous':before,'operation_id':receipt.get('operation_id')}
