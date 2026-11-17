@@ -2106,13 +2106,13 @@ def _process(harness,event,payload,root=None,info=None):
         # A plan approved inside this turn (ExitPlanMode) is raised at this Stop, so the next prompt is not a second exit from plan mode.
         stop_mode=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()
         if stop_mode and state.get('last_mode') and stop_mode!=state['last_mode']:_update(root,session,lambda s:s.update(last_mode=stop_mode))
-        approvals=[]
-        def settle(s):
-            if approvals:s['decisions_settled']=list(dict.fromkeys(list(s.get('decisions_settled') or [])+approvals))[-MAX_SETTLED:]
+        approvals=[]   # every approval in the transcript turn; a receipt settles them all
+        def settle(s,keys):
+            if keys:s['decisions_settled']=list(dict.fromkeys(list(s.get('decisions_settled') or [])+keys))[-MAX_SETTLED:]
         def close(s):
             for key in TURN_STATE:s.pop(key,None)
             if left or s.get('docs_left'):s['docs_left']=left
-            if receipted:settle(s)
+            if receipted:settle(s,approvals)
         signal=state.get('signal');detail.update(turns=len(turns),mutating=bool(state.get('mutating')),signal=signal)
         # The turn ends here whatever happens next, so its statement is settled: a header repeated in every brief raises once.
         for value in state.get('signal_hashes') or [state.get('signal_hash')]:settle_signal(root,domain,value)
@@ -2149,7 +2149,8 @@ def _process(harness,event,payload,root=None,info=None):
             for key in TURN_STATE:
                 if key not in ('touched','unlooked'):s.pop(key,None)
             s['reminded']={'turn':latest,'signal':signal}
-            settle(s)   # an approval is reminded about once a session (HOOK-5)
+            # An approval is reminded about once a session (HOOK-5): only one the reminder text named, or all on a receipt.
+            settle(s,approvals if receipted else [d['key'] for k,d in used if k=='decision' and d.get('key')])
             # Each document and each note is asked about once per session.
             asked=[d['path'] for k,d in used if k=='doc']
             s['docs_reminded']=list(dict.fromkeys(list(s.get('docs_reminded',[]))+asked))[-MAX_DOCS_REMINDED:]
@@ -2267,8 +2268,8 @@ def stop_pending(root,bindings,state,session,turns,domain=None,cwd=None,planning
             if signal!='decision':
                 found=approved_decisions(tools);settled=set(state.get('decisions_settled') or [])
                 if approvals is not None:approvals.extend(key for _,key in found)
-                chosen=next((label for label,key in found if key not in settled),None)
-                if chosen and not receipted:pending.append(('decision',{'files':bool(state.get('mutating')),'plan':chosen}))
+                chosen=next(((label,key) for label,key in found if key not in settled),None)
+                if chosen and not receipted:pending.append(('decision',{'files':bool(state.get('mutating')),'plan':chosen[0],'key':chosen[1]}))
             key=verified_fix(tools) if state.get('mutating') and not receipted else None
             if key:pending.append(('fix',{'command':key}))
         except Exception as exc:
@@ -2343,8 +2344,9 @@ def verified_fix(tools):
 
 def approved_decisions(tools):
     """[(label, key)] for what the user approved in this turn, in order. label: the first heading of an ExitPlanMode plan the
-    user accepted, or the question and answer of an AskUserQuestion. key: a hash of the whole call and its result, so two
-    plans that share a heading are different approvals (HOOK-5). A rejected plan is an error result and arms nothing."""
+    user accepted, or the question and answer of an AskUserQuestion. key: a hash of the call id, the whole call and its
+    result, so two plans that share a heading, or the same question asked again later, are different approvals (HOOK-5).
+    A rejected plan is an error result and arms nothing."""
     found=[]
     for tool in tools:
         name=str(tool.get('name','')).lower();args=tool.get('input') or {}
@@ -2356,7 +2358,7 @@ def approved_decisions(tools):
             asked=args.get('questions');first=asked[0] if isinstance(asked,list) and asked and isinstance(asked[0],dict) else {}
             label=(str(first.get('question') or 'question')[:100]+' -> '+' '.join(str(tool.get('text') or '').split())[:100]).strip()
         else:continue
-        whole=json.dumps([name,args,str(tool.get('text') or '')],sort_keys=True,default=str)
+        whole=json.dumps([str(tool.get('id') or ''),name,args,str(tool.get('text') or '')],sort_keys=True,default=str)
         found.append((label,hashlib.sha256(whole.encode('utf-8')).hexdigest()[:16]))
     return found
 

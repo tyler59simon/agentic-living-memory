@@ -20,6 +20,7 @@ MAX_TOKENS=512
 # serve --stdio (Hivemind) lives for hours, so the cache is bounded (SEM-1); the memory map serves the rest.
 ROW_CACHE=1024
 STALE_PARTIAL_SECONDS=3600   # a .partial- folder older than this is from an install that was killed
+HEARTBEAT_SECONDS=60   # a download touches its .partial- folder this often
 # Pinned to a Hugging Face commit and the bytes it served. min_similarity: the cosine at which a note found only by
 # meaning is shown on a prompt. Chosen 2026-11-06 by an eval bake-off against potion-base-8M: both reached hit@3 1.0
 # (lexical 0.909), but unrelated prompts scored at most 0.30 here and 0.46 with the smaller model.
@@ -195,7 +196,13 @@ def _sha256(path):
     return digest.hexdigest()
 
 def _fetch(url,target):
-    with urllib.request.urlopen(url,timeout=60) as response,open(target,'wb') as out:shutil.copyfileobj(response,out,1<<20)
+    """Download url to target, touching the .partial- folder at least once a minute: Windows may not update an open file's
+    write time, and _clear_stale_partials must see a long download as alive."""
+    beat=0.0
+    with urllib.request.urlopen(url,timeout=60) as response,open(target,'wb') as out:
+        for block in iter(lambda:response.read(1<<20),b''):
+            out.write(block)
+            if time.time()-beat>=HEARTBEAT_SECONDS:os.utime(target.parent);beat=time.time()
 
 def rebuild_all(root,units=False):
     """Rebuild every domain's note index (and with it the unit index, core/vectors.py). units: discard each unit index

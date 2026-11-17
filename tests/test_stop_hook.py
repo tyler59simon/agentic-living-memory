@@ -3,6 +3,7 @@ by the user arms the reminder."""
 import contextlib
 import io
 import json
+from unittest.mock import patch
 
 from test_core import StoreFixture
 from core import runtime
@@ -466,6 +467,20 @@ class TurnTools(StopFixture):
         self.write(use('p', 'ExitPlanMode', plan='# Plan\n\nMove billing.'), result('p', 'User has approved your plan'))
         self.assertIn('The user made a decision', self.notified('t1'))
         self.write(use('p2', 'ExitPlanMode', plan='# Plan\n\nSplit the parser.'), result('p2', 'User has approved your plan'))
+        self.assertIn('The user made a decision', self.notified('t2'))
+
+    def test_the_same_question_asked_again_later_is_a_new_approval(self):
+        asked = [use('q', 'AskUserQuestion', questions=[{'question': 'Which store?'}]), result('q', 'Which store? -> sqlite')]
+        self.write(*asked)
+        self.assertIn('The user made a decision', self.notified('t1'))
+        self.write(use('q2', 'AskUserQuestion', questions=[{'question': 'Which store?'}]), result('q2', 'Which store? -> sqlite'))
+        self.assertIn('The user made a decision', self.notified('t2'))
+
+    def test_an_approval_the_reminder_text_left_out_is_not_settled(self):
+        self.write(use('q', 'AskUserQuestion', questions=[{'question': 'Which store?'}]), result('q', 'Which store? -> sqlite'))
+        with patch.object(runtime, 'stop_text', lambda pending, session, used: (used.extend(p for p in pending if p[0] != 'decision'), 'held')[1]):
+            self.payload.update(turn_id='t1', prompt='Remember that we use tabs')
+            self.assertEqual(self.turn().get('continue_reason'), 'held')
         self.assertIn('The user made a decision', self.notified('t2'))
 
     def test_a_prompt_decision_is_not_raised_twice(self):

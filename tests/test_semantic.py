@@ -114,6 +114,14 @@ class SemanticCase(StoreFixture):
         self.assertFalse(old.exists());self.assertTrue(fresh.exists());self.assertTrue(slow.exists())
         self.assertEqual(semantic.installed(self.root),'tiny')
 
+    def test_a_download_touches_its_partial_folder_while_it_runs(self):
+        import os,time
+        folder=self.base/(semantic.PARTIAL+'download');folder.mkdir();(folder/'model.safetensors').write_bytes(b'')   # rewriting a file does not touch its folder
+        old=time.time()-semantic.STALE_PARTIAL_SECONDS-60;os.utime(folder,(old,old))
+        with patch.object(semantic.urllib.request,'urlopen',return_value=io.BytesIO(b'x'*(3<<20))):semantic._fetch('https://example.invalid/m',folder/'model.safetensors')
+        self.assertGreater(folder.stat().st_mtime,old+60)
+        self.assertEqual((folder/'model.safetensors').stat().st_size,3<<20)
+
     def test_install_rejects_a_hash_mismatch_and_leaves_nothing(self):
         with (self.source/'model.safetensors').open('ab') as handle:handle.write(b'x')
         with self.assertRaisesRegex(ValueError,'hash_mismatch'):self.install()

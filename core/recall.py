@@ -129,10 +129,10 @@ def _turn_prompt(entry):
     return any(isinstance(b,dict) and b.get('type')=='text' and _clean(b.get('text','')) for b in content or [] if isinstance(content,list))
 
 def turn_tools(path):
-    """[{name, input, ok, text}] for the tool calls of the current turn (after the last real user prompt), each paired with its
+    """[{name, input, ok, text, id}] for the tool calls of the current turn (after the last real user prompt), each paired with its
     result by id: Claude `tool_use_id`, Codex `call_id`. ok is False for an error result (Claude `is_error`, a nonzero Codex exit
     code), True otherwise, and None when a Codex result reports no exit code or a call has no result yet. text is the result's
-    text. Only the last TURN_TAIL bytes are read. Harnesses without a reader (Copilot, Factory) give []. Never raises."""
+    text; id is the call id ('' when the harness gives none). Only the last TURN_TAIL bytes are read. Harnesses without a reader (Copilot, Factory) give []. Never raises."""
     try:
         with Path(path).open('rb') as handle:
             handle.seek(0,2);size=handle.tell();handle.seek(max(0,size-TURN_TAIL));data=handle.read()
@@ -150,7 +150,7 @@ def turn_tools(path):
                 kind=payload.get('type');call=payload.get('call_id')
                 if kind in {'function_call','custom_tool_call'}:
                     args=_tool_args(payload.get('arguments') if kind=='function_call' else payload.get('input'))
-                    tool={'name':str(payload.get('name') or ''),'input':args,'ok':None,'text':''}
+                    tool={'name':str(payload.get('name') or ''),'input':args,'ok':None,'text':'','id':str(call or '')}
                     tools.append(tool)
                     if call:by_id[call]=tool
                 elif kind in {'function_call_output','custom_tool_call_output'} and call in by_id:
@@ -162,7 +162,7 @@ def turn_tools(path):
             for block in content if isinstance(content,list) else []:
                 if not isinstance(block,dict):continue
                 if entry.get('type')=='assistant' and block.get('type')=='tool_use':
-                    tool={'name':str(block.get('name') or ''),'input':block.get('input') if isinstance(block.get('input'),dict) else {},'ok':None,'text':''}
+                    tool={'name':str(block.get('name') or ''),'input':block.get('input') if isinstance(block.get('input'),dict) else {},'ok':None,'text':'','id':str(block.get('id') or '')}
                     tools.append(tool);by_id[block.get('id')]=tool
                 elif entry.get('type')=='user' and block.get('type')=='tool_result' and block.get('tool_use_id') in by_id:
                     by_id[block['tool_use_id']].update(ok=not block.get('is_error'),text=_blocks_text(block.get('content'))[:TEXT_MAX])
