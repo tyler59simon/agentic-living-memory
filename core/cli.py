@@ -275,7 +275,7 @@ def _sectioned(args,body='',note_type=None):
 
 # source-sync writes only the derived knowledge-base index (as search --rebuild does the notes' one), so subagents and viewers may run it
 # (not for a remote source, which it would pull from the network: sources.sync refuses that for them).
-READ_ONLY={'help','status','search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','ask','sources','source-sync','ingest-scan','changes','views','log','maintenance','recap'}
+READ_ONLY={'help','config','status','search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','ask','sources','source-sync','ingest-scan','changes','views','log','maintenance','recap'}
 # Viewer: a human-facing app browsing the store. Read-only, and its reads are not usage evidence for the diary.
 VIEWER=READ_ONLY|{'taxonomy','review','diff','inspect-plan'}
 SERVE_API=2
@@ -538,7 +538,7 @@ HELP={'setup':'Choose or move the shared memory folder','bind':'Bind a domain to
  'project-plan':'Plan a project registry change','projects':'List projects','system-plan':'Plan a system registry change','systems':'List systems','source-plan':'Plan a knowledge-base source change','sources':'List knowledge-base sources',
  'source-sync':'Re-index knowledge-base sources','ingest-scan':'Scan for files to ingest','ingest-skip':'Skip an ingest candidate','ask':'Ask a question about the project','change-plan':'Plan a tracked change',
  'changes':'List tracked changes','views':'Saved views','batch':'Run several commands from a JSON file','retag-plan':'Plan retagging notes','remap-plan':'Plan moving notes between domains','promote-plan':'Plan promoting notes to the global domain',
- 'recall':'Search this session transcript','off':'Turn Living Memory off for this session','on':'Turn Living Memory back on for this session','status':'Whether Living Memory is on for this session','capture-finalize':'Record which notes a turn saved','list':'List notes','domains':'List domains','links':'Links between notes',
+ 'recall':'Search this session transcript','off':'Turn Living Memory off for this session','on':'Turn Living Memory back on for this session','status':'Whether Living Memory is on for this session','capture-finalize':'Record which notes a turn saved','list':'List notes','domains':'List domains','config':'Show or change store settings','links':'Links between notes',
  'help':'Protocol details by topic','version':'Version and command list','serve':'JSON-lines server on stdin and stdout','sync':'Sync a domain with an Obsidian vault','overlay-build':'Build the Obsidian overlay','overlay-teardown-plan':'Plan removing the overlay','overlay-sync-all':'Sync every domain with the vault'}
 
 # The groups `alm --help` lists the commands under (CLI-2); every command is in exactly one.
@@ -547,7 +547,7 @@ HELP_GROUPS=(
  ('Maintenance',('review','maintenance','stats','history','diff','undo','recover','restore','doctor','validate','rebuild','semantic','backup','logs')),
  ('Governance (plans)',('plan','apply','inspect-plan','rewrite-plan','merge-plan','retag-plan','remap-plan','promote-plan','taxonomy-plan','note-type-plan','migration-plan','baseline-plan','restore-plan',
    'import-plan','ingest-plan','project-plan','system-plan','source-plan','change-plan','overlay-teardown-plan')),
- ('Admin',('setup','bind','unbind','domains','projects','systems','sources','source-sync','ingest-scan','ingest-skip','taxonomy','changes','views','export','query','batch','sync','overlay-build','overlay-sync-all','serve','version')))
+ ('Admin',('setup','bind','unbind','config','domains','projects','systems','sources','source-sync','ingest-scan','ingest-skip','taxonomy','changes','views','export','query','batch','sync','overlay-build','overlay-sync-all','serve','version')))
 
 def _grouped_commands():
     width=max(len(name) for _,names in HELP_GROUPS for name in names)+2
@@ -568,6 +568,8 @@ def build_parser():
     from .instructions import TOPICS
     p=sub('help');p.add_argument('topic',nargs='?',choices=list(TOPICS))
     p=sub('bind');p.add_argument('name');p.add_argument('prefix',nargs='+')
+    p=sub('config');p.add_argument('action',choices=['get','set']);p.add_argument('key',nargs='?',help='search_scope, repo_aliases, suggest_bind, auto_resolve or cross_project')
+    p.add_argument('value',nargs='?',help='set: JSON, for example true, false, ["_global"] or {"repo": ["alias"]}; null restores the default')
     p=sub('unbind');p.add_argument('name',help='A bound domain with no notes left (move them with remap-plan first)')
     p.add_argument('--prefix',help='Remove only this folder from the binding and keep the domain and its notes (after a bound folder moved)')
     # Legacy forms keep working but are left out of help: --tags, --prefix and a third positional (tags).
@@ -720,6 +722,8 @@ def main(argv=None):
         if args.actor=='viewer' and cmd not in VIEWER:raise ValueError('Viewers are read-only; run changes as --actor main')
         if cmd=='views' and (args.action or 'list')!='list' and args.actor in {'subagent','viewer'} and not (args.action=='render' and args.format=='json' and not args.out):
             raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' are read-only: views list and render --format json (no --out) are allowed; run the rest as --actor main')
+        if cmd=='config' and args.action=='set' and args.actor in {'subagent','viewer'}:
+            raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' are read-only: config get is allowed; run config set as --actor main')
         if cmd=='maintenance' and args.action not in {'status','preview','history'} and args.actor in {'subagent','viewer'}:
             raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' are read-only: maintenance status, preview and history are allowed; run the rest as --actor main')
         if cmd in SWITCH-{'status'} and args.actor in {'subagent','viewer'}:raise ValueError('Only the user turns Living Memory on or off; run it as --actor main')
@@ -734,6 +738,14 @@ def main(argv=None):
         if cmd=='bind':
             from .init_domain import init_domain
             init_domain(args.name,args.prefix,root);result={'ok':True,'domain':args.name,'status':'bound'}
+        elif cmd=='config':
+            from . import settings
+            if args.action=='get':
+                if args.value is not None:raise ValueError('config get takes at most a KEY')
+                result=settings.get(root,args.key)
+            else:
+                if args.key is None or args.value is None:raise ValueError('config set needs KEY and VALUE')
+                result=settings.set_(root,args.key,args.value)
         elif cmd=='unbind':
             from .init_domain import unbind_domain,unbind_prefix
             if args.prefix:result={'ok':True,'domain':args.name,'prefix':unbind_prefix(args.name,args.prefix,root),'status':'prefix_removed'}
