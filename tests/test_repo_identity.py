@@ -221,6 +221,19 @@ class SharedMaps(StoreFixture):
         change(made['map']['id'], 'demo', 'update', self.root, files=['ws/solo'])
         self.assertNotIn('repo', find_note(made['map']['id'], 'demo', self.root)[1])
 
+    def test_a_renamed_repo_folder_still_finds_its_map(self):
+        # MAP-REKEY: the map is keyed by the origin remote, so renaming the folder needs no new map.
+        code, made = self.capture('map', self.po, 'ledger codebase map')
+        self.assertEqual(code, 0, made)
+        renamed = self.po.rename(self.po.parent / 'po-renamed').resolve()
+        self.assertEqual(find_map(renamed, self.root, self.bindings())['id'], made['id'])
+        payload = {'cwd': str(renamed), 'session_id': 'renamed'}
+        runtime.process('claude', 'user-prompt', {**payload, 'prompt': 'look around'}, self.root)
+        for name in ('a.py', 'b.py', 'c.py'):
+            runtime.process('claude', 'pre-tool-use', {**payload, 'tool_name': 'Read', 'tool_input': {'file_path': str(renamed / name)}}, self.root)
+        runtime.process('claude', 'pre-tool-use', {**payload, 'tool_name': 'Write', 'tool_input': {'file_path': str(renamed / 'notes.txt')}}, self.root)
+        self.assertNotIn('codebase map', runtime.process('claude', 'stop', payload, self.root).get('continue_reason', ''))
+
     def test_ordinary_notes_and_the_vault_never_carry_repo(self):
         made = self.note('Cache', 'The local cache is rebuildable.', files=['ws/po'])
         self.assertNotIn('repo', find_note(made['id'], 'demo', self.root)[1])
