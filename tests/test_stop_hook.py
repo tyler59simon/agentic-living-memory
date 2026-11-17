@@ -440,6 +440,34 @@ class TurnTools(StopFixture):
         self.write(use('q', 'AskUserQuestion', questions=[{'question': 'Which store?'}]), result('q', 'Which store? -> sqlite'))
         self.assertIn('The user made a decision', self.stop())
 
+    def notified(self, turn_id):
+        """A hook turn started by a background-task notification: not a real prompt, so the transcript turn goes on."""
+        self.payload.update(turn_id=turn_id, prompt='<task-notification>build finished</task-notification>')
+        return self.turn().get('continue_reason', '')
+
+    def test_a_receipted_approval_is_not_raised_again_in_a_later_hook_turn(self):
+        from core.capture import finalize
+        self.write(use('q', 'AskUserQuestion', questions=[{'question': 'Which store?'}]), result('q', 'Which store? -> sqlite'))
+        self.payload.update(turn_id='t1')
+        runtime.process('claude', 'user-prompt', self.payload, self.root)
+        finalize('session', 't1', [], self.root)
+        self.assertEqual(runtime.process('claude', 'stop', self.payload, self.root), {})
+        self.assertNotIn('The user made a decision', self.notified('t2'))
+
+    def test_a_reminded_approval_is_raised_once_and_a_new_one_is_raised(self):
+        self.write(use('q', 'AskUserQuestion', questions=[{'question': 'Which store?'}]), result('q', 'Which store? -> sqlite'))
+        self.assertIn('The user made a decision', self.notified('t1'))
+        self.assertNotIn('The user made a decision', self.notified('t2'))
+        self.write(use('q', 'AskUserQuestion', questions=[{'question': 'Which store?'}]), result('q', 'Which store? -> sqlite'),
+                   use('r', 'AskUserQuestion', questions=[{'question': 'Which queue?'}]), result('r', 'Which queue? -> redis'))
+        self.assertIn('The user made a decision', self.notified('t3'))
+
+    def test_two_plans_that_share_a_heading_are_two_approvals(self):
+        self.write(use('p', 'ExitPlanMode', plan='# Plan\n\nMove billing.'), result('p', 'User has approved your plan'))
+        self.assertIn('The user made a decision', self.notified('t1'))
+        self.write(use('p2', 'ExitPlanMode', plan='# Plan\n\nSplit the parser.'), result('p2', 'User has approved your plan'))
+        self.assertIn('The user made a decision', self.notified('t2'))
+
     def test_a_prompt_decision_is_not_raised_twice(self):
         self.write(use('p', 'ExitPlanMode', plan='# Plan'), result('p'))
         self.assertEqual(self.stop(prompt='We decided to use sqlite').count('The user made a decision'), 1)

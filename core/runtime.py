@@ -608,6 +608,7 @@ MAX_HINTED=100
 FOLLOW_BODY_TYPES={'bug','decision'}
 MAX_DOCS=10
 MAX_DOCS_REMINDED=50
+MAX_SETTLED=50   # approvals (approved_decisions keys) already reminded about or receipted this session
 
 def file_hints(paths,state,root,domain,bindings,session=None,trace=None,follow=None,digested=None):
     """(context naming notes about files about to be changed, paths looked up). Each file is looked up
@@ -2105,15 +2106,19 @@ def _process(harness,event,payload,root=None,info=None):
         # A plan approved inside this turn (ExitPlanMode) is raised at this Stop, so the next prompt is not a second exit from plan mode.
         stop_mode=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()
         if stop_mode and state.get('last_mode') and stop_mode!=state['last_mode']:_update(root,session,lambda s:s.update(last_mode=stop_mode))
+        approvals=[]
+        def settle(s):
+            if approvals:s['decisions_settled']=list(dict.fromkeys(list(s.get('decisions_settled') or [])+approvals))[-MAX_SETTLED:]
         def close(s):
             for key in TURN_STATE:s.pop(key,None)
             if left or s.get('docs_left'):s['docs_left']=left
+            if receipted:settle(s)
         signal=state.get('signal');detail.update(turns=len(turns),mutating=bool(state.get('mutating')),signal=signal)
         # The turn ends here whatever happens next, so its statement is settled: a header repeated in every brief raises once.
         for value in state.get('signal_hashes') or [state.get('signal_hash')]:settle_signal(root,domain,value)
         # Plan mode cannot save anything, so a repo explored there is reminded about at the next Stop outside plan mode.
         planning=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()=='plan'
-        try:pending=stop_pending(root,bindings,state,session,turns,domain,cwd,planning,harness)
+        try:pending=stop_pending(root,bindings,state,session,turns,domain,cwd,planning,harness,approvals)
         except Exception as exc:
             from .logs import swallowed
             swallowed('runtime.stop_pending',exc,root);pending=[]
@@ -2127,7 +2132,8 @@ def _process(harness,event,payload,root=None,info=None):
         # is easily lost: an explicit request to remember, a decision or directive the user stated, a decision
         # document edited, an edit to a file a note is about, and a repo explored without a codebase map (or
         # grown at its top level), because rebuilding that orientation costs a whole exploration.
-        quiet=('receipt' if not pending and any(capture_status(session,t,root) for t in turns) else 'no_change' if not (state.get('mutating') or signal or pending)
+        receipted=any(capture_status(session,t,root) for t in turns)
+        quiet=('receipt' if not pending and receipted else 'no_change' if not (state.get('mutating') or signal or pending)
                else 'no_turns' if not turns else None if pending else 'nudged' if signal in SIGNAL_TEXT else 'files_only')
         if quiet:
             detail['reason']=quiet;_update(root,session,close);return {}
@@ -2143,6 +2149,7 @@ def _process(harness,event,payload,root=None,info=None):
             for key in TURN_STATE:
                 if key not in ('touched','unlooked'):s.pop(key,None)
             s['reminded']={'turn':latest,'signal':signal}
+            settle(s)   # an approval is reminded about once a session (HOOK-5)
             # Each document and each note is asked about once per session.
             asked=[d['path'] for k,d in used if k=='doc']
             s['docs_reminded']=list(dict.fromkeys(list(s.get('docs_reminded',[]))+asked))[-MAX_DOCS_REMINDED:]
@@ -2234,11 +2241,12 @@ CHANGE_GUARD_COMMITS=3;CHANGE_GUARD_FILES=30   # more than this changed under a 
 FOLLOW_BATCH_FILES=30
 BOILERPLATE_HEADINGS={'context','decision','decisions','consequences','status','background','summary','overview','alternatives','options','notes','rationale','changelog','unreleased'}
 
-def stop_pending(root,bindings,state,session,turns,domain=None,cwd=None,planning=False,harness=None):
+def stop_pending(root,bindings,state,session,turns,domain=None,cwd=None,planning=False,harness=None,approvals=None):
     """[(kind, data)] the Stop reminder may raise, most important first. Kinds: remember, decision, directive (the
     user's own statement); doc (a decision document changed this turn); follow (a file a note is about was edited);
     unbriefed, brief (the project has no brief, or a decision this turn may have outdated it); unmapped, grown (a
-    repo explored without a map, or grown at its top level)."""
+    repo explored without a map, or grown at its top level). approvals, when given, collects the key of every approval
+    in the transcript turn (approved_decisions), for the caller to settle."""
     pending=[];signal=state.get('signal')
     # A receipt settles the housekeeping, so only the brief (which a captured decision may have outdated) is still asked
     # about. A blocking statement, a decision document or a file a note covers is settled only by a note that covers it
@@ -2250,14 +2258,18 @@ def stop_pending(root,bindings,state,session,turns,domain=None,cwd=None,planning
     if signal in BLOCKING_SIGNALS and not (dismissed or (covers_signal(root,saved,state) if state.get('signal_words') else receipted)):pending.append((signal,{'files':bool(state.get('mutating'))}))
     # What the turn's tool calls and their results show (core/recall.turn_tools): an approved plan or an answered
     # question is a decision (UX-C4); a command that failed, then passed after an edit, may carry a root cause (UX-C3).
-    if domain and not planning and not receipted and state.get('transcript') and (harness or state.get('harness')) in RECALL_HARNESSES:
+    # The transcript turn runs back to the last real prompt, so hook turns that a task notification started see the same
+    # approvals again (HOOK-5): one already reminded about or answered by a receipt is settled for the session.
+    if domain and not planning and state.get('transcript') and (harness or state.get('harness')) in RECALL_HARNESSES:
         try:
             from .recall import turn_tools
             tools=turn_tools(state['transcript'])
             if signal!='decision':
-                chosen=approved_decision(tools)
-                if chosen:pending.append(('decision',{'files':bool(state.get('mutating')),'plan':chosen}))
-            key=verified_fix(tools) if state.get('mutating') else None
+                found=approved_decisions(tools);settled=set(state.get('decisions_settled') or [])
+                if approvals is not None:approvals.extend(key for _,key in found)
+                chosen=next((label for label,key in found if key not in settled),None)
+                if chosen and not receipted:pending.append(('decision',{'files':bool(state.get('mutating')),'plan':chosen}))
+            key=verified_fix(tools) if state.get('mutating') and not receipted else None
             if key:pending.append(('fix',{'command':key}))
         except Exception as exc:
             from .logs import swallowed
@@ -2329,19 +2341,28 @@ def verified_fix(tools):
         elif key not in failed and SHELL_WRITE.search(text) and not readonly_shell(text):ready|=failed
     return None
 
-def approved_decision(tools):
-    """What the user approved in this turn, else None: the first heading of an ExitPlanMode plan the user accepted, or the
-    question and answer of an AskUserQuestion. A rejected plan is an error result and arms nothing."""
+def approved_decisions(tools):
+    """[(label, key)] for what the user approved in this turn, in order. label: the first heading of an ExitPlanMode plan the
+    user accepted, or the question and answer of an AskUserQuestion. key: a hash of the whole call and its result, so two
+    plans that share a heading are different approvals (HOOK-5). A rejected plan is an error result and arms nothing."""
+    found=[]
     for tool in tools:
         name=str(tool.get('name','')).lower();args=tool.get('input') or {}
         if tool.get('ok') is not True:continue
         if name=='exitplanmode':
             plan=str(args.get('plan') or '')
-            return next((l.lstrip('# ').strip() for l in plan.splitlines() if l.lstrip().startswith('#')),'')[:120] or 'approved plan'
-        if name=='askuserquestion':
+            label=next((l.lstrip('# ').strip() for l in plan.splitlines() if l.lstrip().startswith('#')),'')[:120] or 'approved plan'
+        elif name=='askuserquestion':
             asked=args.get('questions');first=asked[0] if isinstance(asked,list) and asked and isinstance(asked[0],dict) else {}
-            return (str(first.get('question') or 'question')[:100]+' -> '+' '.join(str(tool.get('text') or '').split())[:100]).strip()
-    return None
+            label=(str(first.get('question') or 'question')[:100]+' -> '+' '.join(str(tool.get('text') or '').split())[:100]).strip()
+        else:continue
+        whole=json.dumps([name,args,str(tool.get('text') or '')],sort_keys=True,default=str)
+        found.append((label,hashlib.sha256(whole.encode('utf-8')).hexdigest()[:16]))
+    return found
+
+def approved_decision(tools):
+    """The label of the first approval in this turn (approved_decisions), else None."""
+    return next((label for label,_ in approved_decisions(tools)),None)
 
 def _norm_path(path):return re.sub(r'^(?:\./)+','',str(path).strip().replace('\\','/')).casefold()
 
