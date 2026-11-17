@@ -534,19 +534,34 @@ HELP={'setup':'Choose or move the shared memory folder','bind':'Bind a domain to
  'recall':'Search this session transcript','off':'Turn Living Memory off for this session','on':'Turn Living Memory back on for this session','status':'Whether Living Memory is on for this session','capture-finalize':'Record which notes a turn saved','list':'List notes','domains':'List domains','links':'Links between notes',
  'version':'Version and command list','serve':'JSON-lines server on stdin and stdout','sync':'Sync a domain with an Obsidian vault','overlay-build':'Build the Obsidian overlay','overlay-teardown-plan':'Plan removing the overlay','overlay-sync-all':'Sync every domain with the vault'}
 
+# The groups `alm --help` lists the commands under (CLI-2); every command is in exactly one.
+HELP_GROUPS=(
+ ('Everyday',('capture','search','read','update','supersede','open','check','confirm','resolve','reopen','ask','list','timeline','links','log','recap','recall','capture-finalize','status','off','on')),
+ ('Maintenance',('review','maintenance','stats','history','diff','undo','recover','restore','doctor','validate','rebuild','semantic','backup','logs')),
+ ('Governance (plans)',('plan','apply','inspect-plan','rewrite-plan','merge-plan','retag-plan','remap-plan','promote-plan','taxonomy-plan','note-type-plan','migration-plan','baseline-plan','restore-plan',
+   'import-plan','ingest-plan','project-plan','system-plan','source-plan','change-plan','overlay-teardown-plan')),
+ ('Admin',('setup','bind','unbind','domains','projects','systems','sources','source-sync','ingest-scan','ingest-skip','taxonomy','changes','views','export','query','batch','sync','overlay-build','overlay-sync-all','serve','version')))
+
+def _grouped_commands():
+    width=max(len(name) for _,names in HELP_GROUPS for name in names)+2
+    return '\n\n'.join(heading+':\n'+'\n'.join(f'  {name:<{width}}{HELP.get(name,"")}' for name in names) for heading,names in HELP_GROUPS)
+
 def build_parser():
-    parser=JsonArgumentParser(prog='alm',description='Agentic Living Memory: the notes your coding agents keep between sessions. Run alm COMMAND --help for a command.')
+    parser=JsonArgumentParser(prog='alm',description='Agentic Living Memory: the notes your coding agents keep between sessions. Run alm COMMAND --help for a command.',
+                              epilog=_grouped_commands(),formatter_class=argparse.RawDescriptionHelpFormatter)
     def common(p,suppress=False):
         default=argparse.SUPPRESS if suppress else None
         p.add_argument('--root',type=Path,default=default);p.add_argument('--domain',default=default);p.add_argument('--cwd',default=default)
         p.add_argument('--json',action='store_true',default=argparse.SUPPRESS if suppress else False)
         p.add_argument('--actor',choices=['main','subagent','viewer'],default=argparse.SUPPRESS if suppress else os.environ.get('LIVING_MEMORY_ACTOR','main'))
-    common(parser);subs=parser.add_subparsers(dest='command',required=True,metavar='COMMAND')
-    def sub(name):p=subs.add_parser(name,help=HELP.get(name));common(p,True);return p
+    common(parser);subs=parser.add_subparsers(dest='command',required=True,metavar='COMMAND',help='one of the commands listed below')
+    # No help= here, so argparse does not print its own flat list; the epilog lists them by group.
+    def sub(name):p=subs.add_parser(name,description=HELP.get(name));common(p,True);return p
     p=sub('setup');p.add_argument('--location',type=Path);p.add_argument('--non-interactive',action='store_true');p.add_argument('--source',type=Path);p.add_argument('--apply-plan');p.add_argument('--inspect-plan');p.add_argument('--expected-plan-sha256')
     p=sub('bind');p.add_argument('name');p.add_argument('prefix',nargs='+')
     p=sub('unbind');p.add_argument('name',help='A bound domain with no notes left (move them with remap-plan first)')
-    p=sub('capture');p.add_argument('items',nargs='*');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='');p.add_argument('--prefix',help='Compatibility assertion only; must equal the uppercase type');p.add_argument('--type',choices=NOTE_TYPES,help='Note type (default: knowledge)');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help="REF of a note this one replaces; it is retired in the same transaction, and its links and files are carried over (see --drop-links)");p.add_argument('--drop-links',action='store_true',help='With --supersedes: do not carry the links and files of the replaced note over');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk/map/runbook/brief notes get a default');p.add_argument('--pin',action='store_true',help=PIN_HELP)
+    # Legacy forms keep working but are left out of help: --tags, --prefix and a third positional (tags).
+    p=sub('capture');p.add_argument('items',nargs='*',metavar='TITLE BODY',help='Title and body; or use --title and --summary');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='',help=argparse.SUPPRESS);p.add_argument('--prefix',help=argparse.SUPPRESS);p.add_argument('--type',choices=NOTE_TYPES,help='Note type (default: knowledge)');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help="REF of a note this one replaces; it is retired in the same transaction, and its links and files are carried over (see --drop-links)");p.add_argument('--drop-links',action='store_true',help='With --supersedes: do not carry the links and files of the replaced note over');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk/map/runbook/brief notes get a default');p.add_argument('--pin',action='store_true',help=PIN_HELP)
     for facet in CAPTURE_FACETS:p.add_argument('--'+facet,action='append',default=[])
     p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
     sections_args(p);_file_flags(p)

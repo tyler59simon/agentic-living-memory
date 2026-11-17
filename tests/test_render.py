@@ -70,8 +70,19 @@ class Cli(StoreFixture):
         out=Tty()   # even a terminal on the serving side must not turn the replies into text
         with patch.object(sys,'stdin',io.StringIO(json.dumps({'id':1,'argv':['search','cache']})+'\n')),contextlib.redirect_stdout(out):cli.serve(self.root,self.base/'project',set(cli.build_parser().subs.choices))
         reply=json.loads(out.getvalue());self.assertEqual(reply['exit_code'],0);self.assertEqual(reply['result']['results'][0]['title'],'Cache policy')
-    def test_help_starts_with_alm_and_every_command_has_a_line(self):
+    def test_help_starts_with_alm_and_lists_every_command_once_by_group(self):
+        import re
         parser=cli.build_parser();text=parser.format_help();self.assertTrue(text.startswith('usage: alm '))
-        for name in parser.subs.choices:self.assertIn(name,cli.HELP);self.assertRegex(text,r'\n    '+name+r'\s+\S')
+        for heading,_ in cli.HELP_GROUPS:self.assertIn('\n'+heading+':\n',text)
+        grouped=[name for _,names in cli.HELP_GROUPS for name in names]
+        self.assertCountEqual(grouped,list(parser.subs.choices))   # every command in exactly one group
+        for name in parser.subs.choices:
+            self.assertIn(name,cli.HELP);self.assertEqual(len(re.findall(r'\n  '+re.escape(name)+r' +\S',text)),1,name)
+    def test_legacy_capture_forms_are_hidden_from_help_but_still_parse(self):
+        parser=cli.build_parser();text=parser.subs.choices['capture'].format_help()
+        for legacy in ('--prefix','--tags'):self.assertNotIn(legacy,text)
+        self.assertIn('TITLE BODY',text)
+        args=parser.parse_args(['capture','Title','Summary','a/b','--prefix','KNOWLEDGE','--tags','c/d'])
+        self.assertEqual((args.items,args.prefix,args.tags),(['Title','Summary','a/b'],'KNOWLEDGE','c/d'))
 
 if __name__=='__main__':unittest.main()
