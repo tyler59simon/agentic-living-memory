@@ -41,21 +41,33 @@ def unbind_domain(name,root=None):
 
 def unbind_prefix(name,prefix,root=None):
     """Drop one folder from a domain's binding and keep the domain and its notes (BIND-RENAME: after a bound folder is renamed, `bind`
-    adds the new folder and this removes the old one). Refused for an unknown domain, a folder the domain is not bound to, and the
-    domain's last folder (use `unbind NAME` for that)."""
+    adds the new folder and this removes the old one). Folders are matched as `resolve_domain` reads them: environment variables and ~
+    expanded, case-insensitive on Windows, from `prefixes` (or legacy `paths`) and legacy `root` or `path`. Refused for an unknown
+    domain, a folder the domain is not bound to, and the domain's last folder (use `unbind NAME` for that)."""
+    import os
+    from .common import _entries
+    def norm(value):return os.path.normcase(str(Path(os.path.expandvars(str(value))).expanduser().resolve()))
+    def folders(entry):return [norm(p) for _,_,prefixes in _entries({'domains':{name:entry}}) for p in prefixes]
     root=Path(root or memory_root()).resolve();name=safe_domain(name)
     with store_lock(root):
         settings=read_json(root/'bindings.json',{})
         if not isinstance(settings,dict) or not isinstance(settings.get('domains',{}),dict):raise ValueError('Invalid bindings preserved')
         entry=settings.get('domains',{}).get(name)
         if not isinstance(entry,dict):raise ValueError(f'{name} is not a bound domain')
-        held=[str(p) for p in entry.get('prefixes',[])];target=str(Path(prefix).expanduser().resolve())
-        kept=[p for p in held if p!=target and str(Path(p).expanduser().resolve())!=target]
-        if len(kept)==len(held):raise ValueError(f"{name} is not bound to {target}; its folders are: {', '.join(held) or 'none'}")
-        if not kept:raise ValueError(f'{target} is the last folder bound to {name}; bind the new folder first, or use unbind {name} to remove the whole binding')
-        entry['prefixes']=kept
+        target=norm(prefix);shown=str(Path(os.path.expandvars(prefix)).expanduser().resolve());before=folders(entry)
+        if target not in before:raise ValueError(f"{name} is not bound to {shown}; its folders are: {', '.join(before) or 'none'}")
+        changed=dict(entry)
+        for key in ('prefixes','paths'):
+            if key in changed:
+                values=[changed[key]] if isinstance(changed[key],str) else list(changed[key] or [])
+                changed[key]=[v for v in values if norm(v)!=target]
+        for key in ('root','path'):
+            if changed.get(key) and norm(changed[key])==target:del changed[key]
+        after=folders(changed)
+        if not after:raise ValueError(f'{shown} is the last folder bound to {name}; bind the new folder first, or use unbind {name} to remove the whole binding')
+        settings['domains'][name]=changed
         transaction(root,{'bindings.json':canonical_json(settings)},'unbind_prefix')
-        return target
+        return shown
 
 def main(argv=None):
     p=argparse.ArgumentParser();p.add_argument('name');p.add_argument('prefix',nargs='+');p.add_argument('--root',type=Path,default=memory_root());a=p.parse_args(argv);print(init_domain(a.name,a.prefix,a.root));return 0

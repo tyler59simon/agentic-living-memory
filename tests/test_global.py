@@ -83,6 +83,21 @@ class Bindings(GlobalFixture):
         self.assertFalse([w for w in doctor(self.root, project)['warnings'] if w.startswith('bindings:')])
         self.assertEqual(load_bindings(self.root)['domains']['moved']['prefixes'], [str((self.base / 'moved-here').resolve())])
 
+    def test_unbind_prefix_matches_expanded_case_folded_and_legacy_folders(self):
+        import os
+        (self.base / 'keep').mkdir();os.environ['ALM_TEST_BASE'] = str(self.base);self.addCleanup(os.environ.pop, 'ALM_TEST_BASE', None)
+        config = load_bindings(self.root)
+        config['domains']['legacy'] = {'prefixes': ['%ALM_TEST_BASE%/old-a', str(self.base / 'keep')], 'root': str(self.base / 'old-b')}
+        (self.root / 'bindings.json').write_text(json.dumps(config), encoding='utf-8')
+        warned = [w for w in doctor(self.root, str(self.base))['warnings'] if "domain 'legacy'" in w];self.assertEqual(len(warned), 2)
+        for old in ('old-a', 'old-b'):
+            folder = str((self.base / old).resolve())
+            spelled = folder.upper() if os.name == 'nt' else folder   # Windows paths are case-insensitive
+            code, out = self.cli('unbind', 'legacy', '--prefix', spelled);self.assertEqual((code, out['status']), (0, 'prefix_removed'), out)
+        entry = load_bindings(self.root)['domains']['legacy']
+        self.assertEqual(entry, {'prefixes': [str(self.base / 'keep')]})   # the legacy root field is gone, not left behind
+        self.assertFalse([w for w in doctor(self.root, str(self.base))['warnings'] if "domain 'legacy'" in w])
+
     def test_unbind_prefix_refuses_an_unknown_folder_and_the_last_folder(self):
         capture('Keep me', 'A note in the domain.', TAGS, 'demo', self.root)
         only = load_bindings(self.root)['domains']['demo']['prefixes']
