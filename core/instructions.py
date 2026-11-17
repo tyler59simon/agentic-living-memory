@@ -52,10 +52,10 @@ def help_topic(name=None):
 def usage(session='SESSION'):
     """Command shapes shared by the static block (SESSION placeholder) and the full fallback injection."""
     return ("Search: CMD search 'query'. Read: CMD read REF (ref or exact title). Ask: CMD ask 'question' (notes, then cited excerpts from the project's docs and code)."
-            f"\nCapture: CMD capture --session {session} [--global] --type TYPE --title 'Title' --summary 'The fact or decision, one or two sentences' [--section 'Heading' 'Text' ...] [--detail 'Fact' ...]"
+            f"\nCapture: CMD capture --session {session} [--global] --type TYPE --title 'Title' --summary 'The fact or decision, one or two sentences' [--section 'Heading' 'Text' ...] [--detail 'Fact' ...] [--link '[[Note]] or URL' ...] [--file PATH]"
             f"\n  Types: {', '.join(NOTE_TYPES)}."
             "\n  Use single quotes, literal in Bash and PowerShell (write ' as '' in PowerShell, '\\'' in Bash). Long body: --content-file FILE."
-            f"\nUpdate: CMD update REF --session {session} --section 'Heading' 'Text' (--detail/--link/--action/--body overwrite)."
+            f"\nUpdate: CMD update REF --session {session} --set-detail '**Label:** new fact', --add-detail/--add-link/--add-action '...' or --section 'Heading' 'Text' (--detail/--link/--action/--body overwrite)."
             f"\nResuming: CMD open first; tick a done item: CMD check REF 'item' --session {session}; finished: CMD resolve REF."
             f"\nNo per-turn receipt unless Stop asks. SessionStart and Stop say what else is needed; for the rest: CMD help TOPIC ({', '.join(TOPICS)}).")
 
