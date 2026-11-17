@@ -87,7 +87,7 @@ class Bindings(GlobalFixture):
         import os
         (self.base / 'keep').mkdir();os.environ['ALM_TEST_BASE'] = str(self.base);self.addCleanup(os.environ.pop, 'ALM_TEST_BASE', None)
         config = load_bindings(self.root)
-        config['domains']['legacy'] = {'prefixes': ['%ALM_TEST_BASE%/old-a', str(self.base / 'keep')], 'root': str(self.base / 'old-b')}
+        config['domains']['legacy'] = {'prefixes': ['$ALM_TEST_BASE/old-a', str(self.base / 'keep')], 'root': str(self.base / 'old-b')}
         (self.root / 'bindings.json').write_text(json.dumps(config), encoding='utf-8')
         warned = [w for w in doctor(self.root, str(self.base))['warnings'] if "domain 'legacy'" in w];self.assertEqual(len(warned), 2)
         for old in ('old-a', 'old-b'):
