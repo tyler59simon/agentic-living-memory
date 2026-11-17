@@ -19,6 +19,7 @@ class CliErrors(StoreFixture):
                 self.assertTrue(error['message'].startswith('bad_arguments: '),error)
                 self.assertIn('--help',error['next'])
         self.assertIn('alm capture --help',self.fail_with('capture','--type','not-a-type')[1]['next'])
+        self.assertIn('alm search --help',self.fail_with('--domain','demo','search','cache','--no-such-flag')[1]['next'])
 
     def test_a_filter_without_a_value_explains_the_form(self):
         code,error=self.fail_with('--domain','demo','search','cache','--filter','decision')

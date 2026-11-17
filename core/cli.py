@@ -646,7 +646,11 @@ def main(argv=None):
             except (ValueError,OSError):pass
     parser=build_parser();subs=parser.subs
     try:args=parser.parse_args(argv)
-    except _ArgumentError as exc:return report_error(str(exc),'invalid','--json' in (argv if argv is not None else sys.argv[1:]),exc.prog)
+    except _ArgumentError as exc:
+        given=argv if argv is not None else sys.argv[1:]
+        # Leftover flags are reported by the top-level parser; name the command's own help.
+        command=next((a for a in given if a in subs.choices),None) if exc.prog=='alm' else None
+        return report_error(str(exc),'invalid','--json' in given,f'alm {command}' if command else exc.prog)
     cwd=args.cwd or os.getcwd()
     invocation={'start':time.perf_counter(),'argv':list(argv) if argv is not None else sys.argv[1:]}
     try:
