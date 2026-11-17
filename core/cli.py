@@ -439,12 +439,38 @@ def _emit(result,args):
         print(render(result))
     else:print(json.dumps(result,ensure_ascii=False,separators=(',',':')))
 
-def error_code(message):
-    """stale, conflict or invalid, from the message's own wording: the text before any quoted value or ': detail',
-    so a note title, tag or path inside the message cannot change the code."""
+UNBOUND='unbound_project: no memory domain is bound to this folder'
+
+def error_code(message,exc=None):
+    """busy for a lock timeout (common.file_lock); else stale, conflict or invalid, from the message's own wording: the text before any
+    quoted value or ': detail', so a note title, tag or path inside the message cannot change the code."""
     import re
+    if isinstance(exc,TimeoutError) and message.startswith('timed out locking'):return 'busy'   # common.file_lock
     head=re.split(r''': |["']''',message,maxsplit=1)[0].lower()
     return 'hivemind' if head=='hivemind' else 'stale' if 'stale' in head else 'conflict' if 'conflict' in head else 'invalid'
+
+def next_step(code,message,command=None):
+    """One plain next step for an error an agent can act on, else None."""
+    if code=='busy':return 'Another memory command holds the store lock; retry in a few seconds.'
+    if message.startswith('unbound_project'):return 'Pass --domain DOMAIN (alm domains lists them), or bind this folder with: bind DOMAIN FOLDER'
+    if message.startswith('bad_arguments'):return f"Run: {command or 'alm'} --help"
+    if message.startswith('not_found: no operation'):return 'List operation IDs with: history'
+    if message.startswith(('Expected one note ID','No note with ID')):return "Find the note's ref with: search 'words from its title'"
+    return None
+
+def report_error(message,code,as_json,command=None):
+    """Print an error the way main does (one line plus next: at a terminal, else the JSON error shape on stderr); return its exit code."""
+    hint=next_step(code,message,command)
+    if not as_json and sys.stderr.isatty():print(f'alm: error ({code}): {message}'+(f'\nnext: {hint}' if hint else ''),file=sys.stderr)
+    else:print(json.dumps({'ok':False,'error':dict({'code':code,'message':message},**({'next':hint} if hint else {}))},separators=(',',':')),file=sys.stderr)
+    return 6 if code=='stale' else 5 if code=='conflict' else 2
+
+class _ArgumentError(Exception):
+    def __init__(self,message,prog):super().__init__(message);self.prog=prog
+
+class JsonArgumentParser(argparse.ArgumentParser):
+    """Raises on a usage error so main can report it in the JSON error shape; subcommand parsers inherit the class."""
+    def error(self,message):raise _ArgumentError('bad_arguments: '+message,self.prog)
 
 def serve(root,cwd,commands):
     """JSON lines on stdin: {"id", "argv", "stdin"?} -> one {"id", "exit_code", "result", "error"} line each, run in-process."""
@@ -509,7 +535,7 @@ HELP={'setup':'Choose or move the shared memory folder','bind':'Bind a domain to
  'version':'Version and command list','serve':'JSON-lines server on stdin and stdout','sync':'Sync a domain with an Obsidian vault','overlay-build':'Build the Obsidian overlay','overlay-teardown-plan':'Plan removing the overlay','overlay-sync-all':'Sync every domain with the vault'}
 
 def build_parser():
-    parser=argparse.ArgumentParser(prog='alm',description='Agentic Living Memory: the notes your coding agents keep between sessions. Run alm COMMAND --help for a command.')
+    parser=JsonArgumentParser(prog='alm',description='Agentic Living Memory: the notes your coding agents keep between sessions. Run alm COMMAND --help for a command.')
     def common(p,suppress=False):
         default=argparse.SUPPRESS if suppress else None
         p.add_argument('--root',type=Path,default=default);p.add_argument('--domain',default=default);p.add_argument('--cwd',default=default)
@@ -618,7 +644,10 @@ def main(argv=None):
         if hasattr(stream,'reconfigure') and (stream.encoding or '').lower().replace('-','')!='utf8':
             try:stream.reconfigure(encoding='utf-8')
             except (ValueError,OSError):pass
-    parser=build_parser();subs=parser.subs;args=parser.parse_args(argv);cwd=args.cwd or os.getcwd()
+    parser=build_parser();subs=parser.subs
+    try:args=parser.parse_args(argv)
+    except _ArgumentError as exc:return report_error(str(exc),'invalid','--json' in (argv if argv is not None else sys.argv[1:]),exc.prog)
+    cwd=args.cwd or os.getcwd()
     invocation={'start':time.perf_counter(),'argv':list(argv) if argv is not None else sys.argv[1:]}
     try:
         # Agents started inside a Hivemind terminal inherit HIVEMIND_SESSION; Hivemind's own backend does not. Every path (batch and serve
@@ -762,7 +791,7 @@ def main(argv=None):
             result=results if isinstance(data,list) else results[0]
         elif cmd=='search':
             from .search import search_domains,search_domain
-            if not domain:raise ValueError('unbound_project')
+            if not domain:raise ValueError(UNBOUND)
             if args.sources:
                 if args.file or args.filter:raise ValueError('--sources takes only a query (and --limit)')
                 if not args.query.strip():raise ValueError('search needs a query')
@@ -776,8 +805,9 @@ def main(argv=None):
             globals_=[g for g in globals_ if (root/'domains'/g).exists()]
             from .runtime import scope_domains
             primary=list(dict.fromkeys([domain]+scope_domains(domain,config)+globals_));foreign=scope.get('foreign_domains',[])
+            if any('=' not in value for value in args.filter):raise ValueError("Search filters are KEY=VALUE with KEY one of prefix, status, tag, type, file (for example --filter type=decision)")
             filters=dict(value.split('=',1) for value in args.filter)
-            if set(filters)-{'prefix','status','tag','type','file'}:raise ValueError('Unsupported search filter')
+            if set(filters)-{'prefix','status','tag','type','file'}:raise ValueError('Unsupported search filter: use prefix, status, tag, type or file')
             if args.file:
                 from .common import domain_prefixes,display_path
                 given=Path(args.file).expanduser()
@@ -840,13 +870,13 @@ def main(argv=None):
         elif cmd=='list':
             if args.all_domains:domains=list_domains(root)['domains'];domains=[d['name'] for d in domains if (root/'domains'/d['name']/'notes').is_dir()]
             elif domain:domains=[domain]
-            else:raise ValueError('unbound_project')
+            else:raise ValueError(UNBOUND)
             result=list_notes(root,domains,args.status,args.type or (),args.tag,max(0,args.offset),max(1,min(1000,args.limit)),args.with_summary)
         elif cmd=='domains':result=list_domains(root)
         elif cmd=='links':
             if args.all_domains:domains=[d['name'] for d in list_domains(root)['domains'] if (root/'domains'/d['name']/'notes').is_dir()]
             elif domain:domains=[domain]
-            else:raise ValueError('unbound_project')
+            else:raise ValueError(UNBOUND)
             result=note_links(root,domains,args.status)
         elif cmd=='version':result={'ok':True,'api':SERVE_API,'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'restore':1,'pin':1,'history':3,'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']}}}
         elif cmd=='update':
@@ -935,7 +965,7 @@ def main(argv=None):
             from .worklist import worklist,KINDS
             if args.all_domains:domains=[d['name'] for d in list_domains(root)['domains'] if (root/'domains'/d['name']/'notes').is_dir()]
             elif domain:domains=[domain]
-            else:raise ValueError('unbound_project')
+            else:raise ValueError(UNBOUND)
             # Read-only for every actor: the worklist writes no usage rows, so a viewer's browsing is no evidence either.
             found=worklist(root,domains,args.kind or None,max(1,min(100,args.limit)),args.tag,working_tree=True)
             result={'ok':True,'domain':None if args.all_domains else domain,'due':found['total'],'stale_digests':found['counts'].get('stale',0),'kinds':list(KINDS),'counts':found['counts'],'notes':found['items'],
@@ -948,7 +978,7 @@ def main(argv=None):
             elif domain:
                 from .common import global_domains
                 scope=[domain]+scope_domains(domain,load_bindings(root))+global_domains(root)
-            else:raise ValueError('unbound_project')
+            else:raise ValueError(UNBOUND)
             found=open_work(list(dict.fromkeys(scope)),root,args.tag)
             items=[{'ref':f"{d}:{n['id']}",'short_ref':short_ref(d,n['id']),'title':n['title'],'type':n['type'],'updated':str(n.get('updated',''))[:10],'index':i,'item':text}
                    for d,n,listed in found for i,text in listed]
@@ -962,7 +992,7 @@ def main(argv=None):
             if result.get('status')!='unchanged':_receipt(args,d,n,root,'check')
         elif cmd=='timeline':
             from .notes import short_ref
-            if not domain:raise ValueError('unbound_project')
+            if not domain:raise ValueError(UNBOUND)
             if args.reference and args.date:raise ValueError('Anchor on a REF or a --date, not both')
             when=lambda n:str(n.get(args.by) or n.get('created') or '')
             anchor_id=None
@@ -985,11 +1015,11 @@ def main(argv=None):
             result={'ok':True,'domain':domain,'by':args.by,'anchor':rows[min(at,before)]['ref'],'notes':rows}
         elif cmd=='ingest-plan':
             from .ingest import ingest_plan,default_source
-            if not domain:raise ValueError('unbound_project')
+            if not domain:raise ValueError(UNBOUND)
             result=ingest_plan(root,domain,args.source or default_source(cwd),args.redact,args.allow_similar)
         elif cmd=='export':
             from .bundle import export
-            if not domain:raise ValueError('unbound_project')
+            if not domain:raise ValueError(UNBOUND)
             result=export(root,domain,args.out,args.type or (),args.tag,args.all)
         elif cmd=='import-plan':
             from .bundle import import_plan
@@ -1018,7 +1048,7 @@ def main(argv=None):
         elif cmd=='stats':
             from .usage import stats
             from .runtime import parent_domains
-            if not domain:raise ValueError('unbound_project')
+            if not domain:raise ValueError(UNBOUND)
             from .common import global_domains
             result=stats(root,list(dict.fromkeys([domain]+parent_domains(domain,load_bindings(root))+global_domains(root))),max(1,min(30,args.days)),max(1,min(100,args.limit)))
         elif cmd=='plan':
@@ -1057,7 +1087,7 @@ def main(argv=None):
             if not 1<=args.days<=90:raise ValueError('--days must be 1 to 90')
             if args.all_domains:scope=[d['name'] for d in list_domains(root)['domains'] if (root/'domains'/d['name']/'notes').is_dir()]
             elif domain:scope=[domain]
-            else:raise ValueError('unbound_project')
+            else:raise ValueError(UNBOUND)
             result=recap(root,scope,args.days,args.project)
         elif cmd=='log':
             import re
@@ -1084,6 +1114,7 @@ def main(argv=None):
             import base64,difflib,re
             if not re.fullmatch('[a-f0-9]{32}',args.operation_id):raise ValueError('Invalid operation ID')
             row=read_json(root/'.operations'/args.operation_id/'journal.json');result=[]
+            if not isinstance(row,dict):raise ValueError(f'not_found: no operation {args.operation_id}')
             for e in row['effects']:
                 before=base64.b64decode(e['before']).decode() if e['before'] else '';after=base64.b64decode(e['after']).decode() if e['after'] else ''
                 result.append({'path':e['path'],'diff':''.join(difflib.unified_diff(before.splitlines(True),after.splitlines(True)))[:8000]})
@@ -1111,7 +1142,7 @@ def main(argv=None):
             result=note_type_plan(root)
         elif cmd in {'rebuild','validate'}:
             d=args.name or domain
-            if not d:raise ValueError('unbound_project')
+            if not d:raise ValueError(UNBOUND)
             from .validate import reconcile,validate_domain
             result=reconcile(d,root) if cmd=='rebuild' else {'issues':validate_domain(d,root)}
         elif cmd=='maintenance':
@@ -1135,7 +1166,7 @@ def main(argv=None):
                     from .common import global_domains
                     skip=set(global_domains(root));names=[d['name'] for d in list_domains(root)['domains'] if d['bound'] and d['name'] not in skip and (root/'domains'/d['name']/'notes').is_dir()]
                 if args.domain or not args.all_domains:
-                    if not domain:raise ValueError('unbound_project')
+                    if not domain:raise ValueError(UNBOUND)
                     names.append(domain)
                 result=maintenance.enable(root,list(dict.fromkeys(names)),bool(args.domain),settings)
         elif cmd=='semantic':
@@ -1151,7 +1182,7 @@ def main(argv=None):
             else:result=semantic.remove(root) if args.action=='remove' else semantic.status(root)
         elif cmd=='query':
             from .search import readonly_query
-            if not domain:raise ValueError('unbound_project')
+            if not domain:raise ValueError(UNBOUND)
             result=readonly_query(domain,args.sql,root)
         elif cmd=='taxonomy-plan':
             from .tag_taxonomy import plan_update
@@ -1179,20 +1210,20 @@ def main(argv=None):
             result=listing(root,domain)
         elif cmd=='ingest-scan':
             from .digests import scan
-            if not domain:raise ValueError('unbound_project')
+            if not domain:raise ValueError(UNBOUND)
             result=scan(root,domain,args.source,max(1,min(100000,args.limit)),args.changed,load_bindings(root))
         elif cmd=='ingest-skip':
             from .digests import record_skips,clear_skips
-            if not domain:raise ValueError('unbound_project')
+            if not domain:raise ValueError(UNBOUND)
             data=_payload(args);items=data.get('skipped') if isinstance(data,dict) else data;clear=data.get('clear') if isinstance(data,dict) else None
             if (items is None and clear is None) or not isinstance(items or [],list) or not isinstance(clear or [],list):raise ValueError('ingest-skip takes {"skipped": [{"path", "reason"}, ...], "clear": ["path", ...]}')
             with store_lock(root):result={'ok':True,'domain':domain,'recorded':record_skips(root,domain,items or [],cwd,load_bindings(root)),'cleared':clear_skips(root,domain,clear or [],cwd,load_bindings(root))}
         elif cmd=='source-sync':
             from .sources import sync
-            if not domain:raise ValueError('unbound_project')
+            if not domain:raise ValueError(UNBOUND)
             result=sync(root,domain,args.name,args.rebuild,all_remote=args.all_remote,network=args.actor not in {'subagent','viewer'})
         elif cmd=='ask':
-            if not domain:raise ValueError('unbound_project')
+            if not domain:raise ValueError(UNBOUND)
             result=_ask(root,domain,' '.join(args.query),args.limit)
         elif cmd=='change-plan':
             from .changes import change_plan
@@ -1205,7 +1236,7 @@ def main(argv=None):
             from . import views
             action=args.action or 'list'
             if action=='list':
-                if not domain and not args.all_domains:raise ValueError('unbound_project')
+                if not domain and not args.all_domains:raise ValueError(UNBOUND)
                 result=views.listing(root,None if args.all_domains else domain)
             elif action=='render' and args.all:
                 if args.reference:raise ValueError('Name one note or pass --all, not both')
@@ -1278,16 +1309,14 @@ def main(argv=None):
             from .sync import teardown_plan
             result=teardown_plan(args.vault)
         elif cmd in {'sync','overlay-build'}:
-            if not domain:raise ValueError('unbound_project')
+            if not domain:raise ValueError(UNBOUND)
             from .sync import sync,build_overlay
             result=sync(domain,args.vault,root) if cmd=='sync' else build_overlay(domain,args.vault,root)
         else:raise ValueError('Unsupported command')
         invocation['result']=result;_emit(result,args);return 0
     except (OSError,ValueError,TimeoutError,KeyError,TypeError) as exc:
-        message=str(exc);code=error_code(message)
-        if not args.json and sys.stderr.isatty():print(f'alm: error ({code}): {message}',file=sys.stderr)
-        else:print(json.dumps({'ok':False,'error':{'code':code,'message':message}},separators=(',',':')),file=sys.stderr)
-        invocation.update(code=6 if code=='stale' else 5 if code=='conflict' else 2,error={'code':code,'message':message});return invocation['code']
+        message=str(exc);code=error_code(message,exc)
+        invocation.update(code=report_error(message,code,args.json,f'alm {args.command}'),error={'code':code,'message':message});return invocation['code']
     except BaseException as exc:
         invocation.update(code=exc.code if isinstance(exc,SystemExit) and isinstance(exc.code,int) else 1,crash=None if isinstance(exc,SystemExit) else exc);raise
     finally:_log_command(invocation,args)

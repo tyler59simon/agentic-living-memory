@@ -61,8 +61,9 @@ class Cli(StoreFixture):
     def test_json_flag_forces_json_before_or_after_the_command(self):
         for argv in (['--json','search','cache'],['search','cache','--json']):
             with self.subTest(argv=argv):self.assertTrue(json.loads(self.run_main(argv)[1])['ok'])
-    def test_error_is_one_line_with_the_exit_code(self):
-        code,out,err=self.run_main(['read','nothing-here']);self.assertEqual((code,out),(2,''));self.assertEqual(len(err.splitlines()),1);self.assertTrue(err.startswith('alm: error (invalid): '))
+    def test_error_is_one_line_with_the_exit_code_then_its_next_step(self):
+        code,out,err=self.run_main(['read','nothing-here']);self.assertEqual((code,out),(2,''));self.assertEqual(len(err.splitlines()),2);self.assertTrue(err.startswith('alm: error (invalid): '))
+        self.assertTrue(err.splitlines()[1].startswith('next: '))
         code,_,err=self.run_main(['read','nothing-here'],tty_err=False);self.assertEqual(json.loads(err)['error']['code'],'invalid')
         self.assertEqual(self.run_main(['--json','read','nothing-here'])[2][0],'{')
     def test_serve_replies_stay_json(self):
