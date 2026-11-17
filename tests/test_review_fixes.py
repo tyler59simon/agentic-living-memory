@@ -163,6 +163,9 @@ class VaultCaptureReplay(StoreFixture):
         sync.build_overlay('demo', vault, self.root)
         self.assertEqual([n['title'] for n in inventory('demo', self.root)].count('Vault idea'), 1)
         self.assertFalse(draft.exists())
+        page = (vault / 'Dashboards/Sync Status - demo.md').read_text(encoding='utf-8')
+        self.assertNotIn('already saved', page)
+        self.assertNotIn('undo None', page)
 
 
 class Backups(StoreFixture):

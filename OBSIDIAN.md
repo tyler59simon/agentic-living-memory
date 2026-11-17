@@ -37,6 +37,7 @@ The vault is your own editing surface, so routine edits need no approval:
 ## Conflicts and recovery
 
 - **Changed on both sides** (you edited a note while an agent updated it): memory's version is written to the vault, your version is saved under the store's `domains/DOMAIN/staged/`, and the Sync Status page offers `- [ ] Keep my vault version`. Ticking it applies your saved version at the next sync. Nothing is ever stuck: later edits apply normally.
+- **Deleted in memory after you edited it** (an agent or an applied plan removed a note whose vault copy you had changed): your version is saved under `domains/DOMAIN/staged/` once, the copy stays in the vault, and the status page lists the conflict until you delete that copy. To bring the note back, capture it again from the saved version.
 - **A rename blocked by another file** (memory renames a note's copy, but a file it does not manage already has the new name): that file is left alone, the copy keeps its old name, and the status page lists the conflict until the file is moved or renamed.
 - **New notes saved again during a sync** are left in place and captured with the newer text at the next sync.
 - **Edited dashboards or canvases** are preserved and no longer regenerated; the status page lists them. Delete the file to get a fresh copy. A dashboard edit never stops a sync.

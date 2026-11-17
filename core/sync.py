@@ -362,7 +362,15 @@ def sync(domain,vault,root=None,trigger=None):
             path=vault/entry['overlay'];known_paths.add(entry['overlay'])
             if _hash(path)==entry.get('overlay_hash'):
                 view_changes[entry['overlay']]=None;entries.pop(note_id);copied+=1
-            elif path.exists():conflicts+=1
+            elif path.exists():
+                # Edited in the vault, deleted in memory: keep the vault version as a staged copy, once per edit.
+                text=_text(path);saved=f"domains/{domain}/staged/{note_id}-{digest(text.encode())[:12]}.conflict.md"
+                if (entry.get('conflict') or {}).get('staged')!=saved:
+                    conflicts+=1;staging_changes[saved]=text
+                    entry['conflict']={'message':f"Deleted in memory after you edited it in the vault. Your version was saved to {saved}; "
+                                                 f"delete `{entry['overlay']}` from the vault to clear this.",'staged':saved}
+            else:
+                view_changes[entry['overlay']]=None;entries.pop(note_id)   # the vault copy is gone too: nothing left to show
         scan_dirs=[vault/NOTES/domain,vault/LEGACY/'domains'/domain/'notes']
         # New drafts: (path_rel, hash read, note id, title, managed copy rel, canonical write or None for a replay).
         # Canonical captures are committed after the drafts are re-checked, just before the vault write.
@@ -419,7 +427,7 @@ def sync(domain,vault,root=None,trigger=None):
                 view_changes.pop(path_rel,None);view_changes.pop(new_rel,None);entries.pop(note_id,None);copied-=1;skipped+=1
                 continue
             if canonical is None:
-                log('Captured',note_id,title,'already saved by an interrupted sync');continue
+                log('Captured',note_id,title,None);continue   # already saved by an interrupted sync
             rel,text=canonical
             receipt=transaction(root,{rel:text,f'domains/{domain}/.derived-dirty':'dirty\n'},'overlay_capture');wrote_canonical=True
             log('Captured',note_id,title,receipt.get('operation_id'))
@@ -464,7 +472,7 @@ def _status_page(domain,root,notes,view_conflicts=(),failure=None):
         elif conflict:conflicts.append(f"- {name(note_id,entry)}: {conflict}")
     conflicts+=[f"- `{rel}` was edited, so it is no longer regenerated. Delete it to get a fresh copy." for rel in view_conflicts]
     errors+=[f"- `{rel}`: {msg}" for rel,msg in sorted(state.get('capture_errors',{}).items())]
-    recent=[f"- {a['at'][:16].replace('T',' ')} {a['action']}: {a['title']} — undo: `{_undo_command(domain,a['operation_id'])}`"
+    recent=[f"- {a['at'][:16].replace('T',' ')} {a['action']}: {a['title']}"+(f" — undo: `{_undo_command(domain,a['operation_id'])}`" if a.get('operation_id') else '')
             for a in reversed(state.get('applied',[])[-10:])]
     last=state.get('last_sync') or {}
     if failure:header=f"**Last sync failed** at {now()[:16].replace('T',' ')} UTC: {failure}"

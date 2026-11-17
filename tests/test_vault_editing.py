@@ -177,6 +177,25 @@ class VaultEditing(StoreFixture):
         self.assertEqual(len(build_overlay('demo', self.vault, self.root)['applied']), 1)
         self.assertIn('later edit', self.body(a['id']))
 
+    def test_vault_edit_to_a_note_deleted_in_memory_is_staged_and_listed_once(self):
+        a = self.note()
+        copy, = self.built(a)
+        self.edit(copy, 'rebuildable', 'vault-side')
+        deletion = plan(self.root, {Path(a['path']).relative_to(self.root).as_posix(): None}, 'delete', ['demo'])
+        apply(self.root, deletion['plan_id'], deletion['digest'])
+        build_overlay('demo', self.vault, self.root)
+        saved = list((self.root / 'domains/demo/staged').glob('*.conflict.md'))
+        self.assertEqual(len(saved), 1)
+        self.assertIn('vault-side', saved[0].read_text(encoding='utf-8'))
+        page = self.status_page().read_text(encoding='utf-8')
+        self.assertIn('Deleted in memory after you edited it in the vault', page)
+        self.assertNotIn('_No conflicts._', page)
+        # Counted once, not on every sync; deleting the vault copy clears it.
+        self.assertEqual(build_overlay('demo', self.vault, self.root)['conflicts'], 0)
+        copy.unlink()
+        build_overlay('demo', self.vault, self.root)
+        self.assertIn('_No conflicts._', self.status_page().read_text(encoding='utf-8'))
+
     def test_edited_dashboard_is_preserved_not_fatal(self):
         a = self.note()
         self.built(a)
