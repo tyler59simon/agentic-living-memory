@@ -6,7 +6,8 @@ arithmetic: no pip dependency and no network after the one explicit `semantic in
 `<root>/.models/<name>/`; it is a download, not canonical data, and backups skip it.
 """
 from __future__ import annotations
-import array,hashlib,json,marshal,math,mmap,operator,os,shutil,struct,tempfile,unicodedata,urllib.request
+import array,hashlib,json,marshal,math,mmap,operator,os,shutil,struct,tempfile,time,unicodedata,urllib.request
+from collections import OrderedDict
 from pathlib import Path
 
 # The eval flips this to compare orderings; with no model installed it changes nothing.
@@ -15,6 +16,10 @@ FOLDER='.models'
 MARKER='verified.json'
 PARTIAL='.partial-'
 MAX_TOKENS=512
+# Vocabulary rows kept unpacked, most recently used last. A row is about 16 KB of Python floats at 512 dimensions, and
+# serve --stdio (Hivemind) lives for hours, so the cache is bounded (SEM-1); the memory map serves the rest.
+ROW_CACHE=1024
+STALE_PARTIAL_SECONDS=3600   # a .partial- folder older than this is from an install that was killed
 # Pinned to a Hugging Face commit and the bytes it served. min_similarity: the cosine at which a note found only by
 # meaning is shown on a prompt. Chosen 2026-11-06 by an eval bake-off against potion-base-8M: both reached hit@3 1.0
 # (lexical 0.909), but unrelated prompts scored at most 0.30 here and 0.46 with the smaller model.
@@ -81,7 +86,7 @@ class Model:
         if tensor['data_offsets'][1]-tensor['data_offsets'][0]!=self.rows*self._row_bytes or 8+size+tensor['data_offsets'][1]>len(self._map):
             raise ValueError('semantic_model_corrupt: embedding matrix size does not match its header')
         if max(self.vocab.values(),default=-1)>=self.rows:raise ValueError('semantic_model_corrupt: vocabulary is larger than the embedding matrix')
-        self._format='<'+str(self.dim)+self._code;self._cache={}
+        self._format='<'+str(self.dim)+self._code;self._cache=OrderedDict()
 
     def close(self):self._map.close()
 
@@ -130,8 +135,12 @@ class Model:
         return [i for i in ids[:MAX_TOKENS] if i is not None and i!=self.unk]
 
     def row(self,index):
-        if index not in self._cache:self._cache[index]=struct.unpack_from(self._format,self._map,self._base+index*self._row_bytes)
-        return self._cache[index]
+        cache=self._cache;row=cache.get(index)
+        if row is None:
+            row=cache[index]=struct.unpack_from(self._format,self._map,self._base+index*self._row_bytes)
+            if len(cache)>ROW_CACHE:cache.popitem(last=False)
+        else:cache.move_to_end(index)
+        return row
 
     def embed(self,text):
         """The unit-length mean of the text's piece rows, or None when no piece is known."""
@@ -208,6 +217,7 @@ def install(root,name=DEFAULT_MODEL,source=None):
     """Download (or copy from a local folder) the pinned model files, verify every SHA-256, then rebuild indexes."""
     if name not in MODELS:raise ValueError(f'unknown_model: choose one of {", ".join(MODELS)}')
     spec=MODELS[name];folder=models_dir(root);folder.mkdir(parents=True,exist_ok=True)
+    _clear_stale_partials(folder)
     partial=Path(tempfile.mkdtemp(prefix=PARTIAL,dir=folder))   # one per installer, so two cannot share it
     try:
         for filename,expected in spec['files'].items():
@@ -226,6 +236,17 @@ def install(root,name=DEFAULT_MODEL,source=None):
     finally:shutil.rmtree(partial,ignore_errors=True)
     rebuilt=rebuild_all(root)
     return {**status(root),'rebuilt':rebuilt}
+
+def _clear_stale_partials(folder,now=None):
+    """Delete .partial- folders left by an install that was killed (its finally never ran). One that an install is still
+    writing may be older than an hour, and writing a file does not touch its folder's time, so a folder goes only when it
+    and every file in it are older than STALE_PARTIAL_SECONDS."""
+    cutoff=(now if now is not None else time.time())-STALE_PARTIAL_SECONDS
+    for other in folder.iterdir():
+        try:
+            if not (other.is_dir() and other.name.startswith(PARTIAL)):continue
+            if max([other.stat().st_mtime]+[p.stat().st_mtime for p in other.iterdir()])<cutoff:shutil.rmtree(other,ignore_errors=True)
+        except OSError:continue
 
 def _retire(folder):
     """Make a model inert first (readers need its marker), then delete what can be deleted. On Windows a file another

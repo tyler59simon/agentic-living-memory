@@ -92,6 +92,28 @@ class SemanticCase(StoreFixture):
         self.addCleanup(wide.close);self.addCleanup(half.close)
         self.assertAlmostEqual(semantic.cosine(wide.embed('how should the cache be laid out'),half.embed('how should the cache be laid out')),1.0,places=3)
 
+    def test_the_row_cache_is_bounded_and_keeps_recent_rows(self):
+        model=semantic.Model(self.source);self.addCleanup(model.close)
+        expected=model.embed('how should the cache be laid out');model._cache.clear()
+        with patch.object(semantic,'ROW_CACHE',3):
+            for token in ROWS:model.row(model.vocab[token])
+            self.assertEqual(len(model._cache),3)
+            self.assertEqual(list(model._cache),[model.vocab[t] for t in list(ROWS)[-3:]])
+            model.row(model.vocab[list(ROWS)[-3]]);model.row(model.vocab['layout'])   # a hit moves to the end; a miss evicts the oldest
+            self.assertEqual(list(model._cache),[model.vocab[t] for t in (list(ROWS)[-1],list(ROWS)[-3],'layout')])
+            self.assertEqual(model.embed('how should the cache be laid out'),expected)
+
+    def test_install_clears_partial_folders_left_by_a_killed_install_but_not_a_running_one(self):
+        import os,time
+        folder=self.root/'.models';old=folder/(semantic.PARTIAL+'killed');fresh=folder/(semantic.PARTIAL+'running')
+        slow=folder/(semantic.PARTIAL+'long-download')   # an old folder whose file is still being written
+        for path in (old,fresh,slow):path.mkdir(parents=True);(path/'model.safetensors').write_bytes(b'x')
+        hour_ago=time.time()-semantic.STALE_PARTIAL_SECONDS-60
+        for path in (old,old/'model.safetensors',slow):os.utime(path,(hour_ago,hour_ago))
+        self.install()
+        self.assertFalse(old.exists());self.assertTrue(fresh.exists());self.assertTrue(slow.exists())
+        self.assertEqual(semantic.installed(self.root),'tiny')
+
     def test_install_rejects_a_hash_mismatch_and_leaves_nothing(self):
         with (self.source/'model.safetensors').open('ab') as handle:handle.write(b'x')
         with self.assertRaisesRegex(ValueError,'hash_mismatch'):self.install()
