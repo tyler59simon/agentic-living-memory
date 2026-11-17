@@ -459,6 +459,7 @@ def next_step(code,message,command=None):
     """One plain next step for an error an agent can act on, else None."""
     if code=='busy':return 'Another memory command holds the store lock; retry in a few seconds.'
     if message.startswith('unbound_project'):return 'Pass --domain DOMAIN (alm domains lists them), or bind this folder with: bind DOMAIN FOLDER'
+    if message.startswith('no_store'):return 'Check the --root path. To start a store, create the folder, then run: bind DOMAIN PROJECT_FOLDER --root FOLDER'
     if message.startswith('bad_arguments'):return f"Run: {command or 'alm'} --help"
     if message.startswith('not_found: no operation'):return 'List operation IDs with: history'
     if message.startswith(('Expected one note ID','No note with ID')):return "Find the note's ref with: search 'words from its title'"
@@ -701,6 +702,9 @@ def main(argv=None):
             _emit(result,args);return 0
         from .storage import resolve_root
         root=resolve_root(args.root)[0]
+        if args.root is not None:
+            from .storage import require_store
+            require_store(root,args.command)
         from . import logs
         logs.use(root);invocation['root']=root
         cmd=args.command
@@ -1290,7 +1294,7 @@ def main(argv=None):
                 elif action=='remove':result=views.remove(root,n)
                 elif action=='published':
                     if not args.url:raise ValueError('views published needs --url')
-                    result=views.published(root,n,args.url)
+                    result=views.published(root,n,args.url,views.project_key(cwd))
                 else:
                     if not registered and not (args.format=='json' or args.out):raise ValueError('That note has no view; add one with views add REF, or pass --out or --format json')
                     from .notes import find_note

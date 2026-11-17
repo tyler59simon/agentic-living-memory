@@ -94,6 +94,19 @@ def resolve_root(explicit=None):
     raise ValueError('Living Memory setup required: run living_memory.py setup')
 
 
+STORE_STARTERS = {'bind', 'restore-plan', 'inspect-plan', 'apply', 'version'}
+
+
+def require_store(root, command):
+    """An explicit --root must name an existing store, so a mistyped path fails instead of quietly creating one (STO-2).
+    bind starts a store in an existing empty folder; the restore commands rebuild one; version reads nothing."""
+    root = Path(root)
+    if not root.is_dir():
+        raise ValueError(f'no_store: the --root folder does not exist: {root}')
+    if command not in STORE_STARTERS and not (root / 'bindings.json').is_file():
+        raise ValueError(f'no_store: the --root folder is not a Living Memory store (no bindings.json): {root}')
+
+
 def diagnostics(explicit=None):
     root, source = resolve_root(explicit)
     configured = None

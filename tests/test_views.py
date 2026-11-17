@@ -270,25 +270,40 @@ class Hint(Fixture):
         self.note_id=self.plan_note();self.add(self.note_id);self.url='https://claude.ai/artifact/abc'
     def start(self,harness='claude',session='s1'):return runtime.process(harness,'session-start',{'cwd':self.cwd,'session_id':session},self.root).get('context','')
     def prompt(self,session='s1',harness='claude'):return runtime.process(harness,'user-prompt',{'cwd':self.cwd,'session_id':session,'prompt':'what is next?'},self.root).get('context','')
+    def publish(self,url=None,cwd=None):return self.ok('--cwd',cwd or self.cwd,'views','published',self.note_id,'--url',url or self.url)
     def line(self):return f'Dashboard "Hook plan" is behind its note: run CMD views render demo:{self.note_id[:8]} --target artifact, publish the printed file to {self.url} with the Artifact tool, then CMD views published demo:{self.note_id[:8]} --url {self.url}'
 
     def test_only_when_behind_and_only_for_claude(self):
         self.assertNotIn('is behind its note',self.start())                                 # no artifact yet
-        self.ok('views','published',self.note_id,'--url',self.url);self.assertNotIn('is behind its note',self.start(session='s2'))   # published and current
+        self.publish();self.assertNotIn('is behind its note',self.start(session='s2'))   # published and current
         self.ok('update',self.note_id,'--add-detail','changed')
         context=self.start(session='s3');self.assertIn(self.line(),context);self.assertEqual(context.count('is behind its note'),1)
         self.assertNotIn('is behind its note',self.start('codex','s4'));self.assertNotIn('is behind its note',self.prompt('s4','codex'))
-        self.ok('views','published',self.note_id,'--url',self.url);self.assertNotIn('is behind its note',self.start(session='s5'))
+        self.publish();self.assertNotIn('is behind its note',self.start(session='s5'))
+
+    def test_only_the_repo_that_published_it_is_told(self):   # VIEW-4
+        def repo(name):
+            folder=self.base/'project'/name;(folder/'.git').mkdir(parents=True)
+            (folder/'.git'/'config').write_text(f'[remote "origin"]\n\turl = https://github.com/someone/{name}.git\n',encoding='utf-8');return str(folder)
+        mine,other=repo('mine'),repo('other')
+        self.publish(cwd=mine);self.assertEqual(views.load(self.root)['views'][0]['project'],'github.com/someone/mine')
+        self.ok('update',self.note_id,'--add-detail','changed')
+        self.cwd=other;self.assertNotIn('is behind its note',self.start(session='o1'));self.assertNotIn('is behind its note',self.prompt('o1'))
+        self.cwd=str(self.base/'project');self.assertNotIn('is behind its note',self.start(session='o2'))   # outside any repo
+        self.cwd=mine;self.assertIn(self.line(),self.start(session='m1'))
+        self.publish(cwd=str(self.base/'project'));self.assertNotIn('project',views.load(self.root)['views'][0])   # republished outside a repo: domain-wide again
+        self.ok('update',self.note_id,'--add-detail','changed again')
+        self.cwd=other;self.assertIn(self.line(),self.start(session='o3'))
 
     def test_a_prompt_says_it_once_per_session_and_revision(self):
-        self.ok('views','published',self.note_id,'--url',self.url);self.start();self.ok('update',self.note_id,'--add-detail','changed')
+        self.publish();self.start();self.ok('update',self.note_id,'--add-detail','changed')
         self.assertIn(self.line(),self.prompt());self.assertNotIn('is behind its note',self.prompt())
         self.ok('update',self.note_id,'--add-detail','changed again');self.assertIn(self.line(),self.prompt())
         self.assertIn(self.line(),self.start(session='s9'))                                  # a new context hears it again
 
     def test_stays_inside_the_budgets(self):
         from core.session_start import HARD_CAP
-        self.ok('views','published',self.note_id,'--url','https://claude.ai/artifact/'+'a'*300);self.ok('update',self.note_id,'--add-detail','changed')
+        self.publish('https://claude.ai/artifact/'+'a'*300);self.ok('update',self.note_id,'--add-detail','changed')
         self.assertLessEqual(len(self.start()),HARD_CAP)
 
     def test_a_broken_registry_never_costs_the_hook(self):

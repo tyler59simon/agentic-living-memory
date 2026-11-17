@@ -1,8 +1,9 @@
 """Operational log: hook runs, CLI command runs and exceptions that would otherwise be swallowed.
 
 Local only and never sent anywhere. One JSON object per line in STORE/logs/log-YYYY-MM-DD.jsonl (UTC day),
-pruned after RETENTION_DAYS. Metadata only: no prompt text, injected context, titles, bodies or argv.
-Exception messages are kept (capped, credentials redacted); tracebacks only as file:line function frames.
+pruned after RETENTION_DAYS. No prompt text, injected context, note bodies or argv. Error and exception messages
+are kept (capped, credentials redacted), so they can name a path or a note title; tracebacks only as file:line
+function frames. A pre-tool-use run that returned nothing is logged at debug only.
 LIVING_MEMORY_LOG_LEVEL = debug|info|warning|error|off (default info). Writes fail open: the log must
 never cost a hook or a command.
 """

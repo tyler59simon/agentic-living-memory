@@ -1617,9 +1617,10 @@ def process(harness,event,payload,root=None):
         logs.write('error','hook',event,root,**fields(),**extra({}),error=logs.error_fields(exc));raise
     finally:repository.LOCK_TIMEOUT=previous
     context=result.get('context') or result.get('instructions')
-    logs.write('warning' if result.get('warning') else 'info','hook',event,root,**fields(),
-               outcome=sorted(k for k in ('context','deny','allow','continue_reason','warning','instructions') if result.get(k)),
-               context_chars=len(context) if isinstance(context,str) else None,**extra(result))
+    outcome=sorted(k for k in ('context','deny','allow','continue_reason','warning','instructions') if result.get(k))
+    # Most tool calls get no decision and no context; those rows (about three in four) are kept at debug only (LOG-1).
+    level='warning' if result.get('warning') else 'debug' if event=='pre-tool-use' and not outcome else 'info'
+    logs.write(level,'hook',event,root,**fields(),outcome=outcome,context_chars=len(context) if isinstance(context,str) else None,**extra(result))
     return result
 
 def _process(harness,event,payload,root=None,info=None):
@@ -1762,7 +1763,7 @@ def _process(harness,event,payload,root=None,info=None):
             try:
                 from . import views
                 from .session_start import _scope
-                behind=views.behind(root,lambda:_scope(domain,root,bindings))
+                behind=views.behind(root,lambda:_scope(domain,root,bindings),project=views.project_key(cwd))
                 if behind:prefix+='\n'.join(line for _,line in behind)+'\n'
                 if session!='unknown' and (behind or state.get('views_told')):_update(root,session,lambda s:s.update(views_told=[key for key,_ in behind]))
             except Exception as exc:
@@ -1836,7 +1837,7 @@ def _process(harness,event,payload,root=None,info=None):
                 from . import views
                 from .session_start import _scope
                 told=state.get('views_told') if isinstance(state.get('views_told'),list) else []
-                behind=[(key,line) for key,line in views.behind(root,lambda:_scope(domain,root,bindings),hint_command(root,state,domain)) if key not in told]
+                behind=[(key,line) for key,line in views.behind(root,lambda:_scope(domain,root,bindings),hint_command(root,state,domain),views.project_key(cwd)) if key not in told]
                 governance+=[line for _,line in behind]
                 if behind and session!='unknown':_update(root,session,lambda s:s.update(views_told=(list(s.get('views_told') or [])+[key for key,_ in behind])[-50:]))
             except Exception as exc:

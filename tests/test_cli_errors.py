@@ -30,6 +30,19 @@ class CliErrors(StoreFixture):
         self.assertEqual(code,2);self.assertTrue(error['message'].startswith('unbound_project: '))
         self.assertIn('--domain',error['next'])
 
+    def test_a_root_that_is_not_a_store_fails_and_creates_nothing(self):   # STO-2
+        missing,empty=self.base/'stroe',self.base/'empty';empty.mkdir()
+        for argv in (('status',),('--domain','demo','search','cache'),('--domain','demo','capture','--type','knowledge','--title','Typo root','--summary','Nothing.')):
+            for root in (missing,empty):
+                with self.subTest(argv=argv,root=root.name):
+                    out,err=io.StringIO(),io.StringIO()
+                    with contextlib.redirect_stdout(out),contextlib.redirect_stderr(err):code=cli.main(['--root',str(root),*argv])
+                    error=json.loads(err.getvalue())['error']
+                    self.assertEqual(code,2);self.assertTrue(error['message'].startswith('no_store: '),error);self.assertIn('bind',error['next'])
+        self.assertFalse(missing.exists());self.assertEqual(list(empty.iterdir()),[])
+        with contextlib.redirect_stdout(io.StringIO()):self.assertEqual(cli.main(['--root',str(empty),'bind','fresh',str(self.base/'fresh')]),0)   # bind starts a store in an empty folder
+        self.assertTrue((empty/'bindings.json').is_file())
+
     def test_diff_of_an_unknown_operation_is_not_found(self):
         code,error=self.fail_with('diff','0123456789abcdef0123456789abcdef')
         self.assertEqual(code,2);self.assertTrue(error['message'].startswith('not_found: no operation'),error);self.assertIn('history',error['next'])

@@ -178,6 +178,16 @@ class Decisions(LogFixture):
         for word in (SECRET_WORDS[0], 'Cache eviction', 'LRU', 'migration'):
             self.assertNotIn(word, self.text())
 
+    def test_a_pre_tool_run_that_returns_nothing_is_debug_only(self):   # LOG-1
+        quiet = self.payload(tool_name='Read', tool_input={'file_path': str(self.base / 'project' / 'a.py')})
+        with patch.dict(os.environ, {'LIVING_MEMORY_LOG_LEVEL': 'info'}):
+            self.assertEqual(runtime.process('claude', 'pre-tool-use', quiet, self.root), {})
+            runtime.process('claude', 'pre-tool-use', self.payload(tool_name='Write', tool_input={'file_path': str(self.root / 'bindings.json'), 'content': 'x'}), self.root)
+        rows = self.rows(kind='hook', level='info')
+        self.assertEqual([(r['event'], r['outcome']) for r in rows], [('pre-tool-use', ['deny'])])
+        with patch.dict(os.environ, {'LIVING_MEMORY_LOG_LEVEL': 'debug'}):runtime.process('claude', 'pre-tool-use', quiet, self.root)
+        self.assertEqual([(r['level'], r['outcome']) for r in self.rows(kind='hook')][0], ('debug', []))
+
     def test_no_detail_at_info(self):
         capture('Cache eviction policy', 'LRU.', TAGS, 'demo', self.root)
         with patch.dict(os.environ, {'LIVING_MEMORY_LOG_LEVEL': 'info'}):

@@ -530,8 +530,16 @@ def remove(root,note_id):
         if cache.pop(note_id,None) is not None:_write_cache(root,cache)
     return {'ok':True,'note':note_id,'status':'removed','operation_id':receipt.get('operation_id')}
 
-def published(root,note_id,url):
-    """Record where the artifact page lives and which revision of the note it shows (kind views_published)."""
+def project_key(cwd):
+    """The repo a session works in, as a view entry records it: the origin identity of the git work tree around cwd, else
+    that work tree's folder; None outside a repo."""
+    from .common import git_root,repo_identity
+    repo=git_root(cwd) if cwd else None
+    return (repo_identity(repo) or repo.as_posix().casefold()) if repo else None
+
+def published(root,note_id,url,project=None):
+    """Record where the artifact page lives, which revision of the note it shows, and the repo it was published from
+    (`project`, so only sessions in that repo are asked to republish; kind views_published)."""
     if not isinstance(url,str) or not re.fullmatch(r'https?://[^\s<>"\']+',url):raise ValueError('--url must be an http(s) address')
     root=Path(root).resolve()
     with store_lock(root):
@@ -539,7 +547,7 @@ def published(root,note_id,url):
         if not entry:raise ValueError('That note has no view; add one with views add REF')
         note=_find(entry,root)
         if not note:raise ValueError('The note of this view was not found')
-        new=dict(entry,artifact_url=url,published_revision=_revision(note))
+        new={k:v for k,v in entry.items() if k!='project'};new.update(artifact_url=url,published_revision=_revision(note),**({'project':project} if project else {}))
         receipt=transaction(root,{'views.json':_registry([v for v in entries if v is not entry]+[new])},'views_published') if new!=entry else {}
     return {'ok':True,'note':note_id,'artifact_url':url,'published_revision':new['published_revision'],'operation_id':receipt.get('operation_id')}
 
@@ -572,12 +580,13 @@ def transient(note):
 # ---- the artifact hint ----
 
 HINT_MAX=3
-def behind(root,domains,cmd='CMD'):   # domains: names, or a function returning them (called only when the store has views)
+def behind(root,domains,cmd='CMD',project=None):   # domains: names, or a function returning them (called only when the store has views)
     """[(key, line)] for views with a published artifact that shows an older revision than the note. Reads only
-    views.json and .cache/views.json (no note is parsed), so the prompt path stays cheap. The line names the repair."""
+    views.json and .cache/views.json (no note is parsed), so the prompt path stays cheap. The line names the repair. A view
+    published from a repo (`project`, see project_key) is reported only to sessions in that repo; one without stays domain-wide."""
     try:
         if not _path(root).is_file():return []
-        wanted=set(domains() if callable(domains) else domains);rows=[v for v in load(root)['views'] if v.get('artifact_url') and v['domain'] in wanted]
+        wanted=set(domains() if callable(domains) else domains);rows=[v for v in load(root)['views'] if v.get('artifact_url') and v['domain'] in wanted and v.get('project') in (None,project)]
         if not rows:return []
         from .notes import short_ref
         cache=_cache(root);found=[]
