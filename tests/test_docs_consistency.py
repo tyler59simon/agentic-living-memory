@@ -16,9 +16,9 @@ class NoteTypeLists(unittest.TestCase):
 
 class MaintenanceDocs(unittest.TestCase):
     def test_the_archive_exception_is_stated_wherever_archive_needs_a_plan_and_the_reference_ships(self):
-        from core.instructions import PROTOCOL
+        from core.instructions import PROTOCOL,TOPICS
         from core.installer_lifecycle import ROOT_DOCUMENTS
-        self.assertIn('maintenance the user enabled archives, resolves and supersedes within its policy and records why; restore REF undoes an archive',PROTOCOL)
+        self.assertIn('maintenance the user enabled archives, resolves and supersedes within its policy and records why; restore REF undoes an archive',TOPICS['plans'][1]);self.assertIn('need approved script plans',PROTOCOL)
         for name in ('AGENTS.md','PROTOCOL.md'):
             self.assertIn('maintenance the user enabled'.lower(),(ROOT/name).read_text(encoding='utf-8').lower(),name)
         self.assertNotIn('There are no background engines',(ROOT/'MAINTENANCE.md').read_text(encoding='utf-8'))
