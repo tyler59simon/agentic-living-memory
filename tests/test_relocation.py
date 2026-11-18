@@ -60,6 +60,12 @@ class Relocation(StoreFixture):
         self.assertTrue(setup._ours(handler('"py" "'+script+'" stop'),'claude'));self.assertTrue(setup._ours(handler(script),'claude'))
         self.assertFalse(setup._ours(handler('"py" "'+script+'.bak" stop'),'claude'));self.assertFalse(setup._ours(handler(script+'.bak'),'claude'))
         self.assertFalse(setup._ours(handler('"py" "'+script+'x" stop'),'claude'))
+    def test_the_legacy_codex_fallback_matches_by_boundary_too(self):   # INST-3.1b
+        old=lambda command:{'type':'command','command':command};legacy='C:/Users/me/.codex/agentic-living-memory/hooks/codex_hooks.py'
+        for command in ('python3 "'+legacy+'" stop',legacy,'"py" '+"'"+legacy+"'"+' stop'):self.assertTrue(setup._ours(old(command),'codex'),command)
+        for command in ('python3 "'+legacy+'.bak" stop',legacy+'.bak','python3 "'+legacy+'x" stop'):self.assertFalse(setup._ours(old(command),'codex'),command)
+        self.assertFalse(setup._ours(old('python3 "C:/other/codex_hooks.py" stop'),'codex'))
+        self.assertTrue(setup._ours({'type':'command','command':'powershell.exe -EncodedCommand AAAA','commandWindows':'x agentic-living-memory codex_hooks.py'},'codex'))
     @unittest.skipUnless(os.name=='nt','Windows paths ignore case and slash direction')
     def test_a_windows_handler_with_other_case_or_forward_slashes_is_ours(self):
         script=str(setup._script('claude'))

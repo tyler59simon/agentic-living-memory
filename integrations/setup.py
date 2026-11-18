@@ -48,7 +48,7 @@ def _ours(handler,harness):
     text=' '.join([str(handler.get('command','')),str(handler.get('commandWindows',''))]+[str(a) for a in handler.get('args',[]) or []])
     if any(_runs(text,marker) for marker in [c/'hooks'/(harness+'_hooks.py') for c in _copies()]+[_legacy_script(harness)]):return True
     # The old Codex installer recognised its handlers by these two names (its Windows command may be encoded).
-    return harness=='codex' and 'agentic-living-memory' in text and 'codex_hooks.py' in text
+    return harness=='codex' and 'agentic-living-memory' in text and _runs(text,'codex_hooks.py')
 
 def _events(config,harness):return config.get('hooks',{}) if harness in NESTED else config
 
