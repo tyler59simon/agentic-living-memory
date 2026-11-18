@@ -378,6 +378,9 @@ def _package_changes(target: Path, uninstall: bool) -> dict:
         record = {'schema': lifecycle.OWNERSHIP_SCHEMA,
                   'installationId': (proposal['ownership'] or {}).get('installationId', uuid.uuid4().hex),
                   'installedRelease': lifecycle.CORE_RELEASE, 'source': str(SOURCE), 'entries': entries, 'updatedAt': now()}
+        stamp = lifecycle.source_stamp(SOURCE)
+        if stamp:
+            record.update(sourceCommit=stamp['commit'], sourceDirty=stamp['dirty'])
         record['recordDigest'] = lifecycle._digest(record)
         changes[ownership_rel] = canonical_json(record) + '\n'
     return changes

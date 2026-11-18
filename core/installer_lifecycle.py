@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import time
@@ -78,6 +79,45 @@ class RecoveryRequiredError(InstallError):
     code = "recovery-required"
     exit_code = 7
     retryable = True
+
+
+def _git(root: str | Path, *args: str) -> str | None:
+    """stdout of `git -C root ARGS`, or None when git is missing or the command fails."""
+    try:
+        done = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout.strip() if done.returncode == 0 else None
+
+
+def source_stamp(source: str | Path) -> dict[str, Any]:
+    """{'commit', 'dirty'} of a source checkout, or {} when it is not a git checkout of its own or git is missing."""
+    top = _git(source, "rev-parse", "--show-toplevel")
+    commit = _git(source, "rev-parse", "HEAD")
+    if not top or not commit or os.path.normcase(os.path.realpath(top)) != os.path.normcase(os.path.realpath(source)):
+        return {}
+    return {"commit": commit, "dirty": bool(_git(source, "status", "--porcelain"))}
+
+
+def installed_stamp(root: str | Path | None = None) -> dict[str, Any] | None:
+    """What the installed copy at root (default: this code's folder) records about itself, or None for a copy with no ownership record."""
+    try:
+        record = json.loads((Path(root or Path(__file__).resolve().parents[1]) / ".core-ownership-v1.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict):
+        return None
+    return {"release": record.get("installedRelease"), "commit": record.get("sourceCommit"), "dirty": record.get("sourceDirty"), "source": record.get("source")}
+
+
+def source_warning(stamp: dict[str, Any] | None) -> str | None:
+    """A doctor warning when the source checkout's HEAD is newer than the commit the install was made from."""
+    if not stamp or not stamp.get("commit") or not stamp.get("source"):
+        return None
+    head = source_stamp(stamp["source"]).get("commit")
+    if not head or head == stamp["commit"] or _git(stamp["source"], "merge-base", "--is-ancestor", stamp["commit"], head) is None:
+        return None
+    return f"install: the source checkout {stamp['source']} is at {head[:12]}, newer than the installed copy ({stamp['commit'][:12]}); run install.py from it to update"
 
 
 def _digest(value: Any) -> str:

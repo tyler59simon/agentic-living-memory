@@ -205,5 +205,44 @@ class LauncherInstall(StoreFixture):
             (home/'.zprofile').write_text('');stale=self.plan();(home/'.zprofile').write_text('# edited')
             with self.assertRaisesRegex(ValueError,'stale'):self.apply(stale)
             self.apply(self.plan(True));self.assertIn('edited',(home/'.zprofile').read_text())
+    def stamped_source(self):
+        source=self.base/'src';(source/'core').mkdir(parents=True);(source/'core/a.py').write_text('a')
+        def git(*a):return subprocess.run(['git','-c','user.name=t','-c','user.email=t@t','-c','commit.gpgsign=false','-C',str(source),*a],capture_output=True,text=True,check=True).stdout.strip()
+        git('init','-q');git('add','.');git('commit','-qm','one');return source,git
+    def doctor(self):
+        import contextlib,io
+        from core.cli import main
+        out=io.StringIO()
+        with contextlib.redirect_stdout(out):main(['--root',str(self.root),'doctor'])
+        return json.loads(out.getvalue())
+    def test_install_stamps_the_source_commit_and_doctor_warns_when_head_moves(self):
+        from core import installer_lifecycle as lifecycle
+        source,git=self.stamped_source();first=git('rev-parse','HEAD')
+        with patch.object(self.install,'SOURCE',source):self.apply(self.plan())
+        stamp=lifecycle.installed_stamp(self.home/'app');self.assertEqual((stamp['commit'],stamp['dirty'],stamp['source']),(first,False,str(source)))
+        self.assertIsNone(lifecycle.source_warning(stamp))
+        (source/'core/a.py').write_text('b')
+        with patch.object(self.install,'SOURCE',source):self.apply(self.plan())
+        self.assertTrue(lifecycle.installed_stamp(self.home/'app')['dirty'])   # installed from an uncommitted tree
+        git('commit','-qam','two');moved=lifecycle.source_warning(lifecycle.installed_stamp(self.home/'app'))
+        self.assertIn('newer than the installed copy',moved);self.assertIn(first[:12],moved)
+        with patch.object(lifecycle,'installed_stamp',return_value=lifecycle.installed_stamp(self.home/'app')):
+            shown=self.doctor();self.assertEqual(shown['install']['commit'],first);self.assertEqual(shown['release'],lifecycle.CORE_RELEASE)
+            self.assertTrue(any(w.startswith('install: ') for w in shown['warnings']),shown['warnings'])
+    def test_stamp_needs_git_and_a_checkout(self):
+        from core import installer_lifecycle as lifecycle
+        source,_=self.stamped_source()
+        with patch('subprocess.run',side_effect=FileNotFoundError('git')):
+            self.assertEqual(lifecycle.source_stamp(source),{});self.assertIsNone(lifecycle.source_warning({'commit':'a'*40,'source':str(source)}))
+            self.home.mkdir(parents=True)
+            with patch.object(self.install,'SOURCE',source):self.assertNotIn('sourceCommit',self.install._package_changes(self.home/'app',False)['app/.core-ownership-v1.json'])
+        inside=source/'core';self.assertEqual(lifecycle.source_stamp(inside),{})   # a folder inside someone else's checkout is not a checkout of its own
+    def test_version_names_the_release_and_the_install(self):
+        import contextlib,io
+        from core.cli import main
+        from core import installer_lifecycle as lifecycle
+        out=io.StringIO()
+        with contextlib.redirect_stdout(out):main(['--root',str(self.root),'version'])
+        shown=json.loads(out.getvalue());self.assertEqual(shown['release'],lifecycle.CORE_RELEASE);self.assertIn('install',shown)
 
 if __name__=='__main__':unittest.main()

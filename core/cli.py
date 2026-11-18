@@ -213,8 +213,11 @@ def doctor(root,cwd,explicit=None,domain=None):
     from .semantic import status as semantic_status
     location = diagnostics(explicit)
     semantic=semantic_status(root)
+    from .installer_lifecycle import CORE_RELEASE,installed_stamp,source_warning
+    install=installed_stamp();installed_warning=source_warning(install)
+    if installed_warning:warnings.append(installed_warning)
     if semantic.get('error'):warnings.append(f"semantic model {semantic['model']} cannot be read ({semantic['error']}); search is lexical-only until it is reinstalled or removed")
-    return {'semantic':{k:semantic[k] for k in ('enabled','model','backend') if k in semantic},'ok':fts and not pending and not unreadable and (not domain or domain_exists) and not hook_wiring.broken(wired),'problems':unreadable,'interpreter':sys.executable,'python':sys.version.split()[0],'fts5':fts,'root':str(root),'location':location,'domain':domain,'binding':'bound' if domain else 'unbound','domain_data':'present' if domain_exists else 'missing' if domain else 'unbound','index':index,'pending_recovery':pending,'hooks':{'trust':'unknown','last_delivery':last,'wiring':wired},'logs':logged,'capture':'main_agent_via_scripts','protection':'cooperating_agent_governance','notes':counts,'warnings':warnings}
+    return {'release':CORE_RELEASE,'install':install,'semantic':{k:semantic[k] for k in ('enabled','model','backend') if k in semantic},'ok':fts and not pending and not unreadable and (not domain or domain_exists) and not hook_wiring.broken(wired),'problems':unreadable,'interpreter':sys.executable,'python':sys.version.split()[0],'fts5':fts,'root':str(root),'location':location,'domain':domain,'binding':'bound' if domain else 'unbound','domain_data':'present' if domain_exists else 'missing' if domain else 'unbound','index':index,'pending_recovery':pending,'hooks':{'trust':'unknown','last_delivery':last,'wiring':wired},'logs':logged,'capture':'main_agent_via_scripts','protection':'cooperating_agent_governance','notes':counts,'warnings':warnings}
 
 SECTION_ARGS=('summary','detail','link','action','done','important','section')
 # update only: add to a list section, or replace one labelled bullet, without restating the rest of it.
@@ -990,7 +993,9 @@ def main(argv=None):
             elif domain:domains=[domain]
             else:raise ValueError(UNBOUND)
             result=note_links(root,domains,args.status)
-        elif cmd=='version':result={'ok':True,'api':SERVE_API,'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'restore':1,'pin':1,'direct_writes':1,'history':3,'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']}}}
+        elif cmd=='version':
+            from .installer_lifecycle import CORE_RELEASE,installed_stamp
+            result={'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'restore':1,'pin':1,'direct_writes':1,'history':3,'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']}}}
         elif cmd=='update':
             from .notes import change
             d,n=_reference(args.reference,domain,root)
