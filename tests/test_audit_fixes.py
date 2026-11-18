@@ -1,5 +1,6 @@
 """Regressions for the defects the mem-audit review reproduced at d32971a; each test fails on that code."""
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -146,6 +147,24 @@ class Pruning(StoreFixture):
         with patch('core.repository.prune_journals', return_value=0) as prune:
             runtime._prune_journals(self.root);runtime._prune_journals(self.root)
         self.assertEqual(prune.call_count, 1)
+
+    def test_housekeeping_prunes_install_and_harness_plans_after_30_days(self):
+        home = self.base / 'local' / 'agentic-living-memory';(home / 'app').mkdir(parents=True);(home / 'app' / '.core-ownership-v1.json').write_text('{}');claude = Path(os.environ['CLAUDE_HOME']);codex = Path(os.environ['CODEX_HOME'])
+        def make(folder, name, days, state=None):
+            plan_id = name * 32;when = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+            (folder / '.plans').mkdir(parents=True, exist_ok=True);(folder / '.plans' / (plan_id + '.json')).write_text(json.dumps({'id': plan_id, 'created': when}))
+            if state:
+                (folder / '.operations' / plan_id).mkdir(parents=True);(folder / '.operations' / plan_id / 'journal.json').write_text(json.dumps({'id': plan_id, 'state': state, 'created': when, 'kind': 'x', 'effects': []}))
+            return folder / '.plans' / (plan_id + '.json')
+        old = {folder: make(folder, 'a', 40, 'committed') for folder in (home, claude, codex)}
+        young = {folder: make(folder, 'b', 5, 'committed') for folder in (home, claude, codex)}   # applied, but inside the 30 days
+        stale = make(claude, 'c', 40)                                                              # never applied, past 30 days
+        with patch.object(runtime, 'SCRIPT', home / 'app' / 'living_memory.py'):runtime._prune_journals(self.root)
+        self.assertFalse(any(p.exists() for p in old.values()) or stale.exists())
+        self.assertTrue(all(p.exists() for p in young.values()))
+        (home / 'app' / '.core-ownership-v1.json').unlink();kept = make(home, 'd', 40, 'committed')   # a source checkout leaves the install folder alone
+        with patch.object(runtime, 'SCRIPT', home / 'app' / 'living_memory.py'), patch('core.runtime.clock.now', return_value=datetime.now(timezone.utc) + timedelta(days=2)):runtime._prune_journals(self.root)
+        self.assertTrue(kept.exists())
 
     def test_skip_unchanged_writes_no_journal(self):
         place = self.base / 'place';place.mkdir()

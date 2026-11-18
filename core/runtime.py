@@ -520,6 +520,14 @@ def _daily_backup(root):
         from .logs import swallowed
         swallowed('runtime.daily_backup',exc,root);return None
 
+def _package_plan_folders():
+    """Where install.py and integrations/setup.py keep their plans (full settings copies): each harness home, and the install folder when
+    this code is the installed copy (app/ beside its plans; a source checkout never reaches into the user's install folder)."""
+    from .instructions import harness_home
+    app=SCRIPT.parent;homes=[harness_home(h) for h in ('claude','codex','copilot','factory')]
+    if (app/'.core-ownership-v1.json').is_file():homes.append(app.parent)
+    return [home for home in dict.fromkeys(homes) if (home/'.plans').is_dir()]
+
 def _prune_journals(root):
     """At most once a day, drop old sync-bookkeeping journals from the store and each managed vault.
     Never fails the hook."""
@@ -541,6 +549,8 @@ def _prune_journals(root):
             if vault and Path(vault).is_dir():roots.add(str(vault))
         out={r:prune_journals(Path(r)) for r in sorted(roots)}
         prune_plans(root)
+        # Undo reads journals, never plan files, so those folders only need the long retention for a plan applied late.
+        for home in _package_plan_folders():prune_plans(home,applied_days=30)
         return out
     except Exception as exc:
         from .logs import swallowed
