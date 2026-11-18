@@ -103,6 +103,30 @@ class Relocation(StoreFixture):
         self.assertNotIn('My own rule.',after);self.assertTrue(after.startswith('Mine before.'));self.assertEqual(after.count('agentic-living-memory:begin'),1)
     def test_adopt_is_a_plan_flag_only(self):
         with self.assertRaises(SystemExit):setup.main(['claude','--home',str(self.claude),'--apply-plan','a'*32,'--expected-plan-sha256','b'*64,'--adopt'])
+    def test_claude_home_follows_claude_config_dir_unless_claude_home_is_set(self):   # INST-6
+        import install
+        from core.instructions import harness_home
+        custom=self.base/'claude-config'
+        with patch.dict(os.environ,{'CLAUDE_CONFIG_DIR':str(custom)}):
+            self.assertEqual(harness_home('claude'),self.claude)   # CLAUDE_HOME, the test override, wins
+            os.environ.pop('CLAUDE_HOME')
+            self.assertEqual(harness_home('claude'),custom);self.assertEqual(install.harness_home('claude'),custom)
+            self.assertNotEqual(harness_home('codex'),custom)
+            proposed=setup.setup_plan('claude',enable_hooks=True)
+            self.assertTrue((custom/'.plans'/(proposed['plan_id']+'.json')).is_file())
+    def planned_after_an_edit(self,name,text):
+        """A setup plan made while someone appends text to name after setup read it and before plan() hashed it."""
+        real=setup.plan
+        def late(home,*args,**kwargs):
+            with open(Path(home)/name,'a',encoding='utf-8') as file:file.write(text)
+            return real(home,*args,**kwargs)
+        with patch.object(setup,'plan',late):return setup.setup_plan('claude',self.claude)
+    def test_a_file_edited_after_setup_read_it_makes_the_plan_stale(self):   # CODEX-R1C
+        self.wired_from(setup.ROOT)
+        for name,text in (('settings.json',' '),('CLAUDE.md','My late line.\n')):
+            proposed=self.planned_after_an_edit(name,text);edited=(self.claude/name).read_text(encoding='utf-8')
+            with self.assertRaisesRegex(ValueError,'stale plan'):self.apply(self.claude,proposed)
+            self.assertEqual((self.claude/name).read_text(encoding='utf-8'),edited)   # the edit survives
 
     def test_retire_refuses_while_referenced_then_removes_owned_files(self):
         import install

@@ -3,9 +3,10 @@ from __future__ import annotations
 import argparse,difflib,hashlib,json,os,re,shutil,sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+from core.common import retry_sharing
 from core.repository import read_json,canonical_json,digest
 from core.governance import plan,apply
-from core.instructions import BLOCK,INSTRUCTION_FILE,instruction_block as _block,merge_block
+from core.instructions import BLOCK,INSTRUCTION_FILE,harness_home,instruction_block as _block,merge_block
 ROOT=Path(__file__).resolve().parents[1]
 EVENTS={'SessionStart':'session-start','UserPromptSubmit':'user-prompt','SubagentStart':'subagent-start','PreToolUse':'pre-tool-use','Stop':'stop','PreCompact':'pre-compact'}
 # Tools that can write files or run the memory script need the guard. Read, Glob, Grep and subagent spawns
@@ -123,12 +124,29 @@ def _refuse(what,path,harness,uninstall):
     flag='--uninstall-plan' if uninstall else '--hooks';script=ROOT/'integrations'/'setup.py'   # outside the f-string: nested quotes need Python 3.12
     raise ValueError(f'{what} preserved: {path} was edited. Run "{sys.executable}" "{script}" {harness} {flag} --adopt to see the difference and take ownership, or undo the edit and run it without --adopt')
 
+def _reader(home):
+    """Read files under home once each and record the digest of the bytes read, so apply refuses a file changed after this read."""
+    read_set={}
+    def read(rel):
+        try:data=retry_sharing(lambda:(home/rel).read_bytes())
+        except FileNotFoundError:data=None
+        read_set[rel]=digest(data);return data
+    def read_config(rel,default):
+        """read_json() on the bytes read: the same default and the same error."""
+        try:
+            data=read(rel)
+            return default if data is None else json.loads(data.decode('utf-8-sig'))
+        except (OSError,UnicodeError,json.JSONDecodeError) as exc:raise ValueError(f'Invalid or unreadable configuration preserved: {home/rel}') from exc
+    return read,read_config,read_set
+
 def setup_plan(harness,home=None,enable_hooks=False,uninstall=False,adopt=False):
     if harness not in CONFIG:raise ValueError('Unknown harness')
-    home=Path(home or os.environ.get(harness.upper()+'_HOME',Path.home()/('.'+harness))).expanduser().resolve();home.mkdir(parents=True,exist_ok=True)
-    state=read_json(home/'.living-memory-ownership.json',{'files':{},'instruction_hash':None})
+    home=Path(home or harness_home(harness)).expanduser().resolve();home.mkdir(parents=True,exist_ok=True)
+    read,read_config,read_set=_reader(home)
+    state=read_config('.living-memory-ownership.json',{'files':{},'instruction_hash':None})
     instruction=INSTRUCTION_FILE[harness]
-    path=home/instruction;original=path.read_text(encoding='utf-8') if path.exists() else ''
+    path=home/instruction;data=read(instruction)
+    original=data.decode('utf-8').replace('\r\n','\n').replace('\r','\n') if data is not None else ''   # as read_text() did
     block=instruction_block(harness,enable_hooks)
     owned_hash=state.get('instruction_hash');adopted={};edited=None
     found=BLOCK.findall(original)
@@ -139,7 +157,7 @@ def setup_plan(harness,home=None,enable_hooks=False,uninstall=False,adopt=False)
     changes={instruction:text};owned=dict(state.get('files',{}));config_name=CONFIG[harness]
     config_path=home/config_name
     if harness!='factory' or enable_hooks or config_name in owned:
-        current=read_json(config_path,{})
+        current=read_config(config_name,{})
         owned_handlers=state.get('handlers',{}).get(config_name)
         if owned_handlers is not None:
             if digest(canonical_json(managed_handlers(current,harness)).encode())!=owned_handlers:
@@ -178,11 +196,11 @@ def setup_plan(harness,home=None,enable_hooks=False,uninstall=False,adopt=False)
     if harness=='factory':summary['note']='Factory: hooks.json shape verified against docs; not exercised in a live Droid session.'
     if harness=='copilot':summary['note']='Copilot: event names verified against the CLI hooks reference; not exercised in a live session.'
     if harness=='codex':summary['note']='Codex: handlers carry status messages and context limits; handlers of the old CODEX_HOME/agentic-living-memory copy are replaced.'
-    return plan(home,changes,harness+'_uninstall' if uninstall else harness+'_setup',summary=summary)
+    return plan(home,changes,harness+'_uninstall' if uninstall else harness+'_setup',summary=summary,guards={'read_set':read_set})
 
 def main(argv=None):
     p=argparse.ArgumentParser();p.add_argument('harness',choices=sorted(CONFIG));p.add_argument('--home',type=Path);p.add_argument('--location',type=Path);p.add_argument('--hooks',action='store_true');p.add_argument('--uninstall-plan',action='store_true');p.add_argument('--adopt',action='store_true',help='Take ownership of a managed block or handler you edited, after showing the difference in the plan');p.add_argument('--apply-plan');p.add_argument('--expected-plan-sha256');a=p.parse_args(argv)
-    home=a.home or Path(os.environ.get(a.harness.upper()+'_HOME',Path.home()/('.'+a.harness)))
+    home=a.home or harness_home(a.harness)
     if not a.uninstall_plan and not a.apply_plan:
         from core.storage import ensure_setup
         ensure_setup(a.location)
