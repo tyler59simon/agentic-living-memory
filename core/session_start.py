@@ -304,8 +304,9 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
         return lines,full,len('\n'.join(lines))+1 if lines else 0   # reserved: outside the budget, like the instruction block
     rule_lines,full_rules,reserved=rules_for()
 
-    def render(listed,opened,width,search,titles_only,with_tail=True,psummary=True,with_brief=True,gcount=0,gsnip=True,summaries=False,ubrief=2):
-        lines=opening(psummary,with_brief,ubrief)+rule_lines
+    def render(listed,opened,width,search,titles_only,with_tail=True,psummary=True,with_brief=True,gcount=0,gsnip=True,summaries=False,ubrief=2,block=None):
+        """The context text; block: these Rules lines instead of the current ones."""
+        lines=opening(psummary,with_brief,ubrief)+(rule_lines if block is None else block)
         for n in guidance:
             line=f"- [{str(n.get('type','note')).upper()} {_updated(n)[:10]}] {short_ref(n['domain'],n['id'])} {flag(n)}{_title(n['title'])}"
             lines.append(line if titles_only else line+' — '+snippet(n.get('body',''),[],width))
@@ -327,7 +328,7 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
     # pointer, the user brief (to its summary, then a pointer), shorter snippets, the search hint, guidance snippets, then the review and problem lines.
     listed,opened,width,search,titles_only,with_tail,psummary,with_brief=len(index),len(open_lines),SESSION_SNIPPET,True,False,True,True,True
     gcount,gsnip,summaries=len(gotchas),True,small;ubrief=2   # the user brief: 2 whole block, 1 summary, 0 pointer
-    shape=(psummary,with_brief,ubrief)   # the opening the Rules block was sized for
+    shape=(psummary,with_brief,ubrief);blocks=[(rule_lines,full_rules,reserved)]   # the opening the Rules block was last sized for; every block sized
     text=render(listed,opened,width,search,titles_only,gcount=gcount,summaries=summaries,ubrief=ubrief)
     while len(text)-reserved>budget:
         if opened>open_items:opened-=1   # a bug with no recorded root cause is the cheapest thing to lose; its note is still indexed
@@ -345,10 +346,18 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
         elif with_tail and tail:with_tail=False
         else:break
         if limit is not None and (psummary,with_brief,ubrief)!=shape:
-            shape=(psummary,with_brief,ubrief);resized=rules_for(*shape)
-            # More room can name fewer rules (past a cut, the block keeps room for the count line); the old block still fits, so keep it then.
-            if _named(resized[0])>=_named(rule_lines) or len(resized[1])>len(full_rules):
-                rule_lines,full_rules,reserved=resized   # render reads the new block
+            shape=(psummary,with_brief,ubrief);blocks.append(rules_for(*shape));rule_lines,full_rules,reserved=blocks[-1]   # render reads the new block
+        text=render(listed,opened,width,search,titles_only,with_tail,psummary,with_brief,gcount,gsnip,summaries,ubrief)
+    if len(blocks)>1:
+        # More room can name fewer rules (past a cut, the block keeps room for the count line), and the final cap can cut a block when the opening
+        # alone passes the budget. Every block sized so far fits the limit under the final opening, so the one that delivers the most is kept:
+        # summaries whole, then rules named, after the cap (the order _rules_block fills), on a tie the latest. The rest of the text does not depend on the block.
+        def delivered(block):
+            lines,full,res=block
+            kept=set(_cap(render(listed,opened,width,search,titles_only,with_tail,psummary,with_brief,gcount,gsnip,summaries,ubrief,block=lines),budget+res).split('\n'))
+            return sum(1 for _,l in full if l in kept),_named([l for l in lines if l in kept])
+        best=max(range(len(blocks)),key=lambda i:(*delivered(blocks[i]),i))
+        rule_lines,full_rules,reserved=blocks[best]
         text=render(listed,opened,width,search,titles_only,with_tail,psummary,with_brief,gcount,gsnip,summaries,ubrief)
     # Title-only guidance did not show its content, so prompts may still inject it. Shown guidance maps
     # ref -> revision key: a later correction of the note is new content and may be injected again. Gotchas

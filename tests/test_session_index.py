@@ -247,6 +247,16 @@ class SessionIndex(StoreFixture):
             with self.subTest(title=note['id'][:8]):
                 self.assertIn(f"demo:{note['id'][:8]} Rule", text[:limit])
 
+    def test_codex_rules_block_is_chosen_by_what_survives_the_final_cap(self):
+        from core import briefs
+        made = [self.rule(f'R4200 rule {i}', f'Rule text {i} ' + 'x' * 200) for i in range(4)]
+        capture('User brief', 'Short.', TAGS, '_global', self.root, type='brief')
+        # An opening that passes the budget even with the brief's pointer, so the final cap cuts into the Rules block.
+        with patch.object(briefs, 'user_brief_pointer', lambda hit: 'P' * 730), \
+             patch.object(briefs, 'user_brief_block', lambda hit, summary_only=False, **kw: 'B' * (730 + (30 if summary_only else 60))):
+            text = session_start.build_context(str(self.base / 'project'), self.root, 800, limit=1300)[0]
+        self.assertGreaterEqual(sum(note['id'][:8] in text[:1300] for note in made), 2, text)
+
     def test_a_block_that_fits_its_room_keeps_no_room_for_the_count(self):
         rule = {'domain': 'demo', 'id': 'a1b2c3d4-0000', 'title': 'A short rule', 'body': 'Keep commits small.', 'type': 'policy', 'rule': True}
         line = '- demo:a1b2c3d4 A short rule — Keep commits small.'
