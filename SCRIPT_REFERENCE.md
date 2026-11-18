@@ -144,3 +144,93 @@ Errors print `{"ok":false,"error":{"code","message","next"}}` on stderr (at a te
 `scripts/safe_write.py DOMAIN notes/FILENAME --content-file FILE --expected-revision HASH` returns an approved update plan, not a direct write.
 
 `scripts/eval_related.py --root STORE [--copy [--keep]] [--pair NEW OLD]... [--labels FILE] [--sample 20] [--days 30] [--json]` measures how often the capture-time related check would fire (UX-C9 step 0; it changes nothing in `capture`). It runs `notes._related_hits` for every active decision, policy and preference note as if it were captured now, widened to its parent, child and global domains (`notes.related_domains`), skipping the note and its `similar` titles. Each hit carries `rank`, `gate`, `coverage`, `similarity`, `pair_score`, `strong` and `owed_bar` (rank 1, `search.strong`, and a second signal: `pair_score` >= 0.5 or similarity >= threshold + `STRONG_MARGIN`; body coverage alone never counts). The report gives, for the `listing` bar (top 3 hits) and the `owed` bar: `notes_scanned`, `notes_firing`, `fire_rate`, `unique_pairs`, `same_domain_pairs`, `cross_domain_pairs`, the same counts for notes created in the last `--days` (`recent`), and a `sample` of owed pairs then listing-only pairs, each with a `key` "NEWREF|OLDREF" to label in a `--labels` JSON file ({key: true|false}), which adds `labelled`, `unlabelled` and `precision` per bar. `--pair NEW OLD` (refs, ID prefixes or exact titles; needs `--copy`) reports `found_listing`, `found_owed` and the signals; a retired OLD is made active again in the copy only. `--copy` runs in a temporary copy of the store (like `eval_retrieval.py --copy`), so the store is never written.
+
+## Flags by command
+
+Generated from the argparse parser in `core/cli.py` by `py -3.15 scripts/gen_script_reference.py`; `tests/test_script_reference.py` fails when this table is out of date. The options every command accepts (`--root`, `--domain`, `--cwd`, `--json`, `--actor`) are left out of the rows. A command whose first argument is an action shows the actions after its name; its flags apply to the actions that use them. Flags hidden from `--help` (the legacy `--tags` and `--prefix` on `capture` and `propose`, and `--scheduled`) are not listed.
+
+<!-- flags:begin -->
+| Command | Flags of its own |
+| --- | --- |
+| `apply` | `--expected-plan-sha256` |
+| `archive` | `--expected-revision`, `--payload-file`, `--session`, `--turn` |
+| `ask` | `--limit` |
+| `backup` | `--keep` |
+| `baseline-plan` | none |
+| `batch` | `--payload-file` |
+| `bind` | none |
+| `capture` | `--action`, `--allow-similar`, `--command`, `--concern`, `--content-file`, `--context`, `--detail`, `--done`, `--drop-links`, `--file`, `--files`, `--from-proposal`, `--global`, `--idempotency-key`, `--important`, `--link`, `--payload-file`, `--pin`, `--platform`, `--project`, `--redact`, `--review-by`, `--section`, `--session`, `--source`, `--subject`, `--summary`, `--supersedes`, `--system`, `--tag`, `--technology`, `--title`, `--turn`, `--type` |
+| `capture-finalize` | `--note`, `--session`, `--turn` |
+| `change create|update|close` | `--payload-file` |
+| `changes` | `--project`, `--status` |
+| `check` | `--index`, `--session`, `--turn`, `--undo` |
+| `config get|set` | none |
+| `confirm` | `--session`, `--turn` |
+| `diff` | none |
+| `doctor` | none |
+| `domains` | none |
+| `export` | `--all`, `--out`, `--tag`, `--type` |
+| `help` | none |
+| `history` | `--limit`, `--markdown`, `--note` |
+| `import-plan` | none |
+| `ingest-plan` | `--allow-similar`, `--redact`, `--source` |
+| `ingest-scan` | `--changed`, `--limit`, `--source` |
+| `ingest-skip` | `--payload-file` |
+| `inspect-plan` | `--full` |
+| `links` | `--all-domains`, `--status` |
+| `list` | `--all-domains`, `--limit`, `--offset`, `--status`, `--tag`, `--type`, `--with-summary` |
+| `log` | `--event`, `--limit`, `--note`, `--project`, `--since`, `--type`, `--until` |
+| `logs` | `--days`, `--event`, `--kind`, `--level`, `--limit` |
+| `maintenance status|preview|run|enable|disable|history` | `--all-domains`, `--daily-budget-usd`, `--dry-run`, `--limit`, `--max-notes-per-day`, `--model`, `--run`, `--timeout-seconds` |
+| `merge-plan` | `--payload-file` |
+| `migration-plan` | none |
+| `note-type-plan` | none |
+| `off` | `--session` |
+| `on` | `--session` |
+| `open` | `--all-domains`, `--limit`, `--tag` |
+| `overlay-build` | none |
+| `overlay-sync-all` | `--primary` |
+| `overlay-teardown-plan` | none |
+| `plan delete` | `--payload-file` |
+| `project create|update|archive` | `--payload-file` |
+| `projects` | `--status` |
+| `promote` | `--only`, `--suggest` |
+| `proposals list|show|reject` | `--reason`, `--session`, `--status` |
+| `propose` | `--action`, `--allow-similar`, `--command`, `--concern`, `--content-file`, `--context`, `--detail`, `--done`, `--drop-links`, `--file`, `--files`, `--global`, `--idempotency-key`, `--important`, `--link`, `--payload-file`, `--pin`, `--platform`, `--project`, `--redact`, `--review-by`, `--section`, `--session`, `--source`, `--subject`, `--summary`, `--supersedes`, `--system`, `--tag`, `--technology`, `--title`, `--turn`, `--type` |
+| `query` | none |
+| `read` | `--max-chars`, `--metadata-only`, `--section` |
+| `rebuild` | none |
+| `recall` | `--all`, `--limit`, `--session` |
+| `recap` | `--all-domains`, `--days`, `--project` |
+| `recover` | `--abandon`, `--direction` |
+| `remap` | `--payload-file` |
+| `reopen` | `--session`, `--turn` |
+| `resolve` | `--session`, `--turn` |
+| `restore` | `--expected-revision`, `--session`, `--turn` |
+| `restore-plan` | none |
+| `retag-plan` | `--payload-file` |
+| `review` | `--all-domains`, `--kind`, `--limit`, `--tag` |
+| `rewrite` | `--payload-file` |
+| `search` | `--explain`, `--file`, `--filter`, `--limit`, `--rebuild`, `--scope`, `--sources` |
+| `semantic status|install|remove|rebuild|native` | `--from`, `--model` |
+| `serve` | `--stdio` |
+| `setup` | `--apply-plan`, `--expected-plan-sha256`, `--inspect-plan`, `--location`, `--non-interactive`, `--source` |
+| `source add|remove|implicit` | `--payload-file` |
+| `source-sync` | `--all-remote`, `--rebuild` |
+| `sources` | none |
+| `stats` | `--days`, `--limit` |
+| `status` | `--session` |
+| `supersede` | `--by`, `--drop-links`, `--session`, `--turn` |
+| `sync` | none |
+| `system create|update|retire` | `--payload-file` |
+| `systems` | `--status` |
+| `taxonomy add` | none |
+| `timeline` | `--after`, `--all`, `--before`, `--by`, `--date`, `--type` |
+| `unbind` | `--prefix` |
+| `undo` | none |
+| `update` | `--action`, `--add-action`, `--add-detail`, `--add-link`, `--body`, `--body-file`, `--command`, `--concern`, `--context`, `--detail`, `--distinct`, `--done`, `--drop-section`, `--expected-revision`, `--file`, `--files`, `--important`, `--link`, `--not-distinct`, `--payload-file`, `--pin`, `--platform`, `--redact`, `--replace-actions`, `--review-by`, `--section`, `--session`, `--set-detail`, `--source`, `--subject`, `--summary`, `--tag`, `--technology`, `--title`, `--turn`, `--type`, `--unpin`, `--why` |
+| `validate` | none |
+| `version` | none |
+| `views list|add|remove|render|published` | `--all`, `--all-domains`, `--format`, `--out`, `--target`, `--title`, `--url` |
+| `wiki` | `--archived`, `--format`, `--out` |
+<!-- flags:end -->
