@@ -65,18 +65,26 @@ def _strings(value):
             yield from _strings(item)
 
 
-def legacy_references(extra_homes=()) -> list:
-    """Harnesses whose hook configuration still runs scripts from the legacy package folder."""
-    marker = os.path.normcase(str(LEGACY_DIR) + os.sep)
+def _unwire_command(harness: str, path: Path) -> str:
+    home = path.parents[len(Path(CONFIG_NAMES[harness]).parts) - 1]
+    custom = '' if home.resolve() == harness_home(harness).resolve() else f' --home "{home}"'
+    return f'"{sys.executable}" "{INSTALL_DIR / "integrations" / "setup.py"}" {harness} --uninstall-plan{custom}'
+
+
+def legacy_references(extra_homes=(), folder=None, unwire=False) -> list:
+    """Harnesses whose hook configuration still runs scripts from the legacy package folder (or from `folder`).
+    With unwire, each entry ends with the command that unwires that harness."""
+    marker = os.path.normcase(str(folder or LEGACY_DIR) + os.sep)
     found = []
     for harness, path in harness_configs(extra_homes):
+        fix = f'; unwire it with: {_unwire_command(harness, path)}' if unwire else ''
         try:
             config = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
-            found.append(f"{harness} ({path}: unreadable, so it cannot be checked)")
+            found.append(f"{harness} ({path}: unreadable, so it cannot be checked{fix})")
             continue
         if any(marker in os.path.normcase(text) for text in _strings(config)):
-            found.append(f"{harness} ({path})")
+            found.append(f"{harness} ({path}{fix})")
     return found
 
 
@@ -106,7 +114,7 @@ def main() -> int:
     parser.add_argument('--uninstall-plan', action='store_true', help='Remove the package (unwire each harness first)')
     parser.add_argument('--retire-legacy-plan', action='store_true', help=f'Remove the old copy in {LEGACY_DIR}')
     parser.add_argument('--home', action='append', default=[], metavar='HARNESS=PATH',
-                        help='A harness home set up with setup.py --home PATH; retirement checks it too (repeatable)')
+                        help='A harness home set up with setup.py --home PATH; uninstall and retirement check it too (repeatable)')
     args = parser.parse_args()
     homes = []
     for value in args.home:
@@ -127,7 +135,7 @@ def main() -> int:
     elif args.retire_legacy_plan:
         result = plan_retire(homes)
     else:
-        proposed = plan_install(args.uninstall_plan)
+        proposed = plan_install(args.uninstall_plan, homes)
         result = proposed if args.plan or args.uninstall_plan else apply_plan(INSTALL_HOME, proposed['plan_id'], proposed['digest'])
         if result is not proposed:
             print_next_steps(INSTALL_HOME, proposed['plan_id'])
@@ -135,9 +143,12 @@ def main() -> int:
     return 0
 
 
-def plan_install(uninstall=False):
+def plan_install(uninstall=False, extra_homes=()):
     from core.repository import store_lock
     from core.governance import plan
+    still = legacy_references(extra_homes, INSTALL_DIR, True) if uninstall else []
+    if still:
+        raise ValueError('The package is still in use by: ' + '; '.join(still) + '. Apply each unwire plan, then retry the uninstall.')
     INSTALL_HOME.mkdir(parents=True, exist_ok=True)
     with store_lock(INSTALL_HOME):
         changes = _package_changes(INSTALL_DIR, uninstall)

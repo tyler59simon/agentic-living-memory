@@ -157,6 +157,23 @@ class LauncherInstall(StoreFixture):
         proposed=self.plan();self.bin.mkdir(parents=True);self.exe.write_bytes(b'appeared later')
         with self.assertRaisesRegex(ValueError,'stale'):self.apply(proposed)
         self.assertFalse((self.home/'app/living_memory.py').exists());self.assertEqual(self.exe.read_bytes(),b'appeared later')
+    def test_uninstall_refuses_while_a_harness_still_runs_the_package(self):
+        from integrations import setup
+        from core.governance import apply
+        self.apply(self.plan());claude=Path(os.environ['CLAUDE_HOME'])
+        with patch.object(setup,'ROOT',self.home/'app'):unwire=setup.setup_plan('claude',claude);apply(claude,unwire['plan_id'],unwire['digest'])
+        with self.assertRaises(ValueError) as caught:self.plan(True)
+        message=str(caught.exception);self.assertIn(str(claude/'settings.json'),message);self.assertIn('claude --uninstall-plan',message);self.assertIn(str(self.home/'app'/'integrations'/'setup.py'),message)
+        self.assertTrue((self.home/'app/living_memory.py').exists())
+        with patch.object(setup,'ROOT',self.home/'app'):removal=setup.setup_plan('claude',claude,uninstall=True);apply(claude,removal['plan_id'],removal['digest'])
+        self.apply(self.plan(True));self.assertFalse((self.home/'app/living_memory.py').exists())
+    def test_uninstall_checks_a_custom_home_given_with_home(self):
+        from integrations import setup
+        from core.governance import apply
+        self.apply(self.plan());custom=self.base/'custom-claude'
+        with patch.object(setup,'ROOT',self.home/'app'):wired=setup.setup_plan('claude',custom);apply(custom,wired['plan_id'],wired['digest'])
+        self.plan(True)   # the default homes are clean
+        with self.assertRaisesRegex(ValueError,'--home'):self.install.plan_install(True,[('claude',str(custom))])
     def test_uninstall_removes_ours_and_says_the_path_entry_stays(self):
         self.apply(self.plan());proposed=self.plan(True);self.assertEqual(proposed['summary']['launcher']['action'],'remove');self.assertIn('left in place',proposed['summary']['path'])
         self.apply(proposed);self.assertFalse(self.exe.exists());self.assertFalse((self.home/'app/living_memory.py').exists())
