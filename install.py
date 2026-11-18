@@ -86,6 +86,16 @@ def next_steps() -> list:
     return [f'"{sys.executable}" "{setup}" {h} --hooks' for h in homes]
 
 
+def print_next_steps(root, plan_id) -> None:
+    """After an install, the wiring commands from the applied plan, ready to paste into PowerShell, on stderr (stdout stays the JSON result)."""
+    from core.repository import read_json
+    steps = ((read_json(Path(root) / '.plans' / f'{plan_id}.json') or {}).get('summary') or {}).get('next_steps') or []
+    if steps:
+        lead = '& ' if os.name == 'nt' else ''
+        print('Installed. Next, wire each harness: run these, then review and apply each plan they print (--apply-plan ID --expected-plan-sha256 DIGEST).\n' +
+              '\n'.join('  ' + lead + step for step in steps), file=sys.stderr)
+
+
 def main() -> int:
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
@@ -113,11 +123,14 @@ def main() -> int:
         # Package plans live in INSTALL_HOME; legacy retirement plans in CODEX_HOME.
         root = INSTALL_HOME if (INSTALL_HOME / '.plans' / f'{args.apply_plan}.json').is_file() else CODEX_HOME
         result = apply_plan(root, args.apply_plan, args.expected_plan_sha256)
+        print_next_steps(root, args.apply_plan)
     elif args.retire_legacy_plan:
         result = plan_retire(homes)
     else:
         proposed = plan_install(args.uninstall_plan)
         result = proposed if args.plan or args.uninstall_plan else apply_plan(INSTALL_HOME, proposed['plan_id'], proposed['digest'])
+        if result is not proposed:
+            print_next_steps(INSTALL_HOME, proposed['plan_id'])
     print(json.dumps(result, separators=(',', ':')))
     return 0
 

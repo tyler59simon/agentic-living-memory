@@ -205,6 +205,19 @@ class LauncherInstall(StoreFixture):
             (home/'.zprofile').write_text('');stale=self.plan();(home/'.zprofile').write_text('# edited')
             with self.assertRaisesRegex(ValueError,'stale'):self.apply(stale)
             self.apply(self.plan(True));self.assertIn('edited',(home/'.zprofile').read_text())
+    def run_main(self,*argv):
+        import contextlib,io
+        out,err=io.StringIO(),io.StringIO()
+        with patch('core.storage.ensure_setup'),patch('sys.argv',['install.py',*argv]),contextlib.redirect_stdout(out),contextlib.redirect_stderr(err):self.install.main()
+        return out.getvalue(),err.getvalue()
+    def test_install_prints_paste_ready_next_steps_on_stderr_and_keeps_stdout_json(self):
+        (self.base/'home-claude').mkdir();lead='& ' if os.name=='nt' else ''
+        proposed=json.loads(self.run_main('--plan')[0]);steps=proposed['summary']['next_steps'];self.assertTrue(steps)
+        out,err=self.run_main('--apply-plan',proposed['plan_id'],'--expected-plan-sha256',proposed['digest'])
+        self.assertIn('operation_id',json.loads(out));self.assertNotIn('Installed',out)   # stdout is still the one JSON result
+        for step in steps:self.assertIn('  '+lead+step,err)
+        self.assertIn(f'{lead}"{sys.executable}" "',err)
+        out,err=self.run_main();json.loads(out);self.assertIn('claude --hooks',err)   # plan and apply in one run
     def stamped_source(self):
         source=self.base/'src';(source/'core').mkdir(parents=True);(source/'core/a.py').write_text('a')
         def git(*a):return subprocess.run(['git','-c','user.name=t','-c','user.email=t@t','-c','commit.gpgsign=false','-C',str(source),*a],capture_output=True,text=True,check=True).stdout.strip()

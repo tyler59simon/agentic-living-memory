@@ -10,7 +10,7 @@ Then run `py -3.15 install.py`. It installs the package into a per-user folder t
 - Windows: `%LOCALAPPDATA%\agentic-living-memory\app`
 - elsewhere: `~/.local/lib/agentic-living-memory/app`
 
-Its plans, journals and ownership record sit beside `app/` in that folder. The plan's summary lists `next_steps`: one `integrations/setup.py HARNESS --hooks` command, run from the installed copy, for each harness found on the machine (Claude Code, Codex, Copilot, Factory). Each generates a plan to review and apply (see INTEGRATION.md). The interpreter that runs setup is the one the hooks use. Then:
+Its plans, journals and ownership record sit beside `app/` in that folder. The plan's summary lists `next_steps`: one `integrations/setup.py HARNESS --hooks` command, run from the installed copy, for each harness found on the machine (Claude Code, Codex, Copilot, Factory). Each generates a plan to review and apply (see INTEGRATION.md). The interpreter that runs setup is the one the hooks use. After an install is applied, `install.py` also prints those commands on stderr, ready to paste into PowerShell (a leading `&` and quoted paths; no `&` elsewhere), while stdout stays the same JSON result. Then:
 1. Review native hook trust and restart the harness.
 2. Bind a project with `alm bind my-project C:/Projects/MyProject` (open a new terminal first; see [The `alm` command](#the-alm-command)).
 3. Run `alm doctor --cwd C:/Projects/MyProject`.
