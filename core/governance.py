@@ -23,6 +23,28 @@ def plan(root, changes, kind, domains=(), summary=None, guards=None):
         path=root/'.plans'/(value['id']+'.json');atomic_write(path,canonical_json(value))
         return {'ok':True,'plan_id':value['id'],'digest':value['digest'],'kind':kind,'summary':value['summary']}
 
+def commit(root,changes,kind,domains=(),summary=None,guards=None,sync_overlay=True):
+    """A direct write: what plan() then apply() do, in one call under one lock, with no plan to approve. The journal is the receipt:
+    its operation ID (prefix `d-`, which tells a direct operation from a plan-applied one) is what `undo` takes."""
+    root=Path(root).resolve()
+    with store_lock(root):   # re-entrant: a builder that already holds the lock reads and writes under it
+        expected={}
+        for rel in changes:
+            p=confined(root,rel)
+            expected[rel]=digest(p.read_bytes()) if p.exists() else None
+        domains=sorted(set(domains))
+        if guards:_check_guards(root,{'guards':{k:(v if k=='read_set' else sorted(set(v))) for k,v in guards.items() if v},'domains':domains,'changes':changes})
+        operation_id='d-'+uuid.uuid4().hex
+        receipt=transaction(root,changes,kind,expected,operation_id)
+        for domain in domains:
+            try:reconcile(domain,root,sync_overlay=sync_overlay)
+            except Exception as exc:
+                from .logs import swallowed
+                swallowed('governance.commit',exc,root)
+                receipt.setdefault('warnings',[]).append(f'{domain}: derived state requires repair')
+        receipt.update(kind=kind,summary=summary or {'files':len(changes)},undo=f'undo {operation_id}')
+        return receipt
+
 def apply(root,plan_id,expected_digest,sync_overlay=True):
     root=Path(root).resolve()
     if not isinstance(plan_id,str) or not __import__('re').fullmatch(r'[a-f0-9]{32}',plan_id):raise ValueError('Invalid plan identity')
@@ -131,6 +153,17 @@ def merge_plan(root,payload):
                 changes[Path(referring['path']).relative_to(root).as_posix()]=serialize(referring)
         return plan(root,changes,'merge',[domain],{'target':payload['target'],'sources':sources,'files':len(changes)})
 
+# Operations that still come back as a plan to approve when undone: the destructive and out-of-store kinds (plus a backup `restore`, see _plan_kind). Every other kind
+# (note edits, archive, rewrite, remap, promote, taxonomy and registry writes) is undone directly.
+KEPT_PLAN_KINDS=frozenset({'merge','delete','bulk_retag','schema_migration','note_type_migration','baseline_migration','import','ingest'})
+
+def _plan_kind(kind,effects=()):
+    """True when undoing an operation of this kind needs an approved plan (an undo of X is judged by X's kind, found through the chain).
+    `restore` is two things with one journal kind: a note restore (direct; notes._commit_many marks the domain `.derived-dirty` in the
+    same journal) and a backup restore (applied from a plan, which writes no such marker)."""
+    if kind=='restore':return not any(Path(e['path']).name=='.derived-dirty' for e in effects)
+    return kind in KEPT_PLAN_KINDS or kind.startswith('overlay_')
+
 def undo(root,operation_id):
     if not __import__('re').fullmatch(r'[A-Za-z0-9_-]{1,100}',operation_id):raise ValueError('Invalid operation ID')
     root=Path(root).resolve();journal=root/'.operations'/operation_id/'journal.json'
@@ -139,10 +172,10 @@ def undo(root,operation_id):
         if journal.exists():raise ValueError(f'corrupt_journal {operation_id}: this operation cannot be undone; see RECOVERY.md') from None
         raise
     if not value:raise ValueError('Operation unavailable')
-    # A plan gives the user a chance to inspect current revisions before undo.
+    # A kept plan kind (merge, delete, bulk retag, ...) comes back as a plan, so the user can inspect current revisions first; every other kind is undone directly.
     import base64
     # The derived-state marker is rewritten by every reconcile; it is not part of what is being undone.
-    value['effects']=[e for e in value['effects'] if Path(e['path']).name!='.derived-dirty']
+    raw_effects=value['effects'];value['effects']=[e for e in value['effects'] if Path(e['path']).name!='.derived-dirty']
     changes={e['path']:base64.b64decode(e['before']).decode() if e['before'] is not None else None for e in value['effects']}
     domains={Path(p).parts[1] for p in changes if Path(p).parts[0]=='domains'}
     # Check and record under one lock: an edit between the check and the plan's snapshot would be overwritten.
@@ -158,7 +191,12 @@ def undo(root,operation_id):
             guards={'unused_tags':dropped}
             try:_check_guards(root,{'guards':{'unused_tags':sorted(dropped)},'domains':sorted(domains),'changes':changes})
             except ValueError as exc:raise ValueError('Undo would remove tags that notes still use; retag those notes first ('+str(exc).split(': ',1)[-1]+')') from None
-        return plan(root,changes,'undo:'+operation_id,domains,guards=guards)
+        kind,judged_effects=str(value['kind']),raw_effects
+        while kind.startswith('undo:'):   # an undo of X: judged by X's kind
+            try:judged=read_json(root/'.operations'/kind[5:]/'journal.json');kind=str(judged['kind']);judged_effects=judged.get('effects') or []
+            except (ValueError,KeyError,TypeError):break
+        if _plan_kind(kind,judged_effects):return plan(root,changes,'undo:'+operation_id,domains,guards=guards)
+        return commit(root,changes,'undo:'+operation_id,domains,guards=guards)
 
 def remap(root,mappings):
     from .notes import find_note
@@ -184,14 +222,14 @@ def remap(root,mappings):
             keep_baseline(note);note['domain']=after['domain'];note['updated']=now()   # a move vouches for nothing
             changes[path.relative_to(root).as_posix()]=None;changes[target.relative_to(root).as_posix()]=serialize(note)
             domains.update((before['domain'],after['domain']))
-        return plan(root,changes,'reference_remap',domains,{'mappings':mappings,'files':len(changes)})
+        return commit(root,changes,'reference_remap',domains,{'mappings':mappings,'files':len(changes)})
 
 PROMOTE_PAIR=0.8   # title score at which notes in two projects look like one piece of knowledge
 
 def promote_suggest(root,domain=None):
     """Project notes that may belong in the global domain, with reasons. Writes nothing.
     Candidates: notes that appear in two unrelated projects, notes that repeat a global note, and notes whose
-    tags or type suggest they hold beyond their project. The agent or user picks; promote-plan moves them."""
+    tags or type suggest they hold beyond their project. The agent or user picks; promote moves them."""
     from .common import global_domains
     from .notes import domain_folders,related,scope_hint,TitleScorer,short_ref
     from .repository import inventory
@@ -219,16 +257,16 @@ def promote_suggest(root,domain=None):
             if reason:add(d,n,reason)
     if domain:found={k:v for k,v in found.items() if v['domain']==domain}
     rows=sorted(found.values(),key=lambda r:(r['domain'],r['title'].casefold()))
-    return {'ok':True,'candidates':rows,'next':'Promote the ones that hold beyond their project: promote-plan REF [REF ...], then inspect-plan and apply.'}
+    return {'ok':True,'candidates':rows,'next':'Promote the ones that hold beyond their project: promote REF [REF ...] (undo OPERATION reverses it).'}
 
-def promote_plan(root,refs):
-    """A reviewed plan moving project notes to the global domain. Stable IDs and filenames are kept and
+def promote(root,refs):
+    """A direct, journaled move of project notes to the global domain. Stable IDs and filenames are kept and
     relative links follow. Two of the notes that are the same knowledge (same type, similar titles) become
     one: the newer supersedes the older inside the global domain."""
     from .common import global_domains
     from .notes import resolve_ref,find_note,_move_set,ensure_global,TitleScorer,domain_folders,promotion_blocker
     root=Path(root).resolve()
-    if not isinstance(refs,list) or not 1<=len(refs)<=20:raise ValueError('promote-plan takes 1..20 note references')
+    if not isinstance(refs,list) or not 1<=len(refs)<=20:raise ValueError('promote takes 1..20 note references')
     target=ensure_global(root);globals_=set(global_domains(root))
     with store_lock(root):
         notes=[]
@@ -254,7 +292,7 @@ def promote_plan(root,refs):
         changes,_=_move_set(list(moves.values()),root)
         domains=sorted({n['domain'] for n in notes}|{target})
         summary={'target':target,'moves':[f"{n['domain']}:{n['id']}" for n in notes],'superseded':superseded,'files':len(changes)}
-        return plan(root,changes,'promote',domains,summary,guards={'absent_ids':[n['id'] for n in notes]})
+        return commit(root,changes,'promote',domains,summary,guards={'absent_ids':[n['id'] for n in notes]})
 
 def retag_plan(root,mappings,domains=None):
     from .repository import inventory,serialize,FACETS
@@ -265,12 +303,12 @@ def retag_plan(root,mappings,domains=None):
     if wanted:
         from .projects import load
         missing=[s for s in wanted if s not in {p['slug'] for p in load(root)['projects']}]
-        if missing:raise ValueError('Unregistered project tags: '+', '.join('project/'+s for s in missing)+'; create projects with project-plan')
+        if missing:raise ValueError('Unregistered project tags: '+', '.join('project/'+s for s in missing)+'; create projects with project create')
     wanted=sorted({t.split('/',1)[1] for t in mappings.values() if t.startswith('system/')})
     if wanted:
         from .systems import load
         missing=[s for s in wanted if s not in {x['slug'] for x in load(root)['systems']}]
-        if missing:raise ValueError('Unregistered system tags: '+', '.join('system/'+s for s in missing)+'; create systems with system-plan')
+        if missing:raise ValueError('Unregistered system tags: '+', '.join('system/'+s for s in missing)+'; create systems with system create')
     with store_lock(root):
         # The taxonomy is store-wide, so a retag must cover every domain directory
         # (including _global and domains no longer bound), or it strands other notes.

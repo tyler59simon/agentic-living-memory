@@ -1,6 +1,6 @@
 """Project knowledge base, layer 3: live wiki connectors (Confluence and Notion), the only code in the store that uses the network.
 
-A `confluence` or `notion` source is registered in sources.json like any other (source-plan add) but holds no folder: `source-sync NAME`
+A `confluence` or `notion` source is registered in sources.json like any other (source add) but holds no folder: `source-sync NAME`
 (or `source-sync --all-remote`) pulls its pages into a derived cache, sources-cache/<name>/ (HTML for Confluence, Markdown for Notion, one
 file per page, plus manifest.json: {page_id: title, version, url, path}), and the library then indexes that folder like an html-export or
 a Markdown folder, with the page title and URL as the citation. Nothing else reaches the network: hooks, the SessionStart background
@@ -59,7 +59,7 @@ def _base_url(value):
     return urllib.parse.urlunsplit((parts.scheme,parts.netloc,parts.path.rstrip('/'),'',''))
 
 def validate(kind,payload,strict=True):
-    """The connector fields of a confluence or notion source, normalized. strict (a source-plan payload) refuses a field that does not
+    """The connector fields of a confluence or notion source, normalized. strict (a source payload) refuses a field that does not
     belong to the kind (a path, include globs, ...); the pull re-checks a stored entry without it. Raises ValueError."""
     allowed=ALLOWED[kind]
     if strict:

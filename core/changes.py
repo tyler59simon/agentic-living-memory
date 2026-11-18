@@ -1,7 +1,7 @@
 """Change registry (changes.json): numbered units of work (CHG-014), each in one project, at one stage, with a brief
 (a plan note) and optionally a repo folder, a branch, a system and an architecture element.
 
-Changes are created and changed only through change-plan (hash-approved, journaled, undoable)."""
+Changes are created and changed only through `change` (direct, journaled, undoable)."""
 from __future__ import annotations
 import re,uuid
 from pathlib import Path
@@ -61,7 +61,7 @@ def _clean(values,base,root):
         if field in values:entry[field]=None if values[field] is None else _text(values[field],field,1,high)
     if 'system' in values:
         slug=values['system']
-        if slug is not None and not any(s['slug']==slug for s in systems.load(root)['systems']):raise ValueError(f'system names an unknown system: {slug}; create it with system-plan first')
+        if slug is not None and not any(s['slug']==slug for s in systems.load(root)['systems']):raise ValueError(f'system names an unknown system: {slug}; create it with system create first')
         entry['system']=slug
     if entry.get('element') and not entry.get('system'):raise ValueError('element needs a system')
     found=find_secrets('\n'.join(str(entry.get(k) or '') for k in ('title','branch','element')))
@@ -70,12 +70,12 @@ def _clean(values,base,root):
 
 def _registry(entries):return canonical_json({'version':1,'changes':sorted(entries,key=lambda c:c['id'])})
 
-def change_plan(root,action,payload):
-    """A reviewed plan creating, updating or closing one change (kinds change_create, change_update, change_close)."""
-    from .governance import plan
+def change_write(root,action,payload):
+    """A direct, journaled write creating, updating or closing one change (kinds change_create, change_update, change_close)."""
+    from .governance import commit
     from .notes import build_note,_change_set,touched_domains
     root=Path(root).resolve()
-    if action not in FIELDS:raise ValueError('change-plan action must be create, update or close')
+    if action not in FIELDS:raise ValueError('change action must be create, update or close')
     if not isinstance(payload,dict):raise ValueError('Payload must be a JSON object')
     extra=set(payload)-FIELDS[action]
     if extra:raise ValueError('Unknown payload fields: '+', '.join(sorted(extra)))
@@ -85,8 +85,8 @@ def change_plan(root,action,payload):
             for key in ('project','title','brief'):
                 if key not in payload:raise ValueError(f'create requires {key}')
             slug=payload['project'];project=next((p for p in projects.load(root)['projects'] if p['slug']==slug),None)
-            if not project:raise ValueError(f'project names an unknown project: {slug}; create it with project-plan first')
-            # Provisional until apply: a second plan made from the same registry gets the same number and goes stale.
+            if not project:raise ValueError(f'project names an unknown project: {slug}; create it with project create first')
+            # The next free number, read and written under one lock.
             number=max((c['id'] for c in entries),default=0)+1
             entry=_clean({k:v for k,v in payload.items() if k not in ('project','brief')},{'id':number,'project':slug,'stage':'explore','status':'active','repo':None,'branch':None,'system':None,'element':None,'created':stamp,'updated':stamp},root)
             tags=[projects.tag(slug)]+([systems.tag(entry['system'])] if entry['system'] else []);brief=payload['brief']
@@ -101,7 +101,7 @@ def change_plan(root,action,payload):
                 missing=set(tags)-set(note.get('tags') or [])
                 if missing:files.update(_change_set(note_id,domain,'retag',root,tags=sorted(set(note.get('tags') or [])|missing))[0])
                 else:
-                    # Nothing to write to the note, so guard it: a note resolved, retyped or deleted before apply makes the plan stale.
+                    # Nothing to write to the note, so guard it: a note resolved, retyped or deleted since it was read makes the write stale.
                     from .notes import find_note
                     rel=find_note(note_id,domain,root)[0];guards={'read_set':{Path(rel).resolve().relative_to(root).as_posix():digest(Path(rel).read_bytes())}}
             else:
@@ -116,7 +116,7 @@ def change_plan(root,action,payload):
                 path,note,text=build_note(f"{display(number)} {brief.get('title') or entry['title']}",brief['body'],['subject/project','concern/workflow']+tags,domain,root,'plan',note_id=note_id)
                 files[path.relative_to(root).as_posix()]=text
             entry['brief']=f'{domain}:{note_id}';files['changes.json']=_registry(entries+[entry])
-            return plan(root,files,'change_create',[domain],guards=guards,summary={'id':number,'display':display(number),'title':entry['title'],'fields':sorted(payload),'brief':entry['brief'],'adopted':isinstance(brief,str),'files':len(files)})
+            return commit(root,files,'change_create',[domain],guards=guards,summary={'id':number,'display':display(number),'title':entry['title'],'fields':sorted(payload),'brief':entry['brief'],'adopted':isinstance(brief,str),'files':len(files)})
         number=_number(payload.get('id'));current=next((c for c in entries if c['id']==number),None)
         if not current:raise ValueError(f'Unknown change {display(number)}')
         if action=='close':
@@ -128,12 +128,12 @@ def change_plan(root,action,payload):
             if not values:raise ValueError('update requires at least one field to change')
         entry=_clean(values,current,root);entry['updated']=stamp;domains=[];moved=None
         live=entry['status']=='active'
-        # Closing resolves the brief and reopening reopens it, in this same plan; a brief already there is left alone.
+        # Closing resolves the brief and reopening reopens it, in this same write; a brief already there is left alone.
         found=_brief(entry.get('brief'),root) if live!=(current.get('status')=='active') else None
         if found and found[2].get('type')=='plan' and found[2].get('status')==('resolved' if live else 'active'):
-            moved='reopen' if live else 'resolve';files.update(_change_set(found[1],found[0],moved,root,actor='plan')[0]);domains=sorted({found[0],*touched_domains(files)})
+            moved='reopen' if live else 'resolve';files.update(_change_set(found[1],found[0],moved,root,actor='agent')[0]);domains=sorted({found[0],*touched_domains(files)})
         files['changes.json']=_registry([c for c in entries if c['id']!=number]+[entry])
-        return plan(root,files,'change_'+action,domains,{'id':number,'display':display(number),'title':entry['title'],'fields':sorted(values),'brief_action':moved,'files':len(files)})
+        return commit(root,files,'change_'+action,domains,{'id':number,'display':display(number),'title':entry['title'],'fields':sorted(values),'brief_action':moved,'files':len(files)})
 
 def listing(root,status='any',project=None):
     """Registry entries (optionally one status and one project) with display, brief_status and actions, and warnings for what no longer resolves."""

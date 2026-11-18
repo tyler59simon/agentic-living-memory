@@ -1,7 +1,7 @@
 """System registry (systems.json): the systems an engineer works on, each with owners, repo folders, dependencies on
 other systems, an Architecture Suite output folder, a passport note and a system/<slug> tag.
 
-Systems are created and changed only through system-plan (hash-approved, journaled, undoable)."""
+Systems are created and changed only through `system` (direct, journaled, undoable)."""
 from __future__ import annotations
 import uuid
 from pathlib import Path
@@ -49,7 +49,7 @@ def _clean(values,base,others):
         if not isinstance(wanted,list) or any(not isinstance(s,str) for s in wanted):raise ValueError('depends_on must be a list of system slugs')
         if entry['slug'] in wanted:raise ValueError('A system cannot depend on itself')
         unknown=sorted(set(wanted)-set(others))
-        if unknown:raise ValueError('depends_on names unknown systems: '+', '.join(unknown)+'; create them with system-plan first')
+        if unknown:raise ValueError('depends_on names unknown systems: '+', '.join(unknown)+'; create them with system create first')
         entry['depends_on']=list(dict.fromkeys(wanted))
     if 'architecture' in values:
         folder=values['architecture']
@@ -64,11 +64,11 @@ def _clean(values,base,others):
 
 def _registry(entries):return canonical_json({'version':1,'systems':sorted(entries,key=lambda s:s['slug'])})
 
-def system_plan(root,action,payload):
-    """A reviewed plan creating, updating or retiring one system (kinds system_create, system_update, system_retire)."""
-    from .governance import plan
+def system_write(root,action,payload):
+    """A direct, journaled write creating, updating or retiring one system (kinds system_create, system_update, system_retire)."""
+    from .governance import commit
     root=Path(root).resolve()
-    if action not in FIELDS:raise ValueError('system-plan action must be create, update or retire')
+    if action not in FIELDS:raise ValueError('system action must be create, update or retire')
     if not isinstance(payload,dict):raise ValueError('Payload must be a JSON object')
     extra=set(payload)-FIELDS[action]
     if extra:raise ValueError('Unknown payload fields: '+', '.join(sorted(extra)))
@@ -95,11 +95,11 @@ def system_plan(root,action,payload):
             path,note,text=build_note(title,passport['body'],['subject/project','concern/architecture',tag(slug)],domain,root,'context',note_id=note_id,extra_tags=[tag(slug)])
             entry['passport']=f'{domain}:{note_id}'
             changes['systems.json']=_registry(others+[entry]);changes[path.relative_to(root).as_posix()]=text
-            return plan(root,changes,'system_create',[domain],{'slug':slug,'tag':tag(slug),'added_tag':added,'passport':entry['passport'],'files':len(changes)})
+            return commit(root,changes,'system_create',[domain],{'slug':slug,'tag':tag(slug),'added_tag':added,'passport':entry['passport'],'files':len(changes)})
         if not current:raise ValueError(f'Unknown system {slug}')
         values={'status':'retired'} if action=='retire' else {k:v for k,v in payload.items() if k!='slug'}
         entry=_clean(values,current,slugs);entry['updated']=stamp
-        return plan(root,{'systems.json':_registry(others+[entry])},'system_'+action,[],{'slug':slug,'fields':sorted(values),'files':1})
+        return commit(root,{'systems.json':_registry(others+[entry])},'system_'+action,[],{'slug':slug,'fields':sorted(values),'files':1})
 
 def listing(root,status='any'):
     """Registry entries (optionally one status) with tag, tag_registered and dependents, and warnings for what no longer resolves."""

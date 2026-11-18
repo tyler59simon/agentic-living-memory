@@ -694,7 +694,7 @@ def capture(title,body,tags,domain,root=None,**metadata):
                                  f"If it is the same subject, run `update {ref}`; pass allow_similar only for a genuinely distinct note")
             if action=='promotable':
                 raise ValueError(f"possible_duplicate conflict: similar to {ref} \"{match['title']}\" in another project. If it holds for both "
-                                 f"projects, run `promote-plan {ref}` and then update it; pass allow_similar only for a genuinely distinct note")
+                                 f"projects, run `promote {ref}` and then update it; pass allow_similar only for a genuinely distinct note")
             absorbed=(other,match)   # 'supersede': the new global note replaces the project one
         review_by=metadata.pop('review_by',None);context=metadata.pop('context','');files=metadata.pop('files',None);origin=metadata.pop('origin',None);commands=metadata.pop('commands',None);sources=metadata.pop('sources',None);pinned=metadata.pop('pinned',False)
         if metadata:raise ValueError('Unsupported capture metadata: '+', '.join(metadata))
@@ -724,7 +724,7 @@ def capture(title,body,tags,domain,root=None,**metadata):
             result=_commit(domain,changes,'capture_supersede' if supersedes else 'capture',root,expected or None)
         result.update(id=note['id'],domain=domain,status='created',path=str(path))
         hint=None if domain in global_domains(root) else scope_hint(note)
-        if hint:result['scope_hint']={'reason':hint,'next':f'If this holds beyond this project, run `promote-plan {domain}:{note["id"]}`.'}
+        if hint:result['scope_hint']={'reason':hint,'next':f'If this holds beyond this project, run `promote {domain}:{note["id"]}`.'}
         near=near_titles(title,[n for n in existing if n.get('status','active')=='active' and n['id'] not in set(supersedes) and not other_map(n)],note_type=selected_type)
         if near:result['similar']=[{'ref':f"{domain}:{n['id']}",'title':n['title']} for n in near]
         hits=_related_hits(note,domain,root,{n['id'] for n in near}|set(supersedes))
@@ -745,7 +745,7 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
     changes of earlier steps in the same transaction (rel path -> text, or None when removed); files are
     read through it, so steps build on each other instead of overwriting one another. A standalone supersede carries the replaced
     note's links and files into its successor (unless values has drop_links); `carried`, when a dict, receives what moved.
-    `rehash=False` (check, rewrite-plan) leaves the recorded file hashes alone: those edits do not re-read the files.
+    `rehash=False` (check, rewrite) leaves the recorded file hashes alone: those edits do not re-read the files.
     `retirement` (maintenance only: rule, reason, evidence, run_id, operation_id) adds its fields to that record.
     `actor` (agent, plan, vault, auto_resolve, maintenance) is recorded in the `last_retirement` of a retired note and as `restored_by` of a restored one."""
     pending=pending or {}
@@ -820,7 +820,7 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
             from datetime import timedelta
             note['review_by']=(clock.today()+timedelta(days=STALE_DAYS)).isoformat()
     elif action in {'resolve','reopen'}:
-        # Notes that track work (plan, bug, risk) are resolved when the work is finished; other types are archived by plan.
+        # Notes that track work (plan, bug, risk) are resolved when the work is finished; other types are archived.
         if action=='resolve' and (note['type'] not in ACTION_TYPES or note.get('status')!='active'):raise ValueError('Only active plan, bug and risk notes may be resolved')
         if action=='reopen' and (note['type'] not in ACTION_TYPES or note.get('status')!='resolved'):raise ValueError('Only resolved plan, bug and risk notes may be reopened')
         note['status']='resolved' if action=='resolve' else 'active'
@@ -942,19 +942,19 @@ REWRITE_MAX=50
 # Maps and briefs keep fixed labelled bullets (`--set-detail` targets them), so a prose rewrite leaves them alone.
 REWRITE_FIXED_TYPES=('map','brief')
 
-def rewrite_plan(items,domain=None,root=None):
-    """One reviewed plan that replaces the bodies of several notes, for a rewrite of their prose. Each item is
+def rewrite(items,domain=None,root=None):
+    """One direct, journaled write that replaces the bodies of several notes, for a rewrite of their prose. Each item is
     {"ref", "revision", "body"}; `revision` is the one the new body was written from, so a note changed since is
     refused. Titles never change here: [[links]] and filenames depend on them. The rewrite keeps each note's
     `updated` and `review_by`, because its facts did not change."""
     root=Path(root or memory_root()).resolve()
-    if not isinstance(items,list) or not items:raise ValueError('rewrite-plan needs a JSON list of {"ref", "revision", "body"}')
-    if len(items)>REWRITE_MAX:raise ValueError(f'rewrite-plan takes at most {REWRITE_MAX} notes; split the batch')
+    if not isinstance(items,list) or not items:raise ValueError('rewrite needs a JSON list of {"ref", "revision", "body"}')
+    if len(items)>REWRITE_MAX:raise ValueError(f'rewrite takes at most {REWRITE_MAX} notes; split the batch')
     with store_lock(root):
         changes={};domains=set();rewritten=[];unchanged=[];seen=set()
         for item in items:
             if not isinstance(item,dict):raise ValueError('Each item is an object with ref, revision and body')
-            if 'title' in item:raise ValueError('rewrite-plan never changes titles: [[links]] and filenames depend on them')
+            if 'title' in item:raise ValueError('rewrite never changes titles: [[links]] and filenames depend on them')
             if set(item)-{'ref','revision','body'} or not all(isinstance(item.get(k),str) and item[k].strip() for k in ('ref','revision','body')):
                 raise ValueError('Each item needs ref, revision and body as non-empty strings, and nothing else')
             d,note_id=resolve_ref(item['ref'],domain,root)
@@ -981,8 +981,8 @@ def rewrite_plan(items,domain=None,root=None):
             if warnings:entry['quality_warnings']=warnings
             rewritten.append(entry)
         if not changes:return {'ok':True,'notes':[],'unchanged':unchanged,'hint':'Nothing to rewrite: every body is already as given'}
-        from .governance import plan
-        result=plan(root,changes,'rewrite',sorted(domains),{'notes':len(rewritten),'titles_unchanged':True})
+        from .governance import commit
+        result=commit(root,changes,'rewrite',sorted(domains),{'notes':len(rewritten),'titles_unchanged':True})
         result.update(notes=rewritten,unchanged=unchanged)
         return result
 

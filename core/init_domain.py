@@ -31,7 +31,7 @@ def init_domain(name,prefixes,root=None):
 
 def unbind_domain(name,root=None):
     """Drop a domain's folder bindings (a journaled change to bindings.json). Refused for a global domain, an unknown name, and while notes or archived notes remain:
-    move them first (remap-plan), so no note is orphaned. The domain's folders stay on disk."""
+    move them first (remap), so no note is orphaned. The domain's folders stay on disk."""
     from .common import global_domains
     from .repository import _note_files
     root=Path(root or memory_root()).resolve();name=safe_domain(name)
@@ -42,7 +42,7 @@ def unbind_domain(name,root=None):
         if name in global_domains(root):raise ValueError(f'{name} is a global domain; global domains are not bound to folders')
         if name not in domains:raise ValueError(f'{name} is not a bound domain')
         held=sum(len(_note_files(root,d)) for d in (root/'domains'/name/'notes',root/'domains'/name/'archive') if d.is_dir())
-        if held:raise ValueError(f'{name} still holds {held} note(s) (notes and archive): move them with remap-plan first, then unbind')
+        if held:raise ValueError(f'{name} still holds {held} note(s) (notes and archive): move them with remap first, then unbind')
         del domains[name]
         aliases=settings.get('domain_aliases')
         if isinstance(aliases,dict):settings['domain_aliases']={k:v for k,v in aliases.items() if v!=name}   # an alias must not name a domain that no longer resolves

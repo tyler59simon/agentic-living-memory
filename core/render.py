@@ -44,6 +44,10 @@ def _plan(r):
     lines=[f"Plan {r['plan_id']}"+(f" ({r['kind']})" if r.get('kind') else '')]+_kv(rest,1)
     return lines+['','Apply it with:',f"  alm {'setup --apply-plan' if relocation else 'apply'} {r['plan_id']} --expected-plan-sha256 {r['digest']}"]
 
+def _direct(r):
+    rest={k:v for k,v in r.items() if k not in ('ok','operation_id','state','kind','undo')+TRAILER}
+    return [f"Done ({r.get('kind') or 'change'}), operation {r['operation_id']}"]+_kv(rest,1)
+
 NOTE_HEAD=('ok','title','type','status','updated','tags','id','domain','body','truncated','stale','currency')
 def _read(r):
     lines=[str(r['title']),'  '+'  '.join(str(r[k]) for k in ('type','status') if r.get(k))+(f"  updated {r['updated']}" if r.get('updated') else '')+f"  {_ref(r)}"]
@@ -79,6 +83,7 @@ def render(result):
     if not isinstance(result,dict):return _s(result)
     if isinstance(result.get('markdown'),str):lines=[result['markdown'].rstrip()]   # recap, history --markdown: already written for a person
     elif result.get('plan_id') and result.get('digest') and result.get('status')!='approval_required':lines=_plan(result)
+    elif result.get('operation_id') and result.get('undo') and isinstance(result.get('summary'),dict):lines=_direct(result)   # a direct write (governance.commit)
     elif 'title' in result and ('body' in result or 'type' in result):lines=_read(result)
     elif result.get('memory') in {'on','off'} and 'session' in result:   # alm off / on / status
         lines=[f"Living Memory is {result['memory']} for this session ({result['session']})"+(': started with LIVING_MEMORY_OFF=1.' if result.get('reason')=='env' else '.')]
@@ -88,6 +93,8 @@ def render(result):
     elif result.get('status') and result.get('id'):lines=_receipt(result)
     elif any(isinstance(result.get(k),list) for k in LISTS):lines=_rows(result)
     else:lines=_kv({k:v for k,v in result.items() if k not in TRAILER})
+    if result.get('operation_id') and result.get('undo') and not lines[0].startswith('Done ('):lines+=['',f"Operation {result['operation_id']}. Undo it with: alm {result['undo']}"]
+    elif result.get('operation_id') and result.get('undo'):lines+=['',f"Undo it with: alm {result['undo']}"]
     for key in TRAILER:
         for item in result.get(key) if isinstance(result.get(key),list) else [result[key]] if result.get(key) else []:lines+=_wrap(f'{key}: {item}',indent='')
     return '\n'.join(lines)

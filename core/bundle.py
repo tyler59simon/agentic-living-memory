@@ -85,7 +85,7 @@ def import_plan(root,source,domain=None):
         parsed[name]=note
     missing=sorted({t for n in parsed.values() for t in n.get('tags',[]) if isinstance(t,str)}-taxonomy(root))
     if missing:
-        raise ValueError('Tags outside this taxonomy: '+', '.join(missing)+'. Add them first with: taxonomy-plan '+' '.join(missing)+', then inspect-plan and apply')
+        raise ValueError('Tags outside this taxonomy: '+', '.join(missing)+'. Add them first with: taxonomy add '+' '.join(missing))
     present={n['id']:n for n in inventory(target,root,retired=True)}
     changes={};created=[];unchanged=[];conflicts=[]
     for name,note in parsed.items():

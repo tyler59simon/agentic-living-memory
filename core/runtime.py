@@ -14,10 +14,10 @@ SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 # Tools that cannot change files; anything else marks the turn as mutating.
 READ_TOOLS={'read','read_file','glob','grep','search','view_image','view','ls','list','webfetch','websearch','web_fetch','web_search','todowrite','task','agent','toolsearch','askuserquestion','exitplanmode','enterplanmode'}
 SHELL_TOOLS={'bash','powershell','shell','run_shell_command','exec_command','local_shell','execute'}
-ALLOWED_SUBCOMMANDS={'ask','sources','source-sync','ingest-scan','search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','promote-plan','projects','systems','changes','views','wiki','resolve','reopen','restore','log','maintenance','recap','status','help','propose','proposals'}
+ALLOWED_SUBCOMMANDS={'ask','sources','source-sync','ingest-scan','search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','archive','rewrite','promote','projects','systems','changes','views','wiki','resolve','reopen','restore','log','maintenance','recap','status','help','propose','proposals'}
 # Subagents are read-only: these are denied for them even though the main agent gets them auto-allowed. Their one write is
 # propose, a draft in .turns/ that only the main agent turns into a note (capture --from-proposal) or rejects.
-MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm','resolve','reopen','restore','off','on'}
+MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm','resolve','reopen','restore','off','on','archive','rewrite','remap','promote','source','project','system','change'}   # `taxonomy add` is the same kind of write: taxonomy_write
 GLOBAL_OPTIONS={'--root','--domain','--cwd','--actor'}
 HOOK_LOCK_TIMEOUT=5
 # Codex has no SessionEnd, so its session start picks up Obsidian edits, at most this often.
@@ -196,11 +196,11 @@ def memory_subcommand(text,grammar=None):
     found={_subcommand(words) for words in parsed}
     return found.pop() if len(found)==1 else None
 
-# Hivemind sets HIVEMIND_SESSION for every program it starts in a terminal. Agents there write plans; only the user applies or undoes them.
-HIVEMIND_GOVERNED={'apply','undo','recover'}   # `setup --apply-plan` also applies a plan; `plan` and the other *-plan commands only write one
+# Hivemind sets HIVEMIND_SESSION for every program it starts in a terminal. Agents there write plans (delete, merge-plan, ...); only the user applies or undoes them, and the direct writes are the user's too.
+HIVEMIND_GOVERNED={'apply','undo','recover','archive','rewrite','remap','promote','source','project','system','change'}   # `setup --apply-plan` and `taxonomy add` are governed too (below)
 
 def hivemind_governed(text,grammar):
-    """True when a shell command applies or undoes a plan: apply, undo, recover or setup --apply-plan. Exact invocations are read by
+    """True when a shell command applies or undoes a plan or makes a direct write: apply, undo, recover, setup --apply-plan, taxonomy add, archive, rewrite and the other HIVEMIND_GOVERNED verbs. Exact invocations are read by
     word; text that cannot be parsed (chained, redirected, expanded) is refused when it names living_memory or a standalone `alm`
     together with a governed word as a separate token."""
     def flag(word):
@@ -208,10 +208,10 @@ def hivemind_governed(text,grammar):
     parsed=_parsed(text,grammar)
     subs=[_subcommand(words) for words in parsed or []]
     if parsed and all(sub and not sub.startswith('-') for sub in subs):   # an option in the subcommand slot (--domain=x, --dom x) is not a subcommand: read the tokens
-        return any(sub in HIVEMIND_GOVERNED or (sub=='setup' and any(flag(w) for w in words)) for sub,words in zip(subs,parsed))
+        return any(sub in HIVEMIND_GOVERNED or (sub=='setup' and any(flag(w) for w in words)) or (sub=='taxonomy' and 'add' in words) for sub,words in zip(subs,parsed))
     tokens=[t for t in re.split(r'''[\s;&|()"'`{}<>=,]+''',text) if t]
     named=any(t.lower().endswith(('living_memory.py','living_memory')) or re.split(r'[\\/]',t)[-1].lower() in ('alm','alm.exe','alm.cmd') for t in tokens)
-    return named and any(t in HIVEMIND_GOVERNED or flag(t) for t in tokens)
+    return named and (any(t in HIVEMIND_GOVERNED or flag(t) for t in tokens) or ('taxonomy' in tokens and 'add' in tokens))
 
 # Options that read a file into a note. Auto-approval covers only files the session could already see.
 FILE_OPTIONS=('--content-file','--body-file','--payload-file')
@@ -285,13 +285,21 @@ def proposals_write(text,grammar):
 
 SUBAGENT_DENY='Living Memory: subagents are read-only. Stage the finding with propose for the main agent instead of running '
 
+def taxonomy_write(text,grammar):
+    """True when a `taxonomy` command adds tags (`taxonomy add`); plain `taxonomy` only reads."""
+    for words in _parsed(text,grammar) or []:
+        index=0
+        while index<len(words) and words[index]!='taxonomy':index+=2 if words[index] in GLOBAL_OPTIONS else 1
+        if 'add' in words[index+1:]:return True   # any word, as in maintenance_write
+    return False
+
 def memory_write(subcommand,text,grammar):
     """True when a memory command writes anything a subagent may not: MUTATING_SUBCOMMANDS, or the writing forms of views,
     maintenance, wiki and proposals. propose is the subagent's one write and is not counted."""
     if not subcommand:return False
     return (subcommand in MUTATING_SUBCOMMANDS or (subcommand=='views' and views_write(text,grammar))
             or (subcommand=='maintenance' and maintenance_write(text,grammar)) or (subcommand=='wiki' and wiki_write(text,grammar))
-            or (subcommand=='proposals' and proposals_write(text,grammar)))
+            or (subcommand=='proposals' and proposals_write(text,grammar)) or (subcommand=='taxonomy' and taxonomy_write(text,grammar)))
 
 def auto_allowed(text,grammar,root,cwd,scratch=None):
     """True when an allow-listed memory command may skip the permission prompt: it uses the hook's own store
@@ -1767,7 +1775,7 @@ def _process(harness,event,payload,root=None,info=None):
         name=str(payload.get('tool_name') or payload.get('toolName') or '').lower();text=shell_command(args) if name in SHELL_TOOLS else ''
         if text and hivemind_governed(text,shell_grammar(name)):
             detail['tool']=name;detail['decision']='deny:hivemind'
-            result['deny']='Memory plans are applied and undone by you in Hivemind, not by an agent. Write the plan; the user applies it.'
+            result['deny']='Applying or undoing a plan, and the direct writes (archive, rewrite, remap, promote, taxonomy add, source, project, system, change), are done by you in Hivemind, not by an agent. Write a plan for a delete or merge; for the rest, tell the user what to change.'
             return result
     if event=='pre-tool-use' and not domain and _subagent(payload):
         # Before the unbound-project return too: from an unbound folder a subagent could still capture --global or settle a proposal.
@@ -2079,7 +2087,7 @@ def _process(harness,event,payload,root=None,info=None):
             detail['decision']='deny:subagent'
             result['deny']='Living Memory: syncing a remote source reaches the network and is not run by subagents; ask the main agent to run source-sync.'
             return result
-        if subcommand in ALLOWED_SUBCOMMANDS and not networked:
+        if subcommand in ALLOWED_SUBCOMMANDS and not networked and not (subcommand=='taxonomy' and taxonomy_write(text,grammar)):   # `taxonomy add` keeps the normal prompt
             # Another store, or an input file from outside the project, is the user's call: no auto-approval.
             if auto_allowed(text,grammar,root,cwd,payload.get('scratchpad_dir') or payload.get('scratchpadDir')):
                 result['allow']='Living Memory read/capture script command.'

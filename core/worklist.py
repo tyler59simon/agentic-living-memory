@@ -4,7 +4,7 @@ Kinds, in this order: stale (a hashed file or a map's cited file changed or is m
 belief left for INTERIM_DAYS), duplicate (a same-type note with a similar title or body), warned (a content check of
 notes.QUALITY_CHECKS), noisy (retrieved often, never used). The worklist only proposes: it writes nothing and runs no git
 (maps and briefs are judged from the currency cache SessionStart and prompts keep, while its fingerprint and the git head still match;
-only the explicit `review` path, working_tree=True, runs one bounded `git diff HEAD` per map for uncommitted edits to cited files). Archive and merge are plans the user applies."""
+only the explicit `review` path, working_tree=True, runs one bounded `git diff HEAD` per map for uncommitted edits to cited files). A merge is a plan the user applies; an archive is a direct, undoable command."""
 from __future__ import annotations
 from collections import Counter
 from . import clock
@@ -192,12 +192,12 @@ def _action(kinds,note,pair):
     """What a person or agent does first for a note: its first kind decides."""
     first=kinds[0]
     if first=='duplicate':return 'supersede' if pair and pair.get('same') else 'merge-plan'
-    if first=='due':return 'resolve' if _acts(note) else 'plan archive' if note.get('type')=='status' else 'confirm'
+    if first=='due':return 'resolve' if _acts(note) else 'archive' if note.get('type')=='status' else 'confirm'
     return 'update'   # stale, interim, warned and noisy (a sharper title or summary; or confirm it): never an archive
 
 def worklist(root,domains,kinds=None,limit=100,tags=None,cheap=False,notes=None,today=None,working_tree=False):
     """{'items': rows, 'counts': {kind: notes}, 'total': distinct notes} for the active notes of these domains. Each row is one note with all
-    its kinds (in KINDS order), a reason, an action (confirm, update, supersede, resolve, merge-plan, plan archive) and for a duplicate its
+    its kinds (in KINDS order), a reason, an action (confirm, update, supersede, resolve, merge-plan, archive) and for a duplicate its
     `pair`. kinds limits what is computed; cheap skips the duplicate scan. notes are already loaded active notes carrying their `domain`
     (SessionStart has them); tags keeps notes with all of these tags. today is the local date the due, interim and noisy rules count from.
     Each row of a note that tracks files, digest sources or a repo carries `currency` (currency_of; not with cheap). working_tree=True

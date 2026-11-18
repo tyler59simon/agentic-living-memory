@@ -542,7 +542,7 @@ def validate(note, domain, root=None, new=False, extra_tags=()):
         if any(t.split("/", 1)[0] not in FACETS or "/" not in t for t in tags):
             raise ValueError("Tags must use subject/, concern/, platform/, technology/, project/, or system/ facets")
     if known and set(tags) - set(known):
-        raise ValueError("Unknown tags require an approved taxonomy plan: " + ", ".join(sorted(set(tags) - set(known))))
+        raise ValueError("Unknown tags must be added to the taxonomy first (taxonomy add): " + ", ".join(sorted(set(tags) - set(known))))
     if new and not known:
         raise ValueError("Initialize the controlled taxonomy before capturing notes")
     found = find_secret("\n".join([str(note.get(k) or "") for k in ("title", "body", "context")] + [c for c in note.get("commands") or [] if isinstance(c, str)] + [str((note.get("last_retirement") or {}).get("reason") or "")]

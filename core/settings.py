@@ -1,7 +1,7 @@
 """config get and config set: the store-wide settings kept at the top level of bindings.json (FEAT-5).
 
 `set` validates the value, then writes bindings.json through one journaled transaction (kind config_set), so `undo`
-reverts it. Domain bindings and aliases are not settings: bind, unbind and remap-plan own them."""
+reverts it. Domain bindings and aliases are not settings: bind, unbind and remap own them."""
 import json
 from pathlib import Path
 from .common import load_bindings,safe_domain

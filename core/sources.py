@@ -2,7 +2,7 @@
 
 Sources are folders of docs, exported wikis or code. A bound repo is an implicit source (every git repo under a bound
 folder) unless the registry turns that off for the domain; other sources are registered in sources.json through
-source-plan (hash-approved, journaled, undoable), like projects.json. `sync` walks each source, skips binaries, large
+`source` (direct, journaled, undoable), like projects.json. `sync` walks each source, skips binaries, large
 files and vendored folders, honours the top-level .gitignore, redacts credentials, cuts every file into chunks of about
 1,200 characters at headings or top-level definitions, and keeps them in domains/<D>/sources.sqlite3: derived data
 (FTS5, optional vectors), never canonical, never backed up, rebuilt by `source-sync --rebuild`. Only (mtime, size)
@@ -66,12 +66,12 @@ def _globs(value,field):
     if not isinstance(value,list) or len(value)>20:raise ValueError(f'{field} must be a list of at most 20 glob patterns')
     return list(dict.fromkeys(_text(v,field,1,200) for v in value))
 
-def source_plan(root,action,payload,domain=None):
-    """A reviewed plan adding or removing one registered source, or switching a domain's implicit repo sources on or off
+def source_write(root,action,payload,domain=None):
+    """A direct, journaled write adding or removing one registered source, or switching a domain's implicit repo sources on or off
     (kinds source_add, source_remove, source_implicit)."""
-    from .governance import plan
+    from .governance import commit
     root=Path(root).resolve()
-    if action not in FIELDS:raise ValueError('source-plan action must be add, remove or implicit')
+    if action not in FIELDS:raise ValueError('source action must be add, remove or implicit')
     if not isinstance(payload,dict):raise ValueError('Payload must be a JSON object')
     extra=set(payload)-FIELDS[action]
     if extra:raise ValueError('Unknown payload fields: '+', '.join(sorted(extra)))
@@ -82,13 +82,13 @@ def source_plan(root,action,payload,domain=None):
             if not isinstance(payload.get('enabled'),bool):raise ValueError('implicit requires enabled true or false')
             if payload['enabled']:implicit.pop(named,None)
             else:implicit[named]=False
-            return plan(root,{'sources.json':_registry(entries,implicit)},'source_implicit',[],{'domain':named,'enabled':payload['enabled'],'files':1})
+            return commit(root,{'sources.json':_registry(entries,implicit)},'source_implicit',[],{'domain':named,'enabled':payload['enabled'],'files':1})
         name=payload.get('name')
         if not isinstance(name,str) or not SLUG.fullmatch(name):raise ValueError('name must match [a-z0-9][a-z0-9-]{0,39}')
         if action=='add' and len(name)<2:raise ValueError('name must be at least 2 characters: `w:Page.md` reads as a Windows drive, so a one-letter source could not be named in a digest\'s `sources`')
         if action=='remove':
             if name not in {s['name'] for s in entries}:raise ValueError(f'Unknown source {name}')
-            return plan(root,{'sources.json':_registry([s for s in entries if s['name']!=name],implicit)},'source_remove',[],{'name':name,'files':1})
+            return commit(root,{'sources.json':_registry([s for s in entries if s['name']!=name],implicit)},'source_remove',[],{'name':name,'files':1})
         if name in {s['name'] for s in entries}:raise ValueError(f'Source {name} already exists')
         if payload.get('kind') not in KINDS:raise ValueError('kind must be one of '+', '.join(KINDS))
         if payload['kind'] in REMOTE:
@@ -97,7 +97,7 @@ def source_plan(root,action,payload,domain=None):
                 found=find_secrets('\n'.join(v for v in ([value] if isinstance(value,str) else value if isinstance(value,list) else []) if isinstance(v,str)))
                 if found:raise ValueError(f'Potential credential detected ({found[0][0]}) in the source fields; token_env takes the NAME of an environment variable, never the token')
             entry=dict({'name':name,'domain':_bound(root,payload.get('domain') or domain),'kind':payload['kind']},**validate(payload['kind'],payload),added=now())
-            return plan(root,{'sources.json':_registry(entries+[entry],implicit)},'source_add',[],{'name':name,'domain':entry['domain'],'kind':entry['kind'],'base_url':entry['base_url'],'token_env':entry['token_env'],'files':1})
+            return commit(root,{'sources.json':_registry(entries+[entry],implicit)},'source_add',[],{'name':name,'domain':entry['domain'],'kind':entry['kind'],'base_url':entry['base_url'],'token_env':entry['token_env'],'files':1})
         if set(payload)&REMOTE_FIELDS:raise ValueError(f"{', '.join(sorted(set(payload)&REMOTE_FIELDS))} apply to confluence and notion sources only")
         if not isinstance(payload.get('path'),str):raise ValueError('add requires path (an absolute folder)')
         folder=_repos([payload['path']])[0]
@@ -108,7 +108,7 @@ def source_plan(root,action,payload,domain=None):
                'include':_globs(payload.get('include'),'include'),'exclude':_globs(payload.get('exclude'),'exclude'),'added':now()}
         found=find_secrets('\n'.join([name,folder]+entry['include']+entry['exclude']))
         if found:raise ValueError(f'Potential credential detected ({found[0][0]}) in the source fields; remove it')
-        return plan(root,{'sources.json':_registry(entries+[entry],implicit)},'source_add',[],{'name':name,'domain':entry['domain'],'kind':entry['kind'],'path':folder,'files':1})
+        return commit(root,{'sources.json':_registry(entries+[entry],implicit)},'source_add',[],{'name':name,'domain':entry['domain'],'kind':entry['kind'],'path':folder,'files':1})
 
 def _bound(root,value):
     """The canonical domain a source belongs to: it must be bound or have a folder already."""

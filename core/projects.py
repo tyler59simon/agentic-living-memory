@@ -1,6 +1,6 @@
 """Project registry (projects.json): named work contexts with repo folders, a charter note and a project/<slug> tag.
 
-Projects are created and changed only through project-plan (hash-approved, journaled, undoable)."""
+Projects are created and changed only through `project` (direct, journaled, undoable)."""
 from __future__ import annotations
 import os,re,uuid
 from pathlib import Path
@@ -93,11 +93,11 @@ def _clean(values,base):
 
 def _registry(entries):return canonical_json({'version':1,'projects':sorted(entries,key=lambda p:p['slug'])})
 
-def project_plan(root,action,payload):
-    """A reviewed plan creating, updating or archiving one project (kinds project_create, project_update, project_archive)."""
-    from .governance import plan
+def project_write(root,action,payload):
+    """A direct, journaled write creating, updating or archiving one project (kinds project_create, project_update, project_archive)."""
+    from .governance import commit
     root=Path(root).resolve()
-    if action not in FIELDS:raise ValueError('project-plan action must be create, update or archive')
+    if action not in FIELDS:raise ValueError('project action must be create, update or archive')
     if not isinstance(payload,dict):raise ValueError('Payload must be a JSON object')
     extra=set(payload)-FIELDS[action]
     if extra:raise ValueError('Unknown payload fields: '+', '.join(sorted(extra)))
@@ -124,11 +124,11 @@ def project_plan(root,action,payload):
             path,note,text=build_note(title,charter['body'],['subject/project','concern/knowledge',tag(slug)],domain,root,'context',note_id=note_id,extra_tags=[tag(slug)])
             entry['charter']=f'{domain}:{note_id}'
             changes['projects.json']=_registry(others+[entry]);changes[path.relative_to(root).as_posix()]=text
-            return plan(root,changes,'project_create',[domain],{'slug':slug,'tag':tag(slug),'added_tag':added,'charter':entry['charter'],'files':len(changes)})
+            return commit(root,changes,'project_create',[domain],{'slug':slug,'tag':tag(slug),'added_tag':added,'charter':entry['charter'],'files':len(changes)})
         if not current:raise ValueError(f'Unknown project {slug}')
         values={'status':'archived'} if action=='archive' else {k:v for k,v in payload.items() if k!='slug'}
         entry=_clean(values,current);entry['updated']=stamp
-        return plan(root,{'projects.json':_registry(others+[entry])},'project_'+action,[],{'slug':slug,'fields':sorted(values),'files':1})
+        return commit(root,{'projects.json':_registry(others+[entry])},'project_'+action,[],{'slug':slug,'fields':sorted(values),'files':1})
 
 def _charter_domain(root,named,repos,field='charter.domain'):
     """The charter's domain: the one named (must exist), else the repo's bound domain, else the global domain."""
