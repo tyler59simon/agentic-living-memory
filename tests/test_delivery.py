@@ -83,17 +83,6 @@ class Delivery(StoreFixture):
         apply(self.root,proposal['plan_id'],proposal['digest'])
         self.assertEqual(find_note(b['id'],'demo',self.root)[1]['superseded_by'],a['id'])
         self.assertEqual(len(inventory('demo',self.root)),1)
-    def test_installer_restarts_after_interruption(self):
-        from core import installer_lifecycle as lifecycle,repository
-        source=self.base/'source';(source/'core').mkdir(parents=True);(source/'core/a.py').write_text('a');(source/'core/b.py').write_text('b');target=self.base/'package'
-        proposal=lifecycle.build_plan(target,source);real=repository._write;counter=[0]
-        def crash(path,data):
-            counter[0]+=1
-            if counter[0]==2:raise OSError('interruption')
-            real(path,data)
-        with patch.object(repository,'_write',crash):
-            with self.assertRaises(OSError):lifecycle.apply_plan(proposal,proposal['planSha256'])
-        receipt=lifecycle.apply_plan(proposal,proposal['planSha256']);self.assertEqual(receipt['state'],'committed');self.assertEqual((target/'core/b.py').read_text(),'b')
     def test_scoped_fallback_and_all_labels(self):
         from core.init_domain import init_domain
         from core.notes import capture

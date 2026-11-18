@@ -5,7 +5,6 @@ from core import repository as repo
 from core.notes import capture,change,find_note
 from core.search import search_domain,search_domains,rebuild_index,readonly_query
 from core.init_domain import init_domain
-from core import installer_lifecycle as lifecycle
 
 # Hooks start a detached background `source-sync` for bound git repos; no test run should leave one behind (test_sources turns it back on).
 os.environ.setdefault('LIVING_MEMORY_NO_BACKGROUND','1')
@@ -94,16 +93,6 @@ class StoreCase(StoreFixture):
         self.assertEqual(len(readonly_query('demo','select id from notes',self.root)['rows']),1)
         with self.assertRaises(Exception):readonly_query('demo','delete from notes',self.root)
         with self.assertRaises(Exception):readonly_query('demo','select id from notes; delete from notes',self.root)
-    def test_installer_stale_rollback_has_no_effects(self):
-        source=self.base/'source';(source/'core').mkdir(parents=True)
-        for name in ('a','b'):(source/'core'/f'{name}.py').write_text(name+'1')
-        target=self.base/'target';p=lifecycle.build_plan(target,source);lifecycle.apply_plan(p,p['planSha256'])
-        for name in ('a','b'):(source/'core'/f'{name}.py').write_text(name+'2')
-        p=lifecycle.build_plan(target,source);receipt=lifecycle.apply_plan(p,p['planSha256'])
-        (target/'core/a.py').write_text('user edit')
-        before={p.name:p.read_bytes() for p in (target/'core').glob('*.py')}
-        with self.assertRaises(lifecycle.StalePlanError):lifecycle.rollback(receipt['receipt'])
-        self.assertEqual(before,{p.name:p.read_bytes() for p in (target/'core').glob('*.py')})
     def test_taxonomy_and_credentials(self):
         with self.assertRaises(ValueError):capture('Bad','body',[],'demo',self.root)
         with self.assertRaises(ValueError):self.note(body='-----BEGIN RSA PRIVATE KEY-----')

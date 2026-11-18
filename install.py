@@ -17,7 +17,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from core.installer_lifecycle import apply_plan as apply_lifecycle_plan
 from core.installer_lifecycle import build_plan as build_lifecycle_plan
 
 SOURCE = Path(__file__).resolve().parent

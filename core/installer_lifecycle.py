@@ -396,11 +396,6 @@ def _read_source(source_root: Path, rel: str, expected_hash: str) -> bytes:
     return content
 
 
-def apply_plan(plan: dict[str, Any], expected_plan_sha256: str) -> dict[str, Any]:
-    from core.durable_install import apply_package
-    return apply_package(plan, expected_plan_sha256)
-
-
 def _load_receipt(path: Path) -> dict[str, Any]:
     try:
         metadata = path.lstat()
@@ -517,12 +512,9 @@ def main(argv: list[str] | None = None) -> int:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--plan", action="store_true")
     group.add_argument("--uninstall-plan", action="store_true")
-    group.add_argument("--apply", action="store_true")
-    group.add_argument("--uninstall-apply", action="store_true")
     group.add_argument("--status", action="store_true")
     group.add_argument("--rollback", type=Path)
     parser.add_argument("--operation-id")
-    parser.add_argument("--expected-plan-sha256")
     args = parser.parse_args(argv)
     try:
         if args.rollback:
@@ -531,15 +523,8 @@ def main(argv: list[str] | None = None) -> int:
             if not args.operation_id:
                 raise InstallError("--operation-id is required for status")
             result = status(args.target, args.operation_id)
-        elif args.plan or args.uninstall_plan:
-            result = build_plan(args.target, args.source, args.uninstall_plan)
         else:
-            if not args.expected_plan_sha256:
-                raise InstallError("--expected-plan-sha256 is required for apply")
-            plan = build_plan(args.target, args.source, args.uninstall_apply)
-            if args.operation_id and plan["operationId"] != args.operation_id:
-                raise StalePlanError("A saved plan must be supplied to apply using the Python API")
-            result = apply_plan(plan, args.expected_plan_sha256)
+            result = build_plan(args.target, args.source, args.uninstall_plan)
         _emit(result)
         return 0
     except InstallError as exc:
