@@ -58,8 +58,8 @@ def _locate(value,prefixes,repos):
     text=text.rstrip('/') or '.'
     raw=Path(text);candidates=[raw] if raw.is_absolute() else [prefix/text for prefix in prefixes]
     path=next((c for c in candidates if probe(c,Path.exists)),candidates[0] if candidates else None)
-    # '.' is the bound folder itself: shown by its folder name (the repo's, when a registered repo owns it).
-    shown,owner=((prefixes[0].name if prefixes else '') if text=='.' else text),None
+    # '.' is the bound folder itself, always a folder: shown by the name of the binding it resolved to (the repo's, when a registered repo owns it).
+    shown,owner=((path.name if path is not None else '') if text=='.' else text),None
     if path is not None:
         full=Path(os.path.normpath(path)).as_posix().rstrip('/');folded=full.casefold()
         for repo in repos:
@@ -68,7 +68,7 @@ def _locate(value,prefixes,repos):
                 shown,owner=(base.rsplit('/',1)[-1]+full[len(base):]).strip('/'),repo;break
     last=shown.rsplit('/',1)[-1]
     exists=path is not None and probe(path,Path.exists)
-    return shown,owner,(probe(path,Path.is_dir) if exists else '.' not in last)
+    return shown,owner,(text=='.' or (probe(path,Path.is_dir) if exists else '.' not in last))
 
 def _split_lead(body,summary):
     """The body without its leading summary paragraph, which the page shows as the lead."""

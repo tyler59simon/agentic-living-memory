@@ -97,6 +97,16 @@ class Model(Fixture):
         n={n['id']:n for n in wiki.wiki_model('demo',self.root)['notes']}[loose]
         self.assertEqual((n['files'],n['filename'],n['project']),(['project'],'','general'));self.assertIsNotNone(n['folder'])
 
+    def test_the_bound_folder_is_named_by_the_binding_it_resolved_to_and_stays_a_folder(self):
+        from core.init_domain import init_domain
+        (self.base/'real.v2').mkdir()
+        init_domain('multi',[str(self.base/'aaaa-gone-but-longest'),str(self.base/'real.v2')],self.root)   # longest first: the missing one is tried first
+        init_domain('ghost',[str(self.base/'ghost.v2')],self.root)   # a dotted folder that is not there
+        for domain,name in (('multi','real.v2'),('ghost','ghost.v2')):
+            note=self.add('About '+domain,'The bound folder.',domain=domain,files=['.'])
+            n={n['id']:n for n in wiki.wiki_model(domain,self.root)['notes']}[note]
+            self.assertEqual((n['files'],n['filename']),([name],''),domain)
+
     def test_unreadable_paths_do_not_stop_the_wiki(self):
         from unittest.mock import patch
         self.add('hive/src/app.ts: root','The root.',['project/hive'],files=['hive/src/app.ts'])
