@@ -199,6 +199,12 @@ class LauncherInstall(StoreFixture):
         os.chdir(elsewhere)
         with self.assertRaisesRegex(ValueError,'--home'):self.apply(removal)
         self.assertTrue((self.home/'app/living_memory.py').exists())
+    def test_a_tampered_uninstall_plan_is_rejected_before_any_harness_is_probed(self):   # NEW-1
+        self.apply(self.plan());removal=self.plan(True);path=self.home/'.plans'/(removal['plan_id']+'.json');value=json.loads(path.read_text())
+        value['summary']['homes']=[['claude',str(self.base/'anywhere')]];path.write_text(json.dumps(value))
+        with patch.object(self.install,'legacy_references') as scan,patch.object(self.install,'harness_configs') as configs:
+            with self.assertRaises(Exception):self.apply(removal)
+        scan.assert_not_called();configs.assert_not_called();self.assertTrue((self.home/'app/living_memory.py').exists())
     def test_uninstall_checks_a_custom_home_given_with_home(self):
         from integrations import setup
         from core.governance import apply

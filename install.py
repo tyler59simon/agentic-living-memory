@@ -339,10 +339,10 @@ def apply_plan(root, plan_id, digest, extra_homes=()):
     value = read_json(Path(root) / '.plans' / f'{plan_id}.json') or {}
     unsigned = {k: v for k, v in value.items() if k != 'digest'}
     summary = value.get('summary') or {}
-    if value.get('kind') == 'package_uninstall':
-        _refuse_if_in_use([tuple(h) for h in summary.get('homes') or []] + list(extra_homes))
     if value.get('digest') != digest or hashlib.sha256(canonical_json(unsigned).encode()).hexdigest() != digest or 'launcher' not in summary:
         return apply(root, plan_id, digest)   # unverified or not a package plan: governance decides
+    if value.get('kind') == 'package_uninstall':   # only a verified plan names the folders to probe
+        _refuse_if_in_use([tuple(h) for h in summary.get('homes') or []] + list(extra_homes))
     record, change = summary['launcher'], summary.get('path_change')
     if _launcher_stale(record) or (change and _path_stale(change) and not _path_done(change)):
         raise ValueError('stale plan: the launcher or PATH changed since this plan was made; plan again')
