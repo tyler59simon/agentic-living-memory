@@ -116,21 +116,26 @@ def _rule_summary(note):
 def _rules_block(rules,flag,room=None):
     """(lines, [(rule, line)] shown in full): RULES_HEADER, then each rule's title and whole summary while the block fits RULES_BUDGET; from the
     first that does not fit, the rest show by title. With `room` (what a harness limit leaves), the block also fits in room: the titles that do
-    not fit become one RULES_MORE line, which stands alone when even the header does not fit. Without it no rule is left out."""
+    not fit become one RULES_MORE line, which stands alone when even the header does not fit. Without it no rule is left out. Room for that line
+    is kept only when the whole block does not fit without it."""
     if not rules:return [],[]
-    if room is not None and len(RULES_HEADER)+MORE_ROOM>room:
-        more=RULES_MORE.format(len(rules));return ([more] if len(more)<=room else []),[]
-    whole=RULES_BUDGET if room is None else min(RULES_BUDGET,room-MORE_ROOM)
-    lines=[RULES_HEADER];size=len(RULES_HEADER);full=[];cut=False
-    for i,n in enumerate(rules):
-        head=f"- {short_ref(n['domain'],n['id'])} {flag(n)}{' '.join(str(n['title']).split())}";text=_rule_summary(n)
-        line=head+(' — '+text if text else '')
-        cut=cut or size+1+len(line)>whole
-        if cut:
-            line=head+RULE_TITLE_ONLY
-            if room is not None and size+1+len(line)>room-MORE_ROOM:lines.append(RULES_MORE.format(len(rules)-i));break
-        else:full.append((n,line))
-        size+=1+len(line);lines.append(line)
+    def build(reserve):
+        if room is not None and len(RULES_HEADER)+reserve>room:
+            more=RULES_MORE.format(len(rules));return ([more] if len(more)<=room else []),[],False
+        whole=RULES_BUDGET if room is None else min(RULES_BUDGET,room-reserve)
+        lines=[RULES_HEADER];size=len(RULES_HEADER);full=[];cut=False
+        for i,n in enumerate(rules):
+            head=f"- {short_ref(n['domain'],n['id'])} {flag(n)}{' '.join(str(n['title']).split())}";text=_rule_summary(n)
+            line=head+(' — '+text if text else '')
+            cut=cut or size+1+len(line)>whole
+            if cut:
+                line=head+RULE_TITLE_ONLY
+                if room is not None and size+1+len(line)>room-reserve:lines.append(RULES_MORE.format(len(rules)-i));return lines,full,False
+            else:full.append((n,line))
+            size+=1+len(line);lines.append(line)
+        return lines,full,True
+    lines,full,complete=build(0)
+    if not complete and room is not None:lines,full,_=build(MORE_ROOM)
     return lines,full
 
 OPEN_NOTES=3

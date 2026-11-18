@@ -499,6 +499,7 @@ def _propose(root,data,domain,session,to_global,redact=False):
     data=dict(data)
     if (data.get('type') or 'knowledge') not in NOTE_TYPES:raise ValueError('Unknown note type: '+str(data.get('type'))+'; use one of '+', '.join(NOTE_TYPES))
     from .repository import RULE_TYPES,rule_type_error
+    if 'rule' in data and not isinstance(data['rule'],bool):raise ValueError('rule must be true or false')   # as capture checks it; the draft keeps it
     if data.get('rule') is True and (data.get('type') or 'knowledge') not in RULE_TYPES:raise ValueError(rule_type_error(data.get('type')))
     if redact:_redact(data)
     # Everything the draft file stores is screened, its digest metadata included.

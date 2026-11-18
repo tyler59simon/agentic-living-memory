@@ -460,6 +460,17 @@ class Rule(StoreFixture):
         saved = self.ok('capture', '--from-proposal', plain['id'], '--rule')
         self.assertIs(self.get(saved)['rule'], True)
 
+    def test_propose_refuses_a_non_bool_rule_before_staging(self):
+        payload = self.base / 'draft.json'
+        for bad in (0, 'yes', None):
+            with self.subTest(bad=bad):
+                payload.write_text(json.dumps({'title': 'Release policy', 'body': 'Releases wait for the user.', 'type': 'policy', 'rule': bad,
+                                               'tags': ['subject/project', 'concern/architecture']}), encoding='utf-8')
+                code, result = self.cli('propose', '--session', 's1', '--payload-file', str(payload))
+                self.assertEqual(code, 2, result)
+                self.assertIn('rule must be true or false', result['error']['message'])
+        self.assertEqual(self.ok('proposals', '--status', 'any')['proposals'], [])
+
     def test_a_rule_only_vault_edit_keeps_updated(self):
         a = self.policy()
         build_overlay('demo', self.vault, self.root)

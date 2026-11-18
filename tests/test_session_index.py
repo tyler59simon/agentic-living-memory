@@ -193,19 +193,35 @@ class SessionIndex(StoreFixture):
         self.many(60)
         payload = {'cwd': str(self.base / 'project'), 'session_id': 'cx'}
         kept = lambda context: context[:4000]   # Codex keeps this much of SessionStart (additionalContextLimit, integrations/setup.py)
-        # The test store's CMD is a long python path; the fallback protocol then leaves room only for a count line.
-        tight = runtime.process('codex', 'session-start', payload, self.root)['context']
-        self.assertIn(session_start.RULES_MORE.format(2) + '\n', kept(tight))
-        self.assertNotIn('demo:' + short['id'], json.loads(runtime._pointer(self.root, 'cx').read_text()).get('shown_snippet', {}))
-        with patch('core.runtime.command', return_value='alm --domain demo'):   # an installed store's CMD
+        shown_now = lambda: json.loads(runtime._pointer(self.root, 'cx').read_text()).get('shown_snippet', {})
+        with patch('core.runtime.command', return_value='alm --domain demo'):   # a fixed CMD, so the room left does not depend on this machine's paths
             context = runtime.process('codex', 'session-start', payload, self.root)['context']
-        self.assertIn(session_start.RULES_HEADER, kept(context))
-        shown = json.loads(runtime._pointer(self.root, 'cx').read_text()).get('shown_snippet', {})
-        for note, text in ((short, 'Keep commits small.'), (long, long_text)):
-            with self.subTest(title=note['id'][:8]):
-                self.assertIn(note['id'][:8], kept(context))   # every rule is named inside the limit
-                self.assertEqual('demo:' + note['id'] in shown, f" — {text}\n" in kept(context))   # shown only when its summary arrives whole
-        self.assertIn('demo:' + short['id'], shown)
+            shown = shown_now()
+            self.assertIn(session_start.RULES_HEADER, kept(context))
+            for note, text in ((short, 'Keep commits small.'), (long, long_text)):
+                with self.subTest(title=note['id'][:8]):
+                    self.assertIn(note['id'][:8], kept(context))   # every rule is named inside the limit
+                    self.assertEqual('demo:' + note['id'] in shown, f" — {text}\n" in kept(context))   # shown only when its summary arrives whole
+            self.assertIn('demo:' + short['id'], shown)
+            # A limit that leaves 100 characters after the prefix and the opening line: room only for a count line.
+            start = context.index("Living Memory context for domain 'demo'")
+            limit = start + len(context[start:].split('\n', 1)[0]) + 2 + 100
+            with patch.dict(runtime.SESSION_LIMITS, {'codex': limit}):
+                tight = runtime.process('codex', 'session-start', payload, self.root)['context']
+        self.assertIn(session_start.RULES_MORE.format(2) + '\n', tight[:limit])
+        self.assertNotIn('demo:' + short['id'], shown_now())
+
+    def test_a_block_that_fits_its_room_keeps_no_room_for_the_count(self):
+        rule = {'domain': 'demo', 'id': 'a1b2c3d4-0000', 'title': 'A short rule', 'body': 'Keep commits small.', 'type': 'policy', 'rule': True}
+        line = '- demo:a1b2c3d4 A short rule — Keep commits small.'
+        room = len(session_start.RULES_HEADER) + 1 + len(line)
+        lines, full = session_start._rules_block([rule], lambda n: '', room)
+        self.assertEqual(lines, [session_start.RULES_HEADER, line])
+        self.assertEqual(full, [(rule, line)])
+        two = [rule, dict(rule, id='e5f6a7b8-0000', title='B short rule')]
+        self.assertLess(room, len(session_start.RULES_HEADER) + session_start.MORE_ROOM)
+        lines, _ = session_start._rules_block(two, lambda n: '', room)   # two do not fit, and the header plus the count's room does not either
+        self.assertEqual(lines, [session_start.RULES_MORE.format(2)])
 
     def test_rule_summaries_keep_code_spans_and_the_header_defers_to_current_instructions(self):
         self.rule('Stage tests by glob', 'Run `git add src/*/test/*` and keep **bold** markup as written.')
