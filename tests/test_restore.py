@@ -34,7 +34,7 @@ class Restore(StoreFixture):
         self.assertEqual(code, 0, result)
         return result
 
-    def fail(self, *argv, **kw):
+    def refused(self, *argv, **kw):
         code, result = self.cli(*argv, **kw)
         self.assertNotEqual(code, 0, result)
         return result['error']['message']
@@ -89,7 +89,7 @@ class Restore(StoreFixture):
         clash = self.root / 'domains/demo/notes' / name
         clash.write_text('A user file in the way.\n', encoding='utf-8')
         before = self.snapshot()
-        self.assertIn('collision', self.fail('restore', 'demo:' + a['id']))
+        self.assertIn('collision', self.refused('restore', 'demo:' + a['id']))
         self.assertEqual(self.snapshot(), before)
         self.assertEqual(self.get(a)[1]['status'], 'archived')
 
@@ -100,16 +100,16 @@ class Restore(StoreFixture):
         self.archive({'id': first['id']})
         self.ok('capture', '--type', 'map', '--title', 'repo codebase map two', '--summary', 'The new layout.', '--subject', 'project', '--concern', 'architecture', '--file', str(folder))
         before = self.snapshot()
-        self.assertIn('map', self.fail('restore', 'demo:' + first['id']).lower())
+        self.assertIn('map', self.refused('restore', 'demo:' + first['id']).lower())
         self.assertEqual(self.snapshot(), before)
 
     def test_resolved_and_superseded_notes_are_refused_with_guidance(self):
         plan = self.ok('capture', '--type', 'plan', '--title', 'Ship the batch', '--summary', 'Order of the fixes.', '--action', 'Publish it', '--concern', 'workflow')
         self.ok('resolve', 'demo:' + plan['id'])
-        self.assertIn('reopen', self.fail('restore', 'demo:' + plan['id']))
+        self.assertIn('reopen', self.refused('restore', 'demo:' + plan['id']))
         old = self.note('Old deploy note', 'Use the old script.')
         new = self.note('Deploy with install.py', 'Use install.py.', supersedes=['demo:' + old['id']])
-        message = self.fail('restore', 'demo:' + old['id'])
+        message = self.refused('restore', 'demo:' + old['id'])
         self.assertIn('Superseded by', message)
         self.assertIn(new['id'], message)
 
@@ -119,7 +119,7 @@ class Restore(StoreFixture):
         self.ok('restore', 'demo:' + a['id'])
         before = self.snapshot()
         journals = len(list((self.root / '.operations').glob('*/journal.json')))
-        self.assertIn('Only archived notes can be restored', self.fail('restore', 'demo:' + a['id']))
+        self.assertIn('Only archived notes can be restored', self.refused('restore', 'demo:' + a['id']))
         self.assertEqual(self.snapshot(), before)
         self.assertEqual(len(list((self.root / '.operations').glob('*/journal.json'))), journals)
 
@@ -149,7 +149,7 @@ class Restore(StoreFixture):
             self.note(f'Pointer number {i}', f'Unique words {i} about [the cache](<{Path(a["path"]).name}>).', allow_similar=True)
         before = self.snapshot()
         with patch('core.notes.LINK_UPDATE_MAX', 2):
-            self.assertIn('too_many_link_updates', self.fail('archive', 'demo:' + a['id']))
+            self.assertIn('too_many_link_updates', self.refused('archive', 'demo:' + a['id']))
         self.assertEqual(self.snapshot(), before)
 
     def test_restore_is_main_only_and_the_hook_allows_it_for_the_main_agent(self):
@@ -169,7 +169,7 @@ class Restore(StoreFixture):
     def test_version_lists_the_new_capabilities_and_command(self):
         version = self.ok('version')
         self.assertIn('restore', version['commands'])
-        self.assertEqual(version['capabilities'], {'restore': 1, 'pin': 1, 'history': 3,
+        self.assertEqual(version['capabilities'], {'restore': 1, 'pin': 1, 'rule': 1, 'direct_writes': 1, 'history': 3,
                                                    'maintenance': {'version': 1, 'actions': ['status', 'preview', 'run', 'enable', 'disable', 'history']}})
 
     def test_the_log_shows_restored_and_the_archive_row(self):
