@@ -62,6 +62,30 @@ class Relocation(StoreFixture):
         with self.assertRaises(ValueError) as caught:setup.setup_plan('claude',self.claude)
         self.assertIn('Modified managed handlers preserved',str(caught.exception));self.assertIn(str(self.claude/'settings.json'),str(caught.exception));self.assertIn('claude --hooks',str(caught.exception))
 
+    def edit_handler(self):
+        self.wired_from(setup.ROOT)
+        settings=read_json(self.claude/'settings.json');settings['hooks']['Stop'][0]['hooks'][0]['timeout']=999
+        (self.claude/'settings.json').write_text(json.dumps(settings))
+    def test_adopt_shows_the_handler_diff_and_applies_through_the_plan(self):
+        self.edit_handler()
+        with self.assertRaisesRegex(ValueError,'--adopt'):setup.setup_plan('claude',self.claude)
+        before=(self.claude/'settings.json').read_text()
+        proposed=setup.setup_plan('claude',self.claude,adopt=True);diff=proposed['summary']['adopt']['settings.json']
+        self.assertIn('--- edited settings.json',diff);self.assertIn('+++ managed settings.json',diff);self.assertIn('-          "timeout": 999',diff);self.assertIn('+          "timeout": 15',diff)
+        self.assertEqual((self.claude/'settings.json').read_text(),before)   # a plan changes nothing
+        with self.assertRaisesRegex(ValueError,'digest'):apply(self.claude,proposed['plan_id'],'0'*64)
+        self.apply(self.claude,proposed)
+        self.assertNotIn('999',(self.claude/'settings.json').read_text());self.assertNotIn('adopt',setup.setup_plan('claude',self.claude)['summary'])
+    def test_adopt_shows_the_instruction_block_diff_and_keeps_text_around_it(self):
+        self.wired_from(setup.ROOT);path=self.claude/'CLAUDE.md';text=path.read_text(encoding='utf-8');begin='agentic-living-memory:begin -->'
+        path.write_text('Mine before.'+chr(10)+text.replace(begin,begin+chr(10)+'My own rule.',1),encoding='utf-8')
+        with self.assertRaisesRegex(ValueError,'--adopt'):setup.setup_plan('claude',self.claude)
+        proposed=setup.setup_plan('claude',self.claude,adopt=True);self.assertIn('-My own rule.',proposed['summary']['adopt']['CLAUDE.md'])
+        self.apply(self.claude,proposed);after=path.read_text(encoding='utf-8')
+        self.assertNotIn('My own rule.',after);self.assertTrue(after.startswith('Mine before.'));self.assertEqual(after.count('agentic-living-memory:begin'),1)
+    def test_adopt_is_a_plan_flag_only(self):
+        with self.assertRaises(SystemExit):setup.main(['claude','--home',str(self.claude),'--apply-plan','a'*32,'--expected-plan-sha256','b'*64,'--adopt'])
+
     def test_retire_refuses_while_referenced_then_removes_owned_files(self):
         import install
         home=self.base/'local'/'agentic-living-memory'

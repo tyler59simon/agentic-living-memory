@@ -1,11 +1,11 @@
 """Plan-bound native adapter setup. Never changes sandbox or trust policies."""
 from __future__ import annotations
-import argparse,hashlib,json,os,re,shutil,sys
+import argparse,difflib,hashlib,json,os,re,shutil,sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from core.repository import read_json,canonical_json,digest
 from core.governance import plan,apply
-from core.instructions import INSTRUCTION_FILE,instruction_block as _block,merge_block
+from core.instructions import BLOCK,INSTRUCTION_FILE,instruction_block as _block,merge_block
 ROOT=Path(__file__).resolve().parents[1]
 EVENTS={'SessionStart':'session-start','UserPromptSubmit':'user-prompt','SubagentStart':'subagent-start','PreToolUse':'pre-tool-use','Stop':'stop','PreCompact':'pre-compact'}
 # Tools that can write files or run the memory script need the guard. Read, Glob, Grep and subagent spawns
@@ -106,14 +106,26 @@ def instruction_block(harness,enable_hooks):
 
 def pretty(value):return json.dumps(value,indent=2,ensure_ascii=False)+'\n'
 
-def setup_plan(harness,home=None,enable_hooks=False,uninstall=False):
+def _diff(name,edited,managed):
+    """A unified diff from the edited text to what this package would write."""
+    return '\n'.join(difflib.unified_diff(edited.splitlines(),managed.splitlines(),'edited '+name,'managed '+name,lineterm=''))
+
+def _refuse(what,path,harness,uninstall):
+    raise ValueError(f'{what} preserved: {path} was edited. Run "{sys.executable}" "{ROOT/"integrations"/"setup.py"}" {harness} {'--uninstall-plan' if uninstall else '--hooks'} --adopt to see the difference and take ownership, or undo the edit and run it without --adopt')
+
+def setup_plan(harness,home=None,enable_hooks=False,uninstall=False,adopt=False):
     if harness not in CONFIG:raise ValueError('Unknown harness')
     home=Path(home or os.environ.get(harness.upper()+'_HOME',Path.home()/('.'+harness))).expanduser().resolve();home.mkdir(parents=True,exist_ok=True)
     state=read_json(home/'.living-memory-ownership.json',{'files':{},'instruction_hash':None})
     instruction=INSTRUCTION_FILE[harness]
     path=home/instruction;original=path.read_text(encoding='utf-8') if path.exists() else ''
     block=instruction_block(harness,enable_hooks)
-    text=merge_block(original,block,state.get('instruction_hash'),digest,uninstall)
+    owned_hash=state.get('instruction_hash');adopted={};edited=None
+    found=BLOCK.findall(original)
+    if len(found)==1 and digest(found[0].encode())!=owned_hash:
+        if not adopt:_refuse('Unknown or modified managed instructions',path,harness,uninstall)
+        adopted[instruction]=(found[0],'' if uninstall else block);owned_hash=digest(found[0].encode())
+    text=merge_block(original,block,owned_hash,digest,uninstall)
     changes={instruction:text};owned=dict(state.get('files',{}));config_name=CONFIG[harness]
     config_path=home/config_name
     if harness!='factory' or enable_hooks or config_name in owned:
@@ -121,8 +133,11 @@ def setup_plan(harness,home=None,enable_hooks=False,uninstall=False):
         owned_handlers=state.get('handlers',{}).get(config_name)
         if owned_handlers is not None:
             if digest(canonical_json(managed_handlers(current,harness)).encode())!=owned_handlers:
-                raise ValueError(f'Modified managed handlers preserved: the hook entries in {config_path} that this package manages were edited. Undo the edit, or remove those entries, then run "{sys.executable}" "{ROOT/"integrations"/"setup.py"}" {harness} --hooks again')
-        elif config_name in owned and digest(canonical_json(current).encode())!=owned[config_name]:raise ValueError('Modified managed hook configuration preserved')
+                if not adopt:_refuse('Modified managed handlers',config_path,harness,uninstall)
+                edited=pretty(managed_handlers(current,harness))
+        elif config_name in owned and digest(canonical_json(current).encode())!=owned[config_name]:
+            if not adopt:_refuse('Modified managed hook configuration',config_path,harness,uninstall)
+            edited=pretty(current)
         generated=hooks(harness)
         if harness=='copilot':
             if current and config_name not in owned:raise ValueError('Unknown existing Copilot file preserved')
@@ -141,25 +156,32 @@ def setup_plan(harness,home=None,enable_hooks=False,uninstall=False):
             else:updated=events
             if harness=='codex' and not uninstall:updated.setdefault('description','Codex user-level lifecycle hooks.')
         changes[config_name]=pretty(updated) if updated is not None else None
+        if edited is not None:
+            managed=pretty(updated if harness=='copilot' else managed_handlers(updated,harness)) if updated is not None else pretty({})
+            adopted[config_name]=(edited,managed)
         if updated is not None:owned[config_name]=digest(canonical_json(updated).encode())
     handler_state=dict(state.get('handlers',{}))
     if config_name in changes and harness!='copilot' and not uninstall:handler_state[config_name]=digest(canonical_json(managed_handlers(updated,harness)).encode())
     changes['.living-memory-ownership.json']=None if uninstall else canonical_json({'schema':2,'files':owned,'handlers':handler_state,'instruction_hash':digest(block.encode())})
     summary={'harness':harness,'hooks':harness!='factory' or enable_hooks,'package':str(ROOT),'interpreter':sys.executable,'sandbox':'unchanged','trust':'native user review required'}
+    if adopted:summary['adopt']={name:_diff(name,*texts) for name,texts in adopted.items()}
     if harness=='factory':summary['note']='Factory: hooks.json shape verified against docs; not exercised in a live Droid session.'
     if harness=='copilot':summary['note']='Copilot: event names verified against the CLI hooks reference; not exercised in a live session.'
     if harness=='codex':summary['note']='Codex: handlers carry status messages and context limits; handlers of the old CODEX_HOME/agentic-living-memory copy are replaced.'
     return plan(home,changes,harness+'_uninstall' if uninstall else harness+'_setup',summary=summary)
 
 def main(argv=None):
-    p=argparse.ArgumentParser();p.add_argument('harness',choices=sorted(CONFIG));p.add_argument('--home',type=Path);p.add_argument('--location',type=Path);p.add_argument('--hooks',action='store_true');p.add_argument('--uninstall-plan',action='store_true');p.add_argument('--apply-plan');p.add_argument('--expected-plan-sha256');a=p.parse_args(argv)
+    p=argparse.ArgumentParser();p.add_argument('harness',choices=sorted(CONFIG));p.add_argument('--home',type=Path);p.add_argument('--location',type=Path);p.add_argument('--hooks',action='store_true');p.add_argument('--uninstall-plan',action='store_true');p.add_argument('--adopt',action='store_true',help='Take ownership of a managed block or handler you edited, after showing the difference in the plan');p.add_argument('--apply-plan');p.add_argument('--expected-plan-sha256');a=p.parse_args(argv)
     home=a.home or Path(os.environ.get(a.harness.upper()+'_HOME',Path.home()/('.'+a.harness)))
     if not a.uninstall_plan and not a.apply_plan:
         from core.storage import ensure_setup
         ensure_setup(a.location)
     if a.apply_plan:
         if not a.expected_plan_sha256:p.error('Expected plan digest required')
+        if a.adopt:p.error('--adopt belongs on the plan command; apply the plan it prints')
         result=apply(home,a.apply_plan,a.expected_plan_sha256)
-    else:result=setup_plan(a.harness,home,a.hooks,a.uninstall_plan)
+    else:
+        result=setup_plan(a.harness,home,a.hooks,a.uninstall_plan,a.adopt)
+        for name,diff in result['summary'].get('adopt',{}).items():print(f'Adopting {name}: review this difference, then apply the plan.{chr(10)}{diff}',file=sys.stderr)
     print(json.dumps(result));return 0
 if __name__=='__main__':raise SystemExit(main())
