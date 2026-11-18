@@ -182,12 +182,22 @@ class LauncherInstall(StoreFixture):
         from integrations import setup
         from core.governance import apply
         self.apply(self.plan());custom=self.base/'custom-claude'
-        removal=self.install.plan_install(True,[('claude',str(custom))]);self.assertEqual(removal['summary']['homes'],[['claude',str(custom)]])
+        removal=self.install.plan_install(True,[('claude',str(custom))]);self.assertEqual(removal['summary']['homes'],[['claude',str(custom.resolve())]])
         with patch.object(setup,'ROOT',self.home/'app'):wired=setup.setup_plan('claude',custom);apply(custom,wired['plan_id'],wired['digest'])
         with self.assertRaisesRegex(ValueError,'--home'):self.apply(removal)
         other=self.base/'other-claude';two=self.plan(True)
         with patch.object(setup,'ROOT',self.home/'app'):wired=setup.setup_plan('claude',other);apply(other,wired['plan_id'],wired['digest'])
         with self.assertRaisesRegex(ValueError,'--home'):self.install.apply_plan(self.home,two['plan_id'],two['digest'],[('claude',str(other))])
+        self.assertTrue((self.home/'app/living_memory.py').exists())
+    def test_saved_uninstall_plan_stores_a_relative_home_as_an_absolute_path(self):   # INST-4.1b
+        from integrations import setup
+        from core.governance import apply
+        self.apply(self.plan());here=os.getcwd();elsewhere=self.base/'elsewhere';elsewhere.mkdir()
+        os.chdir(self.base);self.addCleanup(os.chdir,here)
+        removal=self.install.plan_install(True,[('claude','claude-local')]);self.assertEqual(removal['summary']['homes'],[['claude',str((self.base/'claude-local').resolve())]])
+        with patch.object(setup,'ROOT',self.home/'app'):wired=setup.setup_plan('claude',self.base/'claude-local');apply(self.base/'claude-local',wired['plan_id'],wired['digest'])
+        os.chdir(elsewhere)
+        with self.assertRaisesRegex(ValueError,'--home'):self.apply(removal)
         self.assertTrue((self.home/'app/living_memory.py').exists())
     def test_uninstall_checks_a_custom_home_given_with_home(self):
         from integrations import setup

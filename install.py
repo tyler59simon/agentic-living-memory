@@ -164,7 +164,7 @@ def plan_install(uninstall=False, extra_homes=()):
         summary = {'package': str(INSTALL_DIR), 'files': len(changes), 'interpreter': sys.executable}
         summary['launcher'] = _launcher_plan(uninstall)
         if uninstall:
-            summary['homes'] = [list(h) for h in extra_homes]
+            summary['homes'] = [[h, str(Path(p).expanduser().resolve())] for h, p in extra_homes]   # absolute: apply may run from another folder
             summary['before'] = 'Unwire each harness first: setup.py HARNESS --uninstall-plan from the installed copy.'
             summary['path'] = f'A PATH entry for {LAUNCHER_DIR} is left in place: other programs may live in that folder.'
         else:
