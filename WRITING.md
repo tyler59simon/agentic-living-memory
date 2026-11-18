@@ -90,13 +90,14 @@ A word on the list is not wrong in itself. "Key" in "API key", "robust" in a sta
 
 Rewrite prose and structure only. Keep every fact, name, number, date, path, command, ID and link target. Never change the title: `[[links]]` and filenames depend on it. If the old text lost something (a summary cut off mid-sentence, for example), find it in the source or ask; don't guess.
 
-Several notes are rewritten together through one reviewed plan:
+Several notes are rewritten together in one direct, journaled step:
 
 ```
-living_memory.py rewrite-plan --payload-file rewrite.json
-living_memory.py inspect-plan PLAN_ID --full
-living_memory.py apply PLAN_ID --expected-plan-sha256 DIGEST
+living_memory.py rewrite --payload-file rewrite.json
+living_memory.py undo OPERATION
 ```
+
+The second command is only for reversing it.
 
 `rewrite.json` is a list of `{"ref": "domain:id", "revision": "...", "body": "..."}`, with the revision each new body was written from. A rewrite keeps each note's `updated` and `review_by`, because the facts did not change. Maps and briefs are refused, because they keep their labels.
 
@@ -105,5 +106,5 @@ living_memory.py apply PLAN_ID --expected-plan-sha256 DIGEST
 A note that cites files or code says "checked" only when someone read the source. Which edits re-verify:
 
 - **Re-verify:** `confirm` (you read the files and the note still holds) and an `update --body` (you rewrote the facts as they are now). Both re-hash the files the note lists, except that a file that is missing keeps its last hash.
-- **Do not re-verify:** a title, type, tag, context, command or review-date change, a rename, a checkbox tick, a prose rewrite plan and moving a note between lifecycle states. A stale note stays stale after them.
+- **Do not re-verify:** a title, type, tag, context, command or review-date change, a rename, a checkbox tick, a prose rewrite and moving a note between lifecycle states. A stale note stays stale after them.
 - A note whose files changed stays `STALE` until you read the files, then `update` or `confirm`.

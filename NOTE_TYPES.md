@@ -91,23 +91,23 @@ The Camera app shows a picture.
 - Text inside a section is kept as written, and `##` sections of your own are kept in place.
 - Build the body from flags on `capture` or `update`: `--summary`, `--section HEADING TEXT`, `--detail`, `--link`, `--action`, `--done` and `--important`. Each flag replaces only its own section. On `update`, `--drop-section HEADING` removes a section, `--add-detail`, `--add-link` and `--add-action` append to one, and `--set-detail` replaces one labelled bullet, so the rest need not be restated. You can also pass formatted Markdown with `--content-file` / `--body-file`.
 - Search and session-start snippets show the text without headings or list markup.
-- Notes written before this layout used `# 🎯 Title`, `## 📌 Executive Summary`, a `---` rule, `## 📝 Key Details`, `## 🗂️ Resource Links`, `## 🟩 Action Items` and a closing `> ℹ️ **Important Note:**` callout. They still read correctly, and a note takes the current layout the next time it is written. `rewrite-plan` rewrites several notes at once through a reviewed plan (see [WRITING.md](WRITING.md#rewriting-a-note)).
+- Notes written before this layout used `# 🎯 Title`, `## 📌 Executive Summary`, a `---` rule, `## 📝 Key Details`, `## 🗂️ Resource Links`, `## 🟩 Action Items` and a closing `> ℹ️ **Important Note:**` callout. They still read correctly, and a note takes the current layout the next time it is written. `rewrite` rewrites several notes at once in one direct, journaled step (see [WRITING.md](WRITING.md#rewriting-a-note)).
 
 ## Type, lifecycle status and tags
 
-Type answers “what kind of information is this?” Lifecycle `status` answers “is this note active, resolved, archived or superseded?” They are independent. For example, `type: "status"` with `status: "active"` means an active current-state note. Notes that track work (plan, bug and risk) are resolved when the work is finished: `resolve REF` moves the note to the archive in one journaled, undoable step, and `reopen REF` brings it back. A note retired by archive plan returns with `restore REF`, which also pins it. A resolved bug remains `type: "bug"`, with a `BUG` filename prefix and `status: "resolved"`; the same holds for plan and risk notes. Other types leave the active set through an archive plan.
+Type answers “what kind of information is this?” Lifecycle `status` answers “is this note active, resolved, archived or superseded?” They are independent. For example, `type: "status"` with `status: "active"` means an active current-state note. Notes that track work (plan, bug and risk) are resolved when the work is finished: `resolve REF` moves the note to the archive in one journaled, undoable step, and `reopen REF` brings it back. A note retired with `archive REF` returns with `restore REF`, which also pins it. A resolved bug remains `type: "bug"`, with a `BUG` filename prefix and `status: "resolved"`; the same holds for plan and risk notes. Other types leave the active set through `archive REF`, which is journaled and undoable.
 
 Tags describe the subject and concern, optionally the platform and technology. Every new note still requires registered `subject/` and `concern/` tags. Type names do not automatically become tags; use `taxonomy` to inspect the existing vocabulary. A knowledge note correcting an earlier misunderstanding can use `subject/project` and `concern/correction`.
 
-A project's charter is a `context` note tagged `project/<slug>` (with `subject/project` and `concern/knowledge`); `project-plan create` writes it and `projects.json` links to it.
+A project's charter is a `context` note tagged `project/<slug>` (with `subject/project` and `concern/knowledge`); `project create` writes it and `projects.json` links to it.
 
-A system's passport is a `context` note tagged `system/<slug>` (with `subject/project` and `concern/architecture`); `system-plan create` writes it and `systems.json` links to it.
+A system's passport is a `context` note tagged `system/<slug>` (with `subject/project` and `concern/architecture`); `system create` writes it and `systems.json` links to it.
 
-A change's brief is a `plan` note tagged `project/<slug>` (with `subject/project` and `concern/workflow`); `change-plan create` writes it, or adopts an existing plan note, and `changes.json` links to it.
+A change's brief is a `plan` note tagged `project/<slug>` (with `subject/project` and `concern/workflow`); `change create` writes it, or adopts an existing plan note, and `changes.json` links to it.
 
 Titles that differ only by a number ("Sprint 3 status", "Sprint 4 status") are not refused as duplicates for status notes: `capture` saves the note and lists the earlier one under `similar`, and `review` offers the pair as a `duplicate` row. Plan titles keep the number as a difference ("Phase 1 plan" and "Phase 2 plan" are distinct). A bug, knowledge or decision note that reads as an unconfirmed belief (UNCONFIRMED) and has not been updated or confirmed for 14 days is listed by `review` as `interim`.
 
-Date status snapshots in the body and preserve the information needed to interpret them later. When a snapshot becomes misleading, use an approved update, archive or supersession plan. The system does not automatically expire status notes or treat a plan, risk or policy as an executable instruction.
+Date status snapshots in the body and preserve the information needed to interpret them later. When a snapshot becomes misleading, use `update`, `archive` or `supersede`. The system does not automatically expire status notes or treat a plan, risk or policy as an executable instruction.
 
 ## Capture and existing-note conversion
 

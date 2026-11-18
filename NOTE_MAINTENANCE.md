@@ -11,7 +11,7 @@ Maintenance does not:
 - delete any note. Retired notes move to `archive/` (or are resolved or superseded) and can be brought back.
 - touch preference or policy notes, or retire a pinned note (a pinned note can still be confirmed or get a factual update). The one exception to reading them is a queued pair (see Possible replacements): the reviewer may read such an older note and record the pair as distinct, but never change or supersede it.
 - retire maps, briefs or runbooks. These can be kept, deferred, confirmed or updated.
-- merge, retag, remap, change the taxonomy or edit configuration. Those still need an approved plan.
+- merge, retag, remap, change the taxonomy or edit configuration. Merge and retag need an approved plan; remap, taxonomy and configuration changes are direct commands for the main agent, never maintenance's.
 - retire a note only because it is noisy (retrieved often but never used). Usage, age and review dates are signals, never proof.
 - run when it is disabled, except a manual dry run.
 
@@ -89,7 +89,7 @@ When a run has finished that the session has not been told about, SessionStart a
 
 ## Permissions
 
-The main agent may run `maintenance run`, `enable` and `disable` without a permission prompt (the user chose this on 2026-11-14); the interval and daily limits still apply to every run. Subagents and viewers may only read: `status`, `preview` and `history`. This is the one exception to the rule that archiving needs an approved plan; everything else (merge, delete, retag, taxonomy, remap) is unchanged.
+The main agent may run `maintenance run`, `enable` and `disable` without a permission prompt (the user chose this on 2026-11-14); the interval and daily limits still apply to every run. Subagents and viewers may only read: `status`, `preview` and `history`. Archiving is also a direct, undoable command for the main agent (`archive REF`); maintenance only archives within its policy and records why. Merge, delete and bulk retag still need an approved plan, and maintenance never runs them.
 
 ## Discovery by other tools
 
