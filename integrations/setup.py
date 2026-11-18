@@ -111,7 +111,8 @@ def _diff(name,edited,managed):
     return '\n'.join(difflib.unified_diff(edited.splitlines(),managed.splitlines(),'edited '+name,'managed '+name,lineterm=''))
 
 def _refuse(what,path,harness,uninstall):
-    raise ValueError(f'{what} preserved: {path} was edited. Run "{sys.executable}" "{ROOT/"integrations"/"setup.py"}" {harness} {'--uninstall-plan' if uninstall else '--hooks'} --adopt to see the difference and take ownership, or undo the edit and run it without --adopt')
+    flag='--uninstall-plan' if uninstall else '--hooks';script=ROOT/'integrations'/'setup.py'   # outside the f-string: nested quotes need Python 3.12
+    raise ValueError(f'{what} preserved: {path} was edited. Run "{sys.executable}" "{script}" {harness} {flag} --adopt to see the difference and take ownership, or undo the edit and run it without --adopt')
 
 def setup_plan(harness,home=None,enable_hooks=False,uninstall=False,adopt=False):
     if harness not in CONFIG:raise ValueError('Unknown harness')
