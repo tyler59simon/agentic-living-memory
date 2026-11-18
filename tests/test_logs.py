@@ -154,20 +154,22 @@ class Log(LogFixture):
         self.assertEqual(report['logs']['last_error']['event'], 'site.b')
         self.assertTrue(any('errors logged' in w for w in report['warnings']), report['warnings'])
 
-    def test_days_is_the_last_n_times_24_hours(self):   # CLI-4
+    def test_days_is_the_last_n_times_24_hours(self):   # CLI-4, CLI-4.2: the clock is frozen, so the result does not depend on the hour the suite runs
         from datetime import datetime, timedelta, timezone
-        now = datetime.now(timezone.utc)
+        now = datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc)
         (self.root / 'logs').mkdir(exist_ok=True)
-        for name, age in (('recent', timedelta(hours=1)), ('yesterday', timedelta(hours=30)), ('older', timedelta(hours=60))):
+        # two rows on one calendar date either side of each 24-hour boundary: now - 24h is 06-14 12:00, now - 48h is 06-13 12:00; the file for 06-14 and for 06-13 each hold a row inside and a row outside the window
+        for name, age in (('recent', timedelta(hours=1)), ('in1', timedelta(hours=18)), ('out1', timedelta(hours=30)), ('in2', timedelta(hours=42)), ('out2', timedelta(hours=54))):
             when = now - age
             row = {'ts': when.isoformat(timespec='milliseconds'), 'level': 'error', 'kind': 'internal', 'event': name}
             with (self.root / 'logs' / f'log-{when:%Y-%m-%d}.jsonl').open('a', encoding='utf-8', newline='\n') as out:
                 out.write(json.dumps(row) + '\n')
         events = lambda days: sorted(r['event'] for r in logs.entries(self.root, days=days)[0])
-        self.assertEqual(events(1), ['recent'])
-        self.assertEqual(events(2), ['recent', 'yesterday'])
-        self.assertEqual(events(3), ['older', 'recent', 'yesterday'])
-        self.assertEqual(sorted(r['event'] for r in self.cli('logs', '--days', '2')[1]['entries']), ['recent', 'yesterday'])
+        with frozen_clock(now):
+            self.assertEqual(events(1), ['in1', 'recent'])
+            self.assertEqual(events(2), ['in1', 'in2', 'out1', 'recent'])
+            self.assertEqual(events(3), ['in1', 'in2', 'out1', 'out2', 'recent'])
+            self.assertEqual(sorted(r['event'] for r in self.cli('logs', '--days', '2')[1]['entries']), ['in1', 'in2', 'out1', 'recent'])
 
     def test_days_reads_a_ts_ending_in_z_like_any_other(self):   # CLI-4.1: fromisoformat rejects a trailing Z before Python 3.11
         from datetime import datetime, timezone
