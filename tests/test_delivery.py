@@ -281,6 +281,11 @@ class LauncherInstall(StoreFixture):
         with patch.object(lifecycle,'installed_stamp',return_value=lifecycle.installed_stamp(self.home/'app')):
             shown=self.doctor();self.assertEqual(shown['install']['commit'],first);self.assertEqual(shown['release'],lifecycle.CORE_RELEASE)
             self.assertTrue(any(w.startswith('install: ') for w in shown['warnings']),shown['warnings'])
+    def test_a_failed_git_status_leaves_dirty_unknown(self):   # INST-5.1
+        from core import installer_lifecycle as lifecycle
+        source,_=self.stamped_source();real=lifecycle._git
+        with patch.object(lifecycle,'_git',side_effect=lambda root,*a:None if a[0]=='status' else real(root,*a)):stamp=lifecycle.source_stamp(source)
+        self.assertEqual(set(stamp),{'commit','dirty'});self.assertIsNone(stamp['dirty']);self.assertIs(lifecycle.source_stamp(source)['dirty'],False)
     def test_stamp_needs_git_and_a_checkout(self):
         from core import installer_lifecycle as lifecycle
         source,_=self.stamped_source()

@@ -91,12 +91,13 @@ def _git(root: str | Path, *args: str) -> str | None:
 
 
 def source_stamp(source: str | Path) -> dict[str, Any]:
-    """{'commit', 'dirty'} of a source checkout, or {} when it is not a git checkout of its own or git is missing."""
+    """{'commit', 'dirty'} of a source checkout (dirty is None when git status fails), or {} when it is not a git checkout of its own or git is missing."""
     top = _git(source, "rev-parse", "--show-toplevel")
     commit = _git(source, "rev-parse", "HEAD")
     if not top or not commit or os.path.normcase(os.path.realpath(top)) != os.path.normcase(os.path.realpath(source)):
         return {}
-    return {"commit": commit, "dirty": bool(_git(source, "status", "--porcelain"))}
+    status = _git(source, "status", "--porcelain")
+    return {"commit": commit, "dirty": None if status is None else bool(status)}
 
 
 def installed_stamp(root: str | Path | None = None) -> dict[str, Any] | None:
