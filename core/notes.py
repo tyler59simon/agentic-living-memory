@@ -652,18 +652,30 @@ def capture(title,body,tags,domain,root=None,**metadata):
         rule=metadata.pop('rule',False)
         if not isinstance(rule,bool):raise ValueError('rule must be true or false')
         if rule and selected_type not in RULE_TYPES:raise ValueError(rule_type_error(selected_type))
+        pin=metadata.get('pinned') is True
         def matched(result,note,where):
-            """A duplicate answer to `capture --rule`: say when the note it names is not shown as a rule yet (capture never changes an existing
-            note). An archived or superseded note is not shown at all, rule or not, so the remedy is restore or the successor."""
+            """A duplicate answer to `capture --rule` or `--pin`: say when the note it names is not shown as a rule, or not pinned (capture never
+            changes an existing note). An archived or superseded note is not shown at all, rule or not, so the remedy is restore or the successor,
+            followed to the note that replaced it last."""
+            ref=short_ref(where,note['id'])
+            if pin and note.get('status','active')=='active' and note.get('pinned') is not True:   # restore pins an archived note itself
+                result['pin_warning']=f'{ref} already holds this note and is not pinned; pin it with update {ref} --pin'
             if not rule:return result
-            ref=short_ref(where,note['id']);status=note.get('status','active')
-            if status=='archived':
-                result['rule_warning']=f'{ref} already holds this note and is archived; restore {ref}'+('' if note.get('rule') is True else f', then mark it with update {ref} --rule')
-            elif status=='superseded' and note.get('superseded_by'):
-                by=short_ref(where,note['superseded_by'])
-                result['rule_warning']=f'{ref} already holds this note and is superseded by {by}; if {by} carries the rule, mark it with update {by} --rule'
-            elif note.get('rule') is not True:
-                result['rule_warning']=f'{ref} already holds this note and is not a rule; mark it with update {ref} --rule'
+            head=f'{ref} already holds this note';last=note;seen={note['id']}
+            while last.get('status')=='superseded' and last.get('superseded_by'):
+                try:nxt=find_note(last['superseded_by'],where,root)[1]
+                except (OSError,ValueError):break
+                if nxt['id'] in seen:break
+                seen.add(nxt['id']);last=nxt
+            by=short_ref(where,last['id']);status=last.get('status','active')
+            if last is not note:head+=f' and is superseded by {by}'
+            if status=='superseded':warning=f'{head} and is superseded; read {by} to find the note that replaced it'
+            elif effective_type(last) not in RULE_TYPES:warning=f'{head}; {by} is a {effective_type(last)} note, which cannot be a rule'
+            elif status=='archived':warning=f'{head}; {by} is archived: restore {by}'+('' if last.get('rule') is True else f', then mark it with update {by} --rule')
+            elif last.get('rule') is True:warning=None
+            elif last is note:warning=f'{head} and is not a rule; mark it with update {ref} --rule'
+            else:warning=f'{head}; if {by} carries the rule, mark it with update {by} --rule'
+            if warning:result['rule_warning']=warning
             return result
         supplied_prefix=metadata.pop('prefix',None)
         if supplied_prefix is not None and supplied_prefix!=derived:

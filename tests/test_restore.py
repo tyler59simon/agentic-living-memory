@@ -462,6 +462,34 @@ class Rule(StoreFixture):
         self.assertEqual((out['status'], out['id']), ('duplicate', old['id']))
         self.assertIn(f"update demo:{new['id'][:8]} --rule", out['rule_warning'])
         self.assertNotIn('restore', out['rule_warning'])
+        # The successor is archived: restore it, the note that can show the rule.
+        self.ok('archive', 'demo:' + new['id'])
+        out = again('Branch policy', 'Work happens on branches.')
+        self.assertIn(f"restore demo:{new['id'][:8]}", out['rule_warning'])
+        self.assertNotIn(f"restore demo:{old['id'][:8]}", out['rule_warning'])
+
+    def test_a_duplicate_capture_with_rule_on_a_note_replaced_by_a_non_rule_type_says_so(self):
+        old = self.policy('Deploy policy', 'Deploys happen on Fridays.')
+        new = self.note('Deploy day decision', 'Deploys moved to Tuesdays.', type='decision')
+        self.ok('supersede', 'demo:' + old['id'], '--by', 'demo:' + new['id'])
+        out = self.ok('capture', '--type', 'policy', '--title', 'Deploy policy', '--summary', 'Deploys happen on Fridays.',
+                      '--subject', 'project', '--concern', 'architecture', '--rule')
+        self.assertEqual((out['status'], out['id']), ('duplicate', old['id']))
+        self.assertIn(f"demo:{new['id'][:8]} is a decision note, which cannot be a rule", out['rule_warning'])
+        self.assertNotIn('--rule', out['rule_warning'])
+
+    def test_a_pinned_capture_or_proposal_that_matches_an_unpinned_note_says_the_pin_was_not_applied(self):
+        a = self.policy()
+        args = ('--type', 'policy', '--subject', 'project', '--concern', 'architecture')
+        out = self.ok('capture', *args, '--title', 'Commit policy', '--summary', 'Commits stay small.', '--pin')
+        self.assertEqual((out['status'], out['id']), ('duplicate', a['id']))
+        self.assertIn(f"update demo:{a['id'][:8]} --pin", out['pin_warning'])
+        staged = self.ok('propose', '--session', 's1', *args, '--title', 'Commit policy', '--summary', 'Commits stay small.', '--pin')
+        out = self.ok('capture', '--from-proposal', staged['id'])
+        self.assertIn(f"update demo:{a['id'][:8]} --pin", out['pin_warning'])
+        self.assertNotIn('pinned', self.get(a))
+        self.ok('update', 'demo:' + a['id'], '--pin')
+        self.assertNotIn('pin_warning', self.ok('capture', *args, '--title', 'Commit policy', '--summary', 'Commits stay small.', '--pin'))
 
     def test_a_falsy_non_bool_rule_in_a_payload_is_refused(self):
         for bad in (0, None, ''):
