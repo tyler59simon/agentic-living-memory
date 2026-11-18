@@ -74,6 +74,7 @@ def _check_guards(root,value):
         if (digest(path.read_bytes()) if path.exists() else None)!=expected:
             raise ValueError('stale plan: a file this plan depends on changed: '+rel)
     absent=set(guards.get('absent_ids',[]));unused=set(guards.get('unused_tags',[]))
+    if not (absent or unused):return   # file guards only (setup plans in a harness home): no notes to scan
     folders=sorted(p.name for p in (root/'domains').iterdir() if p.is_dir()) if (root/'domains').is_dir() else []
     for domain in folders:
         if unused or domain in value['domains']:

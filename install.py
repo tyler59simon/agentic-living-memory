@@ -44,9 +44,18 @@ PROFILE_LINE = 'export PATH="$HOME/.local/bin:$PATH"  # agentic-living-memory'
 CONFIG_NAMES = {"claude": "settings.json", "codex": "hooks.json", "copilot": "hooks/agentic-living-memory.json", "factory": "hooks.json"}
 
 
+def default_homes() -> list:
+    """(harness, home) for each harness. When CLAUDE_CONFIG_DIR chooses another Claude folder, ~/.claude is listed too:
+    hooks an earlier setup left there still run the package."""
+    homes = [(h, harness_home(h)) for h in HARNESSES]
+    if not os.environ.get("CLAUDE_HOME") and os.environ.get("CLAUDE_CONFIG_DIR"):
+        homes.append(("claude", Path.home() / ".claude"))
+    return homes
+
+
 def harness_configs(extra_homes=()) -> list:
     """(harness, hook configuration file) for each default harness home, plus homes given with --home."""
-    homes = [(h, harness_home(h)) for h in HARNESSES] + [(h, Path(p).expanduser()) for h, p in extra_homes]
+    homes = default_homes() + [(h, Path(p).expanduser()) for h, p in extra_homes]
     found = [(h, home / CONFIG_NAMES[h]) for h, home in homes]
     return list(dict.fromkeys((h, path) for h, path in found if path.is_file()))
 
@@ -162,6 +171,7 @@ def plan_install(uninstall=False, extra_homes=()):
         summary['launcher'] = _launcher_plan(uninstall)
         if uninstall:
             summary['homes'] = [[h, str(Path(p).expanduser().resolve())] for h, p in extra_homes]   # absolute: apply may run from another folder
+            summary['default_homes'] = [[h, str(p.expanduser().resolve())] for h, p in default_homes()]   # apply may run with other variables
             summary['before'] = 'Unwire each harness first: setup.py HARNESS --uninstall-plan from the installed copy.'
             summary['path'] = f'A PATH entry for {LAUNCHER_DIR} is left in place: other programs may live in that folder.'
         else:
@@ -330,7 +340,8 @@ def _write_launcher(record):
 
 def apply_plan(root, plan_id, digest, extra_homes=()):
     """governance.apply, plus the launcher and PATH change a package plan records. Both are checked before anything is written.
-    A package uninstall re-checks that no harness runs the package: the --home folders it was planned with and extra_homes."""
+    A package uninstall re-checks that no harness runs the package: the --home folders and default homes it was planned with,
+    today's default homes and extra_homes."""
     from core.governance import apply
     from core.repository import canonical_json, read_json
     value = read_json(Path(root) / '.plans' / f'{plan_id}.json') or {}
@@ -339,7 +350,7 @@ def apply_plan(root, plan_id, digest, extra_homes=()):
     if value.get('digest') != digest or hashlib.sha256(canonical_json(unsigned).encode()).hexdigest() != digest or 'launcher' not in summary:
         return apply(root, plan_id, digest)   # unverified or not a package plan: governance decides
     if value.get('kind') == 'package_uninstall':   # only a verified plan names the folders to probe
-        _refuse_if_in_use([tuple(h) for h in summary.get('homes') or []] + list(extra_homes))
+        _refuse_if_in_use([tuple(h) for h in (summary.get('homes') or []) + (summary.get('default_homes') or [])] + list(extra_homes))
     record, change = summary['launcher'], summary.get('path_change')
     if _launcher_stale(record) or (change and _path_stale(change) and not _path_done(change)):
         raise ValueError('stale plan: the launcher or PATH changed since this plan was made; plan again')

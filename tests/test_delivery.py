@@ -199,6 +199,24 @@ class LauncherInstall(StoreFixture):
         os.chdir(elsewhere)
         with self.assertRaisesRegex(ValueError,'--home'):self.apply(removal)
         self.assertTrue((self.home/'app/living_memory.py').exists())
+    def test_with_claude_config_dir_set_uninstall_still_checks_the_default_claude_folder(self):   # CODEX-R4A
+        from integrations import setup
+        from core.governance import apply
+        self.apply(self.plan());user=self.base/'user';default=user/'.claude';chosen=self.base/'claude-config'
+        with patch.object(setup,'ROOT',self.home/'app'):wired=setup.setup_plan('claude',default);apply(default,wired['plan_id'],wired['digest'])
+        with patch.dict(os.environ,{'CLAUDE_CONFIG_DIR':str(chosen)}),patch('pathlib.Path.home',return_value=user):
+            os.environ.pop('CLAUDE_HOME')
+            with self.assertRaisesRegex(ValueError,'still in use by: claude'):self.plan(True)
+        self.assertTrue((self.home/'app/living_memory.py').exists())
+    def test_a_saved_uninstall_plan_rechecks_the_claude_folder_it_was_planned_for(self):   # CODEX-R4B
+        from integrations import setup
+        from core.governance import apply
+        self.apply(self.plan());chosen=self.base/'claude-config'
+        with patch.dict(os.environ,{'CLAUDE_CONFIG_DIR':str(chosen)}),patch('pathlib.Path.home',return_value=self.base/'user'):
+            os.environ.pop('CLAUDE_HOME');removal=self.plan(True)
+        with patch.object(setup,'ROOT',self.home/'app'):wired=setup.setup_plan('claude',chosen);apply(chosen,wired['plan_id'],wired['digest'])
+        with self.assertRaisesRegex(ValueError,'still in use by: claude'):self.apply(removal)   # applied where CLAUDE_HOME names another folder
+        self.assertTrue((self.home/'app/living_memory.py').exists())
     def test_a_tampered_uninstall_plan_is_rejected_before_any_harness_is_probed(self):   # NEW-1
         self.apply(self.plan());removal=self.plan(True);path=self.home/'.plans'/(removal['plan_id']+'.json');value=json.loads(path.read_text())
         value['summary']['homes']=[['claude',str(self.base/'anywhere')]];path.write_text(json.dumps(value))

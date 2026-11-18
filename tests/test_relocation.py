@@ -121,6 +121,13 @@ class Relocation(StoreFixture):
             with open(Path(home)/name,'a',encoding='utf-8') as file:file.write(text)
             return real(home,*args,**kwargs)
         with patch.object(setup,'plan',late):return setup.setup_plan('claude',self.claude)
+    def test_setup_apply_does_not_list_a_domains_folder_in_the_harness_home(self):   # CODEX-R4C: file guards only
+        proposed=setup.setup_plan('claude',self.claude);(self.claude/'domains').mkdir();real=Path.iterdir
+        def unlistable(path):
+            if path.name=='domains':raise PermissionError(str(path))
+            return real(path)
+        with patch.object(Path,'iterdir',unlistable):self.apply(self.claude,proposed)
+        self.assertTrue((self.claude/'settings.json').is_file())
     def test_a_file_edited_after_setup_read_it_makes_the_plan_stale(self):   # CODEX-R1C
         self.wired_from(setup.ROOT)
         for name,text in (('settings.json',' '),('CLAUDE.md','My late line.\n')):
