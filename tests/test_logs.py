@@ -10,6 +10,23 @@ TAGS = ['subject/project', 'concern/decision']
 SECRET_WORDS = ('zebra', 'quokka')
 
 
+def frozen_clock(now, reject_z=False):
+    """A datetime for core.logs whose now() is `now`; reject_z=True makes fromisoformat refuse a trailing Z as Python 3.10 does."""
+    from datetime import datetime
+
+    class Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now
+
+        @classmethod
+        def fromisoformat(cls, value):
+            if reject_z and value.endswith('Z'):
+                raise ValueError(f'Invalid isoformat string: {value!r}')
+            return datetime.fromisoformat(value)
+    return patch('core.logs.datetime', Frozen)
+
+
 class LogFixture(StoreFixture):
     def setUp(self):
         super().setUp()
@@ -151,6 +168,16 @@ class Log(LogFixture):
         self.assertEqual(events(2), ['recent', 'yesterday'])
         self.assertEqual(events(3), ['older', 'recent', 'yesterday'])
         self.assertEqual(sorted(r['event'] for r in self.cli('logs', '--days', '2')[1]['entries']), ['recent', 'yesterday'])
+
+    def test_days_reads_a_ts_ending_in_z_like_any_other(self):   # CLI-4.1: fromisoformat rejects a trailing Z before Python 3.11
+        from datetime import datetime, timezone
+        now = datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc)
+        (self.root / 'logs').mkdir(exist_ok=True)
+        rows = [{'ts': '2026-06-14T06:00:00.000Z', 'event': 'old-z'}, {'ts': '2026-06-14T18:00:00.000Z', 'event': 'new-z'}]   # same file, either side of now - 24h
+        lines = ''.join(json.dumps({**row, 'level': 'error', 'kind': 'internal'}) + '\n' for row in rows)
+        (self.root / 'logs' / 'log-2026-06-14.jsonl').write_text(lines, encoding='utf-8', newline='\n')
+        with frozen_clock(now, reject_z=True):
+            self.assertEqual([r['event'] for r in logs.entries(self.root, days=1)[0]], ['new-z'])
 
 
 class Decisions(LogFixture):
