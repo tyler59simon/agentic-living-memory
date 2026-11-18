@@ -30,11 +30,13 @@ TOPICS={
   f"\n  Types: {', '.join(NOTE_TYPES)}. Omitted --subject/--concern default from the type. --action/--done add action items (plan, bug, risk only)."
   "\n  Sections: decision Why, Alternatives considered; bug Cause, Fix, How to check; runbook When to use, When not to use, Steps, Check, Roll back; research Findings, Sources, Open questions; knowledge, headings named by content; others --detail."
   "\n  Notes about files: --files auto (this turn's edits) or --file PATH."
+  "\n  Rules: --rule marks a policy or preference that every session must see in full (SessionStart shows each rule's title and summary); keep them few."
   "\n  Use single quotes, literal in Bash and PowerShell (write ' as '' in PowerShell, '\\'' in Bash). Long body: --content-file FILE."
   "\nNo per-turn receipt unless Stop asks (then: CMD capture-finalize --session SESSION)."
   "\nSubagent proposals (a subagent runs CMD propose with the capture flags): CMD proposals lists them; save one with CMD capture --from-proposal ID --session SESSION (alone as staged, or beside a full note to edit it); drop one with CMD proposals reject ID --reason '...'."),
  'update':('Change, confirm or supersede a note',
-  "Keep current: CMD update REF --session SESSION --section 'Heading' 'Text', --drop-section 'Heading', --set-detail '**Label:** new fact' or --add-detail/--add-link/--add-action '...' (--detail/--link/--action/--body overwrite) [--title '...']; replaced: capture ... --supersedes REF; still true: CMD confirm REF; due notes: CMD review (confirm, update, supersede or archive them; propose merge or delete plans, never apply)."),
+  "Keep current: CMD update REF --session SESSION --section 'Heading' 'Text', --drop-section 'Heading', --set-detail '**Label:** new fact' or --add-detail/--add-link/--add-action '...' (--detail/--link/--action/--body overwrite) [--title '...']; replaced: capture ... --supersedes REF; still true: CMD confirm REF; due notes: CMD review (confirm, update, supersede or archive them; propose merge or delete plans, never apply)."
+  "\nRules: CMD update REF --rule (a policy or preference shown in full at every session start) or --no-rule; neither moves `updated`."),
  'review':('Work through due notes',
   "Due notes: CMD review (confirm, update, supersede or archive them; propose merge or delete plans, never apply). Still true: CMD confirm REF. Changed: CMD update REF. Replaced: capture ... --supersedes REF."),
  'plans':('Plans and automatic maintenance',

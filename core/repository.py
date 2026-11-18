@@ -252,8 +252,15 @@ def parse_text(raw, path=""):
 
 # Frontmatter order: the properties a person reads first, then bookkeeping.
 FRONT_KEYS = ("title", "type", "status", "tags", "context", "files", "commands", "sources")
-SYSTEM_KEYS = ("id", "domain", "created", "updated", "review_by", "confirmed", "supersedes", "superseded_by", "schema_version", "capture_key", "origin", "repo", "file_hashes", "checked", "pinned", "distinct_from", "last_retirement")
+SYSTEM_KEYS = ("id", "domain", "created", "updated", "review_by", "confirmed", "supersedes", "superseded_by", "schema_version", "capture_key", "origin", "repo", "file_hashes", "checked", "pinned", "rule", "distinct_from", "last_retirement")
 MAX_FILES = 30
+# A rule (`rule: true`) is a policy or preference note that every SessionStart shows in full.
+RULE_TYPES = ("policy", "preference")
+
+
+def rule_type_error(note_type):
+    """The refusal for `rule` on another type; the `rule_type:` prefix gives cli.next_step its hint."""
+    return f"rule_type: only policy and preference notes can be rules, and this note is {note_type or 'knowledge'}"
 
 
 def clean_files(value):
@@ -516,6 +523,11 @@ def validate(note, domain, root=None, new=False, extra_tags=()):
             raise ValueError("checked must be an ISO timestamp") from None
     if "pinned" in note and not isinstance(note["pinned"], bool):
         raise ValueError("pinned must be true or false")
+    if "rule" in note:
+        if not isinstance(note["rule"], bool):
+            raise ValueError("rule must be true or false")
+        if note["rule"] and note.get("type") not in RULE_TYPES:
+            raise ValueError(rule_type_error(note.get("type")))
     if "distinct_from" in note:
         check_distinct(note["distinct_from"])
     if "last_retirement" in note:

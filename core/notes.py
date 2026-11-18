@@ -11,7 +11,7 @@ from .note_format import format_body,without_actions,summary_text,ACTION_TYPES
 from .digests import stale_note
 
 # Fields an agent may change directly (journaled and undoable, no plan) with `update`.
-UPDATABLE=('title','body','tags','type','context','review_by','files','commands','sources','pinned','distinct_from')
+UPDATABLE=('title','body','tags','type','context','review_by','files','commands','sources','pinned','rule','distinct_from')
 LINK_UPDATE_MAX=100   # notes whose links one move may rewrite; a larger move needs its own reviewed operation
 
 def slug(value):return re.sub(r'[^a-z0-9]+','-',value.casefold()).strip('-')[:64] or 'note'
@@ -398,7 +398,7 @@ def _set_identity(note,files,domain,root,moved=True):
     if identity:note['repo']=identity
     elif moved or (folder is not None and folder.is_dir()):note.pop('repo',None)
 
-def build_note(title,body,tags,domain,root,note_type='knowledge',context='',key=None,review_by=None,supersedes=(),files=None,origin=None,note_id=None,extra_tags=(),commands=None,sources=None,pinned=False):
+def build_note(title,body,tags,domain,root,note_type='knowledge',context='',key=None,review_by=None,supersedes=(),files=None,origin=None,note_id=None,extra_tags=(),commands=None,sources=None,pinned=False,rule=False):
     """(path, note, file text) for a new active note, validated like every capture. Writes nothing; capture and
     ingest-plan both create notes through it."""
     stamp=now()
@@ -413,6 +413,7 @@ def build_note(title,body,tags,domain,root,note_type='knowledge',context='',key=
     sources=clean_sources(sources)
     if sources:note['sources']=sources
     if pinned:note['pinned']=pinned   # retirement protection; validate refuses anything but a bool
+    if rule:note['rule']=rule   # shown in full at every session start; validate refuses anything but a bool, and types other than policy and preference
     _set_file_hashes(note,domain,root)
     if origin:note['origin']=str(origin)
     if note_type in KEYED_TYPES:_set_identity(note,files,domain,root)
@@ -624,6 +625,24 @@ def _user_brief_hint(note,domain,root):
         from .logs import swallowed
         swallowed('notes.user_brief_hint',exc,root);return None
 
+RULES_WARN=15
+
+def _rule_hint(note,domain,root):
+    """For a rule note: a warning when the domain and the global domains hold more than RULES_WARN active rules, since every session start shows
+    them all and past its reserved room the rest show as titles only. Advisory: never raises."""
+    if note.get('rule') is not True:return None
+    from .common import global_domains
+    try:
+        domains=list(dict.fromkeys([domain,*global_domains(root)]))
+        count=sum(1 for d in domains for n in inventory(d,root) if n.get('rule') is True)
+        if count<=RULES_WARN:return None
+        from .session_start import RULES_BUDGET
+        return (f"{count} rule notes in {' and '.join(domains)} (more than {RULES_WARN}): every session start shows them all, and past {RULES_BUDGET} characters "
+                f"only their titles; unmark one that need not be in front of every session with update REF --no-rule")
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('notes.rule_hint',exc,root);return None
+
 def capture(title,body,tags,domain,root=None,**metadata):
     root=Path(root or memory_root()).resolve();domain=canonical_domain(domain,root)
     with store_lock(root):
@@ -696,7 +715,7 @@ def capture(title,body,tags,domain,root=None,**metadata):
                 raise ValueError(f"possible_duplicate conflict: similar to {ref} \"{match['title']}\" in another project. If it holds for both "
                                  f"projects, run `promote {ref}` and then update it; pass allow_similar only for a genuinely distinct note")
             absorbed=(other,match)   # 'supersede': the new global note replaces the project one
-        review_by=metadata.pop('review_by',None);context=metadata.pop('context','');files=metadata.pop('files',None);origin=metadata.pop('origin',None);commands=metadata.pop('commands',None);sources=metadata.pop('sources',None);pinned=metadata.pop('pinned',False)
+        review_by=metadata.pop('review_by',None);context=metadata.pop('context','');files=metadata.pop('files',None);origin=metadata.pop('origin',None);commands=metadata.pop('commands',None);sources=metadata.pop('sources',None);pinned=metadata.pop('pinned',False);rule=metadata.pop('rule',False)
         if metadata:raise ValueError('Unsupported capture metadata: '+', '.join(metadata))
         carried=carried_files=[]
         if supersedes and not drop_links:
@@ -707,7 +726,7 @@ def capture(title,body,tags,domain,root=None,**metadata):
             conflict=capture_conflict(clean_files(files),domain,root,read_json(root/'bindings.json',{}),set(supersedes),selected_type)
             if conflict:raise ValueError(conflict)
         replaces=supersedes+([absorbed[1]['id']] if absorbed else [])
-        path,note,text=build_note(title,body,tags,domain,root,selected_type,context=context,key=key,review_by=review_by,supersedes=replaces,files=files,origin=origin,commands=commands,sources=sources,pinned=pinned)
+        path,note,text=build_note(title,body,tags,domain,root,selected_type,context=context,key=key,review_by=review_by,supersedes=replaces,files=files,origin=origin,commands=commands,sources=sources,pinned=pinned,rule=rule)
         changes={path.relative_to(root).as_posix():text};expected={}
         for old in supersedes:
             # The new note and the retirement of what it replaces commit together.
@@ -738,6 +757,8 @@ def capture(title,body,tags,domain,root=None,**metadata):
         if supersedes:result['superseded']=[f'{domain}:{old}' for old in supersedes];result['carried_links']=carried;result['carried_files']=carried_files
         user=_user_brief_hint(note,domain,root)
         if user:result['user_brief']=user
+        rules=_rule_hint(note,domain,root)
+        if rules:result['rule_warning']=rules
         return result
 
 def _change_set(note_id,domain,action,root,expected_revision=None,successor=None,pending=None,carried=None,rehash=True,actor='agent',retirement=None,**values):
@@ -787,6 +808,7 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
             # of every file still listed and starts one only for a file without a hash; a title edit does not come here at all.
             _set_file_hashes(note,domain,root,{h['path']:h['sha256'] for h in note.get('file_hashes') or []},fresh='body' in values)
         if 'pinned' in values:note['pinned']=values['pinned']   # validate refuses anything but a bool
+        if 'rule' in values:note['rule']=values['rule']   # validate refuses anything but a bool, and a rule of another type
         if 'distinct_from' in values:
             if values['distinct_from']:note['distinct_from']=values['distinct_from']   # validate checks the shape
             else:note.pop('distinct_from',None)
@@ -852,7 +874,7 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
     target=path if action=='delete' else folder/f"{note['prefix']} - {slug(note['title'])}-{note_id[:8]}.md"
     # `updated` means the content changed; it drives recency and review age. A tag-, snooze- or files-only edit
     # (triage, backfill) must not reorder recency lists or reset the review clock; confirm never bumps it either.
-    if action!='confirm' and not (action=='update' and set(values)<={'tags','review_by','files','commands','sources','pinned','distinct_from'}):
+    if action!='confirm' and not (action=='update' and set(values)<={'tags','review_by','files','commands','sources','pinned','rule','distinct_from'}):
         verifying=action=='update' and 'body' in values and rehash   # a checkbox tick or a prose rewrite (rehash=False) says nothing about the facts
         if action!='delete' and not verifying:keep_baseline(note)   # `updated` moves; what was checked does not
         note['updated']=now()
@@ -934,8 +956,11 @@ def change(note_id,domain,action,root=None,expected_revision=None,plan_only=Fals
             if warnings:result['quality_warnings']=warnings
         if action=='update':
             from .repository import parse
-            user=_user_brief_hint(parse(target) or {},domain,root)
+            saved=parse(target) or {}
+            user=_user_brief_hint(saved,domain,root)
             if user:result['user_brief']=user
+            rules=_rule_hint(saved,domain,root)
+            if rules:result['rule_warning']=rules
         return result
 
 REWRITE_MAX=50

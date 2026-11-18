@@ -127,6 +127,7 @@ def _redact(values):
             if isinstance(command,str):values['commands'][i],kinds=redact(command);found+=[{'kind':k,'field':'commands'} for k in kinds]
     return found
 
+RULE_HELP='Mark a policy or preference note as a rule: every session start shows its title and summary in full, outside the guidance slots'
 PIN_HELP='Protect the note from automatic retirement (archive, resolve, supersede by maintenance); it still allows manual archive, resolve and supersede, factual updates and review reminders'
 
 def _receipt(args,domain,note_id,root,event=None):
@@ -310,7 +311,7 @@ def _summary_fields(note):
     """list --with-summary: the summary as plain text (300 characters at most), the files, and action item counts for plan, bug and risk notes."""
     from .note_format import sections,plain,action_items,ACTION_TYPES
     body=note.get('body') or '';text=sections(body).get('summary') or ''
-    out={'summary':plain(text)[:300],'files':list(note.get('files') or []),'pinned':note.get('pinned') is True}
+    out={'summary':plain(text)[:300],'files':list(note.get('files') or []),'pinned':note.get('pinned') is True,'rule':note.get('rule') is True}
     if note.get('type') in ACTION_TYPES:items=action_items(body);out['actions']={'open':sum(1 for d,_ in items if not d),'done':sum(1 for d,_ in items if d)}
     return out
 
@@ -427,6 +428,7 @@ def next_step(code,message,command=None):
     if message.startswith('unbound_project'):return 'Pass --domain DOMAIN (alm domains lists them), or bind this folder with: bind DOMAIN FOLDER'
     if message.startswith('no_store'):return 'Check the --root path. To start a store, create the folder, then run: bind DOMAIN PROJECT_FOLDER --root FOLDER'
     if message.startswith('bad_arguments'):return f"Run: {command or 'alm'} --help"
+    if message.startswith('rule_type'):return 'Pass --type policy or --type preference with --rule, or leave --rule out (a rule note takes --no-rule before it changes type)'
     if message.startswith('not_found: no operation'):return 'List operation IDs with: history'
     if message.startswith(('Expected one note ID','No note with ID')):return "Find the note's ref with: search 'words from its title'"
     return None
@@ -496,6 +498,8 @@ def _propose(root,data,domain,session,to_global,redact=False):
     if isinstance(data,list):raise ValueError('propose takes one note; run it once per note')
     data=dict(data)
     if (data.get('type') or 'knowledge') not in NOTE_TYPES:raise ValueError('Unknown note type: '+str(data.get('type'))+'; use one of '+', '.join(NOTE_TYPES))
+    from .repository import RULE_TYPES,rule_type_error
+    if data.get('rule') is True and (data.get('type') or 'knowledge') not in RULE_TYPES:raise ValueError(rule_type_error(data.get('type')))
     if redact:_redact(data)
     # Everything the draft file stores is screened, its digest metadata included.
     found=find_secret('\n'.join([str(data.get(k) or '') for k in ('title','body','context','idempotency_key')]+[c for c in data.get('commands') or [] if isinstance(c,str)]
@@ -578,7 +582,7 @@ def build_parser():
     p.add_argument('--prefix',help='Remove only this folder from the binding and keep the domain and its notes (after a bound folder moved)')
     # Legacy forms keep working but are left out of help: --tags, --prefix and a third positional (tags).
     def capture_flags(p):
-     p.add_argument('items',nargs='*',metavar='TITLE BODY',help='Title and body; or use --title and --summary');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='',help=argparse.SUPPRESS);p.add_argument('--prefix',help=argparse.SUPPRESS);p.add_argument('--type',choices=NOTE_TYPES,help='Note type (default: knowledge)');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help="REF of a note this one replaces; it is retired in the same transaction, and its links and files are carried over (see --drop-links)");p.add_argument('--drop-links',action='store_true',help='With --supersedes: do not carry the links and files of the replaced note over');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk/map/runbook/brief notes get a default');p.add_argument('--pin',action='store_true',help=PIN_HELP)
+     p.add_argument('items',nargs='*',metavar='TITLE BODY',help='Title and body; or use --title and --summary');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='',help=argparse.SUPPRESS);p.add_argument('--prefix',help=argparse.SUPPRESS);p.add_argument('--type',choices=NOTE_TYPES,help='Note type (default: knowledge)');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help="REF of a note this one replaces; it is retired in the same transaction, and its links and files are carried over (see --drop-links)");p.add_argument('--drop-links',action='store_true',help='With --supersedes: do not carry the links and files of the replaced note over');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk/map/runbook/brief notes get a default');p.add_argument('--pin',action='store_true',help=PIN_HELP);p.add_argument('--rule',action='store_true',help=RULE_HELP)
      for facet in CAPTURE_FACETS:p.add_argument('--'+facet,action='append',default=[])
      p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
      sections_args(p);_file_flags(p)
@@ -592,6 +596,7 @@ def build_parser():
     p=sub('read');p.add_argument('reference');p.add_argument('--max-chars',type=int,default=16000);p.add_argument('--metadata-only',action='store_true');p.add_argument('--section',help='Only this section, by heading (as search evidence and prompt lines name it)')
     p=sub('update');p.add_argument('reference');p.add_argument('--title');p.add_argument('--body');p.add_argument('--body-file',type=Path);p.add_argument('--tag',action='append');p.add_argument('--type',choices=NOTE_TYPES);p.add_argument('--context');p.add_argument('--review-by');p.add_argument('--expected-revision');p.add_argument('--payload-file',type=Path);p.add_argument('--session');p.add_argument('--turn')
     pins=p.add_mutually_exclusive_group();pins.add_argument('--pin',dest='pin',action='store_const',const=True,help=PIN_HELP);pins.add_argument('--unpin',dest='pin',action='store_const',const=False,help='Remove retirement protection (a pin change never counts as checking the note)')
+    rules=p.add_mutually_exclusive_group();rules.add_argument('--rule',dest='rule',action='store_const',const=True,help=RULE_HELP);rules.add_argument('--no-rule',dest='rule',action='store_const',const=False,help='Stop showing the note in full at every session start (a rule change never counts as checking the note)')
     p.add_argument('--distinct',metavar='REF',help='Record that this note and REF (same domain) are different subjects, so neither replaces the other; needs --why')
     p.add_argument('--why',help='With --distinct: the reason, one line of 8 to 200 characters')
     p.add_argument('--not-distinct',metavar='REF',dest='not_distinct',help='Remove the distinct record between this note and REF (kept on either note), so maintenance may review the pair again')
@@ -808,6 +813,7 @@ def main(argv=None):
                 if args.supersedes:data['supersedes']=args.supersedes
                 if args.drop_links:data['drop_links']=True
                 if args.pin:data['pinned']=True
+                if args.rule:data['rule']=True
                 if args.review_by:data['review_by']=args.review_by
                 files,_=_file_args(args,domain,root)
                 if files:data['files']=files
@@ -821,7 +827,7 @@ def main(argv=None):
                 # The session is the exception: the private-text check, the origin and the receipt depend on it.
                 beside=[('--title',args.title),('--tag',args.tag),('--tags',args.tags),('--prefix',args.prefix),('--type',args.type),('--context',args.context),
                         ('--idempotency-key',args.idempotency_key),('--allow-similar',args.allow_similar),('--supersedes',args.supersedes),('--drop-links',args.drop_links),
-                        ('--review-by',args.review_by),('--file',args.file),('--files',args.files),('--command',args.shell_command),('--source',args.source),('--pin',args.pin)]+[('--'+f,getattr(args,f)) for f in CAPTURE_FACETS]
+                        ('--review-by',args.review_by),('--file',args.file),('--files',args.files),('--command',args.shell_command),('--source',args.source),('--pin',args.pin),('--rule',args.rule)]+[('--'+f,getattr(args,f)) for f in CAPTURE_FACETS]
                 ignored=[flag for flag,given in beside if given]
                 if ignored:raise ValueError('A JSON payload carries its own fields; put these in the payload instead of passing '+', '.join(ignored))
                 if args.turn and not args.session:raise ValueError('--turn needs --session')
@@ -995,11 +1001,11 @@ def main(argv=None):
             result=note_links(root,domains,args.status)
         elif cmd=='version':
             from .installer_lifecycle import CORE_RELEASE,installed_stamp
-            result={'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'restore':1,'pin':1,'direct_writes':1,'history':3,'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']}}}
+            result={'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'restore':1,'pin':1,'rule':1,'direct_writes':1,'history':3,'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']}}}
         elif cmd=='update':
             from .notes import change
             d,n=_reference(args.reference,domain,root)
-            values=_payload(args) if args.payload_file or not any(getattr(args,k) is not None for k in ('title','body','body_file','tag','type','context','review_by','pin','file','files','shell_command','source','subject','concern','platform','technology','distinct','not_distinct')+SECTION_ARGS+AMEND_ARGS) else {}
+            values=_payload(args) if args.payload_file or not any(getattr(args,k) is not None for k in ('title','body','body_file','tag','type','context','review_by','pin','rule','file','files','shell_command','source','subject','concern','platform','technology','distinct','not_distinct')+SECTION_ARGS+AMEND_ARGS) else {}
             if args.title is not None:values['title']=args.title
             if args.body is not None:values['body']=args.body
             if args.body_file:values['body']=args.body_file.read_text(encoding='utf-8-sig')
@@ -1016,6 +1022,7 @@ def main(argv=None):
                 for key in ('type','context','review_by'):
                     if getattr(args,key) is not None:values[key]=getattr(args,key)
                 if args.pin is not None:values['pinned']=args.pin
+                if args.rule is not None:values['rule']=args.rule
                 revision=values.pop('expected_revision',None) or args.expected_revision
                 if args.shell_command:values['commands']=list(find_note(n,d,root)[1].get('commands') or [])+args.shell_command
                 redacted=_redact(values) if args.redact else []

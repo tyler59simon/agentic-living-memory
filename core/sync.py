@@ -101,7 +101,7 @@ def is_managed(vault):
     vault=Path(vault)
     return (vault/VAULT_ID).exists() or (vault/COPIES).exists() or (vault/LEGACY_COPIES).exists()
 
-EDITABLE=('title','tags','type','context','review_by','files','commands','pinned')
+EDITABLE=('title','tags','type','context','review_by','files','commands','pinned','rule')
 LIFECYCLE={'archived':'archive','resolved':'resolve'}
 DONE={'archive':'Archived','resolve':'Resolved','delete':'Deleted'}
 APPROVAL_LINE=re.compile(r'^\s*[-*]\s*\[[xX]\].*<!--\s*lm:([a-f0-9]{32})\s*-->')
@@ -320,7 +320,7 @@ def sync(domain,vault,root=None,trigger=None):
                         if not updated['commands']:updated.pop('commands')
                     updated['body']=proposed_note['body'];updated=normalize(updated)
                     if serialize({**updated,'updated':''})!=serialize({**normalize(note),'updated':''}):
-                        if serialize({**updated,'updated':'','pinned':False})!=serialize({**normalize(note),'updated':'','pinned':False}):   # a pin-only edit keeps `updated`, as update --pin does
+                        if serialize({**updated,'updated':'','pinned':False,'rule':False})!=serialize({**normalize(note),'updated':'','pinned':False,'rule':False}):   # a pin- or rule-only edit keeps `updated`, as update --pin and --rule do
                             keep_baseline(updated) if updated['body']==note['body'] else None   # a cosmetic vault edit keeps the verification baseline
                             updated['updated']=now()
                             if updated['body']!=note['body'] and updated.get('checked'):updated['checked']=updated['updated']   # a body edited in the vault is the author's word for the facts

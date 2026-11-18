@@ -324,6 +324,125 @@ class Pin(StoreFixture):
         self.assertEqual(self.get(a)['last_retirement']['actor'], 'vault')
 
 
+class Rule(StoreFixture):
+    """RULES-1: `rule` marks a policy or preference note that every session start shows in full."""
+    def setUp(self):
+        super().setUp()
+        self.vault = self.base / 'vault'
+
+    def cli(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(['--root', str(self.root), '--domain', 'demo', '--json', *argv])
+        text = out.getvalue() or err.getvalue()
+        return code, json.loads(text) if text.strip()[:1] in '{[' else text
+
+    def ok(self, *argv):
+        code, result = self.cli(*argv)
+        self.assertEqual(code, 0, result)
+        return result
+
+    def get(self, note):
+        return find_note(note['id'], 'demo', self.root)[1]
+
+    def policy(self, title='Commit policy', body='Commits stay small.', **kw):
+        return self.note(title, body, type='policy', **kw)
+
+    def test_capture_rule_and_update_rule_no_rule_leave_updated_and_checked_alone(self):
+        created = self.ok('capture', '--type', 'policy', '--title', 'No session links', '--summary', 'Pull request descriptions carry no session URL.',
+                          '--subject', 'project', '--concern', 'architecture', '--rule')
+        self.assertIs(self.get(created)['rule'], True)
+        plain = self.policy()
+        self.assertNotIn('rule', self.get(plain))
+        self.ok('confirm', 'demo:' + plain['id'])
+        before = self.get(plain)
+        self.ok('update', 'demo:' + plain['id'], '--rule')
+        ruled = self.get(plain)
+        self.assertIs(ruled['rule'], True)
+        self.ok('update', 'demo:' + plain['id'], '--no-rule')
+        after = self.get(plain)
+        self.assertIs(after['rule'], False)
+        for key in ('updated', 'checked', 'confirmed', 'review_by', 'body'):
+            self.assertEqual((before.get(key), ruled.get(key)), (before.get(key), after.get(key)), key)
+        code, error = self.cli('update', 'demo:' + plain['id'], '--rule', '--no-rule')
+        self.assertEqual(code, 2)
+        self.assertTrue(error['error']['message'].startswith('bad_arguments: '), error)
+
+    def test_a_preference_can_be_a_rule_and_a_payload_may_carry_it(self):
+        pref = self.note('Short commit subjects', 'Commit subjects stay under 60 characters.', type='preference', rule=True)
+        self.assertIs(self.get(pref)['rule'], True)
+        payload = self.base / 'note.json'
+        payload.write_text(json.dumps({'title': 'Release policy', 'body': 'Releases wait for the user.', 'type': 'policy', 'rule': True,
+                                       'tags': ['subject/project', 'concern/architecture']}), encoding='utf-8')
+        made = self.ok('capture', '--payload-file', str(payload))
+        self.assertIs(self.get(made)['rule'], True)
+
+    def test_rule_must_be_a_real_bool(self):
+        a = self.policy()
+        for bad in ('true', 1, None):
+            with self.subTest(bad=bad):
+                with self.assertRaisesRegex(ValueError, 'rule'):
+                    change(a['id'], 'demo', 'update', self.root, rule=bad)
+        with self.assertRaisesRegex(ValueError, 'rule must be true or false'):
+            validate(dict(self.get(a), rule='true'), 'demo', self.root)
+
+    def test_other_types_are_refused_with_a_next_step(self):
+        code, error = self.cli('capture', '--type', 'knowledge', '--title', 'Cache fact', '--summary', 'The cache is rebuildable.',
+                               '--subject', 'project', '--concern', 'architecture', '--rule')
+        self.assertEqual(code, 2, error)
+        self.assertEqual(error['error']['code'], 'invalid')
+        self.assertTrue(error['error']['message'].startswith('rule_type: '), error)
+        self.assertIn('--type policy', error['error']['next'])
+        self.assertEqual(inventory('demo', self.root), [])
+        fact = self.note('Cache fact', 'The cache is rebuildable.')
+        code, error = self.cli('update', 'demo:' + fact['id'], '--rule')
+        self.assertEqual((code, error['error']['message'][:11]), (2, 'rule_type: '), error)
+        self.assertNotIn('rule', self.get(fact))
+        # Retyping a rule away from policy or preference is refused too; the note keeps its type.
+        rule = self.policy(rule=True)
+        code, error = self.cli('update', 'demo:' + rule['id'], '--type', 'knowledge')
+        self.assertEqual((code, error['error']['message'][:11]), (2, 'rule_type: '), error)
+        self.assertEqual(self.get(rule)['type'], 'policy')
+        # Retyping together with --rule works.
+        self.ok('update', 'demo:' + fact['id'], '--type', 'policy', '--rule')
+        self.assertEqual((self.get(fact)['type'], self.get(fact)['rule']), ('policy', True))
+
+    def test_rule_beside_a_capture_payload_is_refused(self):
+        payload = self.base / 'note.json'
+        payload.write_text(json.dumps({'title': 'Payload policy', 'body': 'From a file.', 'type': 'policy', 'tags': ['subject/project', 'concern/architecture']}), encoding='utf-8')
+        code, result = self.cli('capture', '--payload-file', str(payload), '--rule')
+        self.assertNotEqual(code, 0)
+        self.assertIn('--rule', str(result))
+
+    def test_the_log_shows_ruled_and_unruled(self):
+        a = self.policy()
+        self.ok('update', 'demo:' + a['id'], '--rule')
+        self.ok('update', 'demo:' + a['id'], '--no-rule')
+        out = self.ok('log', '--note', 'demo:' + a['id'])
+        self.assertEqual([r['event'] for r in out['rows']][:2], ['unruled', 'ruled'])
+        self.assertEqual(self.ok('log', '--event', 'ruled')['rows'][0]['title'], 'Commit policy')
+
+    def test_list_with_summary_and_version_report_rules(self):
+        a = self.policy(rule=True)
+        b = self.policy('Review policy', 'Every change gets a review.')
+        rows = {r['id']: r for r in self.ok('list', '--with-summary')['notes']}
+        self.assertEqual((rows[a['id']]['rule'], rows[b['id']]['rule']), (True, False))
+        self.assertNotIn('rule', self.ok('list')['notes'][0])
+        self.assertEqual(self.ok('version')['capabilities']['rule'], 1)
+
+    def test_a_rule_only_vault_edit_keeps_updated(self):
+        a = self.policy()
+        build_overlay('demo', self.vault, self.root)
+        before = self.get(a)
+        copy = self.vault / 'Domains/demo' / Path(a['path']).name
+        text = copy.read_text(encoding='utf-8')
+        copy.write_text(text.replace('title: ', 'rule: true\ntitle: ', 1), encoding='utf-8')
+        build_overlay('demo', self.vault, self.root)
+        after = self.get(a)
+        self.assertIs(after['rule'], True)
+        self.assertEqual((after['updated'], after.get('checked')), (before['updated'], before.get('checked')))
+
+
 class LastRetirement(StoreFixture):
     def cli(self, *argv):
         out, err = io.StringIO(), io.StringIO()

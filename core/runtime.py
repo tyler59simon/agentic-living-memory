@@ -1084,8 +1084,21 @@ def _titled(root,refs):
         except (OSError,ValueError):continue
     return [f"{short_ref(*r.split(':',1))} {_title(titles[r])}" for r in refs if r in titles]
 
-def steering(root,state):
-    """PreCompact instructions for the summarizer: keep what the next context needs and memory cannot rebuild."""
+RULES_STEER='- Keep these rules verbatim:'
+RULES_STEER_MAX=600
+
+def _rules_line(root,domain,bindings):
+    """The PreCompact line naming the rules SessionStart shows (session_start.scope_rules), by title, within RULES_STEER_MAX characters."""
+    from .session_start import scope_rules
+    titles=[' '.join(str(n['title']).split()) for n in scope_rules(domain,root,bindings)]
+    if not titles:return None
+    for shown in range(len(titles),0,-1):
+        line=RULES_STEER+' '+'; '.join(titles[:shown])+(f' (+{len(titles)-shown} more)' if shown<len(titles) else '')
+        if len(line)<=RULES_STEER_MAX:return line
+    return RULES_STEER+f' (+{len(titles)} more)'
+
+def steering(root,state,domain=None,bindings=None):
+    """PreCompact instructions for the summarizer: keep what the next context needs and memory cannot rebuild, and the rules word for word."""
     lines=['Living Memory asks this summary to also keep:',
            '- For each decision: the reason, and the alternatives that were rejected.',
            '- The exact identifiers needed to continue: paths, commands, error strings, IDs and numbers.',
@@ -1095,6 +1108,11 @@ def steering(root,state):
            '(never text the user marked <private>). Write "none" if there are none.']
     saved=_titled(root,list(state.get('saved',[]))[-HANDOFF_NOTES:])
     if saved:lines.append('- Notes saved to Living Memory this session (keep the refs; do not restate their content): '+'; '.join(saved))
+    try:rules=_rules_line(root,domain,bindings) if domain else None
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('runtime.rules_line',exc,root);rules=None
+    if rules:lines.append(rules)
     lines.append('Bulky detail (full tool output, long code) may be left out: after compaction the agent can search this '
                  "session's transcript with the Living Memory recall command.")
     return '\n'.join(lines)
@@ -2049,7 +2067,7 @@ def _process(harness,event,payload,root=None,info=None):
             s['compactions']=(list(s.get('compactions',[]))+[{'at':now(),'trigger':trigger}])[-10:]
             if transcript:s['transcript']=transcript
         state=_update(root,session,compacting)
-        if harness in STEERED:result['instructions']=steering(root,state)
+        if harness in STEERED:result['instructions']=steering(root,state,domain,bindings)
         detail['steered']=bool(result.get('instructions'))
     elif event=='subagent-start':
         # A subagent's context has no CMD, so this is the whole command; PowerShell needs the call operator before a quoted path.

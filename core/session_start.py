@@ -33,6 +33,12 @@ SHORT_SNIPPET=80
 TITLE_MAX=90
 FOOTER_READ="Read: CMD read REF --max-chars 1500"
 FOOTER_SEARCH=" · Search: CMD search 'query'"
+# Rules (policy or preference notes with `rule: true`) come after the last-session line: every one, each with its title and whole summary while the
+# block stays within RULES_BUDGET characters, the rest by title. The block takes no guidance slot, the degrade loop never cuts it, and the budget
+# does not count it, so a small budget or a compaction (SessionStart re-fires with source=compact) still shows the rules.
+RULES_BUDGET=1200
+RULES_HEADER='Rules (follow them in every turn):'
+RULE_TITLE_ONLY=' (title only; read it)'
 
 def _updated(note):return str(note.get('updated') or note.get('created') or '')
 
@@ -81,6 +87,38 @@ def _scope(active,root,bindings):
         try:globals_.append(canonical_domain(name,root))
         except ValueError:continue
     return list(dict.fromkeys([active]+scope_domains(active,bindings)+globals_))
+
+def rule_notes(notes,domains,root):
+    """The rules among `notes` (active notes, each carrying its domain): the global domains' first, then the other domains in `domains` order,
+    each domain's by title."""
+    from .common import global_domains
+    from .repository import RULE_TYPES
+    globals_=set(global_domains(root));order=[d for d in domains if d in globals_]+[d for d in domains if d not in globals_]
+    rank={d:i for i,d in enumerate(order)}
+    found=[n for n in notes if n.get('rule') is True and n.get('type') in RULE_TYPES and n.get('id') and n.get('title')]
+    return sorted(found,key=lambda n:(rank.get(n['domain'],len(rank)),' '.join(str(n['title']).split()).casefold(),n['id']))
+
+def scope_rules(active,root,bindings):
+    """The rules SessionStart shows for the active domain (its scope: parent, child and global domains); PreCompact names them too."""
+    domains=_scope(active,root,bindings);notes=[]
+    for domain in domains:
+        try:notes.extend(dict(n,domain=domain) for n in inventory(domain,root))
+        except (OSError,ValueError):continue
+    return rule_notes(notes,domains,root)
+
+def _rules_block(rules,flag):
+    """(lines, the rules shown in full): RULES_HEADER, then each rule's title and whole summary while the block fits RULES_BUDGET; from the first
+    that does not fit, the rest show by title. No rule is left out."""
+    if not rules:return [],[]
+    lines=[RULES_HEADER];size=len(RULES_HEADER);full=[];cut=False
+    for n in rules:
+        head=f"- {short_ref(n['domain'],n['id'])} {flag(n)}{' '.join(str(n['title']).split())}";text=_summary(n)
+        line=head+(' — '+text if text else '')
+        cut=cut or size+1+len(line)>RULES_BUDGET
+        if cut:line=head+RULE_TITLE_ONLY
+        else:full.append(n);size+=1+len(line)
+        lines.append(line)
+    return lines,full
 
 OPEN_NOTES=3
 OPEN_BUGS=2
@@ -195,8 +233,8 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
     notes runtime.auto_resolve just resolved; they get a tail line of their own."""
     root=(root or memory_root()).resolve();bindings=load_bindings(root);active=resolve_domain(cwd,bindings)
     if not active:return None,[],False
-    notes=[]
-    for domain in _scope(active,root,bindings):
+    notes=[];scope=_scope(active,root,bindings)
+    for domain in scope:
         if not (root/'domains'/domain).is_dir():continue
         try:notes.extend(dict(n,domain=domain) for n in inventory(domain,root))
         except (OSError,ValueError):continue
@@ -214,6 +252,8 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
     from .briefs import user_brief_block,user_brief_pointer
     user=_user_brief(root)
     if user:notes=[n for n in notes if (n['domain'],n['id'])!=(user['domain'],user['id'])]   # shown as its own block, not as an index line
+    rules=rule_notes(notes,scope,root)
+    ruled={id(n) for n in rules};notes=[n for n in notes if id(n) not in ruled]   # the Rules block shows them: no guidance slot, no index line
     guidance=[n for n in notes if n.get('type') in PRIORITY][:GUIDANCE]
     gotchas=[n for n in notes if n.get('type') not in PRIORITY and is_gotcha(n)][:GOTCHAS]
     chosen={id(n) for n in guidance+gotchas};index=[n for n in notes if id(n) not in chosen][:INDEX]
@@ -232,9 +272,11 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
             from .digests import stale_note
             text=stale_note(n,root,bindings);flagged[key]=text+' — ' if text else ''
         return flagged[key]+unconfirmed(n)
+    rule_lines,full_rules=_rules_block(rules,flag)
+    reserved=len('\n'.join(rule_lines))+1 if rule_lines else 0   # outside the budget, like the instruction block
 
     def render(listed,opened,width,search,titles_only,with_tail=True,psummary=True,with_brief=True,gcount=0,gsnip=True,summaries=False,ubrief=2):
-        lines=[header]+([_project_line(project,root,psummary)] if project else here)+([user_brief_block(user,summary_only=ubrief==1) if ubrief else user_brief_pointer(user)] if user else [])+([brief] if brief and with_brief else [])+last
+        lines=[header]+([_project_line(project,root,psummary)] if project else here)+([user_brief_block(user,summary_only=ubrief==1) if ubrief else user_brief_pointer(user)] if user else [])+([brief] if brief and with_brief else [])+last+rule_lines
         for n in guidance:
             line=f"- [{str(n.get('type','note')).upper()} {_updated(n)[:10]}] {short_ref(n['domain'],n['id'])} {flag(n)}{_title(n['title'])}"
             lines.append(line if titles_only else line+' — '+snippet(n.get('body',''),[],width))
@@ -257,7 +299,7 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
     listed,opened,width,search,titles_only,with_tail,psummary,with_brief=len(index),len(open_lines),SESSION_SNIPPET,True,False,True,True,True
     gcount,gsnip,summaries=len(gotchas),True,small;ubrief=2   # the user brief: 2 whole block, 1 summary, 0 pointer
     text=render(listed,opened,width,search,titles_only,gcount=gcount,summaries=summaries,ubrief=ubrief)
-    while len(text)>budget:
+    while len(text)-reserved>budget:
         if opened>open_items:opened-=1   # a bug with no recorded root cause is the cheapest thing to lose; its note is still indexed
         elif summaries:summaries=False
         elif gsnip and gcount:gsnip=False
@@ -279,10 +321,11 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
     shown={} if titles_only else {f"{n['domain']}:{n['id']}":str(n.get('revision') or '')[:12] for n in guidance}
     if gsnip:shown.update({f"{n['domain']}:{n['id']}":str(n.get('revision') or '')[:12] for n in gotchas[:gcount]})
     if user and ubrief==2:shown[f"{user['domain']}:{user['id']}"]=str(user.get('revision') or '')[:12]
+    shown.update({f"{n['domain']}:{n['id']}":str(n.get('revision') or '')[:12] for n in full_rules})
     if isinstance(trace,dict):
         trace['degrade']={'listed':listed,'of':len(index),'opened':opened,'open_of':len(open_lines),'width':width,'search':search,
-                          'titles_only':titles_only,'gotchas':gcount,'gotcha_of':len(gotchas),'gotcha_snippets':gsnip,'summaries':summaries,'tail':with_tail,'project_summary':psummary,'brief':bool(brief and with_brief),'user_brief':ubrief if user else None,'capped':len(text)>budget}
-    return _cap(text,budget),shown,bool(listed)
+                          'titles_only':titles_only,'gotchas':gcount,'gotcha_of':len(gotchas),'gotcha_snippets':gsnip,'summaries':summaries,'tail':with_tail,'project_summary':psummary,'brief':bool(brief and with_brief),'user_brief':ubrief if user else None,'rules':len(rules),'rules_full':len(full_rules),'capped':len(text)-reserved>budget}
+    return _cap(text,budget+reserved),shown,bool(listed)
 
 def _cap(text,budget):
     """Last resort for the budget: whole lines while they fit, then a hard cut."""

@@ -91,6 +91,21 @@ class Quality(StoreFixture):
         self.assertIn('CMD capture-finalize --session q', reminder)
         self.assertNotIn('--turn', reminder); self.assertNotIn('living_memory.py', reminder)  # one short line in the terminal
 
+    def test_more_than_fifteen_rules_warns_on_capture_and_update(self):
+        from core.notes import RULES_WARN
+        words = ['amber', 'basil', 'cedar', 'delta', 'ember', 'fjord', 'garnet', 'harbor', 'indigo', 'juniper', 'kelp', 'lilac', 'maple', 'nectar', 'onyx', 'pepper', 'quartz']
+        rule = lambda i, domain='demo', **kw: capture(f'{words[i].title()} rule', f'Handle {words[i]} this way.', TAGS, domain, self.root, type='policy', allow_similar=True, **kw)
+        for i in range(RULES_WARN - 1):
+            self.assertNotIn('rule_warning', rule(i, rule=True))
+        self.assertNotIn('rule_warning', rule(RULES_WARN - 1, '_global', rule=True))   # the global domain counts too: 15 so far
+        over = rule(RULES_WARN, rule=True)
+        self.assertIn(f'{RULES_WARN + 1} rule notes', over['rule_warning'])
+        self.assertIn('--no-rule', over['rule_warning'])
+        plain = rule(RULES_WARN + 1)
+        self.assertNotIn('rule_warning', plain)   # only a rule hears about the count
+        self.assertIn('rule_warning', change(plain['id'], 'demo', 'update', self.root, rule=True))
+        self.assertNotIn('rule_warning', change(plain['id'], 'demo', 'update', self.root, rule=False))
+
 
 if __name__ == '__main__':
     import unittest

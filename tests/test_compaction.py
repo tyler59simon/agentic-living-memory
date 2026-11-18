@@ -5,6 +5,7 @@ from unittest.mock import patch
 from test_core import StoreFixture
 from core import runtime,recall
 from core.cli import main
+from core.notes import capture
 
 
 def claude_line(kind,content,**extra):
@@ -109,6 +110,28 @@ class Hooks(CompactionFixture):
         self.assertNotIn(runtime.UNCAPTURED,self.start(harness='codex')['context'])   # Codex summaries are not steered
         factory=self.start(harness='factory')['context']   # handoff via SessionStart(compact), but no recall: format unknown
         self.assertIn('Saved this session',factory);self.assertNotIn('recall',factory)
+
+    def rule(self,title,summary='Always do it this way.',domain='demo'):
+        return capture(title,summary,['subject/project','concern/architecture'],domain,self.root,type='policy',rule=True,allow_similar=True)
+
+    def test_compact_session_start_shows_the_rules_again(self):
+        rule=self.rule('No session URL in pull requests','Pull request descriptions never carry a Claude session URL.')
+        context=self.start()['context']
+        self.assertIn('Before this compaction',context)
+        self.assertIn(f"demo:{rule['id'][:8]} No session URL in pull requests — Pull request descriptions never carry a Claude session URL.",context)
+
+    def test_pre_compact_steering_lists_the_rules_by_title_within_its_cap(self):
+        self.rule('No session URL in pull requests')
+        self.rule('Track every review finding',domain='_global')
+        text=runtime.process('claude','pre-compact',self.payload,self.root)['instructions']
+        line=next(l for l in text.splitlines() if l.startswith(runtime.RULES_STEER))
+        self.assertEqual(line,runtime.RULES_STEER+' Track every review finding; No session URL in pull requests')   # global first, as at SessionStart
+        for i in range(40):self.rule(f'Rule number {i} with a fairly long title so that the line overflows')
+        text=runtime.process('claude','pre-compact',self.payload,self.root)['instructions']
+        line=next(l for l in text.splitlines() if l.startswith(runtime.RULES_STEER))
+        self.assertLessEqual(len(line),runtime.RULES_STEER_MAX)
+        self.assertRegex(line,r'\(\+\d+ more\)$')
+        self.assertNotIn(runtime.RULES_STEER,runtime.process('claude','pre-compact',{**self.payload,'cwd':str(self.base/'elsewhere')},self.root).get('instructions',''))
 
     def test_prompt_injection_is_remembered_as_surfaced_across_session_start(self):
         note=self.note('Upload pipeline','The upload pipeline retries on 307.')

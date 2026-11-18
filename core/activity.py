@@ -16,7 +16,7 @@ NOTE_PATH=re.compile(r'domains/([^/]+)/(?:notes|archive)/.+\.md')
 CONTENT=('title','body','type','tags','context','files','commands','sources')
 STATUS_EVENT={'superseded':'superseded','resolved':'resolved','archived':'archived','active':'reopened'}
 LIFECYCLE={'created','superseded','resolved','archived','restored','deleted','promoted'}
-EVENTS=('created','updated','confirmed','superseded','resolved','archived','reopened','restored','pinned','unpinned','deleted','promoted','moved','undone','stage','closed','session')
+EVENTS=('created','updated','confirmed','superseded','resolved','archived','reopened','restored','pinned','unpinned','ruled','unruled','deleted','promoted','moved','undone','stage','closed','session')
 CHANGE_FIELDS=('title','repo','branch','system','element')
 RETIRED={'superseded','resolved','archived'}
 PLAN_KINDS={'merge','rewrite','bulk_retag','reference_remap','import','ingest','schema_migration','note_type_migration','baseline_migration','taxonomy_expansion'}
@@ -51,6 +51,7 @@ def _event(kind,old,new):
     if old_domain!=new_domain:return 'promoted' if 'promote' in kind else 'moved'
     if any(o.get(k)!=n.get(k) for k in CONTENT):return 'updated'
     if bool(o.get('pinned'))!=bool(n.get('pinned')):return 'pinned' if n.get('pinned') else 'unpinned'
+    if bool(o.get('rule'))!=bool(n.get('rule')):return 'ruled' if n.get('rule') else 'unruled'
     if o.get('confirmed')!=n.get('confirmed') or o.get('checked')!=n.get('checked'):return 'confirmed'
     return None
 

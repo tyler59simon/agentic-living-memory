@@ -271,6 +271,16 @@ class GlobalEverywhere(GlobalFixture):
         self.assertEqual([i['item'] for i in listed['items']], ['Export the Device Parameters key'])
         self.assertIn('Export the Device Parameters key', session_start.build_context(str(self.base / 'project'), self.root)[0])
 
+    def test_a_global_rule_is_shown_in_full_in_every_bound_domain(self):
+        self.other()
+        code, out = self.cli('--domain', 'demo', 'capture', '--global', '--type', 'preference', '--subject', 'project', '--concern', 'decision', '--rule',
+                             '--title', 'No session URL in pull requests', '--summary', 'Pull request descriptions never carry a Claude session URL.')
+        self.assertEqual((code, out['domain']), (0, '_global'), out)
+        for cwd in (self.base / 'project', self.base / 'other'):
+            text, shown, _ = session_start.build_context(str(cwd), self.root, session_start.MIN_BUDGET)
+            self.assertIn(f"_global:{out['id'][:8]} No session URL in pull requests — Pull request descriptions never carry a Claude session URL.", text)
+            self.assertIn('_global:' + out['id'], shown)
+
     def test_search_does_not_bury_a_global_match_under_weak_local_hits(self):
         for word in ('amber', 'basil', 'cedar', 'delta', 'ember', 'fjord', 'garnet', 'harbor'):
             capture(f'{word.title()} notes', f'About {word}; mentions a webcam once.', TAGS, 'demo', self.root)

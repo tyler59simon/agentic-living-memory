@@ -142,6 +142,56 @@ class SessionIndex(StoreFixture):
         self.assertNotIn('Prefer small commits', self.prompt('should commits be small'))
         self.assertIn('Webcam conclusion', self.prompt('webcam conclusion'))
 
+    def rule(self, title, summary, kind='policy', domain='demo'):
+        return capture(title, summary, TAGS, domain, self.root, type=kind, rule=True, allow_similar=True)
+
+    def test_rules_are_shown_in_full_and_survive_the_smallest_budget(self):
+        summary = 'Pull request descriptions never carry a Claude session URL, because the link exposes the session to every reader of the pull request. ' * 2
+        rule = self.rule('No session URL in pull requests', summary.strip())
+        capture('Prefer small commits', 'Keep commits small. ' * 20, TAGS, 'demo', self.root, type='preference')
+        self.many(60)
+        for budget in (100000, session_start.BUDGET, session_start.MIN_BUDGET, 260):
+            with self.subTest(budget=budget):
+                text, shown, _ = self.build(budget=budget)
+                self.assertIn(session_start.RULES_HEADER, text)
+                self.assertIn(f"- demo:{rule['id'][:8]} No session URL in pull requests — {' '.join(summary.split())}", text)
+                self.assertIn('demo:' + rule['id'], shown)   # shown in full, so a prompt does not inject it again
+        tiny = self.build(budget=260)[0]
+        self.assertNotIn('Other notes', tiny)   # everything else still degraded
+        self.assertLess(tiny.index(session_start.RULES_HEADER), tiny.index('Prefer small commits'))
+
+    def test_rules_do_not_take_guidance_slots(self):
+        for i in range(3):
+            capture(f'{TOPICS[i]} decision', 'Decided.', TAGS, 'demo', self.root, type='decision', allow_similar=True)
+        rules = [self.rule(f'{TOPICS[i + 3]} rule', 'Always do it this way.') for i in range(2)]
+        text, shown, _ = self.build(budget=100000)
+        guidance = [l for l in text.splitlines() if l.startswith('- [')]
+        self.assertEqual(len(guidance), 3)
+        self.assertTrue(all('DECISION' in l for l in guidance), guidance)
+        for r in rules:
+            self.assertEqual(sum(1 for l in text.splitlines() if r['id'][:8] in l), 1)   # one line, in the Rules block, and none in the index
+            self.assertIn('demo:' + r['id'], shown)
+
+    def test_rules_past_the_reserve_show_as_titles_and_are_never_dropped(self):
+        long = 'Every rule here has a long summary so that the reserved block fills up after a few of them. ' * 3
+        made = [self.rule(f'Rule {c}', long.strip()) for c in 'ABCDEFG']
+        text, shown, _ = self.build(budget=session_start.MIN_BUDGET)
+        block = text.split(session_start.RULES_HEADER + '\n', 1)[1].splitlines()[:len(made)]
+        self.assertEqual([l.split(' ', 2)[2].split(' — ')[0].removesuffix(session_start.RULE_TITLE_ONLY) for l in block], [f'Rule {c}' for c in 'ABCDEFG'])   # by title
+        full = [l for l in block if ' — ' in l]
+        self.assertTrue(full and len(full) < len(made), block)
+        self.assertTrue(all(l.endswith(session_start.RULE_TITLE_ONLY) for l in block[len(full):]), block)
+        self.assertLessEqual(len('\n'.join([session_start.RULES_HEADER] + full)), session_start.RULES_BUDGET)
+        self.assertEqual({r for r in shown if r.startswith('demo:')}, {'demo:' + n['id'] for n in made[:len(full)]})
+
+    def test_global_rules_come_first(self):
+        local = self.rule('A local rule', 'Applies here.')
+        g = self.rule('Z global rule', 'Applies everywhere.', kind='preference', domain='_global')
+        text = self.build()[0]
+        self.assertLess(text.index('Z global rule'), text.index('A local rule'))
+        self.assertIn('_global:' + g['id'][:8], text)
+        self.assertIn('demo:' + local['id'][:8], text)
+
     def test_no_title_fallback_after_the_index(self):
         capture('Webcam conclusion', 'Likely hardware.', TAGS, 'demo', self.root)
         self.start()
