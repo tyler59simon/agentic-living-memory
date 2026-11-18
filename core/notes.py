@@ -653,9 +653,17 @@ def capture(title,body,tags,domain,root=None,**metadata):
         if not isinstance(rule,bool):raise ValueError('rule must be true or false')
         if rule and selected_type not in RULE_TYPES:raise ValueError(rule_type_error(selected_type))
         def matched(result,note,where):
-            """A duplicate answer to `capture --rule`: say when the note it names is not a rule yet (capture never changes an existing note)."""
-            if rule and note.get('rule') is not True:
-                ref=short_ref(where,note['id']);result['rule_warning']=f'{ref} already holds this note and is not a rule; mark it with update {ref} --rule'
+            """A duplicate answer to `capture --rule`: say when the note it names is not shown as a rule yet (capture never changes an existing
+            note). An archived or superseded note is not shown at all, rule or not, so the remedy is restore or the successor."""
+            if not rule:return result
+            ref=short_ref(where,note['id']);status=note.get('status','active')
+            if status=='archived':
+                result['rule_warning']=f'{ref} already holds this note and is archived; restore {ref}'+('' if note.get('rule') is True else f', then mark it with update {ref} --rule')
+            elif status=='superseded' and note.get('superseded_by'):
+                by=short_ref(where,note['superseded_by'])
+                result['rule_warning']=f'{ref} already holds this note and is superseded by {by}; if {by} carries the rule, mark it with update {by} --rule'
+            elif note.get('rule') is not True:
+                result['rule_warning']=f'{ref} already holds this note and is not a rule; mark it with update {ref} --rule'
             return result
         supplied_prefix=metadata.pop('prefix',None)
         if supplied_prefix is not None and supplied_prefix!=derived:

@@ -444,6 +444,25 @@ class Rule(StoreFixture):
         self.assertEqual(out['status'], 'duplicate')
         self.assertNotIn('rule_warning', out)
 
+    def test_a_duplicate_capture_with_rule_on_a_retired_note_names_a_remedy_that_shows_it(self):
+        again = lambda title, summary: self.ok('capture', '--type', 'policy', '--title', title, '--summary', summary,
+                                               '--subject', 'project', '--concern', 'architecture', '--rule')
+        a = self.policy()
+        self.ok('archive', 'demo:' + a['id'])
+        out = again('Commit policy', 'Commits stay small.')
+        self.assertEqual((out['status'], out['id']), ('duplicate', a['id']))
+        self.assertIn(f"restore demo:{a['id'][:8]}", out['rule_warning'])
+        # Already a rule, but archived: SessionStart still does not show it.
+        b = self.policy('Review policy', 'Every change gets a review.', rule=True)
+        self.ok('archive', 'demo:' + b['id'])
+        self.assertIn(f"restore demo:{b['id'][:8]}", again('Review policy', 'Every change gets a review.')['rule_warning'])
+        old = self.policy('Branch policy', 'Work happens on branches.')
+        new = self.policy('Branching policy', 'Work happens on short-lived branches.', supersedes='demo:' + old['id'])
+        out = again('Branch policy', 'Work happens on branches.')
+        self.assertEqual((out['status'], out['id']), ('duplicate', old['id']))
+        self.assertIn(f"update demo:{new['id'][:8]} --rule", out['rule_warning'])
+        self.assertNotIn('restore', out['rule_warning'])
+
     def test_a_falsy_non_bool_rule_in_a_payload_is_refused(self):
         for bad in (0, None, ''):
             with self.subTest(bad=bad):
