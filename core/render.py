@@ -45,7 +45,7 @@ def _plan(r):
     return lines+['','Apply it with:',f"  alm {'setup --apply-plan' if relocation else 'apply'} {r['plan_id']} --expected-plan-sha256 {r['digest']}"]
 
 def _direct(r):
-    rest={k:v for k,v in r.items() if k not in ('ok','operation_id','state','kind','undo')+TRAILER}
+    rest={k:v for k,v in r.items() if k not in ('ok','operation_id','state','kind','undo','idempotent')+TRAILER}
     return [f"Done ({r.get('kind') or 'change'}), operation {r['operation_id']}"]+_kv(rest,1)
 
 NOTE_HEAD=('ok','title','type','status','updated','tags','id','domain','body','truncated','stale','currency')
