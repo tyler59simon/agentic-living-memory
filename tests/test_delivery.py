@@ -167,6 +167,28 @@ class LauncherInstall(StoreFixture):
         self.assertTrue((self.home/'app/living_memory.py').exists())
         with patch.object(setup,'ROOT',self.home/'app'):removal=setup.setup_plan('claude',claude,uninstall=True);apply(claude,removal['plan_id'],removal['digest'])
         self.apply(self.plan(True));self.assertFalse((self.home/'app/living_memory.py').exists())
+    def test_applying_a_saved_uninstall_plan_refuses_once_a_harness_is_wired(self):   # INST-4.1: the check ran at plan time only
+        from integrations import setup
+        from core.governance import apply
+        self.apply(self.plan());removal=self.plan(True);claude=Path(os.environ['CLAUDE_HOME']);custom=self.base/'custom-claude'
+        with patch.object(setup,'ROOT',self.home/'app'):wired=setup.setup_plan('claude',claude);apply(claude,wired['plan_id'],wired['digest'])
+        with self.assertRaisesRegex(ValueError,'still in use by: claude'):self.apply(removal)
+        self.assertTrue((self.home/'app/living_memory.py').exists())
+        with patch.object(setup,'ROOT',self.home/'app'):off=setup.setup_plan('claude',claude,uninstall=True);apply(claude,off['plan_id'],off['digest'])
+        with patch.object(setup,'ROOT',self.home/'app'):wired=setup.setup_plan('claude',custom);apply(custom,wired['plan_id'],wired['digest'])
+        self.apply(removal)   # a custom home nobody named is not checked
+        self.assertFalse((self.home/'app/living_memory.py').exists())
+    def test_saved_uninstall_plan_remembers_its_home_and_apply_takes_more(self):
+        from integrations import setup
+        from core.governance import apply
+        self.apply(self.plan());custom=self.base/'custom-claude'
+        removal=self.install.plan_install(True,[('claude',str(custom))]);self.assertEqual(removal['summary']['homes'],[['claude',str(custom)]])
+        with patch.object(setup,'ROOT',self.home/'app'):wired=setup.setup_plan('claude',custom);apply(custom,wired['plan_id'],wired['digest'])
+        with self.assertRaisesRegex(ValueError,'--home'):self.apply(removal)
+        other=self.base/'other-claude';two=self.plan(True)
+        with patch.object(setup,'ROOT',self.home/'app'):wired=setup.setup_plan('claude',other);apply(other,wired['plan_id'],wired['digest'])
+        with self.assertRaisesRegex(ValueError,'--home'):self.install.apply_plan(self.home,two['plan_id'],two['digest'],[('claude',str(other))])
+        self.assertTrue((self.home/'app/living_memory.py').exists())
     def test_uninstall_checks_a_custom_home_given_with_home(self):
         from integrations import setup
         from core.governance import apply

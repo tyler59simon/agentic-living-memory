@@ -130,7 +130,7 @@ def main() -> int:
             parser.error('--expected-plan-sha256 is required')
         # Package plans live in INSTALL_HOME; legacy retirement plans in CODEX_HOME.
         root = INSTALL_HOME if (INSTALL_HOME / '.plans' / f'{args.apply_plan}.json').is_file() else CODEX_HOME
-        result = apply_plan(root, args.apply_plan, args.expected_plan_sha256)
+        result = apply_plan(root, args.apply_plan, args.expected_plan_sha256, homes)
         print_next_steps(root, args.apply_plan)
     elif args.retire_legacy_plan:
         result = plan_retire(homes)
@@ -143,18 +143,24 @@ def main() -> int:
     return 0
 
 
+def _refuse_if_in_use(extra_homes=()):
+    still = legacy_references(extra_homes, INSTALL_DIR, True)
+    if still:
+        raise ValueError('The package is still in use by: ' + '; '.join(still) + '. Apply each unwire plan, then retry the uninstall.')
+
+
 def plan_install(uninstall=False, extra_homes=()):
     from core.repository import store_lock
     from core.governance import plan
-    still = legacy_references(extra_homes, INSTALL_DIR, True) if uninstall else []
-    if still:
-        raise ValueError('The package is still in use by: ' + '; '.join(still) + '. Apply each unwire plan, then retry the uninstall.')
+    if uninstall:
+        _refuse_if_in_use(extra_homes)
     INSTALL_HOME.mkdir(parents=True, exist_ok=True)
     with store_lock(INSTALL_HOME):
         changes = _package_changes(INSTALL_DIR, uninstall)
         summary = {'package': str(INSTALL_DIR), 'files': len(changes), 'interpreter': sys.executable}
         summary['launcher'] = _launcher_plan(uninstall)
         if uninstall:
+            summary['homes'] = [list(h) for h in extra_homes]
             summary['before'] = 'Unwire each harness first: setup.py HARNESS --uninstall-plan from the installed copy.'
             summary['path'] = f'A PATH entry for {LAUNCHER_DIR} is left in place: other programs may live in that folder.'
         else:
@@ -321,13 +327,16 @@ def _write_launcher(record):
     return f'The launcher {path} did not run ({reason}) and was removed; agents keep using the full command.'
 
 
-def apply_plan(root, plan_id, digest):
-    """governance.apply, plus the launcher and PATH change a package plan records. Both are checked before anything is written."""
+def apply_plan(root, plan_id, digest, extra_homes=()):
+    """governance.apply, plus the launcher and PATH change a package plan records. Both are checked before anything is written.
+    A package uninstall re-checks that no harness runs the package: the --home folders it was planned with and extra_homes."""
     from core.governance import apply
     from core.repository import canonical_json, read_json
     value = read_json(Path(root) / '.plans' / f'{plan_id}.json') or {}
     unsigned = {k: v for k, v in value.items() if k != 'digest'}
     summary = value.get('summary') or {}
+    if value.get('kind') == 'package_uninstall':
+        _refuse_if_in_use([tuple(h) for h in summary.get('homes') or []] + list(extra_homes))
     if value.get('digest') != digest or hashlib.sha256(canonical_json(unsigned).encode()).hexdigest() != digest or 'launcher' not in summary:
         return apply(root, plan_id, digest)   # unverified or not a package plan: governance decides
     record, change = summary['launcher'], summary.get('path_change')
