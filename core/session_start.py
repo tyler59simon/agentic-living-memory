@@ -138,6 +138,10 @@ def _rules_block(rules,flag,room=None):
     if not complete and room is not None:lines,full,_=build(MORE_ROOM)
     return lines,full
 
+def _named(lines):
+    """How many rules a Rules block names: its lines but the header and the count line."""
+    return sum(1 for line in lines if line!=RULES_HEADER and not line.startswith(RULES_MORE.split('{')[0]))
+
 OPEN_NOTES=3
 OPEN_BUGS=2
 ITEM_MAX=100
@@ -341,7 +345,10 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
         elif with_tail and tail:with_tail=False
         else:break
         if limit is not None and (psummary,with_brief,ubrief)!=shape:
-            shape=(psummary,with_brief,ubrief);rule_lines,full_rules,reserved=rules_for(*shape)   # render reads the new block
+            shape=(psummary,with_brief,ubrief);resized=rules_for(*shape)
+            # More room can name fewer rules (past a cut, the block keeps room for the count line); the old block still fits, so keep it then.
+            if _named(resized[0])>=_named(rule_lines) or len(resized[1])>len(full_rules):
+                rule_lines,full_rules,reserved=resized   # render reads the new block
         text=render(listed,opened,width,search,titles_only,with_tail,psummary,with_brief,gcount,gsnip,summaries,ubrief)
     # Title-only guidance did not show its content, so prompts may still inject it. Shown guidance maps
     # ref -> revision key: a later correction of the note is new content and may be injected again. Gotchas

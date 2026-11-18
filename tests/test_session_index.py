@@ -226,6 +226,27 @@ class SessionIndex(StoreFixture):
         self.assertIn(line, text[:limit].split('\n'))   # a whole line inside the limit
         self.assertIn('demo:' + rule['id'], shown)
 
+    def test_codex_rules_keep_the_names_that_fit_when_more_room_would_name_fewer(self):
+        from core.briefs import find_user_brief, user_brief_block, user_brief_pointer
+        from core.repository import inventory
+        made = [self.rule(f'Rule {i}', 'x' * 200) for i in range(4)]
+        capture('User brief', 'Uses Windows.', TAGS, '_global', self.root, type='brief')
+        self.many(30)
+        user = find_user_brief(self.root)
+        grows = len(user_brief_block(user)) - len(user_brief_pointer(user))   # the room the brief's pointer gives back
+        rules = session_start.rule_notes([dict(n, domain='demo') for n in inventory('demo', self.root)], ['demo'], self.root)
+        named = lambda room: sum(1 for line in session_start._rules_block(rules, lambda n: '', room)[0] if ' Rule ' in line)
+        room = next(r for r in range(100, 1500) if named(r) == 4 and named(r + grows) < 4)   # past a cut, the block keeps room for the count
+        whole = self.build(budget=100000)[0]
+        opening = whole.index(session_start.RULES_HEADER) - 1
+        limit = opening + 2 + room
+        trace = {}   # a budget that only the opening with the brief's pointer fits: the loop drops everything else, then shrinks the brief
+        text = session_start.build_context(str(self.base / 'project'), self.root, opening - grows, trace=trace, limit=limit)[0]
+        self.assertEqual(trace['degrade']['user_brief'], 0)
+        for note in made:
+            with self.subTest(title=note['id'][:8]):
+                self.assertIn(f"demo:{note['id'][:8]} Rule", text[:limit])
+
     def test_a_block_that_fits_its_room_keeps_no_room_for_the_count(self):
         rule = {'domain': 'demo', 'id': 'a1b2c3d4-0000', 'title': 'A short rule', 'body': 'Keep commits small.', 'type': 'policy', 'rule': True}
         line = '- demo:a1b2c3d4 A short rule — Keep commits small.'
