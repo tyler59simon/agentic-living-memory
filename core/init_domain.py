@@ -20,7 +20,7 @@ def init_domain(name,prefixes,root=None):
         settings,read=_read_bindings(root,{'version':2,'domains':{},'search_scope':{'global_domains':['_global'],'foreign_domains':[]}})
         if not isinstance(settings,dict) or not isinstance(settings.get('domains',{}),dict):raise ValueError('Invalid bindings preserved')
         domains=settings.setdefault('domains',{});existing=domains.get(name,{})
-        legacy=existing.get('paths',[]);legacy=[legacy] if isinstance(legacy,str) else list(legacy or [])   # `prefixes` shadows a legacy `paths` list, so carry its folders over
+        legacy=existing.get('paths',[]) if 'prefixes' not in existing else [];legacy=[legacy] if isinstance(legacy,str) else list(legacy or [])   # `prefixes` shadows a legacy `paths` list, so carry its folders over once; later it stays shadowed (STO-4.1)
         selected=sorted(set(existing.get('prefixes',[])+legacy+[str(Path(p).expanduser().resolve()) for p in prefixes]))
         for other,entry in domains.items():
             if other!=name and set(selected)&set(entry.get('prefixes',[])):raise ValueError('Prefix is already registered to another domain')

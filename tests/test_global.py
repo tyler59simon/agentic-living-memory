@@ -116,6 +116,18 @@ class Bindings(GlobalFixture):
             self.assertEqual(resolve_domain(self.base / old, domains), name, f'{old} stopped resolving after re-bind')
             self.assertEqual(resolve_domain(self.base / new, domains), name)
 
+    def test_rebinding_an_entry_with_both_keys_keeps_the_shadowed_paths_folder_inactive(self):   # STO-4.1
+        from core.common import resolve_domain
+        config = load_bindings(self.root)
+        config['domains']['both'] = {'prefixes': [str(self.base / 'new')], 'paths': [str(self.base / 'old')]}   # `prefixes` shadows `paths`
+        (self.root / 'bindings.json').write_text(json.dumps(config), encoding='utf-8')
+        self.assertIsNone(resolve_domain(self.base / 'old', load_bindings(self.root)))
+        self.assertEqual(self.cli('bind', 'both', str(self.base / 'extra'))[0], 0)
+        domains = load_bindings(self.root)['domains']
+        self.assertEqual(domains['both']['prefixes'], sorted(str(self.base / n) for n in ('new', 'extra')));self.assertEqual(domains['both']['paths'], [str(self.base / 'old')])
+        self.assertIsNone(resolve_domain(self.base / 'old', domains), 'the shadowed paths folder resolves again after re-bind')
+        self.assertEqual(resolve_domain(self.base / 'extra', domains), 'both')
+
     def test_unbind_prefix_refuses_an_unknown_folder_and_the_last_folder(self):
         capture('Keep me', 'A note in the domain.', TAGS, 'demo', self.root)
         only = load_bindings(self.root)['domains']['demo']['prefixes']
