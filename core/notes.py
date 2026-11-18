@@ -661,18 +661,29 @@ def capture(title,body,tags,domain,root=None,**metadata):
             if pin and note.get('status','active')=='active' and note.get('pinned') is not True:   # restore pins an archived note itself
                 result['pin_warning']=f'{ref} already holds this note and is not pinned; pin it with update {ref} --pin'
             if not rule:return result
-            head=f'{ref} already holds this note';last=note;seen={note['id']}
+            known={}
+            def lookup(nid):
+                """(domain, note) for a successor ID: in the match's domain, else a global domain (promotion keeps IDs). Each domain is listed
+                once, and the capture domain reuses the inventory already loaded."""
+                for d in dict.fromkeys([where,*global_domains(root)]):
+                    if d not in known:
+                        try:known[d]={n['id']:n for n in (existing if d==domain else inventory(d,root,retired=True))}
+                        except (OSError,ValueError):known[d]={}
+                    if nid in known[d]:return d,known[d][nid]
+                return None
+            head=f'{ref} already holds this note';last,at=note,where;seen={note['id']};missing=None
             while last.get('status')=='superseded' and last.get('superseded_by'):
-                try:nxt=find_note(last['superseded_by'],where,root)[1]
-                except (OSError,ValueError):break
-                if nxt['id'] in seen:break
-                seen.add(nxt['id']);last=nxt
-            by=short_ref(where,last['id']);status=last.get('status','active')
+                sid=str(last['superseded_by']).rpartition(':')[2];found=lookup(sid)
+                if not found:missing=sid;break
+                if found[1]['id'] in seen:break
+                at,last=found;seen.add(last['id'])
+            by=short_ref(at,last['id']);status=last.get('status','active')
             if last is not note:head+=f' and is superseded by {by}'
-            if status=='superseded':warning=f'{head} and is superseded; read {by} to find the note that replaced it'
+            if missing:warning=f'{head}; {by} is superseded by {missing[:8]}, which no longer exists, so no live note can be marked as this rule'
+            elif status=='superseded':warning=f'{head} and is superseded; read {by} to find the note that replaced it'
             elif effective_type(last) not in RULE_TYPES:warning=f'{head}; {by} is a {effective_type(last)} note, which cannot be a rule'
             elif status=='archived':warning=f'{head}; {by} is archived: restore {by}'+('' if last.get('rule') is True else f', then mark it with update {by} --rule')
-            elif last.get('rule') is True:warning=None
+            elif last.get('rule') is True:warning=None if last is note else f'{head}; {by} is already a rule, so SessionStart shows it, not this text'
             elif last is note:warning=f'{head} and is not a rule; mark it with update {ref} --rule'
             else:warning=f'{head}; if {by} carries the rule, mark it with update {by} --rule'
             if warning:result['rule_warning']=warning

@@ -478,6 +478,20 @@ class Rule(StoreFixture):
         self.assertIn(f"demo:{new['id'][:8]} is a decision note, which cannot be a rule", out['rule_warning'])
         self.assertNotIn('--rule', out['rule_warning'])
 
+    def test_a_duplicate_capture_with_rule_follows_a_successor_that_is_promoted_ruled_or_gone(self):
+        capture_old = lambda: self.ok('capture', '--type', 'policy', '--title', 'Merge policy', '--summary', 'Merges are squashed.',
+                                      '--subject', 'project', '--concern', 'architecture', '--rule')['rule_warning']
+        old = self.policy('Merge policy', 'Merges are squashed.')
+        new = self.policy('Merging policy', 'Merges are squashed or rebased.', supersedes='demo:' + old['id'])
+        self.ok('promote', 'demo:' + new['id'])
+        self.assertIn(f"update _global:{new['id'][:8]} --rule", capture_old())   # promotion keeps the ID; the warning names its new domain
+        self.ok('update', f"_global:{new['id']}", '--rule')
+        self.assertIn(f"_global:{new['id'][:8]} is already a rule", capture_old())
+        find_note(new['id'], '_global', self.root)[0].unlink()   # as an approved delete plan would leave it
+        warning = capture_old()
+        self.assertIn(f"superseded by {new['id'][:8]}, which no longer exists", warning)
+        self.assertNotIn('update', warning)
+
     def test_a_pinned_capture_or_proposal_that_matches_an_unpinned_note_says_the_pin_was_not_applied(self):
         a = self.policy()
         args = ('--type', 'policy', '--subject', 'project', '--concern', 'architecture')
