@@ -65,10 +65,15 @@ def _strings(value):
             yield from _strings(item)
 
 
+def _lead() -> str:
+    """PowerShell runs a command that starts with a quoted executable only after `&`."""
+    return '& ' if os.name == 'nt' else ''
+
+
 def _unwire_command(harness: str, path: Path) -> str:
     home = path.parents[len(Path(CONFIG_NAMES[harness]).parts) - 1]
     custom = '' if home.resolve() == harness_home(harness).resolve() else f' --home "{home}"'
-    return f'"{sys.executable}" "{INSTALL_DIR / "integrations" / "setup.py"}" {harness} --uninstall-plan{custom}'
+    return f'{_lead()}"{sys.executable}" "{INSTALL_DIR / "integrations" / "setup.py"}" {harness} --uninstall-plan{custom}'
 
 
 def legacy_references(extra_homes=(), folder=None, unwire=False) -> list:
@@ -99,9 +104,8 @@ def print_next_steps(root, plan_id) -> None:
     from core.repository import read_json
     steps = ((read_json(Path(root) / '.plans' / f'{plan_id}.json') or {}).get('summary') or {}).get('next_steps') or []
     if steps:
-        lead = '& ' if os.name == 'nt' else ''
         print('Installed. Next, wire each harness: run these, then review and apply each plan they print (--apply-plan ID --expected-plan-sha256 DIGEST).\n' +
-              '\n'.join('  ' + lead + step for step in steps), file=sys.stderr)
+              '\n'.join('  ' + _lead() + step for step in steps), file=sys.stderr)
 
 
 def main() -> int:

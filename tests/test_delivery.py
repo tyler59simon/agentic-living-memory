@@ -163,7 +163,7 @@ class LauncherInstall(StoreFixture):
         self.apply(self.plan());claude=Path(os.environ['CLAUDE_HOME'])
         with patch.object(setup,'ROOT',self.home/'app'):unwire=setup.setup_plan('claude',claude);apply(claude,unwire['plan_id'],unwire['digest'])
         with self.assertRaises(ValueError) as caught:self.plan(True)
-        message=str(caught.exception);self.assertIn(str(claude/'settings.json'),message);self.assertIn('claude --uninstall-plan',message);self.assertIn(str(self.home/'app'/'integrations'/'setup.py'),message)
+        message=str(caught.exception);self.assertIn(str(claude/'settings.json'),message);self.assertIn('claude --uninstall-plan',message);self.assertTrue(os.name!='nt' or 'unwire it with: & "'+sys.executable+'"' in message,message);self.assertIn(str(self.home/'app'/'integrations'/'setup.py'),message)
         self.assertTrue((self.home/'app/living_memory.py').exists())
         with patch.object(setup,'ROOT',self.home/'app'):removal=setup.setup_plan('claude',claude,uninstall=True);apply(claude,removal['plan_id'],removal['digest'])
         self.apply(self.plan(True));self.assertFalse((self.home/'app/living_memory.py').exists())
