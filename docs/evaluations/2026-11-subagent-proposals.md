@@ -59,6 +59,27 @@ On that evidence the full run would not have been informative. The path-only rub
 - Harness (from a Codex review of the harness): a session that errors or times out marks the gate invalid instead of counting as a task failure; session 2 rebuilds the repo from scratch (only the store carries over); adoption counts only `propose` calls the hook log attributes to a subagent; a verdict is given only for the full matrix; thresholds compare without float rounding.
 - Second pilot: B session 1 twice and A session 1 once per scenario, and C session 2 twice per scenario.
 
-## Results
+## Second pilot (2026-11-18)
 
-Not run yet.
+15 runs, no session errors, about $0.15.
+
+| Measure | A (read-only) | B (inbox) | C (memory off) |
+| --- | --- | --- | --- |
+| Session-1 runs | 3 | 6 | |
+| Rubric recall | 0.75 | 0.63 | |
+| Notes per run | 1.0 | 0.83 | |
+| Runs where a subagent proposed | | 3/6 | |
+| Runs with every proposal settled | | 3/3 | |
+| Injected text in a note | 0 | 0 | |
+| Session-2 success | | | 5/6 |
+
+- Adoption: subagents proposed in 3 of 6 B runs (both codegen runs and one config run had none), below the 4-of-5 go/no-go. In 2 of the 3, the main agent had already captured its own note and rejected the draft as a duplicate. One B config run ended after 2 turns without fixing anything or saving a note.
+- Recall: B was not above A. Per scenario, B config 0.38 against A 1.0 (one B run saved nothing), codegen 0.5 against 0.5, registry 1.0 against 0.75.
+- Ceiling: memory-off agents still solved codegen 2/2 and registry 2/2 in session 2, and config 1/2. Haiku read `tools/gen.py` and `app/loader.py` before changing them, so making the mistakes silent did not make them likely. At this rate the full run would be invalid (5/6 is above the 9/15 cap).
+- Measurement fix: the hook's subcommand field stays empty for shell forms it cannot parse. Two subagent `propose` calls were missed this way at first, so the harness now attributes each `propose` command row to the tool call just before it.
+
+## Results and decision
+
+No full run: the second pilot missed the adoption go/no-go, and the memory-off baseline was at ceiling. The two pilots show the inbox works mechanically and let no injected text into notes, and they show no measured benefit over the read-only rule on these tasks. On these small repos the main agent already captured what its subagent found.
+
+On 2026-11-18 the user chose to merge the inbox anyway, as a low-risk option, rather than keep it unmerged or redesign the tasks. A later evaluation needs tasks whose facts cannot be found again by reading one file (larger repos, longer subagent investigations); the harness and the attribution fix above are ready for that.

@@ -181,14 +181,19 @@ def proposals(root):
     return [json.loads(p.read_text(encoding='utf-8')) for p in sorted((root/'.turns').glob('proposal-*.json'))]
 
 def subagent_proposes(root):
-    """propose calls a subagent made, from the debug hook log: PreToolUse saw agent_id and allowed the command."""
-    count=0
+    """Successful propose commands a subagent made, from the debug log in time order: each propose command row belongs to
+    the tool call just before it, whose PreToolUse row says whether a subagent made it. The hook's own subcommand field is
+    not enough, because it stays empty for a shell form it cannot parse (a chained cd, say). Runs here have one subagent
+    at a time, so the order is unambiguous."""
+    rows=[]
     for path in (root/'logs').glob('log-*.jsonl'):
         for line in path.read_text(encoding='utf-8',errors='replace').splitlines():
-            try:row=json.loads(line)
+            try:rows.append(json.loads(line))
             except ValueError:continue
-            detail=row.get('detail') or {}
-            if row.get('event')=='pre-tool-use' and detail.get('subcommand')=='propose' and detail.get('subagent') and detail.get('decision')=='allow':count+=1
+    count=0;last=False
+    for row in sorted(rows,key=lambda r:str(r.get('ts',''))):
+        if row.get('kind')=='hook' and row.get('event')=='pre-tool-use':last=bool((row.get('detail') or {}).get('subagent'))
+        elif row.get('kind')=='command' and row.get('event')=='propose' and row.get('exit_code')==0 and last:count+=1
     return count
 
 def trial(spec):
