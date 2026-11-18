@@ -482,6 +482,25 @@ class Prompts(Kb):
             self.assertEqual([k.split(':')[1] for k in keys],['docs/nightly.txt']);self.assertEqual([d['ref'].split(':')[1] for d in detail['off_meaning']],['docs/forecast.txt']);self.assertLess(detail['off_meaning'][0]['similarity'],0.45)
             semantic.remove(self.root);self.sync()   # no model, no vectors: the word test alone, as before
             self.assertEqual(sorted(k.split(':')[1] for k in runtime.prompt_sources('cache rebuild',self.root,'demo',{},{})[1]),['docs/forecast.txt','docs/nightly.txt'])
+    def test_with_a_model_a_chunk_without_a_vector_keeps_the_word_test_alone(self):   # EVAL-1.1 (a)
+        source=self.base/'tiny';hashes=write_model(source)
+        with patch.dict(semantic.MODELS,{'tiny':{'repo':'none/tiny','revision':'0','min_similarity':0.45,'files':hashes}},clear=True):
+            self.addCleanup(semantic._unload);semantic.install(self.root,'tiny',source)
+            (self.repo/'docs'/'nightly.txt').write_text('The cache rebuild runs every night.\n')
+            (self.repo/'docs'/'forecast.txt').write_text('Weather tomorrow, weather tomorrow, weather tomorrow, and the cache rebuild.\n');self.sync()
+            with contextlib.closing(self.db()) as db,db:db.execute("DELETE FROM vec WHERE rowid IN (SELECT c.id FROM chunk c WHERE c.path='docs/forecast.txt')")   # as if it were indexed before the model
+            detail={};keys=runtime.prompt_sources('cache rebuild',self.root,'demo',{},detail)[1]
+            self.assertEqual(sorted(k.split(':')[1] for k in keys),['docs/forecast.txt','docs/nightly.txt']);self.assertNotIn('off_meaning',detail)
+    def test_with_a_model_a_query_it_cannot_embed_keeps_the_word_test_alone_like_a_note(self):   # EVAL-1.1 (b): notes do the same (search.py similarityScored)
+        source=self.base/'tiny';hashes=write_model(source)
+        with patch.dict(semantic.MODELS,{'tiny':{'repo':'none/tiny','revision':'0','min_similarity':0.45,'files':hashes}},clear=True):
+            self.addCleanup(semantic._unload);semantic.install(self.root,'tiny',source)
+            (self.repo/'docs'/'quokka.txt').write_text('The zorblax frobnicator restarts every night.\n');self.sync()
+            with contextlib.closing(self.db()) as db:self.assertTrue(db.execute("SELECT 1 FROM vec v JOIN chunk c ON c.id=v.rowid WHERE c.path='docs/quokka.txt'").fetchone())   # the chunk has a vector
+            self.assertIsNone(semantic.load(self.root).embed('zorblax frobnicator'))   # and the query has no word the model knows
+            with contextlib.closing(self.db()) as db:self.assertEqual(sources._chunk_similarity(db,self.root,'zorblax frobnicator',[1,2,3]),{})
+            detail={};keys=runtime.prompt_sources('zorblax frobnicator',self.root,'demo',{},detail)[1]
+            self.assertEqual([k.split(':')[1] for k in keys],['docs/quokka.txt']);self.assertNotIn('off_meaning',detail)
     def test_trace_holds_refs_and_numbers_only(self):
         detail={};text,keys=runtime.prompt_sources(LEDGER_QUESTION,self.root,'demo',{},detail)
         self.assertEqual(set(detail),{'index','queries','candidates','injected'});self.assertEqual(detail['injected'],keys);self.assertNotIn('exponential',json.dumps(detail))

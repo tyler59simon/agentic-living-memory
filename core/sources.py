@@ -888,7 +888,9 @@ def search(root,domain,query,limit=5,vocab=None,informative=False,gate=None,leas
     finally:db.close()
 
 def _chunk_similarity(db,root,query,ids):
-    """chunk id -> cosine of the query with the chunk's stored vector; empty without a model, vectors made by the installed model, or ids."""
+    """chunk id -> cosine of the query with the chunk's stored vector; empty without a model, vectors made by the installed model, or ids.
+    A chunk with no stored vector is absent, and so is every chunk when the model cannot embed the query (no word it knows): those keep the word
+    test alone, as a note the model never scored does (search.py relevance_gate, similarityScored)."""
     try:
         from . import semantic
         from .search import _vector_identity,_query_vector
