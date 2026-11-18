@@ -161,10 +161,10 @@ Generated from the argparse parser in `core/cli.py` by `py -3.15 scripts/gen_scr
 | `bind` | none |
 | `capture` | `--action`, `--allow-similar`, `--command`, `--concern`, `--content-file`, `--context`, `--detail`, `--done`, `--drop-links`, `--file`, `--files`, `--from-proposal`, `--global`, `--idempotency-key`, `--important`, `--link`, `--payload-file`, `--pin`, `--platform`, `--project`, `--redact`, `--review-by`, `--section`, `--session`, `--source`, `--subject`, `--summary`, `--supersedes`, `--system`, `--tag`, `--technology`, `--title`, `--turn`, `--type` |
 | `capture-finalize` | `--note`, `--session`, `--turn` |
-| `change create|update|close` | `--payload-file` |
+| `change create/update/close` | `--payload-file` |
 | `changes` | `--project`, `--status` |
 | `check` | `--index`, `--session`, `--turn`, `--undo` |
-| `config get|set` | none |
+| `config get/set` | none |
 | `confirm` | `--session`, `--turn` |
 | `diff` | none |
 | `doctor` | none |
@@ -181,7 +181,7 @@ Generated from the argparse parser in `core/cli.py` by `py -3.15 scripts/gen_scr
 | `list` | `--all-domains`, `--limit`, `--offset`, `--status`, `--tag`, `--type`, `--with-summary` |
 | `log` | `--event`, `--limit`, `--note`, `--project`, `--since`, `--type`, `--until` |
 | `logs` | `--days`, `--event`, `--kind`, `--level`, `--limit` |
-| `maintenance status|preview|run|enable|disable|history` | `--all-domains`, `--daily-budget-usd`, `--dry-run`, `--limit`, `--max-notes-per-day`, `--model`, `--run`, `--timeout-seconds` |
+| `maintenance status/preview/run/enable/disable/history` | `--all-domains`, `--daily-budget-usd`, `--dry-run`, `--limit`, `--max-notes-per-day`, `--model`, `--run`, `--timeout-seconds` |
 | `merge-plan` | `--payload-file` |
 | `migration-plan` | none |
 | `note-type-plan` | none |
@@ -192,10 +192,10 @@ Generated from the argparse parser in `core/cli.py` by `py -3.15 scripts/gen_scr
 | `overlay-sync-all` | `--primary` |
 | `overlay-teardown-plan` | none |
 | `plan delete` | `--payload-file` |
-| `project create|update|archive` | `--payload-file` |
+| `project create/update/archive` | `--payload-file` |
 | `projects` | `--status` |
 | `promote` | `--only`, `--suggest` |
-| `proposals list|show|reject` | `--reason`, `--session`, `--status` |
+| `proposals list/show/reject` | `--reason`, `--session`, `--status` |
 | `propose` | `--action`, `--allow-similar`, `--command`, `--concern`, `--content-file`, `--context`, `--detail`, `--done`, `--drop-links`, `--file`, `--files`, `--global`, `--idempotency-key`, `--important`, `--link`, `--payload-file`, `--pin`, `--platform`, `--project`, `--redact`, `--review-by`, `--section`, `--session`, `--source`, `--subject`, `--summary`, `--supersedes`, `--system`, `--tag`, `--technology`, `--title`, `--turn`, `--type` |
 | `query` | none |
 | `read` | `--max-chars`, `--metadata-only`, `--section` |
@@ -212,17 +212,17 @@ Generated from the argparse parser in `core/cli.py` by `py -3.15 scripts/gen_scr
 | `review` | `--all-domains`, `--kind`, `--limit`, `--tag` |
 | `rewrite` | `--payload-file` |
 | `search` | `--explain`, `--file`, `--filter`, `--limit`, `--rebuild`, `--scope`, `--sources` |
-| `semantic status|install|remove|rebuild|native` | `--from`, `--model` |
+| `semantic status/install/remove/rebuild/native` | `--from`, `--model` |
 | `serve` | `--stdio` |
 | `setup` | `--apply-plan`, `--expected-plan-sha256`, `--inspect-plan`, `--location`, `--non-interactive`, `--source` |
-| `source add|remove|implicit` | `--payload-file` |
+| `source add/remove/implicit` | `--payload-file` |
 | `source-sync` | `--all-remote`, `--rebuild` |
 | `sources` | none |
 | `stats` | `--days`, `--limit` |
 | `status` | `--session` |
 | `supersede` | `--by`, `--drop-links`, `--session`, `--turn` |
 | `sync` | none |
-| `system create|update|retire` | `--payload-file` |
+| `system create/update/retire` | `--payload-file` |
 | `systems` | `--status` |
 | `taxonomy add` | none |
 | `timeline` | `--after`, `--all`, `--before`, `--by`, `--date`, `--type` |
@@ -231,6 +231,6 @@ Generated from the argparse parser in `core/cli.py` by `py -3.15 scripts/gen_scr
 | `update` | `--action`, `--add-action`, `--add-detail`, `--add-link`, `--body`, `--body-file`, `--command`, `--concern`, `--context`, `--detail`, `--distinct`, `--done`, `--drop-section`, `--expected-revision`, `--file`, `--files`, `--important`, `--link`, `--not-distinct`, `--payload-file`, `--pin`, `--platform`, `--redact`, `--replace-actions`, `--review-by`, `--section`, `--session`, `--set-detail`, `--source`, `--subject`, `--summary`, `--tag`, `--technology`, `--title`, `--turn`, `--type`, `--unpin`, `--why` |
 | `validate` | none |
 | `version` | none |
-| `views list|add|remove|render|published` | `--all`, `--all-domains`, `--format`, `--out`, `--target`, `--title`, `--url` |
+| `views list/add/remove/render/published` | `--all`, `--all-domains`, `--format`, `--out`, `--target`, `--title`, `--url` |
 | `wiki` | `--archived`, `--format`, `--out` |
 <!-- flags:end -->

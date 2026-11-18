@@ -20,7 +20,7 @@ class FlagTable(unittest.TestCase):
         table=gen.render_table();self.assertEqual(table,gen.render_table())
         rows={l.split('`')[1].split(' ')[0] for l in table.splitlines()[2:]}
         self.assertFalse({n for _,names in HELP_GROUPS for n in names}-rows,'commands without a row')
-        self.assertNotIn('--tags',table);self.assertIn('`project create|update|archive`',table)
+        self.assertNotIn('--tags',table);self.assertIn('`project create/update/archive`',table)
 
     def test_update_keeps_the_text_around_the_markers(self):
         text=f'before\n{gen.BEGIN}\nold\n{gen.END}\nafter\n'

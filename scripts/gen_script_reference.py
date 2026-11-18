@@ -6,7 +6,7 @@
 One row per command (alphabetical), listing the flags that command defines itself, sorted. The options every command accepts
 (`--root`, `--domain`, `--cwd`, `--json`, `--actor`, `-h`) are described in the prose of the document, and flags hidden from
 `--help` (legacy `--tags` and `--prefix` on capture and propose, `--scheduled`) are left out on purpose. A command whose first
-positional chooses an action shows the choices after its name, for example `project create|update|archive`. Only the text between
+positional chooses an action shows the choices after its name, for example `project create/update/archive`. Only the text between
 `<!-- flags:begin -->` and `<!-- flags:end -->` is replaced; the rest of the document is hand-written.
 """
 from __future__ import annotations
@@ -39,7 +39,7 @@ def render_table(parser=None):
     rows=sorted(_rows(parser))
     lines=['| Command | Flags of its own |','| --- | --- |']
     for words,actions,flags in rows:
-        label=' '.join(words)+(' '+'|'.join(actions) if actions else '')
+        label=' '.join(words)+(' '+'/'.join(actions) if actions else '')
         lines.append(f'| `{label}` | '+(', '.join(f'`{f}`' for f in flags) if flags else 'none')+' |')
     return '\n'.join(lines)
 
@@ -54,7 +54,7 @@ def documented(table):
     for line in table.splitlines():
         cells=[c.strip() for c in line.strip().strip('|').split('|')]
         if len(cells)!=2 or not cells[0].startswith('`'):continue
-        command=' '.join(w for w in cells[0].strip('`').split(' ') if '|' not in w)
+        command=' '.join(w for w in cells[0].strip('`').split(' ') if '/' not in w)
         pairs.update(f'{command} {flag}' for flag in re.findall(r'`(-[^`]+)`',cells[1]))
     return pairs
 
