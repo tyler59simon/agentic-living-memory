@@ -48,13 +48,12 @@ class Confirm(StoreFixture):
         self.assertEqual(find_note(n['id'], 'demo', self.root)[1]['confirmed'], older[-8:])
 
     def test_confirm_is_journaled_and_undoable(self):
-        from core.governance import undo, apply
+        from core.governance import undo
         n = capture('Undo me', 'A.', TAGS, 'demo', self.root)
         path = find_note(n['id'], 'demo', self.root)[0]
         original = path.read_bytes()
         result = confirm(n['id'], 'demo', self.root)
-        plan = undo(self.root, result['operation_id'])
-        apply(self.root, plan['plan_id'], plan['digest'])
+        undo(self.root, result['operation_id'])
         self.assertEqual(path.read_bytes(), original)
 
     def test_confirmed_survives_a_round_trip_and_is_validated(self):

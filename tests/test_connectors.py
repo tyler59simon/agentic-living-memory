@@ -106,8 +106,8 @@ class Wiki(StoreFixture):
         text=out.getvalue() or err.getvalue();return code,(json.loads(text) if text.strip().startswith('{') else text)
     def register(self,**kw):
         value={k:v for k,v in {'name':'wiki','kind':'confluence','base_url':self.url,'token_env':'WIKI_TOKEN','space':'ENG',**kw}.items() if v is not None}
-        code,plan=self.cli('source-plan','add',stdin=json.dumps(value));self.assertEqual(code,0,plan)
-        code,done=self.cli('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest']);self.assertEqual(code,0,done);return plan
+        code,plan=self.cli('source','add',stdin=json.dumps(value));self.assertEqual(code,0,plan)
+        return plan
     def sync(self,*argv):return self.cli('source-sync',*(argv or ('wiki',)))
     def cache(self,name='wiki'):return connectors.cache_dir(self.root,name)
     def manifest(self,name='wiki'):return json.loads((self.cache(name)/'manifest.json').read_text(encoding='utf-8'))
@@ -115,8 +115,7 @@ class Wiki(StoreFixture):
 class Registry(Wiki):
     def test_a_confluence_and_a_notion_source_hold_the_variable_name_and_never_the_token(self):
         self.register()
-        code,plan=self.cli('source-plan','add',stdin=json.dumps({'name':'notes','kind':'notion','token_env':'NOTION_TOKEN','database_ids':[nid(1)],'page_ids':[nid(2)]}));self.assertEqual(code,0,plan)
-        self.cli('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest'])
+        code,plan=self.cli('source','add',stdin=json.dumps({'name':'notes','kind':'notion','token_env':'NOTION_TOKEN','database_ids':[nid(1)],'page_ids':[nid(2)]}));self.assertEqual(code,0,plan)
         text=(self.root/'sources.json').read_text(encoding='utf-8');self.assertNotIn(TOKEN,text);entries={e['name']:e for e in json.loads(text)['sources']}
         self.assertEqual((entries['wiki']['kind'],entries['wiki']['token_env'],entries['wiki']['space'],entries['wiki']['base_url']),('confluence','WIKI_TOKEN','ENG',self.url))
         self.assertEqual((entries['notes']['base_url'],entries['notes']['database_ids'],entries['notes']['page_ids']),('https://api.notion.com',[nid(1)],[nid(2)]));self.assertNotIn('path',entries['wiki'])
@@ -135,12 +134,12 @@ class Registry(Wiki):
                ({'name':'fl','kind':'folder','path':str(self.project),'base_url':'https://example.com'},'apply to confluence and notion sources only'))
         for payload,message in cases:
             with self.subTest(message=message,payload={k:v for k,v in payload.items() if 'token' not in k}):
-                code,error=self.cli('source-plan','add',stdin=json.dumps(payload));self.assertEqual(code,2,error);self.assertIn(message,str(error));self.assertNotIn('sk-abcdefgh',str(error))
-        for good in (ok,dict(ok,base_url='http://localhost:8090/wiki/'),dict(ok,base_url='http://127.0.0.1:1'),dict(ok,space=None,root_page='123'),dict(ok,space=None,page_ids=['1','2']),dict(ok,api_path='/rest/api')):
-            with self.subTest(good=good['base_url']):self.assertEqual(self.cli('source-plan','add',stdin=json.dumps({k:v for k,v in good.items() if v is not None}))[0],0)
+                code,error=self.cli('source','add',stdin=json.dumps(payload));self.assertEqual(code,2,error);self.assertIn(message,str(error));self.assertNotIn('sk-abcdefgh',str(error))
+        for n,good in enumerate((ok,dict(ok,base_url='http://localhost:8090/wiki/'),dict(ok,base_url='http://127.0.0.1:1'),dict(ok,space=None,root_page='123'),dict(ok,space=None,page_ids=['1','2']),dict(ok,api_path='/rest/api'))):   # a direct write registers each, so each needs its own name
+            with self.subTest(good=good['base_url']):self.assertEqual(self.cli('source','add',stdin=json.dumps({k:v for k,v in dict(good,name=f'wiki{n}').items() if v is not None}))[0],0)
     def test_a_removed_source_loses_its_cache_at_the_next_full_sync(self):
         self.register();self.assertEqual(self.sync()[0],0);self.assertTrue(self.cache().is_dir())
-        code,plan=self.cli('source-plan','remove',stdin='{"name":"wiki"}');self.cli('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest'])
+        code,plan=self.cli('source','remove',stdin='{"name":"wiki"}')
         self.assertEqual(self.cli('source-sync')[0],0);self.assertFalse(self.cache().exists())
 
 class Confluence(Wiki):
@@ -328,6 +327,6 @@ class NoNetwork(Wiki):
             code,error=self.cli('--actor',actor,'source-sync','wiki');self.assertEqual(code,2);self.assertIn('reaches the network',str(error));self.assertEqual(self.cli('--actor',actor,'source-sync')[0],0)
         self.assertEqual(self.fake.log,[])
     def test_the_source_plan_keeps_the_hosts_prompt(self):
-        self.assertNotIn('allow',self.decision('source-plan add'))
+        self.assertNotIn('allow',self.decision('source add'))
 
 if __name__=='__main__':unittest.main()

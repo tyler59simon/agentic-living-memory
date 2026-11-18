@@ -129,10 +129,10 @@ class OpenWork(StoreFixture):
         self.assertEqual(self.cli('check','demo:'+p['id'],'--index','9')[0],2)
         self.assertEqual(self.cli('check','demo:'+p['id'])[0],2)
     def test_check_is_journaled_and_undoable(self):
-        from core.governance import undo,apply
+        from core.governance import undo
         p=self.plan('Undo plan',['Only step'])
         result=check_action(p['id'],'demo',self.root,'only step')
-        plan=undo(self.root,result['operation_id']);apply(self.root,plan['plan_id'],plan['digest'])
+        undo(self.root,result['operation_id'])
         self.assertEqual(action_items(find_note(p['id'],'demo',self.root)[1]['body']),[(False,'Only step')])
     def test_check_rejects_notes_without_actions(self):
         n=self.note('Plain knowledge','A fact.')

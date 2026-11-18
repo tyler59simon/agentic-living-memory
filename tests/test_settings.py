@@ -99,7 +99,5 @@ class Config(StoreFixture):
     def test_undo_restores_the_previous_file(self):
         before=(self.root/'bindings.json').read_text(encoding='utf-8')
         op=self.ok('set','cross_project','false')['operation_id']
-        planned=undo(self.root,op)
-        from core.governance import apply
-        apply(self.root,planned['plan_id'],planned['digest'])
+        undo(self.root,op)   # a settings write is a direct kind
         self.assertEqual((self.root/'bindings.json').read_text(encoding='utf-8'),before)

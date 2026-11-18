@@ -41,8 +41,7 @@ class Currency(StoreFixture):
         self.assertEqual((note['title'], note['body'], note['tags']), ('Cache layer', 'The cache is disposable.', sorted(TAGS)))
         self.assertIn('cache-layer', path.name)
         self.assertIn(quote(path.name), find_note(b['id'], 'demo', self.root)[1]['body'])
-        reverse = undo(self.root, result['operation_id'])
-        apply(self.root, reverse['plan_id'], reverse['digest'])
+        undo(self.root, result['operation_id'])
         note = find_note(a['id'], 'demo', self.root)[1]
         self.assertEqual((note['title'], note['body']), ('Cache', 'The local cache is rebuildable.'))
 
@@ -66,8 +65,7 @@ class Currency(StoreFixture):
         self.assertEqual((retired['status'], retired['superseded_by']), ('superseded', new['id']))
         self.assertEqual(find_note(new['id'], 'demo', self.root)[1]['supersedes'], [old['id']])
         self.assertEqual([n['id'] for n in inventory('demo', self.root)], [new['id']])
-        reverse = undo(self.root, new['operation_id'])
-        apply(self.root, reverse['plan_id'], reverse['digest'])
+        undo(self.root, new['operation_id'])
         self.assertEqual([n['id'] for n in inventory('demo', self.root)], [old['id']])
 
     def test_supersede_command_and_duplicate_hint(self):

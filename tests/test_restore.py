@@ -40,8 +40,7 @@ class Restore(StoreFixture):
         return result['error']['message']
 
     def archive(self, note, domain='demo'):
-        plan = self.ok('plan', 'archive', f"{domain}:{note['id']}", domain=domain)
-        return apply(self.root, plan['plan_id'], plan['digest'])
+        return self.ok('archive', f"{domain}:{note['id']}", domain=domain)
 
     def get(self, note, domain='demo'):
         return find_note(note['id'], domain, self.root)
@@ -79,7 +78,7 @@ class Restore(StoreFixture):
         after = self.get(a)[1]
         for key in ('id', 'body', 'created', 'checked', 'title'):
             self.assertEqual(before.get(key), after.get(key), key)
-        self.assertEqual(after['last_retirement']['actor'], 'plan')
+        self.assertEqual(after['last_retirement']['actor'], 'agent')
         self.assertEqual(after['last_retirement']['restored_by'], 'agent')
         self.assertTrue(after['last_retirement']['restored_at'])
 
@@ -124,20 +123,12 @@ class Restore(StoreFixture):
         self.assertEqual(self.snapshot(), before)
         self.assertEqual(len(list((self.root / '.operations').glob('*/journal.json'))), journals)
 
-    def test_plan_restore_goes_through_the_reviewed_route(self):
-        a = self.note('Cache policy', 'The cache is rebuildable.')
-        self.archive(a)
-        plan = self.ok('plan', 'restore', 'demo:' + a['id'])
-        self.assertEqual(self.get(a)[1]['status'], 'archived')
-        apply(self.root, plan['plan_id'], plan['digest'])
-        self.assertEqual((self.get(a)[1]['status'], self.get(a)[1]['pinned']), ('active', True))
-
     def test_restore_is_undoable(self):
         a = self.note('Cache policy', 'The cache is rebuildable.')
         self.archive(a)
         result = self.ok('restore', 'demo:' + a['id'])
         reverse = undo(self.root, result['operation_id'])
-        apply(self.root, reverse['plan_id'], reverse['digest'])
+        self.assertNotIn('plan_id', reverse)   # a note restore is a direct kind: the undo runs at once
         self.assertEqual(self.get(a)[1]['status'], 'archived')
 
     def test_cross_domain_relative_links_follow_the_move(self):
@@ -149,8 +140,8 @@ class Restore(StoreFixture):
         self.assertIn(f'../../demo/archive/{name}', self.get(b, 'other')[1]['body'])
         restored = self.ok('restore', 'demo:' + a['id'])
         self.assertIn(f'../../demo/notes/{name}', self.get(b, 'other')[1]['body'])
-        reverse = undo(self.root, restored['operation_id'])
-        self.assertIn('other', reverse and json.loads((self.root / '.plans' / (reverse['plan_id'] + '.json')).read_text(encoding='utf-8'))['domains'])
+        undo(self.root, restored['operation_id'])
+        self.assertIn(f'../../demo/archive/{name}', self.get(b, 'other')[1]['body'])   # the other domain's note is put back too
 
     def test_too_many_referring_notes_fails_with_nothing_written(self):
         a = self.note('Cache policy', 'The cache is rebuildable.')
@@ -158,7 +149,7 @@ class Restore(StoreFixture):
             self.note(f'Pointer number {i}', f'Unique words {i} about [the cache](<{Path(a["path"]).name}>).', allow_similar=True)
         before = self.snapshot()
         with patch('core.notes.LINK_UPDATE_MAX', 2):
-            self.assertIn('too_many_link_updates', self.fail('plan', 'archive', 'demo:' + a['id']))
+            self.assertIn('too_many_link_updates', self.fail('archive', 'demo:' + a['id']))
         self.assertEqual(self.snapshot(), before)
 
     def test_restore_is_main_only_and_the_hook_allows_it_for_the_main_agent(self):
@@ -231,8 +222,7 @@ class Pin(StoreFixture):
 
     def test_a_pinned_note_still_archives_resolves_and_supersedes_by_hand(self):
         a = self.note('Pinned fact', 'It stays.', pinned=True)
-        plan = self.ok('plan', 'archive', 'demo:' + a['id'])
-        apply(self.root, plan['plan_id'], plan['digest'])
+        self.ok('archive', 'demo:' + a['id'])
         self.assertEqual(self.get(a)['status'], 'archived')
 
     def test_pinned_must_be_a_real_bool(self):
@@ -248,8 +238,7 @@ class Pin(StoreFixture):
     def test_pin_and_last_retirement_survive_bundle_and_backup(self):
         a = self.note('Pinned fact', 'It stays.', pinned=True)
         b = self.note('Retired fact', 'It went.')
-        plan = self.ok('plan', 'archive', 'demo:' + b['id'])
-        apply(self.root, plan['plan_id'], plan['digest'])
+        self.ok('archive', 'demo:' + b['id'])
         bundle = self.base / 'all.zip'
         self.ok('export', '--out', str(bundle), '--all')
         other = self.base / 'store2'
@@ -266,9 +255,11 @@ class Pin(StoreFixture):
         for note in (a, b):
             Path(self.get(note)['path']).unlink()
         proposed = snap.restore_plan(self.root, source)
-        apply(self.root, proposed['plan_id'], proposed['digest'])
+        applied = apply(self.root, proposed['plan_id'], proposed['digest'])
         self.assertIs(self.get(a)['pinned'], True)
         self.assertEqual(self.get(b)['last_retirement']['action'], 'archive')
+        # A backup restore is a plan kind (it rewrites more than notes), though a note restore shares its journal kind: its undo is still a plan.
+        self.assertIn('plan_id', undo(self.root, applied['operation_id']))
 
     def edit(self, path, old, new):
         text = path.read_text(encoding='utf-8')
@@ -354,9 +345,8 @@ class LastRetirement(StoreFixture):
         self.ok('resolve', 'demo:' + plan_note['id'])
         self.assertEqual({k: self.get(plan_note)['last_retirement'][k] for k in ('version', 'action', 'actor')}, {'version': 1, 'action': 'resolve', 'actor': 'agent'})
         a = self.note('Cache policy', 'The cache is rebuildable.')
-        plan = self.ok('plan', 'archive', 'demo:' + a['id'])
-        apply(self.root, plan['plan_id'], plan['digest'])
-        self.assertEqual({k: self.get(a)['last_retirement'][k] for k in ('action', 'actor')}, {'action': 'archive', 'actor': 'plan'})
+        self.ok('archive', 'demo:' + a['id'])
+        self.assertEqual({k: self.get(a)['last_retirement'][k] for k in ('action', 'actor')}, {'action': 'archive', 'actor': 'agent'})
         old = self.note('Old deploy note', 'Use the old script.')
         new = self.ok('capture', '--title', 'Deploy with install.py', '--summary', 'Use install.py.', '--subject', 'project', '--concern', 'architecture', '--supersedes', 'demo:' + old['id'])
         record = self.get(old)['last_retirement']
@@ -381,12 +371,10 @@ class LastRetirement(StoreFixture):
 
     def test_restore_fills_restored_fields_and_a_new_retirement_replaces_the_record(self):
         a = self.note('Cache policy', 'The cache is rebuildable.')
-        plan = self.ok('plan', 'archive', 'demo:' + a['id'])
-        apply(self.root, plan['plan_id'], plan['digest'])
+        self.ok('archive', 'demo:' + a['id'])
         self.ok('restore', 'demo:' + a['id'])
         self.assertTrue(self.get(a)['last_retirement']['restored_at'])
-        plan = self.ok('plan', 'archive', 'demo:' + a['id'])
-        apply(self.root, plan['plan_id'], plan['digest'])
+        self.ok('archive', 'demo:' + a['id'])
         self.assertNotIn('restored_at', self.get(a)['last_retirement'])
 
     def test_capture_and_update_cannot_set_it(self):
@@ -412,8 +400,7 @@ class LastRetirement(StoreFixture):
     def test_list_and_review_rows_show_pin_and_retirement(self):
         a = self.note('Pinned fact', 'It stays.', pinned=True, review_by='2020-01-01')
         b = self.note('Retired fact', 'It went.', allow_similar=True)
-        plan = self.ok('plan', 'archive', 'demo:' + b['id'])
-        apply(self.root, plan['plan_id'], plan['digest'])
+        self.ok('archive', 'demo:' + b['id'])
         rows = {r['id']: r for r in self.ok('list', '--status', 'any', '--with-summary')['notes']}
         self.assertIs(rows[a['id']]['pinned'], True)
         self.assertEqual(set(rows[b['id']]['last_retirement']), {'action', 'at', 'actor', 'reason'})

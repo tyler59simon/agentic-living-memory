@@ -38,7 +38,7 @@ class Worklist(Base):
         self.cap('Fresh decision','Fresh.',type='decision')
         rows=self.rows(kinds=['due'])
         self.assertEqual(set(rows),{self.ref(old),self.ref(decided)})
-        self.assertEqual((rows[self.ref(old)]['action'],rows[self.ref(decided)]['action']),('plan archive','confirm'))
+        self.assertEqual((rows[self.ref(old)]['action'],rows[self.ref(decided)]['action']),('archive','confirm'))
         self.assertIn('2020-01-01',rows[self.ref(old)]['reason'])
 
     def test_a_simulated_clock_makes_a_status_note_due_only_when_headless(self):
@@ -117,14 +117,14 @@ class Worklist(Base):
         made=self.cap('Wiring task','Pending: wire the adapter.',type='status',review_by='2020-01-01')
         usage.record(self.root,'inject',[self.ref(made)]*3,'s1','prompt')
         found=worklist(self.root,['demo']);self.assertEqual(len(found['items']),1);self.assertEqual(found['total'],1)
-        self.assertEqual(found['items'][0]['kinds'],['due','warned','noisy']);self.assertEqual(found['items'][0]['action'],'plan archive')
+        self.assertEqual(found['items'][0]['kinds'],['due','warned','noisy']);self.assertEqual(found['items'][0]['action'],'archive')
         self.assertEqual({k:v for k,v in found['counts'].items() if v},{'due':1,'warned':1,'noisy':1})
 
     def test_review_keeps_its_fields_and_filters_by_kind(self):
         old=self.cap('Old status','Green.',type='status',review_by='2020-01-01');warned=self.cap('Wiring task','Pending: wire the adapter.')
         found=self.cli('review')
         self.assertEqual((found['due'],found['stale_digests']),(2,0));self.assertEqual(found['kinds'],list(KINDS));self.assertEqual(found['counts']['due'],1);self.assertEqual(found['counts']['warned'],1)
-        self.assertIn('propose plans for archive or merge; the user applies them',found['hint'])
+        self.assertIn('archive REF (undo OPERATION reverses it); for a duplicate (pair), propose a merge-plan for the user to apply',found['hint'])
         note={n['ref']:n for n in found['notes']}[self.ref(old)]
         for key in ('ref','title','type','updated','review_by','confirmed','revision','domain'):self.assertIn(key,note)
         only=self.cli('review','--kind','warned');self.assertEqual([n['ref'] for n in only['notes']],[self.ref(warned)]);self.assertEqual(only['due'],1)
@@ -302,7 +302,7 @@ class Maps(StoreFixture):
 
 class ActionsParse(unittest.TestCase):
     SAMPLES={'confirm':'confirm demo:abc','update':'update demo:abc --body text','supersede':'supersede demo:abc --by demo:def','resolve':'resolve demo:abc',
-             'merge-plan':'merge-plan','plan archive':'plan archive demo:abc'}
+             'merge-plan':'merge-plan','archive':'archive demo:abc'}
     def test_every_action_the_worklist_emits_is_a_command_the_cli_parses(self):
         from core.cli import build_parser
         from core.worklist import _action,KINDS
@@ -314,6 +314,5 @@ class ActionsParse(unittest.TestCase):
             with self.subTest(action=action):
                 self.assertTrue(sample.startswith(action.split()[0]))
                 args=build_parser().parse_args(sample.split());self.assertEqual(args.command,action.split()[0])
-        self.assertEqual(build_parser().parse_args('plan archive demo:abc'.split()).action,'archive')
 
 if __name__=='__main__':unittest.main()

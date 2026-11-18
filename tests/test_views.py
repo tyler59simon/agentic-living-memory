@@ -169,10 +169,10 @@ class Registry(Fixture):
         path.unlink();self.assertFalse(self.ok('views')['views'][0]['exists'])
         self.ok('views','render',note_id);self.assertTrue(path.is_file())
         removed=self.ok('views','remove',note_id);self.assertFalse(path.exists());self.assertFalse((self.root/'views.json').exists());self.assertEqual(self.ok('views')['views'],[])
-        undo=self.ok('undo',removed['operation_id']);self.ok('apply',undo['plan_id'],'--expected-plan-sha256',undo['digest'])
+        self.ok('undo',removed['operation_id'])
         self.assertEqual(self.ok('views')['views'][0]['note'],note_id)
     def test_undo_of_an_add_removes_the_entry(self):
-        added=self.add(self.plan_note());undo=self.ok('undo',added['operation_id']);self.ok('apply',undo['plan_id'],'--expected-plan-sha256',undo['digest'])
+        added=self.add(self.plan_note());self.ok('undo',added['operation_id'])
         self.assertFalse((self.root/'views.json').exists());self.assertEqual(self.ok('views')['views'],[])
 
     def test_published_records_the_revision(self):

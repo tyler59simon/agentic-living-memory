@@ -7,7 +7,7 @@ from pathlib import Path
 from test_core import StoreFixture
 from core import governance
 from core.cli import main as cli
-from core.notes import capture, find_note, quality_warnings, rewrite_plan
+from core.notes import capture, find_note, quality_warnings, rewrite
 from core.style import style_warnings
 
 TAGS = ['subject/project', 'concern/decision']
@@ -77,20 +77,17 @@ class Rewrite(StoreFixture):
         n = capture(title, body, TAGS, 'demo', self.root, **kw)
         return find_note(n['id'], 'demo', self.root)[1]
 
-    def test_one_plan_rewrites_several_notes_and_keeps_dates(self):
+    def test_one_write_rewrites_several_notes_and_keeps_dates(self):
         a = self.made('Index choice', 'The index serves as a pivotal layer.', type='decision')
         b = self.made('Cache layer', 'The cache is disposable.', type='status')
         payload = [{'ref': f"demo:{a['id']}", 'revision': a['revision'], 'body': 'On 2026-11-12 the user chose SQLite.\n\n## Why\nNo server.'},
                    {'ref': b['id'], 'revision': b['revision'], 'body': 'The cache can be deleted and rebuilt.'}]
-        result = rewrite_plan(payload, 'demo', self.root)
+        result = rewrite(payload, 'demo', self.root)
         self.assertEqual(result['summary'], {'notes': 2, 'titles_unchanged': True})
         self.assertEqual([n['ref'] for n in result['notes']], [f"demo:{a['id']}", f"demo:{b['id']}"])
         self.assertNotIn('quality_warnings', result['notes'][0])
-        self.assertEqual(find_note(a['id'], 'demo', self.root)[1]['body'], a['body'])   # nothing changes before apply
-        inspected = governance.inspect_plan(self.root, result['plan_id'], full=True)
-        self.assertEqual(len(inspected['effects']), 2)
-        self.assertFalse(any(e['truncated'] for e in inspected['effects']))
-        governance.apply(self.root, result['plan_id'], result['digest'])
+        self.assertNotIn('plan_id', result);self.assertTrue(result['operation_id'].startswith('d-'))   # direct: no plan, one journaled operation
+        self.assertEqual(len(governance.read_json(self.root / '.operations' / result['operation_id'] / 'journal.json')['effects']), 2)
         after_a = find_note(a['id'], 'demo', self.root)[1]
         after_b = find_note(b['id'], 'demo', self.root)[1]
         self.assertEqual(after_a['body'], 'On 2026-11-12 the user chose SQLite.\n\n## Why\nNo server.')
@@ -107,17 +104,18 @@ class Rewrite(StoreFixture):
                  ([{'ref': a['id'], 'revision': a['revision'], 'body': '## Why\nNo summary.'}], 'Note needs a summary'))
         for payload, message in cases:
             with self.subTest(message), self.assertRaisesRegex(ValueError, message):
-                rewrite_plan(payload, 'demo', self.root)
+                rewrite(payload, 'demo', self.root)
         m = self.made('Repo map', 'What the repo is for.', type='map', files=[str(self.base)])
         with self.assertRaisesRegex(ValueError, 'labelled layout'):
-            rewrite_plan([{'ref': m['id'], 'revision': m['revision'], 'body': 'New.'}], 'demo', self.root)
+            rewrite([{'ref': m['id'], 'revision': m['revision'], 'body': 'New.'}], 'demo', self.root)
 
-    def test_cli_rewrite_plan_from_a_payload_file(self):
+    def test_cli_rewrite_from_a_payload_file(self):
         a = self.made('Index choice', 'We chose SQLite.', type='decision')
         payload = self.base / 'rewrite.json'
         payload.write_text(json.dumps([{'ref': a['id'], 'revision': a['revision'], 'body': 'We chose SQLite.\n\n## Why\nNo server.'}]), encoding='utf-8')
-        result = self.run_cli('rewrite-plan', '--payload-file', str(payload))
-        self.assertIn('inspect-plan PLAN_ID --full', result['hint'])
+        result = self.run_cli('rewrite', '--payload-file', str(payload))
+        self.assertEqual((result['kind'], 'plan_id' in result), ('rewrite', False));self.assertEqual(result['undo'], 'undo ' + result['operation_id'])
         unchanged = self.base / 'same.json'
-        unchanged.write_text(json.dumps([{'ref': a['id'], 'revision': a['revision'], 'body': 'We chose SQLite.'}]), encoding='utf-8')
-        self.assertEqual(self.run_cli('rewrite-plan', '--payload-file', str(unchanged))['unchanged'], [f"demo:{a['id']}"])
+        current = find_note(a['id'], 'demo', self.root)[1]
+        unchanged.write_text(json.dumps([{'ref': a['id'], 'revision': current['revision'], 'body': current['body']}]), encoding='utf-8')
+        self.assertEqual(self.run_cli('rewrite', '--payload-file', str(unchanged))['unchanged'], [f"demo:{a['id']}"])

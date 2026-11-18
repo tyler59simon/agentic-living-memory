@@ -15,7 +15,7 @@ class NoteTypeLists(unittest.TestCase):
                 self.assertFalse(set(NOTE_TYPES)-listed,'missing: '+', '.join(sorted(set(NOTE_TYPES)-listed)))
 
 class MaintenanceDocs(unittest.TestCase):
-    def test_the_archive_exception_is_stated_wherever_archive_needs_a_plan_and_the_reference_ships(self):
+    def test_the_maintenance_clause_is_stated_where_plans_are_described_and_the_reference_ships(self):
         from core.instructions import PROTOCOL,TOPICS
         from core.installer_lifecycle import ROOT_DOCUMENTS
         self.assertIn('maintenance the user enabled archives, resolves and supersedes within its policy and records why; restore REF undoes an archive',TOPICS['plans'][1]);self.assertIn('need approved script plans',PROTOCOL)

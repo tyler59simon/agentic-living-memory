@@ -1,4 +1,4 @@
-"""Project facet, registry, project-plan and projects."""
+"""Project facet, registry, project (a direct, journaled write) and projects."""
 import contextlib,io,json,os,unittest
 from unittest.mock import patch
 from test_core import StoreFixture
@@ -21,24 +21,23 @@ class Projects(StoreFixture):
             try:code=main(['--root',str(self.root),*argv])
             except SystemExit as exc:code=exc.code
         text=out.getvalue() or err.getvalue()
-        return code,(json.loads(text) if text.strip().startswith('{') else text)
+        return code,(json.loads(text) if text.strip().startswith(('{','[')) else text)
     def payload(self,**kw):
         value={'slug':'demo-app','name':'Demo App','repos':[str(self.repo)],'aliases':['DA'],'description':'A demo.','charter':{'body':BODY}}
         value.update(kw);return value
     def plan(self,action,value,actor='main'):
-        return self.cli('--actor',actor,'project-plan',action,stdin=json.dumps(value))
-    def apply(self,plan):
-        code,result=self.cli('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest']);self.assertEqual(code,0,result);return result
+        return self.cli('--actor',actor,'project',action,stdin=json.dumps(value))
+    def apply(self,written):return written   # a direct write has nothing left to apply; kept so the call sites read the same
+    def paths(self,written):return [e['path'] for e in self.cli('diff',written['operation_id'])[1]]
     def create(self,**kw):
         code,plan=self.plan('create',self.payload(**kw));self.assertEqual(code,0,plan);return self.apply(plan),plan
     def registry(self):return json.loads((self.root/'projects.json').read_text(encoding='utf-8'))
 
-    def test_create_inspect_apply(self):
+    def test_create_writes_three_files(self):
         code,plan=self.plan('create',self.payload());self.assertEqual(code,0,plan)
-        self.assertEqual(plan['kind'],'project_create');s=plan['summary']
+        self.assertEqual(plan['kind'],'project_create');self.assertTrue(plan['operation_id'].startswith('d-'));s=plan['summary']
         self.assertEqual((s['slug'],s['tag'],s['added_tag'],s['files']),('demo-app','project/demo-app',True,3))
-        _,view=self.cli('inspect-plan',plan['plan_id'])
-        paths=[e['path'] for e in view['effects']];self.assertEqual(len(paths),3)
+        paths=self.paths(plan);self.assertEqual(len(paths),3)
         self.assertEqual(sorted(paths)[-2:],['projects.json','tag_taxonomy.json']);self.assertTrue(any(p.startswith('domains/demo/notes/') for p in paths),paths)
         self.apply(plan)
         self.assertIn('project/demo-app',json.loads((self.root/'tag_taxonomy.json').read_text())['tags'])
@@ -66,29 +65,23 @@ class Projects(StoreFixture):
         code,undo=self.cli('undo',receipt['operation_id']);self.assertNotEqual(code,0,undo);self.assertIn('retag those notes first',json.dumps(undo))
         self.assertIn('project/demo-app',json.loads((self.root/'tag_taxonomy.json').read_text())['tags'])
 
-    def test_undo_guard_catches_tags_added_after_the_undo_plan(self):
-        receipt,_=self.create()
-        code,undo=self.cli('undo',receipt['operation_id']);self.assertEqual(code,0,undo)
-        self.cli('--domain','demo','capture','--title','Use the cache','--summary','We cache reads.','--type','decision','--concern','decision','--project','demo-app')
-        code,result=self.cli('apply',undo['plan_id'],'--expected-plan-sha256',undo['digest']);self.assertNotEqual(code,0,result);self.assertIn('stale plan',json.dumps(result))
-
     def test_refusals(self):
         self.create()
         for value,message in ((self.payload(),'already exists'),(self.payload(slug='Bad Slug'),'slug'),(self.payload(slug='x',repos=['rel/path']),'absolute'),
                               (self.payload(slug='y',repos=[SLASH(self.base/f'r{i}') for i in range(11)]),'at most 10'),
                               (self.payload(slug='z',charter={'body':'## Key Details'+chr(10)+'* only details'}),'Note needs a summary'),(self.payload(slug='w',status='active'),'Unknown payload')):
             code,result=self.plan('create',value);self.assertNotEqual(code,0,value['slug']);self.assertIn(message,json.dumps(result),value['slug'])
-        code,result=self.cli('taxonomy-plan','project/x');self.assertNotEqual(code,0);self.assertIn('project-plan',json.dumps(result))
+        code,result=self.cli('taxonomy','add','project/x');self.assertNotEqual(code,0);self.assertIn('project create',json.dumps(result))
         code,result=self.cli('retag-plan',stdin=json.dumps({'concern/decision':'project/ghost'}));self.assertNotEqual(code,0);self.assertIn('Unregistered',json.dumps(result))
         code,result=self.cli('retag-plan',stdin=json.dumps({'concern/decision':'project/demo-app'}));self.assertEqual(code,0,result)
 
     def test_update_and_archive_touch_only_registry(self):
         self.create();tags=(self.root/'tag_taxonomy.json').read_text()
         code,plan=self.plan('update',{'slug':'demo-app','name':'Renamed','status':'paused'});self.assertEqual((code,plan['kind']),(0,'project_update'))
-        _,view=self.cli('inspect-plan',plan['plan_id']);self.assertEqual([e['path'] for e in view['effects']],['projects.json']);self.apply(plan)
+        self.assertEqual(self.paths(plan),['projects.json'])
         entry=self.registry()['projects'][0];self.assertEqual((entry['name'],entry['status']),('Renamed','paused'))
         code,plan=self.plan('archive',{'slug':'demo-app'});self.assertEqual(plan['kind'],'project_archive')
-        _,view=self.cli('inspect-plan',plan['plan_id']);self.assertEqual([e['path'] for e in view['effects']],['projects.json']);self.apply(plan)
+        self.assertEqual(self.paths(plan),['projects.json'])
         self.assertEqual(self.registry()['projects'][0]['status'],'archived');self.assertEqual((self.root/'tag_taxonomy.json').read_text(),tags)
         self.assertNotEqual(self.plan('update',{'slug':'nope','name':'x'})[0],0)
 

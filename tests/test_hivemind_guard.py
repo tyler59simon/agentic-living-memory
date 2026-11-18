@@ -1,4 +1,4 @@
-"""Hivemind guard: with HIVEMIND_SESSION set, an agent's shell command may not apply or undo a plan."""
+"""Hivemind guard: with HIVEMIND_SESSION set, an agent's shell command may not apply or undo a plan or make a direct write."""
 import contextlib, io, json, os, sys, unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -6,7 +6,7 @@ from test_core import StoreFixture
 from core import logs, runtime
 from core.cli import main
 
-REASON = 'Memory plans are applied and undone by you in Hivemind, not by an agent. Write the plan; the user applies it.'
+REASON = 'Applying or undoing a plan, and the direct writes (archive, rewrite, remap, promote, taxonomy add, source, project, system, change), are done by you in Hivemind, not by an agent. Write a plan for a delete or merge; for the rest, tell the user what to change.'
 MODES = ('default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions')
 APPLY = 'apply plan-1 --expected-plan-sha256 abc'
 
@@ -31,7 +31,7 @@ class HivemindGuard(StoreFixture):
         return self.run_hook(harness, tool, command, **extra).get('deny') == REASON
 
     def test_governed_subcommands_are_denied_for_both_harnesses(self):
-        for rest in (APPLY, 'undo op-1', 'recover op-1 --direction backward', 'setup --apply-plan p1'):
+        for rest in (APPLY, 'undo op-1', 'recover op-1 --direction backward', 'setup --apply-plan p1', 'archive demo:x', 'rewrite --payload-file r.json', 'remap', 'promote demo:x', 'taxonomy add concern/x', 'source add', 'project create', 'system update', 'change close'):
             for harness, tool in (('claude', 'Bash'), ('codex', 'shell'), ('codex', 'exec_command')):
                 with self.subTest(rest=rest, harness=harness, tool=tool):
                     result = self.run_hook(harness, tool, self.memory(rest))
@@ -92,8 +92,8 @@ class HivemindGuard(StoreFixture):
         self.assertTrue(self.denied(self.memory('undo op-1'), agent_id='sub'))
 
     def test_reading_and_plan_writing_commands_are_allowed(self):
-        for rest in ('plan --list', 'plan update demo:NOTE --payload-file p.json', 'inspect-plan plan-1', 'setup --inspect-plan p1', 'search apply',
-                     'read undo', 'show', 'diff op-1', 'history', 'rewrite-plan', 'merge-plan', 'restore-plan b.zip', 'import-plan x.zip',
+        for rest in ('plan --list', 'plan delete demo:NOTE', 'inspect-plan plan-1', 'setup --inspect-plan p1', 'search apply', 'taxonomy', 'projects',
+                     'read undo', 'show', 'diff op-1', 'history', 'retag-plan', 'merge-plan', 'restore-plan b.zip', 'import-plan x.zip',
                      'ingest-plan', 'doctor', "capture 'apply the plan' 'undo recover'"):
             with self.subTest(rest=rest):
                 self.assertFalse(self.denied(self.memory(rest)))

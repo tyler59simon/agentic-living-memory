@@ -42,7 +42,7 @@ class Distinct(StoreFixture):
         after=self.get(b);record=after['distinct_from'][0]
         self.assertEqual((record['ref'],record['why'],record['by']),('demo:'+a['id'],'Different retry scopes.','user'))
         self.assertEqual(after['updated'],before['updated']);self.assertTrue(result.get('operation_id'))
-        reverse=undo(self.root,result['operation_id']);apply(self.root,reverse['plan_id'],reverse['digest'])
+        undo(self.root,result['operation_id'])
         self.assertNotIn('distinct_from',self.get(b))
 
     def test_update_distinct_needs_why_and_a_note_in_the_same_domain(self):
@@ -98,7 +98,7 @@ class Distinct(StoreFixture):
         self.cli('update','demo:'+a2['id'],'--distinct','demo:'+b2['id'],'--why','Different retry scopes.')
         result=self.cli('update','demo:'+b2['id'],'--not-distinct','demo:'+a2['id'],'--context','together')
         self.assertEqual((self.get(b2).get('context'),'distinct_from' in self.get(a2)),('together',False))
-        reverse=undo(self.root,result['operation_id']);apply(self.root,reverse['plan_id'],reverse['digest'])
+        undo(self.root,result['operation_id'])
         self.assertEqual((self.get(b2).get('context'),'distinct_from' in self.get(a2)),('',True))
 
 if __name__=='__main__':unittest.main()

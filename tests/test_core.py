@@ -66,9 +66,9 @@ class StoreCase(StoreFixture):
         self.assertEqual(self.cli('unbind','side')[0],2)   # unknown now
     def test_unbind_refuses_a_domain_that_still_holds_notes_or_archived_notes(self):
         from core.common import load_bindings
-        n=self.note('Rollout plan','A plan.',type='plan');code,result=self.cli('unbind','demo');self.assertEqual(code,2);self.assertIn('remap-plan',result['error']['message']);self.assertIn('1 note',result['error']['message'])
+        n=self.note('Rollout plan','A plan.',type='plan');code,result=self.cli('unbind','demo');self.assertEqual(code,2);self.assertIn('remap',result['error']['message']);self.assertIn('1 note',result['error']['message'])
         change(n['id'],'demo','resolve',self.root);self.assertEqual(len(list((self.root/'domains/demo/notes').glob('*.md'))),0)   # now only in the archive
-        code,result=self.cli('unbind','demo');self.assertEqual(code,2);self.assertIn('remap-plan',result['error']['message'])
+        code,result=self.cli('unbind','demo');self.assertEqual(code,2);self.assertIn('remap',result['error']['message'])
         self.assertIn('demo',load_bindings(self.root)['domains'])
     def test_unbind_refuses_global_and_unknown_domains_and_non_main_actors(self):
         init_domain('side',[str(self.base/'side')],self.root)
@@ -112,7 +112,7 @@ class StoreCase(StoreFixture):
         n=self.note();p=change(n['id'],'demo','update',self.root,plan_only=True,body='New body')
         with self.assertRaises(ValueError):apply(self.root,p['plan_id'],'bad')
         receipt=apply(self.root,p['plan_id'],p['digest']);self.assertEqual(find_note(n['id'],'demo',self.root)[1]['body'],'New body')
-        p=undo(self.root,receipt['operation_id']);apply(self.root,p['plan_id'],p['digest'])
+        undone=undo(self.root,receipt['operation_id']);self.assertNotIn('plan_id',undone)   # an update is a direct kind
         self.assertIn('rebuildable',find_note(n['id'],'demo',self.root)[1]['body'])
 
 if __name__=='__main__':unittest.main()

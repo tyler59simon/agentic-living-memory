@@ -1,4 +1,4 @@
-"""System facet, registry, system-plan, systems, capture attribution and the runbook note type."""
+"""System facet, registry, system (a direct, journaled write), systems, capture attribution and the runbook note type."""
 import contextlib,io,json,unittest
 from unittest.mock import patch
 from test_core import StoreFixture
@@ -28,21 +28,20 @@ class Fixture(StoreFixture):
         value={'slug':'billing','name':'Billing','repos':[str(self.repo)],'owners':['Payments team'],'capabilities':['Take payments','Issue invoices'],'description':'Takes payments.','passport':{'body':BODY}}
         value.update(kw);return value
     def plan(self,action,value,actor='main'):
-        return self.cli('--actor',actor,'system-plan',action,stdin=json.dumps(value))
-    def apply(self,plan):
-        code,result=self.cli('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest']);self.assertEqual(code,0,result);return result
+        return self.cli('--actor',actor,'system',action,stdin=json.dumps(value))
+    def apply(self,written):return written   # a direct write has nothing left to apply; kept so the call sites read the same
+    def paths(self,written):return sorted(e['path'] for e in self.cli('diff',written['operation_id'])[1])
     def create(self,**kw):
         code,plan=self.plan('create',self.payload(**kw));self.assertEqual(code,0,plan);return self.apply(plan),plan
     def registry(self):return json.loads((self.root/'systems.json').read_text(encoding='utf-8'))
     def entry(self,slug='billing'):return next(s for s in self.registry()['systems'] if s['slug']==slug)
 
 class Systems(Fixture):
-    def test_create_inspect_apply(self):
+    def test_create_writes_three_files(self):
         code,plan=self.plan('create',self.payload(architecture=str(self.base/'arch'/'billing')+'/'));self.assertEqual(code,0,plan)
         self.assertEqual(plan['kind'],'system_create');s=plan['summary']
         self.assertEqual((s['slug'],s['tag'],s['added_tag'],s['files']),('billing','system/billing',True,3))
-        _,view=self.cli('inspect-plan',plan['plan_id'])
-        paths=sorted(e['path'] for e in view['effects']);self.assertEqual(len(paths),3)
+        paths=self.paths(plan);self.assertEqual(len(paths),3)
         self.assertEqual(paths[-2:],['systems.json','tag_taxonomy.json']);self.assertTrue(paths[0].startswith('domains/demo/notes/'),paths)
         self.apply(plan)
         self.assertIn('system/billing',json.loads((self.root/'tag_taxonomy.json').read_text())['tags'])
@@ -90,7 +89,7 @@ class Systems(Fixture):
                               (self.payload(slug='y',architecture='rel/arch'),'architecture'),(self.payload(slug='z',passport={'body':'## Key Details'+chr(10)+'* only details'}),'Note needs a summary'),
                               (self.payload(slug='w',status='active'),'Unknown payload'),(self.payload(slug='v',owners=['x']*11),'at most 10'),({'slug':'u','repos':[]},'requires name')):
             code,result=self.plan('create',value);self.assertNotEqual(code,0,value['slug']);self.assertIn(message,json.dumps(result),value['slug'])
-        code,result=self.cli('taxonomy-plan','system/x');self.assertNotEqual(code,0);self.assertIn('system-plan',json.dumps(result))
+        code,result=self.cli('taxonomy','add','system/x');self.assertNotEqual(code,0);self.assertIn('system create',json.dumps(result))
         code,result=self.cli('retag-plan',stdin=json.dumps({'concern/decision':'system/ghost'}));self.assertNotEqual(code,0);self.assertIn('Unregistered',json.dumps(result))
         code,result=self.cli('retag-plan',stdin=json.dumps({'concern/decision':'system/billing'}));self.assertEqual(code,0,result)
 
@@ -98,7 +97,7 @@ class Systems(Fixture):
         self.create();tags=(self.root/'tag_taxonomy.json').read_text()
         code,plan=self.plan('update',{'slug':'billing','name':'Billing v2','status':'deprecated','owners':['Platform'],'architecture':None})
         self.assertEqual((code,plan['kind']),(0,'system_update'))
-        _,view=self.cli('inspect-plan',plan['plan_id']);self.assertEqual([e['path'] for e in view['effects']],['systems.json']);self.apply(plan)
+        self.assertEqual(self.paths(plan),['systems.json'])
         entry=self.entry();self.assertEqual((entry['name'],entry['status'],entry['owners'],entry['architecture']),('Billing v2','deprecated',['Platform'],None))
         code,plan=self.plan('retire',{'slug':'billing'});self.assertEqual(plan['kind'],'system_retire');self.apply(plan)
         self.assertEqual(self.entry()['status'],'retired');self.assertEqual((self.root/'tag_taxonomy.json').read_text(),tags)
@@ -145,7 +144,7 @@ class Attribution(Fixture):
         self.assertEqual(self.tagged(self.cap('Six','--file','billing/a.py')),[])
     def test_project_and_system_in_one_repo_both_tag(self):
         self.create()
-        code,plan=self.cli('project-plan','create',stdin=json.dumps({'slug':'billing-revamp','name':'Billing revamp','repos':[str(self.repo)],'charter':{'body':BODY}}));self.assertEqual(code,0,plan);self.apply(plan)
+        code,plan=self.cli('project','create',stdin=json.dumps({'slug':'billing-revamp','name':'Billing revamp','repos':[str(self.repo)],'charter':{'body':BODY}}));self.assertEqual(code,0,plan);self.apply(plan)
         r=self.cap('Seven','--file','billing/a.py')
         self.assertEqual((self.tagged(r),self.tagged(r,'project/')),(['system/billing'],['project/billing-revamp']))
     def test_broken_registry_does_not_break_capture(self):

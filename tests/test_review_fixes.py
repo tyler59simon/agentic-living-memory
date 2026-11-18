@@ -74,7 +74,7 @@ class Rehearsal(StoreFixture):
 
 
 class PlanRaces(StoreFixture):
-    def test_taxonomy_plan_reads_under_the_store_lock(self):
+    def test_taxonomy_add_reads_under_the_store_lock(self):
         from core import tag_taxonomy, repository
         held = []
         real = tag_taxonomy.read_json
@@ -82,7 +82,7 @@ class PlanRaces(StoreFixture):
             held.append(str(self.root.resolve()) in getattr(repository._locks, 'held', set()))
             return real(*a, **k)
         with patch.object(tag_taxonomy, 'read_json', spy):
-            tag_taxonomy.plan_update(['concern/bug'], self.root)
+            tag_taxonomy.add_tags(['concern/bug'], self.root)
         self.assertEqual(held, [True])
 
     def test_retag_plan_goes_stale_when_a_new_note_uses_the_old_tag(self):

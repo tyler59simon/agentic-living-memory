@@ -1,11 +1,11 @@
-"""C2: `file_hashes` on knowledge-type notes that list files, `checked` on confirm, and check / rewrite-plan leaving both alone."""
+"""C2: `file_hashes` on knowledge-type notes that list files, `checked` on confirm, and check / rewrite leaving both alone."""
 import hashlib,os,shutil,subprocess,time,unittest
 from pathlib import Path
 from datetime import datetime,timezone
 from test_core import StoreFixture
 from unittest.mock import patch
 from core import digests,notes,runtime,search
-from core.notes import capture,change,check_action,confirm,find_note,rewrite_plan
+from core.notes import capture,change,check_action,confirm,find_note,rewrite
 from core.common import parse_iso
 from core.repository import validate
 
@@ -88,12 +88,12 @@ class FileCurrency(Base):
         change(made['id'],'demo','update',self.root,type='decision');self.assertNotIn('file_hashes',self.note_of(made))
         change(made['id'],'demo','update',self.root,type='runbook');self.assertEqual(self.hashes(made),{'src/a.py':sha(A)})
 
-    def test_check_and_rewrite_plan_do_not_rehash(self):
+    def test_check_and_rewrite_do_not_rehash(self):
         bug=self.cap('Retry bug',['src/a.py'],type='bug',body=BUG_BODY);put(self.project/'src'/'a.py','retry = 8\n')
         check_action(bug['id'],'demo',self.root,item='Fix the loop');self.assertEqual(self.hashes(bug),{'src/a.py':sha(A)})   # still stale
-        plan=rewrite_plan([{'ref':f"demo:{bug['id']}",'revision':self.note_of(bug)['revision'],'body':'Retries stop after one attempt.'}],'demo',self.root)
-        self.assertTrue(plan.get('notes'),plan)
-        self.assertEqual(self.hashes(bug),{'src/a.py':sha(A)})   # planned, not applied: the note is untouched
+        done=rewrite([{'ref':f"demo:{bug['id']}",'revision':self.note_of(bug)['revision'],'body':'Retries stop after one attempt.'}],'demo',self.root)
+        self.assertTrue(done.get('notes'),done);self.assertEqual(self.note_of(bug)['body'],'Retries stop after one attempt.')
+        self.assertEqual(self.hashes(bug),{'src/a.py':sha(A)})   # rewritten, not re-hashed
 
     def test_rehash_false_leaves_both_hash_lists_in_the_planned_text(self):
         from core.repository import parse_text
@@ -201,12 +201,11 @@ class Freshness(Base):
         bug=self.cap('Retry bug',['src/a.py'],type='bug',body=BUG_BODY);self.legacy(bug)
         before=self.note_of(bug)['updated'];check_action(bug['id'],'demo',self.root,item='Fix the loop');self.assertEqual(self.note_of(bug)['checked'],before)   # the old baseline, not the tick's time
 
-    def test_check_and_a_rewrite_plan_do_not_advance_an_existing_checked(self):
+    def test_check_and_a_rewrite_do_not_advance_an_existing_checked(self):
         bug=self.cap('Retry bug',['src/a.py'],type='bug',body=BUG_BODY);confirm(bug['id'],'demo',self.root);checked=self.note_of(bug)['checked']
         check_action(bug['id'],'demo',self.root,item='Fix the loop');note=self.note_of(bug);self.assertEqual(note['checked'],checked);self.assertGreater(note['updated'],checked)
-        plan=rewrite_plan([{'ref':f"demo:{bug['id']}",'revision':note['revision'],'body':'Retries stop after one attempt.\n\n## Action Items\n\n- [x] Fix the loop\n'}],'demo',self.root)
-        from core.governance import apply
-        apply(self.root,plan['plan_id'],plan['digest']);after=self.note_of(bug)
+        rewrite([{'ref':f"demo:{bug['id']}",'revision':note['revision'],'body':'Retries stop after one attempt.\n\n## Action Items\n\n- [x] Fix the loop\n'}],'demo',self.root)
+        after=self.note_of(bug)
         self.assertEqual((after['checked'],after['updated']),(checked,note['updated']))   # neither a prose rewrite nor a tick confirms the note
 
     def test_a_merge_body_and_a_vault_body_edit_advance_checked_but_a_vault_title_edit_does_not(self):

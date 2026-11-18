@@ -65,17 +65,17 @@ class Features(StoreFixture):
         from core.init_domain import init_domain
         from core.governance import undo
         init_domain('other',[str(self.base/'other')],self.root);a=self.note()
-        proposal=remap(self.root,[{'before':{'domain':'demo','id':a['id']},'after':{'domain':'other','id':a['id']}}])
-        receipt=apply(self.root,proposal['plan_id'],proposal['digest']);self.assertEqual(find_note(a['id'],'other',self.root)[1]['domain'],'other')
-        proposal=undo(self.root,receipt['operation_id']);apply(self.root,proposal['plan_id'],proposal['digest']);self.assertEqual(find_note(a['id'],'demo',self.root)[1]['domain'],'demo')
+        receipt=remap(self.root,[{'before':{'domain':'demo','id':a['id']},'after':{'domain':'other','id':a['id']}}])
+        self.assertEqual((receipt['kind'],find_note(a['id'],'other',self.root)[1]['domain']),('reference_remap','other'));self.assertNotIn('plan_id',receipt)
+        undone=undo(self.root,receipt['operation_id']);self.assertNotIn('plan_id',undone);self.assertEqual(find_note(a['id'],'demo',self.root)[1]['domain'],'demo')
     def test_remap_keeps_the_verification_baseline(self):
         from core.init_domain import init_domain
         from core.note_types import verified_at
         init_domain('other',[str(self.base/'other')],self.root);(self.base/'project').mkdir(exist_ok=True);(self.base/'project'/'x.py').write_text('x=1',encoding='utf-8')
         a=self.note(files=['x.py']);before=find_note(a['id'],'demo',self.root)[1]
         self.assertTrue(before.get('file_hashes'));self.assertFalse(before.get('checked'))
-        proposal=remap(self.root,[{'before':{'domain':'demo','id':a['id']},'after':{'domain':'other','id':a['id']}}])
-        apply(self.root,proposal['plan_id'],proposal['digest']);after=find_note(a['id'],'other',self.root)[1]
+        remap(self.root,[{'before':{'domain':'demo','id':a['id']},'after':{'domain':'other','id':a['id']}}])
+        after=find_note(a['id'],'other',self.root)[1]
         self.assertEqual(verified_at(after),verified_at(before))   # a move vouches for nothing
         self.assertEqual((after['files'],after['file_hashes'],after['tags']),(before['files'],before['file_hashes'],before['tags']))   # only promotion cleans a note
     def test_script_capture_batch_compact_output(self):

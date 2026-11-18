@@ -28,7 +28,7 @@ class Kb(StoreFixture):
             try:code=main(['--root',str(self.root),*(['--domain',domain] if domain else []),*argv])
             except SystemExit as exc:code=exc.code
         text=out.getvalue() or err.getvalue()
-        return code,(json.loads(text) if text.strip().startswith('{') else text)
+        return code,(json.loads(text) if text.strip().startswith(('{','[')) else text)
     def sync(self,**kw):return sources.sync(self.root,'demo',**kw)
     def db(self):return sqlite3.connect(sources.db_path(self.root,'demo'))
     def indexed(self):
@@ -37,8 +37,8 @@ class Kb(StoreFixture):
         return runtime.process('claude',event,{'cwd':str(self.project),'session_id':session,**extra},self.root)
     def register(self,**kw):
         value={'name':'wiki','kind':'html-export','path':str(self.repo/'docs'/'export'),**kw}
-        code,plan=self.cli('source-plan','add',stdin=json.dumps(value));self.assertEqual(code,0,plan)
-        code,done=self.cli('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest']);self.assertEqual(code,0,done);return plan
+        code,plan=self.cli('source','add',stdin=json.dumps(value));self.assertEqual(code,0,plan)
+        return plan
 
 class Chunking(unittest.TestCase):
     def chunks(self,rel,kind='folder'):return sources.chunk_file(rel,(FIXTURE/rel).read_text(encoding='utf-8'),kind)
@@ -159,7 +159,7 @@ class Index(Kb):
         code,error=self.cli('source-sync','nope');self.assertEqual(code,2);self.assertIn('Unknown source',str(error))
     def test_a_removed_source_leaves_the_index(self):
         self.register();self.sync();self.assertIn('Billing-FAQ.html',self.indexed())
-        code,plan=self.cli('source-plan','remove',stdin='{"name":"wiki"}');self.cli('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest'])
+        code,plan=self.cli('source','remove',stdin='{"name":"wiki"}')
         self.sync();self.assertNotIn('Billing-FAQ.html',self.indexed());self.assertEqual([s['name'] for s in self.cli('sources')[1]['sources']],['kb'])
     def test_a_git_wiki_source_indexes_pages_and_html(self):
         wiki=self.base/'wiki';wiki.mkdir();(wiki/'Dunning-Process.md').write_text('Overdue invoices are chased every seven days by the collections bot.\n');(wiki/'Faq.html').write_text('<html><body><h1>Faq</h1><p>Wallaby support hours are nine to five.</p></body></html>')
@@ -190,13 +190,13 @@ class Index(Kb):
         self.assertTrue(sources.stale(self.root,'demo'));self.sync();self.assertIn('src/billing/ledger.py',self.indexed())
     def test_removing_the_last_source_makes_the_index_stale_and_the_sync_prunes_it(self):
         self.register();self.sync();self.assertIn('Billing-FAQ.html',self.indexed())
-        code,plan=self.cli('source-plan','remove',stdin='{"name":"wiki"}');self.cli('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest'])
-        code,plan=self.cli('source-plan','implicit',stdin='{"enabled": false}');self.cli('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest'])
+        code,plan=self.cli('source','remove',stdin='{"name":"wiki"}')
+        code,plan=self.cli('source','implicit',stdin='{"enabled": false}')
         self.assertEqual(sources.resolve(self.root,'demo'),[]);self.assertTrue(sources.stale(self.root,'demo'))
         self.sync();self.assertEqual(self.indexed(),set());self.assertEqual(sources.search(self.root,'demo','retry policy'),[]);self.assertFalse(sources.stale(self.root,'demo'))
     def test_include_and_exclude_globs(self):
         self.register(name='code',kind='folder',path=str(self.repo),include=['*.py'],exclude=['config/**'])
-        code,plan=self.cli('source-plan','implicit',stdin='{"enabled": false}');self.cli('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest']);self.sync()
+        code,plan=self.cli('source','implicit',stdin='{"enabled": false}');self.sync()
         found=self.indexed();self.assertEqual(found,{'src/billing/ledger.py'})
     def test_semantic_vectors_cover_only_changed_chunks(self):
         source=self.base/'tiny';hashes=write_model(source)
@@ -233,7 +233,7 @@ class Limits(Kb):
         self.note('Cache note','store-marker-gecko')
         for path in (self.root,self.root/'domains'):
             with self.subTest(path=path):
-                code,error=self.cli('source-plan','add',stdin=json.dumps({'name':'mem','kind':'folder','path':str(path)}));self.assertEqual(code,2,error);self.assertIn('memory store',str(error))
+                code,error=self.cli('source','add',stdin=json.dumps({'name':'mem','kind':'folder','path':str(path)}));self.assertEqual(code,2,error);self.assertIn('memory store',str(error))
         from core.repository import canonical_json   # registered before the check existed
         entries=[{'name':n,'domain':'demo','kind':'folder','path':p.as_posix(),'include':[],'exclude':[]} for n,p in (('mem',self.root),('inner',self.root/'domains'))]
         (self.root/'sources.json').write_bytes(canonical_json({'version':1,'sources':entries}).encode())
@@ -256,11 +256,10 @@ class Registry(Kb):
         code,listed=self.cli('sources');rows={r['name']:r for r in listed['sources']}
         self.assertEqual(set(rows),{'kb','wiki'});self.assertTrue(rows['kb']['implicit']);self.assertFalse(rows['wiki']['implicit']);self.assertEqual(rows['wiki']['state'],'not synced')
         self.assertEqual(listed['warnings'],[])
-    def test_plan_effects_and_undo(self):
-        code,plan=self.cli('source-plan','add',stdin=json.dumps({'name':'wiki','kind':'html-export','path':str(self.repo/'docs'/'export')}))
-        _,view=self.cli('inspect-plan',plan['plan_id']);self.assertEqual([e['path'] for e in view['effects']],['sources.json']);self.assertFalse((self.root/'sources.json').exists())
-        code,done=self.cli('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest']);self.assertEqual(code,0,done)
-        code,undo=self.cli('undo',done['operation_id']);code,done=self.cli('apply',undo['plan_id'],'--expected-plan-sha256',undo['digest']);self.assertEqual(code,0,done)
+    def test_a_source_write_is_direct_and_undo(self):
+        code,done=self.cli('source','add',stdin=json.dumps({'name':'wiki','kind':'html-export','path':str(self.repo/'docs'/'export')}));self.assertEqual(code,0,done)
+        self.assertEqual([e['path'] for e in self.cli('diff',done['operation_id'])[1]],['sources.json']);self.assertTrue((self.root/'sources.json').exists());self.assertNotIn('plan_id',done)
+        code,undone=self.cli('undo',done['operation_id']);self.assertEqual(code,0,undone);self.assertNotIn('plan_id',undone)
         self.assertFalse((self.root/'sources.json').exists())
     def test_validation(self):
         folder=str(self.repo/'docs'/'export');ok={'name':'wiki','kind':'html-export','path':folder}
@@ -268,19 +267,19 @@ class Registry(Kb):
                                 (dict(ok,extra=1),'Unknown payload fields'),(dict(ok,include='*.md'),'list of at most 20'),(dict(ok,domain='ghost'),'not a bound domain'),
                                 (dict(ok,name='sk-abcdefghijklmnopqrstuvwxyz0123'),'credential')):
             with self.subTest(message=message):
-                code,error=self.cli('source-plan','add',stdin=json.dumps(payload));self.assertEqual(code,2,error);self.assertIn(message,str(error))
-        code,error=self.cli('source-plan','add',stdin=json.dumps(dict(ok,name='w')));self.assertEqual(code,2,error);self.assertIn('at least 2',str(error))   # `w:Page.md` is not a named path: a letter and a colon is a drive
-        self.assertEqual(self.cli('source-plan','add',stdin=json.dumps(dict(ok,name='wk')))[0],0)
-        self.register();code,error=self.cli('source-plan','add',stdin=json.dumps(ok));self.assertEqual(code,2);self.assertIn('already exists',str(error))
-        code,error=self.cli('source-plan','remove',stdin='{"name":"ghost"}');self.assertEqual(code,2);self.assertIn('Unknown source',str(error))
-        code,error=self.cli('source-plan','add',stdin=json.dumps(dict(ok,name='other',include=['api_key = "abcd1234efgh5678"'])));self.assertEqual(code,2);self.assertIn('credential',str(error))
+                code,error=self.cli('source','add',stdin=json.dumps(payload));self.assertEqual(code,2,error);self.assertIn(message,str(error))
+        code,error=self.cli('source','add',stdin=json.dumps(dict(ok,name='w')));self.assertEqual(code,2,error);self.assertIn('at least 2',str(error))   # `w:Page.md` is not a named path: a letter and a colon is a drive
+        self.assertEqual(self.cli('source','add',stdin=json.dumps(dict(ok,name='wk')))[0],0)
+        self.register();code,error=self.cli('source','add',stdin=json.dumps(ok));self.assertEqual(code,2);self.assertIn('already exists',str(error))
+        code,error=self.cli('source','remove',stdin='{"name":"ghost"}');self.assertEqual(code,2);self.assertIn('Unknown source',str(error))
+        code,error=self.cli('source','add',stdin=json.dumps(dict(ok,name='other',include=['api_key = "abcd1234efgh5678"'])));self.assertEqual(code,2);self.assertIn('credential',str(error))
     def test_implicit_default_source_and_the_flag(self):
         specs=sources.resolve(self.root,'demo');self.assertEqual([(s['name'],s['kind'],s['implicit']) for s in specs],[('kb','folder',True)])
         self.assertEqual(specs[0]['path'],self.repo.resolve().as_posix())
-        code,plan=self.cli('source-plan','implicit',stdin='{"enabled": false}');self.assertEqual((code,plan['kind']),(0,'source_implicit'))
-        self.cli('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest']);self.assertEqual(sources.resolve(self.root,'demo'),[])
+        code,plan=self.cli('source','implicit',stdin='{"enabled": false}');self.assertEqual((code,plan['kind']),(0,'source_implicit'))
+        self.assertEqual(sources.resolve(self.root,'demo'),[])
         self.assertEqual(json.loads((self.root/'sources.json').read_text())['implicit'],{'demo':False});self.assertEqual(self.cli('sources')[1]['implicit_disabled'],['demo'])
-        code,plan=self.cli('source-plan','implicit',stdin='{"enabled": true}');self.cli('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest'])
+        code,plan=self.cli('source','implicit',stdin='{"enabled": true}')
         self.assertEqual([s['name'] for s in sources.resolve(self.root,'demo')],['kb'])
     def test_a_bound_repo_and_nested_repos_are_found_but_not_vendored_ones(self):
         (self.project/'.git').mkdir();self.assertEqual([s['name'] for s in sources.resolve(self.root,'demo')],['project'])   # the bound folder itself is a repo
@@ -375,7 +374,7 @@ class Commands(Kb):
         for actor in ('subagent','viewer'):
             for argv in (('ask','retry backoff'),('sources',),('search','--sources','retry'),('source-sync',)):
                 with self.subTest(actor=actor,argv=argv):self.assertEqual(self.cli('--actor',actor,*argv)[0],0)
-            self.assertEqual(self.cli('--actor',actor,'source-plan','implicit',stdin='{"enabled": false}')[0],2)
+            self.assertEqual(self.cli('--actor',actor,'source','implicit',stdin='{"enabled": false}')[0],2)
 
 class AutoAllow(Kb):
     def command(self,rest):return f'"{sys.executable}" "{runtime.SCRIPT}" --root "{self.root}" --domain demo {rest}'
@@ -385,12 +384,12 @@ class AutoAllow(Kb):
     def test_ask_sources_and_source_sync_are_auto_allowed(self):
         for rest in ("ask 'how does retry work'",'sources',"search --sources 'retry'",'source-sync','source-sync --rebuild',"ask 'x' --limit 3"):
             with self.subTest(rest=rest):self.assertIn('allow',self.decision(rest))
-    def test_subagents_may_run_them_but_not_the_plan(self):
+    def test_subagents_may_run_them_but_not_the_write(self):
         for rest in ("ask 'x'",'sources','source-sync'):
             with self.subTest(rest=rest):
                 reply=self.decision(rest,agent_id='sub1');self.assertIn('allow',reply);self.assertNotIn('deny',reply)
-    def test_source_plan_keeps_the_hosts_prompt_and_chained_commands_are_not_allowed(self):
-        self.assertNotIn('allow',self.decision('source-plan add'));self.assertNotIn('allow',self.decision("ask 'x'; rm -rf ~"))
+    def test_source_keeps_the_hosts_prompt_and_chained_commands_are_not_allowed(self):
+        self.assertNotIn('allow',self.decision('source add'));self.assertNotIn('allow',self.decision("ask 'x'; rm -rf ~"))
         self.assertNotIn('allow',self.decision("ask 'x' | cat"))
     def test_sources_json_is_protected_from_direct_edits(self):
         reply=runtime.process('claude','pre-tool-use',{'cwd':str(self.project),'session_id':'p','tool_name':'Write','tool_input':{'file_path':str(self.root/'sources.json'),'content':'{}'}},self.root)

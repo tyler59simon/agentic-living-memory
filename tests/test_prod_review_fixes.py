@@ -280,8 +280,7 @@ class FinishedWork(Cli):
         self.assertEqual(inventory('demo', self.root), [])
         self.assertNotIn('Ship the importer', self.start())
         # Journaled like any update: undo brings it back, and so does reopen.
-        proposed = undo(self.root, resolved['operation_id'])
-        apply(self.root, proposed['plan_id'], proposed['digest'])
+        undo(self.root, resolved['operation_id'])
         self.assertEqual(find_note(note, 'demo', self.root)[1]['status'], 'active')
         self.ok('resolve', note)
         self.ok('reopen', note)

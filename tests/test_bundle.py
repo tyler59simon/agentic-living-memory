@@ -92,7 +92,7 @@ class Bundles(StoreFixture):
         bundle, _ = self.export()
         code, result = self.cli(self.other, 'import-plan', str(bundle))
         self.assertEqual(code, 2)
-        self.assertIn('taxonomy-plan concern/architecture', result['error']['message'])
+        self.assertIn('taxonomy add concern/architecture', result['error']['message'])
 
     def tampered(self, name, edit):
         bundle, _ = self.export('source-' + name)

@@ -42,7 +42,7 @@ class Notes(Log):
         self.assertEqual([r['event'] for r in self.rows('--note','demo:'+a['id'])],['confirmed','created'])
         # Archiving a note rewrites the links of notes that point at it; those notes did not change in their own right.
         self.note('Pointer note','See [Cache policy](./PROJECT%20-%20cache-policy.md).')
-        before=len(self.rows());code,plan=self.cli('--domain','demo','plan','archive','demo:'+a['id']);self.assertEqual(code,0,plan);self.apply(plan)
+        before=len(self.rows());code,plan=self.cli('--domain','demo','archive','demo:'+a['id']);self.assertEqual(code,0,plan);self.apply(plan)
         new=self.rows()[:len(self.rows())-before];self.assertEqual([(r['event'],r['title']) for r in new],[('archived','Cache policy')])
 
     def test_undo_row(self):
@@ -51,7 +51,7 @@ class Notes(Log):
         self.assertEqual([(r['event'],r['title']) for r in self.rows()],[('undone','Cache policy'),('created','Cache policy')])
 
     def test_deleted_note_stays_in_its_history(self):
-        a=self.note('Cache policy','Body one.');code,plan=self.cli('--domain','demo','plan','delete','demo:'+a['id']);self.assertEqual(code,0,plan);self.apply(plan)
+        a=self.note('Cache policy','Body one.');code,plan=self.cli('--domain','demo','plan','delete','demo:'+a['id']);self.assertEqual(code,0,plan);self.cli('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest'])   # delete is still a plan
         self.assertEqual([r['event'] for r in self.rows('--note',a['id'])],['deleted','created'])
         self.assertEqual([r['event'] for r in self.rows('--note','demo:'+a['id'])],['deleted','created'])
 
