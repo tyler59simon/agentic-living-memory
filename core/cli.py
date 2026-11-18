@@ -607,7 +607,7 @@ def build_parser():
     for name in ('resolve','reopen'):p=sub(name);p.add_argument('reference',help='A plan, bug or risk note');p.add_argument('--session');p.add_argument('--turn')
     p=sub('restore');p.add_argument('reference',help='An archived note: it returns to notes/, pinned, with its id, body and verification baseline kept (a resolved note uses reopen, a superseded one is read through its successor)');p.add_argument('--expected-revision');p.add_argument('--session');p.add_argument('--turn')
     p=sub('stats');p.add_argument('--days',type=int,default=30,help='Window, at most 30 (the diary keeps 30 days)');p.add_argument('--limit',type=int,default=10)
-    p=sub('logs');p.add_argument('--level',choices=['debug','info','warning','error'],default='info',help='Lowest level shown');p.add_argument('--kind',choices=['hook','command','internal']);p.add_argument('--event',help='Hook event, command name or internal call site');p.add_argument('--days',type=int,default=1,help='Window, at most 30 (logs keep 30 days)');p.add_argument('--limit',type=int,default=50)
+    p=sub('logs');p.add_argument('--level',choices=['debug','info','warning','error'],default='info',help='Lowest level shown');p.add_argument('--kind',choices=['hook','command','internal']);p.add_argument('--event',help='Hook event, command name or internal call site');p.add_argument('--days',type=int,default=1,help='Last N x 24 hours, at most 30 (logs keep 30 days)');p.add_argument('--limit',type=int,default=50)
     p=sub('plan');p.add_argument('action',choices=['delete'],help='Only delete is planned; every other change to one note has its own command');p.add_argument('reference');p.add_argument('--payload-file',type=Path)
     p=sub('archive');p.add_argument('reference',help='A note to retire without a replacement (a plan, bug or risk that is finished uses resolve)');p.add_argument('--expected-revision');p.add_argument('--payload-file',type=Path);p.add_argument('--session');p.add_argument('--turn')
     p=sub('apply');p.add_argument('plan_id');p.add_argument('--expected-plan-sha256',required=True)
@@ -974,8 +974,8 @@ def main(argv=None):
                 for u in extract(dict(note,path=path)) if same else []:spans.setdefault(u['heading'],u['lines'])
                 span=spans.get(' > '.join(path_));last=max(n for n,t in rows if t.strip())
                 result.update(section={'heading':' > '.join(path_),'role':role_of(heading),'lines':[span[0],span[0]+last-rows[0][0]] if span else None},
-                              body=text[:max(0,min(64000,args.max_chars))],truncated=len(text)>args.max_chars)
-            elif not args.metadata_only:result.update(body=note['body'][:max(0,min(64000,args.max_chars))],truncated=len(note['body'])>args.max_chars)
+                              body=text[:max(0,min(64000,args.max_chars))],truncated=len(text)>max(0,min(64000,args.max_chars)))
+            elif not args.metadata_only:result.update(body=note['body'][:max(0,min(64000,args.max_chars))],truncated=len(note['body'])>max(0,min(64000,args.max_chars)))
             if args.actor!='viewer':
                 from .usage import record
                 record(root,'read',[f'{d}:{n}'])

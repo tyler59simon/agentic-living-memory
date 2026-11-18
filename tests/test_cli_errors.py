@@ -67,3 +67,20 @@ class CliErrors(StoreFixture):
     def test_errors_without_a_next_step_keep_the_old_shape(self):
         code,error=self.fail_with('--domain','demo','search','cache','--filter','colour=blue')
         self.assertEqual(set(error),{'code','message'})
+
+    def read_with(self,*argv):
+        out=io.StringIO()
+        with contextlib.redirect_stdout(out):code=cli.main(['--root',str(self.root),'--domain','demo','read',*argv])
+        self.assertEqual(code,0);return json.loads(out.getvalue())
+
+    def test_read_truncated_tells_whether_the_returned_body_was_cut(self):   # CLI-4
+        made=self.note(body='x'*65000)
+        for limit in ('70000','64000','100'):   # the body is cut at 64000 whatever --max-chars allows
+            with self.subTest(limit=limit):
+                result=self.read_with(made['id'],'--max-chars',limit)
+                self.assertEqual((len(result['body'])<65000,result['truncated']),(True,True))
+        small=self.note(title='Small',body='y'*500)
+        self.assertEqual(self.read_with(small['id'],'--max-chars','70000')['truncated'],False)
+        wide=self.note(title='Wide',body='A wide note.\n\n## Notes\n'+'z'*65000)
+        result=self.read_with(wide['id'],'--section','Notes','--max-chars','70000')
+        self.assertEqual((len(result['body']),result['truncated']),(64000,True))

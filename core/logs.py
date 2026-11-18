@@ -116,8 +116,8 @@ def _day(path):
     except ValueError:return None
 
 def entries(root,level='info',kind=None,event=None,days=1,limit=50):
-    """(matching rows newest first, at most `limit`; total matched)."""
-    cutoff=(datetime.now(timezone.utc)-timedelta(days=max(1,days)-1)).date();rows=[]
+    """(matching rows newest first, at most `limit`; total matched). `days` is the last days x 24 hours."""
+    since=datetime.now(timezone.utc)-timedelta(hours=24*max(1,days));cutoff=since.date();rows=[]
     for path in sorted(_dir(root).glob('log-*.jsonl')):
         day=_day(path)
         if day is None or day<cutoff:continue
@@ -128,6 +128,9 @@ def entries(root,level='info',kind=None,event=None,days=1,limit=50):
             except ValueError:continue
             if not isinstance(row,dict) or LEVELS.get(row.get('level'),0)<LEVELS[level]:continue
             if (kind and row.get('kind')!=kind) or (event and row.get('event')!=event):continue
+            try:
+                if datetime.fromisoformat(row['ts'])<since:continue
+            except (KeyError,TypeError,ValueError):pass   # no usable time: the day file decides
             rows.append(row)
     rows.reverse()
     return rows[:limit],len(rows)

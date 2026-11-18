@@ -137,6 +137,21 @@ class Log(LogFixture):
         self.assertEqual(report['logs']['last_error']['event'], 'site.b')
         self.assertTrue(any('errors logged' in w for w in report['warnings']), report['warnings'])
 
+    def test_days_is_the_last_n_times_24_hours(self):   # CLI-4
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc)
+        (self.root / 'logs').mkdir(exist_ok=True)
+        for name, age in (('recent', timedelta(hours=1)), ('yesterday', timedelta(hours=30)), ('older', timedelta(hours=60))):
+            when = now - age
+            row = {'ts': when.isoformat(timespec='milliseconds'), 'level': 'error', 'kind': 'internal', 'event': name}
+            with (self.root / 'logs' / f'log-{when:%Y-%m-%d}.jsonl').open('a', encoding='utf-8', newline='\n') as out:
+                out.write(json.dumps(row) + '\n')
+        events = lambda days: sorted(r['event'] for r in logs.entries(self.root, days=days)[0])
+        self.assertEqual(events(1), ['recent'])
+        self.assertEqual(events(2), ['recent', 'yesterday'])
+        self.assertEqual(events(3), ['older', 'recent', 'yesterday'])
+        self.assertEqual(sorted(r['event'] for r in self.cli('logs', '--days', '2')[1]['entries']), ['recent', 'yesterday'])
+
 
 class Decisions(LogFixture):
     """At debug, each hook line carries why the hook did what it did: refs, numbers and reason codes, never text."""
