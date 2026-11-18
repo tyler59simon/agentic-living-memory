@@ -80,6 +80,11 @@ class EachVerbJournalsAndUndoes(Fixture):
         plan=self.ok('merge-plan',stdin=json.dumps({'target':'demo:'+a['id'],'sources':['demo:'+b['id']],'body':'Merged body.'}))
         applied=self.ok('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest'])
         rows={r['operation_id']:r for r in self.ok('history')};self.assertEqual(rows[applied['operation_id']]['actor'],'plan')
+    def test_a_direct_change_is_logged_as_a_command(self):
+        self.ok('project','create',stdin=json.dumps({'slug':'pay','name':'Pay','repos':[str(self.base/'project')],'charter':{'body':CHARTER}}))
+        change=self.ok('change','create',stdin=json.dumps({'project':'pay','title':'Add alerts','brief':{'body':CHARTER}}))
+        rows=[r for r in self.ok('log','--type','change')['rows'] if r.get('op')==change['operation_id']]
+        self.assertTrue(rows);self.assertEqual({r['actor'] for r in rows},{'command'})
 
 class RemovedNames(Fixture):
     def test_old_commands_fail_at_argparse(self):
@@ -107,6 +112,12 @@ class UndoOfKeptKinds(Fixture):
     def test_an_undo_of_an_undo_follows_the_kind_of_the_original(self):
         a=self.note('One','Alpha body.');archived=self.ok('archive','demo:'+a['id']);undone=self.ok('undo',archived['operation_id'])
         again=self.ok('undo',undone['operation_id']);self.assertNotIn('plan_id',again);self.assertEqual(find_note(a['id'],'demo',self.root)[1]['status'],'archived')
+    def test_undo_of_an_unlisted_kind_such_as_a_harness_setup_returns_a_plan(self):
+        # Only the direct kinds are undone at once; anything else (install and setup operations outside the store, maintenance, a kind added later) needs approval.
+        a=self.note('One','Alpha body.');written=self.ok('update','demo:'+a['id'],'--body','Changed body.')
+        journal=self.root/'.operations'/written['operation_id']/'journal.json';value=read_json(journal);value['kind']='claude_setup';journal.write_text(json.dumps(value))
+        self.assertIn('plan_id',self.ok('undo',written['operation_id']))
+        self.assertTrue(governance._plan_kind('package_install'));self.assertTrue(governance._plan_kind('maintenance_decision'));self.assertFalse(governance._plan_kind('change_update'))
     def test_the_conflict_check_stays(self):
         a=self.note('One','Alpha body.');archived=self.ok('archive','demo:'+a['id'])
         self.ok('restore','demo:'+a['id'])
@@ -151,6 +162,7 @@ class Permissions(Fixture):
         for rest in ('archive demo:abc','rewrite','remap','promote demo:abc','source add','project create','system create','change create','taxonomy add concern/x'):
             with self.subTest(rest=rest):self.assertIn('deny',self.decision(rest,agent_id='sub1'))
         self.assertNotIn('deny',self.decision('taxonomy',agent_id='sub1'))
+        self.assertIn('deny',self.decision('undo d-abc',agent_id='sub1'))   # undo writes directly now
     def test_the_cli_refuses_subagents_and_viewers(self):
         n=self.note()
         for actor in ('subagent','viewer'):

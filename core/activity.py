@@ -183,7 +183,7 @@ def _change_rows(op,kind,created,effects):
             elif before.get('status')!=after.get('status'):event='closed' if after.get('status')!='active' else 'reopened';extra={'detail':after.get('status')}
             elif any(before.get(k)!=after.get(k) for k in CHANGE_FIELDS):event='updated'
             else:continue
-            rows.append(_row(op,created,event,display(number),entry.get('title'),'change',str(entry.get('brief') or '').partition(':')[0] or None,[entry['project']] if entry.get('project') else [],summary=extra.get('detail') or event,actor='plan' if kind.startswith('change_') else 'command',**extra))
+            rows.append(_row(op,created,event,display(number),entry.get('title'),'change',str(entry.get('brief') or '').partition(':')[0] or None,[entry['project']] if entry.get('project') else [],summary=extra.get('detail') or event,actor='plan' if kind.startswith('change_') and not str(op).startswith('d-') else 'command',**extra))
     return rows
 
 def _sig(path):

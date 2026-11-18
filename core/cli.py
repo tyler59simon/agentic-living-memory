@@ -694,7 +694,7 @@ def main(argv=None):
         # Agents started inside a Hivemind terminal inherit HIVEMIND_SESSION; Hivemind's own backend does not. Every path (batch and serve
         # re-enter main) reaches this point before a governed command runs.
         if os.environ.get('HIVEMIND_SESSION') and (args.command in {'apply','undo','recover'}|DIRECT_WRITES or (args.command=='setup' and args.apply_plan) or (args.command=='taxonomy' and args.action=='add')):
-            raise ValueError('hivemind: Applying or undoing a plan, and the direct writes (archive, rewrite, remap, promote, taxonomy add, source, project, system, change), are done by you in Hivemind, not by an agent. Write a plan for a delete or merge; for the rest, tell the user what to change.')
+            raise ValueError('hivemind: Applying or undoing a plan, and the direct writes (archive, rewrite, remap, promote, taxonomy add, source, project, system, change), are for the user to do in Hivemind, not for an agent. Write a plan for a delete or merge; for the rest, tell the user what to change.')
         if args.command=='help':
             from .instructions import help_topic
             _emit(help_topic(args.topic),args);return 0

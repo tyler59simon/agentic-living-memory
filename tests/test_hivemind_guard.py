@@ -6,7 +6,7 @@ from test_core import StoreFixture
 from core import logs, runtime
 from core.cli import main
 
-REASON = 'Applying or undoing a plan, and the direct writes (archive, rewrite, remap, promote, taxonomy add, source, project, system, change), are done by you in Hivemind, not by an agent. Write a plan for a delete or merge; for the rest, tell the user what to change.'
+REASON = 'Applying or undoing a plan, and the direct writes (archive, rewrite, remap, promote, taxonomy add, source, project, system, change), are for the user to do in Hivemind, not for an agent. Write a plan for a delete or merge; for the rest, tell the user what to change.'
 MODES = ('default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions')
 APPLY = 'apply plan-1 --expected-plan-sha256 abc'
 
