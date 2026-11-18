@@ -1,4 +1,5 @@
 """Regressions for the defects the mem-audit review reproduced at d32971a; each test fails on that code."""
+import hashlib
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -150,22 +151,35 @@ class Pruning(StoreFixture):
 
     def test_housekeeping_prunes_install_and_harness_plans_after_30_days(self):
         home = self.base / 'local' / 'agentic-living-memory';(home / 'app').mkdir(parents=True);(home / 'app' / '.core-ownership-v1.json').write_text('{}');claude = Path(os.environ['CLAUDE_HOME']);codex = Path(os.environ['CODEX_HOME'])
-        def make(folder, name, days, state=None):
+        def make(folder, name, days, state=None, digest=None):
             plan_id = name * 32;when = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-            (folder / '.plans').mkdir(parents=True, exist_ok=True);(folder / '.plans' / (plan_id + '.json')).write_text(json.dumps({'schema': 2, 'id': plan_id, 'kind': 'x', 'created': when, 'changes': {}, 'digest': 'f' * 64}))
+            (folder / '.plans').mkdir(parents=True, exist_ok=True);unsigned = {'schema': 2, 'id': plan_id, 'kind': 'x', 'created': when, 'changes': {}}
+            (folder / '.plans' / (plan_id + '.json')).write_text(json.dumps({**unsigned, 'digest': digest or hashlib.sha256(canonical_json(unsigned).encode()).hexdigest()}))
             if state:
                 (folder / '.operations' / plan_id).mkdir(parents=True);(folder / '.operations' / plan_id / 'journal.json').write_text(json.dumps({'id': plan_id, 'state': state, 'created': when, 'kind': 'x', 'effects': []}))
             return folder / '.plans' / (plan_id + '.json')
         old = {folder: make(folder, 'a', 40, 'committed') for folder in (home, claude, codex)}
         young = {folder: make(folder, 'b', 5, 'committed') for folder in (home, claude, codex)}   # applied, but inside the 30 days
         stale = make(claude, 'c', 40)                                                              # never applied, past 30 days
+        forged = make(claude, 'e', 400, 'committed', 'f' * 64)   # OPS-1b.1b: the right shape, but the digest is not the plan's
         foreign = claude / '.plans' / ('9' * 32 + '.json');foreign.write_text(json.dumps({'created': (datetime.now(timezone.utc) - timedelta(days=400)).isoformat()}))   # OPS-1b.1: not an ALM plan
         with patch.object(runtime, 'SCRIPT', home / 'app' / 'living_memory.py'):runtime._prune_journals(self.root)
-        self.assertFalse(any(p.exists() for p in old.values()) or stale.exists());self.assertTrue(foreign.exists())
+        self.assertFalse(any(p.exists() for p in old.values()) or stale.exists());self.assertTrue(foreign.exists() and forged.exists())
         self.assertTrue(all(p.exists() for p in young.values()))
         (home / 'app' / '.core-ownership-v1.json').unlink();kept = make(home, 'd', 40, 'committed')   # a source checkout leaves the install folder alone
         with patch.object(runtime, 'SCRIPT', home / 'app' / 'living_memory.py'), patch('core.runtime.clock.now', return_value=datetime.now(timezone.utc) + timedelta(days=2)):runtime._prune_journals(self.root)
         self.assertTrue(kept.exists())
+
+    def test_a_real_applied_plan_is_pruned_by_digest(self):   # OPS-1b.1b
+        from core.governance import plan, apply
+        from core.repository import prune_plans
+        folder = self.base / 'harness';folder.mkdir();proposed = plan(folder, {'a.txt': 'x'}, 'x');apply(folder, proposed['plan_id'], proposed['digest'])
+        path = folder / '.plans' / (proposed['plan_id'] + '.json');tampered = json.loads(path.read_text());tampered['summary'] = {'files': 99};path.write_text(json.dumps(tampered))
+        later = datetime.now(timezone.utc) + timedelta(days=40)
+        with patch('core.repository.clock.now', return_value=later):self.assertEqual(prune_plans(folder, applied_days=30, require_plan=True), 0)
+        self.assertTrue(path.exists());path.write_text(json.dumps({k: v for k, v in tampered.items() if k != 'summary'} | {'summary': proposed['summary']}))
+        with patch('core.repository.clock.now', return_value=later):self.assertEqual(prune_plans(folder, applied_days=30, require_plan=True), 1)
+        self.assertFalse(path.exists())
 
     def test_skip_unchanged_writes_no_journal(self):
         place = self.base / 'place';place.mkdir()

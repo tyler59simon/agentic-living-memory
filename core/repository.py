@@ -739,7 +739,8 @@ def prune_plans(root, applied_days=1, unapplied_days=30, require_plan=False):
             except (ValueError, AttributeError):
                 continue
             if require_plan and not (value.get("id") == plan_path.stem and isinstance(value.get("kind"), str) and isinstance(value.get("changes"), dict)
-                                     and isinstance(value.get("digest"), str) and re.fullmatch("[a-f0-9]{64}", value["digest"])):
+                                     and isinstance(value.get("digest"), str)
+                                     and value["digest"] == hashlib.sha256(canonical_json({k: v for k, v in value.items() if k != "digest"}).encode()).hexdigest()):
                 continue
             if created.tzinfo is None:
                 created = created.replace(tzinfo=timezone.utc)
