@@ -714,10 +714,11 @@ def prune_journals(root, days=14, kinds=BOOKKEEPING_KINDS):
     return removed
 
 
-def prune_plans(root, applied_days=1, unapplied_days=30):
+def prune_plans(root, applied_days=1, unapplied_days=30, require_plan=False):
     """Delete plan files: applied ones (committed journal) older than `applied_days`, never-applied ones older
     than `unapplied_days`. A plan whose journal is in any other state, or unreadable, stays, and so does one an
-    Obsidian approval still waits on (`pending_plan` in a domain's sync-state.json). Returns the count removed."""
+    Obsidian approval still waits on (`pending_plan` in a domain's sync-state.json). Returns the count removed.
+    require_plan: for a folder this store does not own (a harness home), touch only files shaped like governance.plan() output."""
     from datetime import timedelta
     now_utc = clock.now()
     removed = 0
@@ -736,6 +737,9 @@ def prune_plans(root, applied_days=1, unapplied_days=30):
                 value = read_json(plan_path, None)
                 created = parse_iso(str(value.get("created")))
             except (ValueError, AttributeError):
+                continue
+            if require_plan and not (value.get("id") == plan_path.stem and isinstance(value.get("kind"), str) and isinstance(value.get("changes"), dict)
+                                     and isinstance(value.get("digest"), str) and re.fullmatch("[a-f0-9]{64}", value["digest"])):
                 continue
             if created.tzinfo is None:
                 created = created.replace(tzinfo=timezone.utc)

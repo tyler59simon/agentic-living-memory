@@ -152,15 +152,16 @@ class Pruning(StoreFixture):
         home = self.base / 'local' / 'agentic-living-memory';(home / 'app').mkdir(parents=True);(home / 'app' / '.core-ownership-v1.json').write_text('{}');claude = Path(os.environ['CLAUDE_HOME']);codex = Path(os.environ['CODEX_HOME'])
         def make(folder, name, days, state=None):
             plan_id = name * 32;when = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-            (folder / '.plans').mkdir(parents=True, exist_ok=True);(folder / '.plans' / (plan_id + '.json')).write_text(json.dumps({'id': plan_id, 'created': when}))
+            (folder / '.plans').mkdir(parents=True, exist_ok=True);(folder / '.plans' / (plan_id + '.json')).write_text(json.dumps({'schema': 2, 'id': plan_id, 'kind': 'x', 'created': when, 'changes': {}, 'digest': 'f' * 64}))
             if state:
                 (folder / '.operations' / plan_id).mkdir(parents=True);(folder / '.operations' / plan_id / 'journal.json').write_text(json.dumps({'id': plan_id, 'state': state, 'created': when, 'kind': 'x', 'effects': []}))
             return folder / '.plans' / (plan_id + '.json')
         old = {folder: make(folder, 'a', 40, 'committed') for folder in (home, claude, codex)}
         young = {folder: make(folder, 'b', 5, 'committed') for folder in (home, claude, codex)}   # applied, but inside the 30 days
         stale = make(claude, 'c', 40)                                                              # never applied, past 30 days
+        foreign = claude / '.plans' / ('9' * 32 + '.json');foreign.write_text(json.dumps({'created': (datetime.now(timezone.utc) - timedelta(days=400)).isoformat()}))   # OPS-1b.1: not an ALM plan
         with patch.object(runtime, 'SCRIPT', home / 'app' / 'living_memory.py'):runtime._prune_journals(self.root)
-        self.assertFalse(any(p.exists() for p in old.values()) or stale.exists())
+        self.assertFalse(any(p.exists() for p in old.values()) or stale.exists());self.assertTrue(foreign.exists())
         self.assertTrue(all(p.exists() for p in young.values()))
         (home / 'app' / '.core-ownership-v1.json').unlink();kept = make(home, 'd', 40, 'committed')   # a source checkout leaves the install folder alone
         with patch.object(runtime, 'SCRIPT', home / 'app' / 'living_memory.py'), patch('core.runtime.clock.now', return_value=datetime.now(timezone.utc) + timedelta(days=2)):runtime._prune_journals(self.root)

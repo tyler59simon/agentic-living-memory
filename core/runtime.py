@@ -550,7 +550,8 @@ def _prune_journals(root):
         out={r:prune_journals(Path(r)) for r in sorted(roots)}
         prune_plans(root)
         # Undo reads journals, never plan files, so those folders only need the long retention for a plan applied late.
-        for home in _package_plan_folders():prune_plans(home,applied_days=30)
+        # A harness home is not ours: only files that have the shape of a plan are touched.
+        for home in _package_plan_folders():prune_plans(home,applied_days=30,require_plan=True)
         return out
     except Exception as exc:
         from .logs import swallowed
