@@ -39,6 +39,29 @@ class Relocation(StoreFixture):
         self.assertEqual(len(handlers),6);self.assertTrue(all(str(self.legacy) not in c for c in self.commands(handlers)))
         self.assertEqual((self.codex/'AGENTS.md').read_text(encoding='utf-8').count('agentic-living-memory:begin'),1)
 
+    def wired_from(self,source,harness='claude'):
+        with patch.object(setup,'ROOT',source):self.apply(self.claude,setup.setup_plan(harness,self.claude))
+    def test_handlers_wired_from_the_source_checkout_are_managed_by_the_installed_copy(self):
+        source,app=self.base/'checkout',self.base/'app';app.mkdir();(app/'.core-ownership-v1.json').write_text(json.dumps({'source':str(source)}))
+        self.wired_from(source)
+        with patch.object(setup,'ROOT',app):
+            self.apply(self.claude,setup.setup_plan('claude',self.claude))   # no "Modified managed handlers preserved"
+            handlers=self.ours(read_json(self.claude/'settings.json'),'claude')
+            self.assertEqual(len(handlers),7);self.assertTrue(all(str(app) in c and str(source) not in c for c in self.commands(handlers)))
+            self.apply(self.claude,setup.setup_plan('claude',self.claude,uninstall=True))   # uninstall is not blocked either
+        self.assertEqual(self.ours(read_json(self.claude/'settings.json'),'claude'),[])
+    def test_handlers_wired_from_the_default_install_folder_are_managed_from_a_checkout(self):
+        import install
+        app=self.base/'app';self.wired_from(app)
+        with patch.object(install,'INSTALL_DIR',app):self.apply(self.claude,setup.setup_plan('claude',self.claude))
+        self.assertTrue(all(str(setup._script('claude')) in c for c in self.commands(self.ours(read_json(self.claude/'settings.json'),'claude'))))
+    def test_a_real_edit_of_a_managed_handler_names_the_file_and_the_repair(self):
+        self.wired_from(setup.ROOT)
+        settings=read_json(self.claude/'settings.json');settings['hooks']['Stop'][0]['hooks'][0]['timeout']=999
+        (self.claude/'settings.json').write_text(json.dumps(settings))
+        with self.assertRaises(ValueError) as caught:setup.setup_plan('claude',self.claude)
+        self.assertIn('Modified managed handlers preserved',str(caught.exception));self.assertIn(str(self.claude/'settings.json'),str(caught.exception));self.assertIn('claude --hooks',str(caught.exception))
+
     def test_retire_refuses_while_referenced_then_removes_owned_files(self):
         import install
         home=self.base/'local'/'agentic-living-memory'

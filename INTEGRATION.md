@@ -11,7 +11,7 @@ py -3.15 integrations/setup.py copilot --home C:/path/to/.copilot
 py -3.15 integrations/setup.py factory --home C:/path/to/.factory --hooks
 ```
 
-These commands generate plans. Apply with the same harness/home arguments plus `--apply-plan ID --expected-plan-sha256 HASH`. `--uninstall-plan` removes only managed blocks/handlers; modified managed content is preserved as a conflict. Unrelated settings and later unrelated hook additions survive reruns. Factory defaults to instructions; `--hooks` opts into native command hooks.
+These commands generate plans. Apply with the same harness/home arguments plus `--apply-plan ID --expected-plan-sha256 HASH`. `--uninstall-plan` removes only managed blocks/handlers; modified managed content is preserved as a conflict. Setup treats a handler as managed when it runs the adapter script from this copy, the installed copy, the source checkout this copy was installed from or the legacy folder, so wiring a harness from the checkout first does not block later runs. A real edit to a managed handler stops the plan with an error that names the file and the command to run again after undoing the edit. Unrelated settings and later unrelated hook additions survive reruns. Factory defaults to instructions; `--hooks` opts into native command hooks.
 
 Run adapter setup from the installed package (`%LOCALAPPDATA%/agentic-living-memory/app/integrations/setup.py` on Windows, `~/.local/lib/agentic-living-memory/app/integrations/setup.py` elsewhere) rather than the development checkout, so live hooks change only through a reviewed install. Setup recognises the handlers of an older copy in `CODEX_HOME/agentic-living-memory` and replaces them (see INSTALLATION.md, Upgrading).
 

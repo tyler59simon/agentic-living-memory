@@ -22,11 +22,22 @@ def _legacy_script(harness):
     """Where releases before the harness-neutral install put this adapter (CODEX_HOME/agentic-living-memory)."""
     return Path(os.environ.get('CODEX_HOME',Path.home()/'.codex')).expanduser()/'agentic-living-memory'/'hooks'/(harness+'_hooks.py')
 
+def _copies():
+    """Folders this package may have been wired from: this copy, the installed copy, and the source checkout this copy was installed from."""
+    found=[ROOT]
+    try:
+        import install
+        found.append(install.INSTALL_DIR)
+    except Exception:pass   # no install.py beside this copy: nothing more to know
+    try:recorded=read_json(ROOT/'.core-ownership-v1.json',{}).get('source')
+    except (ValueError,AttributeError):recorded=None   # an unreadable record: this copy was not installed by install.py
+    return found+([Path(recorded)] if isinstance(recorded,str) and recorded else [])
+
 def _ours(handler,harness):
-    """A handler this package manages: it runs our adapter script from this copy or the legacy location."""
+    """A handler this package manages: it runs our adapter script from this copy, the installed copy, its source checkout or the legacy location."""
     if not isinstance(handler,dict):return False
     text=' '.join([str(handler.get('command','')),str(handler.get('commandWindows',''))]+[str(a) for a in handler.get('args',[]) or []])
-    if any(str(marker) in text for marker in (_script(harness),_legacy_script(harness))):return True
+    if any(str(marker) in text for marker in [c/'hooks'/(harness+'_hooks.py') for c in _copies()]+[_legacy_script(harness)]):return True
     # The old Codex installer recognised its handlers by these two names (its Windows command may be encoded).
     return harness=='codex' and 'agentic-living-memory' in text and 'codex_hooks.py' in text
 
@@ -109,7 +120,8 @@ def setup_plan(harness,home=None,enable_hooks=False,uninstall=False):
         current=read_json(config_path,{})
         owned_handlers=state.get('handlers',{}).get(config_name)
         if owned_handlers is not None:
-            if digest(canonical_json(managed_handlers(current,harness)).encode())!=owned_handlers:raise ValueError('Modified managed handlers preserved')
+            if digest(canonical_json(managed_handlers(current,harness)).encode())!=owned_handlers:
+                raise ValueError(f'Modified managed handlers preserved: the hook entries in {config_path} that this package manages were edited. Undo the edit, or remove those entries, then run "{sys.executable}" "{ROOT/"integrations"/"setup.py"}" {harness} --hooks again')
         elif config_name in owned and digest(canonical_json(current).encode())!=owned[config_name]:raise ValueError('Modified managed hook configuration preserved')
         generated=hooks(harness)
         if harness=='copilot':
