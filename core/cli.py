@@ -531,7 +531,9 @@ def _propose(root,data,domain,session,to_global,redact=False):
     data=dict(data)
     if (data.get('type') or 'knowledge') not in NOTE_TYPES:raise ValueError('Unknown note type: '+str(data.get('type'))+'; use one of '+', '.join(NOTE_TYPES))
     if redact:_redact(data)
-    found=find_secret('\n'.join([str(data.get(k) or '') for k in ('title','body','context')]+[c for c in data.get('commands') or [] if isinstance(c,str)]))
+    # Everything the draft file stores is screened, its digest metadata included.
+    found=find_secret('\n'.join([str(data.get(k) or '') for k in ('title','body','context','idempotency_key')]+[c for c in data.get('commands') or [] if isinstance(c,str)]
+                                +[json.dumps(data.get(k)) for k in ('files','sources') if data.get(k)]))
     if found:raise ValueError(f'Potential credential detected ({found[0]} at character {found[1]}); remove it, replace it with a placeholder such as <REDACTED>, or pass --redact')
     from .private import check as private_check
     private_check(_session_state(root,session),data)
@@ -802,6 +804,9 @@ def main(argv=None):
                 from . import proposals
                 proposal=proposals.get(root,args.from_proposal)
                 if proposal.get('status')!='pending':raise ValueError(f"Proposal {args.from_proposal} is already {proposal.get('status')}")
+                # The draft's domain is the default target, set before files and sources resolve against it: an edit changes the text,
+                # not where the draft was meant to go. --domain, --global or a positional domain still choose another.
+                if not args.domain and not getattr(args,'to_global',False) and proposal.get('domain'):domain=proposal['domain']
             edited=bool(args.items or args.content_file or structured or args.payload_file)
             if proposal and not edited:
                 # Saved as staged. An edit passes the whole note, so a lone --title or --tag would be half an edit: refuse it.
@@ -859,10 +864,6 @@ def main(argv=None):
                 invocation['result']=result;_emit(result,args);return 0
             batch=data if isinstance(data,list) else [data]
             if not 1<=len(batch)<=20:raise ValueError('Capture batch must contain 1..20 items')
-            if proposal and edited and not args.domain and not getattr(args,'to_global',False) and proposal.get('domain'):
-                # An edit changes the text, not where the draft was meant to go: a global draft stays global unless --domain moves it.
-                for item in batch:
-                    if not item.get('domain') or item.get('domain')==domain:item['domain']=proposal['domain']
             results=[]
             with store_lock(root):
                 if proposal:

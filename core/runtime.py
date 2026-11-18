@@ -2039,6 +2039,7 @@ def _process(harness,event,payload,root=None,info=None):
             try:args=json.loads(args)
             except json.JSONDecodeError:pass
         detail['tool']=name
+        if _subagent(payload):detail['subagent']=True   # who ran a command (for evaluations that count subagent propose calls)
         # Shell text is not regex-checked: a regex over commands is trivially bypassed and blocks harmless reads. The one narrow exception
         # is the Hivemind guard below, which reuses memory_subcommand() and fails closed on text it cannot parse.
         rule=next((r for r in (protected_rule(p,cwd,root) for p in raw_paths(args)) if r),None) if name not in READ_TOOLS and name not in SHELL_TOOLS else None

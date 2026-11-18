@@ -206,6 +206,9 @@ class ClaudeIntegrationFixes(StoreFixture):
         self.assertEqual(list((self.root/'.turns').glob('proposal-*.json')),[])
         code,result=self.cli('propose','--session','s1','--redact','--title','Deploy key','--summary',f'The key is {secret}.')
         self.assertEqual(code,0,result);self.assertNotIn(secret,(self.root/'.turns'/f"proposal-{result['id']}.json").read_text())
+        keyed=self.base/'k.json';keyed.write_text(json.dumps({'title':'T','body':'A fact.','type':'decision','idempotency_key':secret}))
+        code,result=self.cli('propose','--session','s1','--payload-file',str(keyed))
+        self.assertNotEqual(code,0);self.assertIn('credential',result['error']['message'])   # digest metadata is screened too
         payload=self.base/'p.json';payload.write_text(json.dumps({'title':'T','body':'A fact.','type':'nonsense'}))
         code,result=self.cli('propose','--session','s1','--payload-file',str(payload))
         self.assertNotEqual(code,0);self.assertIn('Unknown note type',result['error']['message'])
@@ -221,6 +224,11 @@ class ClaudeIntegrationFixes(StoreFixture):
         result=json.loads(out.getvalue());self.assertEqual(code,0,result);self.assertEqual(result['domain'],'_global')
         code,moved=self.cli('capture','--from-proposal',self.propose('Project fact'),'--type','decision','--title','Moved fact','--summary','Moved on purpose.','--global')
         self.assertEqual(code,0,moved);self.assertEqual(moved['domain'],'_global')   # an explicit choice still moves it
+        row=proposals.write(self.root,'s1','_global',{'title':'Another global fact','body':'Holds widely.','type':'decision'})
+        out=io.StringIO()
+        with contextlib.redirect_stdout(out),contextlib.redirect_stderr(io.StringIO()):   # a positional domain is explicit too
+            code=main(['--json','--root',str(self.root),'--cwd',str(self.base/'project'),'capture','--from-proposal',row['id'],'--type','decision','demo','Project after all','It holds here only.'])
+        result=json.loads(out.getvalue());self.assertEqual(code,0,result);self.assertEqual(result['domain'],'demo')
         self.assertIn('sources',proposals.FIELDS)
     def test_a_proposal_settled_meanwhile_saves_nothing(self):
         from core import proposals
