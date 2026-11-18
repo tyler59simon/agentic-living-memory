@@ -33,11 +33,20 @@ def _copies():
     except (ValueError,AttributeError):recorded=None   # an unreadable record: this copy was not installed by install.py
     return found+([Path(recorded)] if isinstance(recorded,str) and recorded else [])
 
+def _runs(text,script):
+    """True when text runs this script: path case and, on Windows, slash direction are ignored, and the path must end at a quote, whitespace or the end (not claude_hooks.py.bak)."""
+    text,script=os.path.normcase(text),os.path.normcase(str(script));start=text.find(script)
+    while start>=0:
+        end=start+len(script)
+        if end==len(text) or text[end] in '"\' \t\r\n':return True
+        start=text.find(script,start+1)
+    return False
+
 def _ours(handler,harness):
     """A handler this package manages: it runs our adapter script from this copy, the installed copy, its source checkout or the legacy location."""
     if not isinstance(handler,dict):return False
     text=' '.join([str(handler.get('command','')),str(handler.get('commandWindows',''))]+[str(a) for a in handler.get('args',[]) or []])
-    if any(str(marker) in text for marker in [c/'hooks'/(harness+'_hooks.py') for c in _copies()]+[_legacy_script(harness)]):return True
+    if any(_runs(text,marker) for marker in [c/'hooks'/(harness+'_hooks.py') for c in _copies()]+[_legacy_script(harness)]):return True
     # The old Codex installer recognised its handlers by these two names (its Windows command may be encoded).
     return harness=='codex' and 'agentic-living-memory' in text and 'codex_hooks.py' in text
 

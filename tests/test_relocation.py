@@ -55,6 +55,17 @@ class Relocation(StoreFixture):
         app=self.base/'app';self.wired_from(app)
         with patch.object(install,'INSTALL_DIR',app):self.apply(self.claude,setup.setup_plan('claude',self.claude))
         self.assertTrue(all(str(setup._script('claude')) in c for c in self.commands(self.ours(read_json(self.claude/'settings.json'),'claude'))))
+    def test_a_handler_path_is_matched_by_boundary_and_on_windows_by_case_and_slash(self):   # INST-3.1
+        script=str(setup._script('claude'));handler=lambda command:{'type':'command','command':command}
+        self.assertTrue(setup._ours(handler('"py" "'+script+'" stop'),'claude'));self.assertTrue(setup._ours(handler(script),'claude'))
+        self.assertFalse(setup._ours(handler('"py" "'+script+'.bak" stop'),'claude'));self.assertFalse(setup._ours(handler(script+'.bak'),'claude'))
+        self.assertFalse(setup._ours(handler('"py" "'+script+'x" stop'),'claude'))
+    @unittest.skipUnless(os.name=='nt','Windows paths ignore case and slash direction')
+    def test_a_windows_handler_with_other_case_or_forward_slashes_is_ours(self):
+        script=str(setup._script('claude'))
+        for variant in (script.upper(),script.lower(),script.replace(os.sep,'/'),script.replace(os.sep,'/').upper()):
+            self.assertTrue(setup._ours({'type':'command','command':'"py" "'+variant+'" stop'},'claude'),variant)
+            self.assertFalse(setup._ours({'type':'command','command':'"py" "'+variant+'.bak" stop'},'claude'),variant)
     def test_a_real_edit_of_a_managed_handler_names_the_file_and_the_repair(self):
         self.wired_from(setup.ROOT)
         settings=read_json(self.claude/'settings.json');settings['hooks']['Stop'][0]['hooks'][0]['timeout']=999
