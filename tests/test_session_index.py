@@ -184,6 +184,35 @@ class SessionIndex(StoreFixture):
         self.assertLessEqual(len('\n'.join([session_start.RULES_HEADER] + full)), session_start.RULES_BUDGET)
         self.assertEqual({r for r in shown if r.startswith('demo:')}, {'demo:' + n['id'] for n in made[:len(full)]})
 
+    def test_codex_rules_fit_the_hook_limit_with_the_fallback_protocol(self):
+        import json
+        long_text = ('Every word of this rule matters and the summary is long on purpose. ' * 9).strip()
+        short = self.rule('A short rule', 'Keep commits small.')
+        long = self.rule('B long rule', long_text)
+        capture('Prefer small commits', 'Keep commits small. ' * 20, TAGS, 'demo', self.root, type='preference')
+        self.many(60)
+        payload = {'cwd': str(self.base / 'project'), 'session_id': 'cx'}
+        kept = lambda context: context[:4000]   # Codex keeps this much of SessionStart (additionalContextLimit, integrations/setup.py)
+        # The test store's CMD is a long python path; the fallback protocol then leaves room only for a count line.
+        tight = runtime.process('codex', 'session-start', payload, self.root)['context']
+        self.assertIn(session_start.RULES_MORE.format(2) + '\n', kept(tight))
+        self.assertNotIn('demo:' + short['id'], json.loads(runtime._pointer(self.root, 'cx').read_text()).get('shown_snippet', {}))
+        with patch('core.runtime.command', return_value='alm --domain demo'):   # an installed store's CMD
+            context = runtime.process('codex', 'session-start', payload, self.root)['context']
+        self.assertIn(session_start.RULES_HEADER, kept(context))
+        shown = json.loads(runtime._pointer(self.root, 'cx').read_text()).get('shown_snippet', {})
+        for note, text in ((short, 'Keep commits small.'), (long, long_text)):
+            with self.subTest(title=note['id'][:8]):
+                self.assertIn(note['id'][:8], kept(context))   # every rule is named inside the limit
+                self.assertEqual('demo:' + note['id'] in shown, f" — {text}\n" in kept(context))   # shown only when its summary arrives whole
+        self.assertIn('demo:' + short['id'], shown)
+
+    def test_rule_summaries_keep_code_spans_and_the_header_defers_to_current_instructions(self):
+        self.rule('Stage tests by glob', 'Run `git add src/*/test/*` and keep **bold** markup as written.')
+        text = self.build()[0]
+        self.assertIn('— Run `git add src/*/test/*` and keep **bold** markup as written.', text)
+        self.assertIn("unless the user's current instructions or the source say otherwise", session_start.RULES_HEADER)
+
     def test_global_rules_come_first(self):
         local = self.rule('A local rule', 'Applies here.')
         g = self.rule('Z global rule', 'Applies everywhere.', kind='preference', domain='_global')

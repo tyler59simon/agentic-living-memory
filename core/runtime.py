@@ -1084,6 +1084,8 @@ def _titled(root,refs):
         except (OSError,ValueError):continue
     return [f"{short_ref(*r.split(':',1))} {_title(titles[r])}" for r in refs if r in titles]
 
+# The SessionStart additionalContextLimit integrations/setup.py gives a harness that applies one to the whole hook context.
+SESSION_LIMITS={'codex':4000}
 RULES_STEER='- Keep these rules verbatim:'
 RULES_STEER_MAX=600
 
@@ -1881,7 +1883,10 @@ def _process(harness,event,payload,root=None,info=None):
             swallowed('runtime.refresh_stale',exc,root)
         from .briefs import brief_folder
         resolved=[] if _subagent(payload) else auto_resolve(root,domain,bindings,session);detail['auto_resolved']=len(resolved)
+        # A harness that cuts the hook's whole context (Codex: additionalContextLimit) gets a Rules block that ends inside that limit.
+        limit=SESSION_LIMITS.get(harness)
         text,shown,indexed=build_context(cwd,root,max(MIN_BUDGET,BUDGET-(len(prefix)-rules_outside_budget)),session=session,trace=detail,resolved=resolved,
+                                         limit=None if limit is None else max(0,limit-len(prefix)),
                                          currency=lambda hit:note_currency(hit,brief_folder(hit,cwd,bindings),root,bindings,state,session,'fresh_brief'))
         detail.update(shown=list(shown),indexed=indexed)
         if session!='unknown':

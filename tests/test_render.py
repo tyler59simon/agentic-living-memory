@@ -24,6 +24,9 @@ class RenderShapes(unittest.TestCase):
     def test_receipt_lists_similar_and_warnings(self):
         text=render.render({'ok':True,'status':'created','id':self.HIT['id'],'domain':'demo','similar':[{'ref':'demo:b','title':'Other'}],'quality_warnings':['style: x']})
         self.assertEqual(text.splitlines()[:2],['created: demo:a6e9955e','  similar: demo:b  Other']);self.assertIn('quality_warnings: style: x',text)
+    def test_receipt_shows_the_rule_warning(self):
+        text=render.render({'ok':True,'status':'created','id':self.HIT['id'],'domain':'demo','rule_warning':'16 rule notes in demo and _global (more than 15)'})
+        self.assertIn('rule_warning: 16 rule notes in demo and _global (more than 15)',text)
     # Codex review of feat/alm-command: the shapes below were crashed, dropped or misrouted.
     def test_open_lists_items_beside_an_integer_note_count(self):
         text=render.render({'ok':True,'domain':'demo','notes':1,'count':1,'items':[{'ref':'demo:'+self.HIT['id'],'short_ref':'demo:a6e9955e','title':'Plan','type':'plan','updated':'2026-11-14','index':2,'item':'Ship it'}]})

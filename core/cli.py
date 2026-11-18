@@ -790,6 +790,7 @@ def main(argv=None):
                 beside=[flag for flag,given in (('--title',args.title),('--tag',args.tag),('--type',args.type),('--file',args.file),('--files',args.files)) if given]
                 if beside:raise ValueError('To edit a proposal pass the whole note (--title with --summary or a body) beside --from-proposal; '+', '.join(beside)+' alone would be lost')
                 data=dict(proposal['note'],domain=proposal.get('domain') or domain)
+                if args.rule:data['rule']=True   # the main agent may make the staged draft a rule; capture checks its type
                 if args.turn and not args.session:raise ValueError('--turn needs --session')
                 if args.session:data.update(session_id=args.session,turn_id=_turn(root,args.session,args.turn))
             elif args.items or args.content_file or structured:

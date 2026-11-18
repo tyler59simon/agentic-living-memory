@@ -37,8 +37,10 @@ FOOTER_SEARCH=" · Search: CMD search 'query'"
 # block stays within RULES_BUDGET characters, the rest by title. The block takes no guidance slot, the degrade loop never cuts it, and the budget
 # does not count it, so a small budget or a compaction (SessionStart re-fires with source=compact) still shows the rules.
 RULES_BUDGET=1200
-RULES_HEADER='Rules (follow them in every turn):'
+RULES_HEADER="Rules (follow them in every turn unless the user's current instructions or the source say otherwise):"
 RULE_TITLE_ONLY=' (title only; read it)'
+RULES_MORE='- +{} rules did not fit the context limit'
+MORE_ROOM=60   # kept free for the RULES_MORE line when a harness limit applies
 
 def _updated(note):return str(note.get('updated') or note.get('created') or '')
 
@@ -106,18 +108,29 @@ def scope_rules(active,root,bindings):
         except (OSError,ValueError):continue
     return rule_notes(notes,domains,root)
 
-def _rules_block(rules,flag):
-    """(lines, the rules shown in full): RULES_HEADER, then each rule's title and whole summary while the block fits RULES_BUDGET; from the first
-    that does not fit, the rest show by title. No rule is left out."""
+def _rule_summary(note):
+    """A rule's summary as written, whitespace collapsed: code spans and markup stay exact (plain() would rewrite them)."""
+    from .note_format import sections
+    return ' '.join(str(sections(note.get('body') or '').get('summary') or '').split())
+
+def _rules_block(rules,flag,room=None):
+    """(lines, [(rule, line)] shown in full): RULES_HEADER, then each rule's title and whole summary while the block fits RULES_BUDGET; from the
+    first that does not fit, the rest show by title. With `room` (what a harness limit leaves), the block also fits in room: the titles that do
+    not fit become one RULES_MORE line, which stands alone when even the header does not fit. Without it no rule is left out."""
     if not rules:return [],[]
+    if room is not None and len(RULES_HEADER)+MORE_ROOM>room:
+        more=RULES_MORE.format(len(rules));return ([more] if len(more)<=room else []),[]
+    whole=RULES_BUDGET if room is None else min(RULES_BUDGET,room-MORE_ROOM)
     lines=[RULES_HEADER];size=len(RULES_HEADER);full=[];cut=False
-    for n in rules:
-        head=f"- {short_ref(n['domain'],n['id'])} {flag(n)}{' '.join(str(n['title']).split())}";text=_summary(n)
+    for i,n in enumerate(rules):
+        head=f"- {short_ref(n['domain'],n['id'])} {flag(n)}{' '.join(str(n['title']).split())}";text=_rule_summary(n)
         line=head+(' — '+text if text else '')
-        cut=cut or size+1+len(line)>RULES_BUDGET
-        if cut:line=head+RULE_TITLE_ONLY
-        else:full.append(n);size+=1+len(line)
-        lines.append(line)
+        cut=cut or size+1+len(line)>whole
+        if cut:
+            line=head+RULE_TITLE_ONLY
+            if room is not None and size+1+len(line)>room-MORE_ROOM:lines.append(RULES_MORE.format(len(rules)-i));break
+        else:full.append((n,line))
+        size+=1+len(line);lines.append(line)
     return lines,full
 
 OPEN_NOTES=3
@@ -227,8 +240,9 @@ def _last_session_line(active,root,session,notes):
     if not parts:return []
     return [f"Last session ({str(last.get('ended',''))[:10]}, {last.get('harness','unknown')}): "+'; '.join(parts)+'.']
 
-def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|None=None,trace: dict|None=None,currency=None,resolved=None):
-    """(text or None, {ref: revision key} of guidance shown with its snippet, whether the title index listed any note).
+def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|None=None,trace: dict|None=None,currency=None,resolved=None,limit: int|None=None):
+    """(text or None, {ref: revision key} of guidance shown with its snippet, whether the title index listed any note). limit: the characters a
+    harness keeps of this text (what its hook limit leaves after the prefix); the Rules block ends inside it.
     trace, when a dict, receives how far the text degraded to fit the budget (counts and flags only). resolved: [(short ref, title)] of the finished
     notes runtime.auto_resolve just resolved; they get a tail line of their own."""
     root=(root or memory_root()).resolve();bindings=load_bindings(root);active=resolve_domain(cwd,bindings)
@@ -272,11 +286,15 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
             from .digests import stale_note
             text=stale_note(n,root,bindings);flagged[key]=text+' — ' if text else ''
         return flagged[key]+unconfirmed(n)
-    rule_lines,full_rules=_rules_block(rules,flag)
+    def opening(psummary=True,with_brief=True,ubrief=2):
+        return [header]+([_project_line(project,root,psummary)] if project else here)+([user_brief_block(user,summary_only=ubrief==1) if ubrief else user_brief_pointer(user)] if user else [])+([brief] if brief and with_brief else [])+last
+    # Under a harness limit (Codex cuts the whole hook context), the block fits what the opening lines leave at their longest, so it ends inside
+    # the limit whatever the degrade loop does; the sections after it are cut by the harness as before.
+    rule_lines,full_rules=_rules_block(rules,flag,None if limit is None else limit-len('\n'.join(opening()))-2)
     reserved=len('\n'.join(rule_lines))+1 if rule_lines else 0   # outside the budget, like the instruction block
 
     def render(listed,opened,width,search,titles_only,with_tail=True,psummary=True,with_brief=True,gcount=0,gsnip=True,summaries=False,ubrief=2):
-        lines=[header]+([_project_line(project,root,psummary)] if project else here)+([user_brief_block(user,summary_only=ubrief==1) if ubrief else user_brief_pointer(user)] if user else [])+([brief] if brief and with_brief else [])+last+rule_lines
+        lines=opening(psummary,with_brief,ubrief)+rule_lines
         for n in guidance:
             line=f"- [{str(n.get('type','note')).upper()} {_updated(n)[:10]}] {short_ref(n['domain'],n['id'])} {flag(n)}{_title(n['title'])}"
             lines.append(line if titles_only else line+' — '+snippet(n.get('body',''),[],width))
@@ -321,11 +339,13 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
     shown={} if titles_only else {f"{n['domain']}:{n['id']}":str(n.get('revision') or '')[:12] for n in guidance}
     if gsnip:shown.update({f"{n['domain']}:{n['id']}":str(n.get('revision') or '')[:12] for n in gotchas[:gcount]})
     if user and ubrief==2:shown[f"{user['domain']}:{user['id']}"]=str(user.get('revision') or '')[:12]
+    capped=len(text)-reserved>budget;text=_cap(text,budget+reserved)
+    full_rules=[n for n,line in full_rules if line in text.split('\n')]   # a summary counts as shown only when it survived the cap
     shown.update({f"{n['domain']}:{n['id']}":str(n.get('revision') or '')[:12] for n in full_rules})
     if isinstance(trace,dict):
         trace['degrade']={'listed':listed,'of':len(index),'opened':opened,'open_of':len(open_lines),'width':width,'search':search,
-                          'titles_only':titles_only,'gotchas':gcount,'gotcha_of':len(gotchas),'gotcha_snippets':gsnip,'summaries':summaries,'tail':with_tail,'project_summary':psummary,'brief':bool(brief and with_brief),'user_brief':ubrief if user else None,'rules':len(rules),'rules_full':len(full_rules),'capped':len(text)-reserved>budget}
-    return _cap(text,budget+reserved),shown,bool(listed)
+                          'titles_only':titles_only,'gotchas':gcount,'gotcha_of':len(gotchas),'gotcha_snippets':gsnip,'summaries':summaries,'tail':with_tail,'project_summary':psummary,'brief':bool(brief and with_brief),'user_brief':ubrief if user else None,'rules':len(rules),'rules_full':len(full_rules),'capped':capped}
+    return text,shown,bool(listed)
 
 def _cap(text,budget):
     """Last resort for the budget: whole lines while they fit, then a hard cut."""

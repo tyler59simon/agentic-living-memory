@@ -647,6 +647,16 @@ def capture(title,body,tags,domain,root=None,**metadata):
     root=Path(root or memory_root()).resolve();domain=canonical_domain(domain,root)
     with store_lock(root):
         selected_type=metadata.pop('type','knowledge');derived=prefix_for(selected_type)
+        # The rule flag is checked before any duplicate answer, so a refused value never comes back as a match.
+        from .repository import RULE_TYPES,rule_type_error
+        rule=metadata.pop('rule',False)
+        if not isinstance(rule,bool):raise ValueError('rule must be true or false')
+        if rule and selected_type not in RULE_TYPES:raise ValueError(rule_type_error(selected_type))
+        def matched(result,note,where):
+            """A duplicate answer to `capture --rule`: say when the note it names is not a rule yet (capture never changes an existing note)."""
+            if rule and note.get('rule') is not True:
+                ref=short_ref(where,note['id']);result['rule_warning']=f'{ref} already holds this note and is not a rule; mark it with update {ref} --rule'
+            return result
         supplied_prefix=metadata.pop('prefix',None)
         if supplied_prefix is not None and supplied_prefix!=derived:
             raise ValueError('Prefix is derived from type; use --type '+selected_type+' and omit --prefix')
@@ -680,12 +690,12 @@ def capture(title,body,tags,domain,root=None,**metadata):
                 if supersedes and not drop_links:sent.add(_carry_pointers(body,metadata.get('files'),[n for n in existing if n['id'] in supersedes],root/'domains'/domain/'notes'/'x.md')[0].strip())
                 if (note['body'].strip() not in sent or note['title']!=title.strip()) and not key.startswith(DIGEST_KEY):raise ValueError('Idempotency key has different content')
                 if effective_type(note)!=selected_type:raise ValueError('Existing note has a different type; update that note instead')
-                return {'ok':True,'id':note['id'],'status':'existing','path':note['path']}
+                return matched({'ok':True,'id':note['id'],'status':'existing','path':note['path']},note,domain)
             if note['title'].casefold()==title.strip().casefold() and note['body'].strip()==body.strip():
                 # A digest is about a file at a hash: a note being replaced for that file (its hash moved on) or one already retired is no duplicate, and is never answered with.
                 if digesting and (note['id'] in supersedes or note.get('status','active')!='active'):continue
                 if effective_type(note)!=selected_type:raise ValueError('Existing note has a different type; update that note instead')
-                return {'ok':True,'id':note['id'],'status':'duplicate','path':note['path']}
+                return matched({'ok':True,'id':note['id'],'status':'duplicate','path':note['path']},note,domain)
         # A map is one per repo and a brief one per project folder, enforced by that folder (maps.capture_conflict below).
         # Every map is titled "<repo> codebase map", so comparing titles would refuse the second repo's map as a duplicate.
         # Likewise digests (notes with `sources`): each is about its own file, so similar titles are not duplicates.
@@ -706,8 +716,10 @@ def capture(title,body,tags,domain,root=None,**metadata):
             action,other,match=found;ref=f"{other}:{match['id']}"
             if action in {'duplicate','promote'} and effective_type(match)!=selected_type:
                 raise ValueError(f'Existing note {ref} has a different type; update that note instead')
-            if action=='duplicate':return {'ok':True,'id':match['id'],'domain':other,'ref':ref,'status':'duplicate','path':match['path']}
-            if action=='promote':return _promote_existing(match,other,root)
+            if action=='duplicate':return matched({'ok':True,'id':match['id'],'domain':other,'ref':ref,'status':'duplicate','path':match['path']},match,other)
+            if action=='promote':
+                promoted=_promote_existing(match,other,root)
+                return matched(promoted,match,promoted['domain'])
             if action=='visible':
                 raise ValueError(f"possible_duplicate conflict: similar to {ref} \"{match['title']}\", which this domain already sees. "
                                  f"If it is the same subject, run `update {ref}`; pass allow_similar only for a genuinely distinct note")
@@ -715,7 +727,7 @@ def capture(title,body,tags,domain,root=None,**metadata):
                 raise ValueError(f"possible_duplicate conflict: similar to {ref} \"{match['title']}\" in another project. If it holds for both "
                                  f"projects, run `promote {ref}` and then update it; pass allow_similar only for a genuinely distinct note")
             absorbed=(other,match)   # 'supersede': the new global note replaces the project one
-        review_by=metadata.pop('review_by',None);context=metadata.pop('context','');files=metadata.pop('files',None);origin=metadata.pop('origin',None);commands=metadata.pop('commands',None);sources=metadata.pop('sources',None);pinned=metadata.pop('pinned',False);rule=metadata.pop('rule',False)
+        review_by=metadata.pop('review_by',None);context=metadata.pop('context','');files=metadata.pop('files',None);origin=metadata.pop('origin',None);commands=metadata.pop('commands',None);sources=metadata.pop('sources',None);pinned=metadata.pop('pinned',False)
         if metadata:raise ValueError('Unsupported capture metadata: '+', '.join(metadata))
         carried=carried_files=[]
         if supersedes and not drop_links:

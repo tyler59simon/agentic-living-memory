@@ -3,7 +3,7 @@ from __future__ import annotations
 import json,textwrap
 WIDTH=88
 LISTS=('results','notes','items','sources')
-TRAILER=('hint','warnings','quality_warnings')
+TRAILER=('hint','warnings','quality_warnings','rule_warning')
 
 def _s(v):return v if isinstance(v,str) else json.dumps(v,ensure_ascii=False)
 def _wrap(text,indent='   '):return textwrap.wrap(' '.join(str(text).split()),WIDTH,initial_indent=indent,subsequent_indent=indent)

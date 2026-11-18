@@ -430,6 +430,36 @@ class Rule(StoreFixture):
         self.assertNotIn('rule', self.ok('list')['notes'][0])
         self.assertEqual(self.ok('version')['capabilities']['rule'], 1)
 
+    def test_a_duplicate_capture_with_rule_says_the_existing_note_is_not_a_rule(self):
+        a = self.policy()
+        out = self.ok('capture', '--type', 'policy', '--title', 'Commit policy', '--summary', 'Commits stay small.',
+                      '--subject', 'project', '--concern', 'architecture', '--rule')
+        self.assertEqual((out['status'], out['id']), ('duplicate', a['id']))
+        self.assertIn(f"update demo:{a['id'][:8]} --rule", out['rule_warning'])
+        self.assertNotIn('rule', self.get(a))
+        # Already a rule: nothing to say.
+        b = self.policy('Review policy', 'Every change gets a review.', rule=True)
+        out = self.ok('capture', '--type', 'policy', '--title', 'Review policy', '--summary', 'Every change gets a review.',
+                      '--subject', 'project', '--concern', 'architecture', '--rule')
+        self.assertEqual(out['status'], 'duplicate')
+        self.assertNotIn('rule_warning', out)
+
+    def test_a_falsy_non_bool_rule_in_a_payload_is_refused(self):
+        for bad in (0, None, ''):
+            with self.subTest(bad=bad):
+                with self.assertRaisesRegex(ValueError, 'rule must be true or false'):
+                    self.policy(f'Policy {bad!r}', 'Text.', rule=bad, allow_similar=True)
+        self.assertEqual(inventory('demo', self.root), [])
+
+    def test_propose_rule_and_from_proposal_rule_keep_the_flag(self):
+        args = ('--session', 's1', '--type', 'policy', '--subject', 'project', '--concern', 'architecture')
+        staged = self.ok('propose', *args, '--title', 'Release policy', '--summary', 'Releases wait for the user.', '--rule')
+        saved = self.ok('capture', '--from-proposal', staged['id'])
+        self.assertIs(self.get(saved)['rule'], True)
+        plain = self.ok('propose', *args, '--title', 'Branch policy', '--summary', 'Work happens on branches.')
+        saved = self.ok('capture', '--from-proposal', plain['id'], '--rule')
+        self.assertIs(self.get(saved)['rule'], True)
+
     def test_a_rule_only_vault_edit_keeps_updated(self):
         a = self.policy()
         build_overlay('demo', self.vault, self.root)
