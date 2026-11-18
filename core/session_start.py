@@ -293,10 +293,12 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
         return flagged[key]+unconfirmed(n)
     def opening(psummary=True,with_brief=True,ubrief=2):
         return [header]+([_project_line(project,root,psummary)] if project else here)+([user_brief_block(user,summary_only=ubrief==1) if ubrief else user_brief_pointer(user)] if user else [])+([brief] if brief and with_brief else [])+last
-    # Under a harness limit (Codex cuts the whole hook context), the block fits what the opening lines leave at their longest, so it ends inside
-    # the limit whatever the degrade loop does; the sections after it are cut by the harness as before.
-    rule_lines,full_rules=_rules_block(rules,flag,None if limit is None else limit-len('\n'.join(opening()))-2)
-    reserved=len('\n'.join(rule_lines))+1 if rule_lines else 0   # outside the budget, like the instruction block
+    # Under a harness limit (Codex cuts the whole hook context), the block fits what the opening lines leave, so it ends inside the limit; the
+    # sections after it are cut by the harness as before. It is sized again whenever the degrade loop shortens the opening.
+    def rules_for(psummary=True,with_brief=True,ubrief=2):
+        lines,full=_rules_block(rules,flag,None if limit is None else limit-len('\n'.join(opening(psummary,with_brief,ubrief)))-2)
+        return lines,full,len('\n'.join(lines))+1 if lines else 0   # reserved: outside the budget, like the instruction block
+    rule_lines,full_rules,reserved=rules_for()
 
     def render(listed,opened,width,search,titles_only,with_tail=True,psummary=True,with_brief=True,gcount=0,gsnip=True,summaries=False,ubrief=2):
         lines=opening(psummary,with_brief,ubrief)+rule_lines
@@ -321,6 +323,7 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
     # pointer, the user brief (to its summary, then a pointer), shorter snippets, the search hint, guidance snippets, then the review and problem lines.
     listed,opened,width,search,titles_only,with_tail,psummary,with_brief=len(index),len(open_lines),SESSION_SNIPPET,True,False,True,True,True
     gcount,gsnip,summaries=len(gotchas),True,small;ubrief=2   # the user brief: 2 whole block, 1 summary, 0 pointer
+    shape=(psummary,with_brief,ubrief)   # the opening the Rules block was sized for
     text=render(listed,opened,width,search,titles_only,gcount=gcount,summaries=summaries,ubrief=ubrief)
     while len(text)-reserved>budget:
         if opened>open_items:opened-=1   # a bug with no recorded root cause is the cheapest thing to lose; its note is still indexed
@@ -337,6 +340,8 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
         elif not titles_only:titles_only=True
         elif with_tail and tail:with_tail=False
         else:break
+        if limit is not None and (psummary,with_brief,ubrief)!=shape:
+            shape=(psummary,with_brief,ubrief);rule_lines,full_rules,reserved=rules_for(*shape)   # render reads the new block
         text=render(listed,opened,width,search,titles_only,with_tail,psummary,with_brief,gcount,gsnip,summaries,ubrief)
     # Title-only guidance did not show its content, so prompts may still inject it. Shown guidance maps
     # ref -> revision key: a later correction of the note is new content and may be injected again. Gotchas

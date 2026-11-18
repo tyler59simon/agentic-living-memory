@@ -211,6 +211,21 @@ class SessionIndex(StoreFixture):
         self.assertIn(session_start.RULES_MORE.format(2) + '\n', tight[:limit])
         self.assertNotIn('demo:' + short['id'], shown_now())
 
+    def test_codex_rules_get_the_room_a_shrunk_user_brief_leaves(self):
+        rule = self.rule('A short rule', 'Keep commits small.')
+        capture('User brief', 'The user works on Windows and reviews every change before merge. ' * 9, TAGS, '_global', self.root, type='brief')
+        self.many(30)
+        whole = self.build(budget=100000)[0]
+        self.assertIn('User brief _global:', whole)   # the whole brief block, not its pointer
+        opening = whole.index(session_start.RULES_HEADER) - 1
+        limit = opening + 2 + 60   # the full opening leaves room for the count line only
+        trace = {}
+        text, shown, _ = session_start.build_context(str(self.base / 'project'), self.root, 300, trace=trace, limit=limit)
+        self.assertEqual(trace['degrade']['user_brief'], 0)   # the budget pushed the brief down to its pointer
+        line = f"- demo:{rule['id'][:8]} A short rule — Keep commits small."
+        self.assertIn(line, text[:limit].split('\n'))   # a whole line inside the limit
+        self.assertIn('demo:' + rule['id'], shown)
+
     def test_a_block_that_fits_its_room_keeps_no_room_for_the_count(self):
         rule = {'domain': 'demo', 'id': 'a1b2c3d4-0000', 'title': 'A short rule', 'body': 'Keep commits small.', 'type': 'policy', 'rule': True}
         line = '- demo:a1b2c3d4 A short rule — Keep commits small.'
