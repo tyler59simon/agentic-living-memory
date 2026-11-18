@@ -130,6 +130,15 @@ def _by_kind(fixture,root,cwd):
     out['any']={'rate':_ratio(sum(1 for r in rows if r['got']),len(rows)),'prompts':[r['prompt'] for r in rows if r['got']]}
     return out
 
+def _positive_sources(fixture,root,cwd):
+    """The positive retrieval cases that also got source excerpts through the whole prompt hook: a source gate must not cost useful ones."""
+    rows=[]
+    for case in fixture.get('retrieval',[]):
+        if not case.get('expect'):continue
+        got=_hooked(_case_cwd(case,cwd),case['prompt'],root,case.get('first_prompt',True)).get('sources')
+        if got:rows.append({'prompt':case['prompt'],'injected':got})
+    return {'cases':sum(1 for c in fixture.get('retrieval',[]) if c.get('expect')),'prompts':rows}
+
 # The retrieval variants compared on one fixture (VALIDATION.md). Each sets the switches below before the store is built:
 #   A  lexical: FTS5 and the gates, no model, the line-per-note delivery
 #   B  Python note-level: the model's title+summary vectors in search.sqlite3 (the behaviour before units)
@@ -330,6 +339,7 @@ def evaluate(fixture,root,cwd=None,domain=None,keys=None,harness='claude',hooked
     if fixture.get('units'):extra['units']=evaluate_units(fixture,root,cwd,domain,resolve)
     # After the read-only measurements (its diary rows are put back) and before the session cases, which edit notes.
     by_kind=_by_kind(fixture,root,cwd) if hooked else None
+    positive_sources=_positive_sources(fixture,root,cwd) if hooked else None
     if fixture.get('sessions'):extra['sessions']=evaluate_sessions(fixture,root,cwd,domain,resolve)   # last: it edits notes
     return {**extra,
         'retrieval':{
@@ -337,6 +347,7 @@ def evaluate(fixture,root,cwd=None,domain=None,keys=None,harness='claude',hooked
             'hit@3':_ratio(sum(c['hit'] for c in positive),len(positive)),
             'false_injection':_ratio(sum(c['false'] for c in negative),len(negative)),
             'false_injection_by_kind':by_kind,
+            'sources_on_positives':positive_sources,
             'forbid_violations':[{'prompt':c['prompt'],'refs':c['forbidden']} for c in cases if c['forbidden']],
             'mean_injected_chars':round(sum(c['chars'] for c in cases)/len(cases)) if cases else None,
             'mean_ms':round(sum(c['ms'] for c in cases)/len(cases),1) if cases else None,
@@ -463,6 +474,7 @@ def _table(report):
            f"  false injection  {r['false_injection']}   (target <= 0.1; notes)",
            *([f"    {k:<9}      {v['rate']}   ({len(v['prompts'])} of {r['negative']} negatives, whole prompt hook)" for k,v in r['false_injection_by_kind'].items()]
              if r.get('false_injection_by_kind') else ["    by kind needs a temporary store (a synthetic fixture, or --copy)"]),
+           *([f"  sources on positives  {len(r['sources_on_positives']['prompts'])} of {r['sources_on_positives']['cases']} positives got excerpts, whole prompt hook"] if r.get('sources_on_positives') else []),
            f"  forbid hits      {len(r['forbid_violations'])}",
            f"  mean chars       {r['mean_injected_chars']}",
            f"  mean ms          {r['mean_ms']}   (prompt-time retrieval, in process)",

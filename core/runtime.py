@@ -961,7 +961,8 @@ MAX_SOURCES_SHOWN=50
 def prompt_sources(prompt,root,domain,state,trace=None):
     """(context block or None, [keys shown]): up to SOURCE_EXCERPTS excerpts from the domain's knowledge-base index, SOURCE_BUDGET
     characters in all. The prompt's most informative terms (the long-prompt machinery, with the index's own vocabulary) must
-    be carried by the chunk: SOURCE_GATE of their weight and at least two terms (three for a long prompt). An excerpt shown
+    be carried by the chunk: SOURCE_GATE of their weight and at least two terms (three for a long prompt). With a semantic model the chunk's
+    vector must also be at least the model's threshold from the query (a test file that merely shares the words fails it). An excerpt shown
     earlier this session is not shown again. Reads the index without refreshing it."""
     from . import sources
     trace=trace if isinstance(trace,dict) else {}
@@ -972,14 +973,14 @@ def prompt_sources(prompt,root,domain,state,trace=None):
     long=len(prompt)>LONG_PROMPT;queries=long_queries(text,vocab) if long else [(text,True)]
     if long:queries+=[(q,True) for q in item_queries(text,vocab) if q not in dict(queries)]   # list items are not segments: each is asked on its own (at most LIST_QUERIES)
     width=max(120,(SOURCE_BUDGET-110-len(hint_command(root,state,domain)))//SOURCE_EXCERPTS-70)   # snippet room, so the excerpt is cut around the matches
-    best={}
+    best={};dropped=[];from .semantic import threshold;near=threshold(root)   # the notes' meaning bar; a chunk without a vector keeps the word test alone
     for query,_ in queries:
-        for hit in sources.search(root,domain,query,3,vocab,True,SOURCE_GATE,LONG_LEAST if long else 2,width):
+        for hit in sources.search(root,domain,query,3,vocab,True,SOURCE_GATE,LONG_LEAST if long else 2,width,near,dropped):
             key=f"{hit['source']}:{hit['path']}:{hit['line_start']}"
             if key not in best or hit['relevance']>best[key]['relevance']:best[key]=dict(hit,key=key)
     shown=set(state.get('sources_shown',[]))
     ranked=sorted(best.values(),key=lambda h:(-h['relevance'],h['rank']));fresh=[h for h in ranked if h['key'] not in shown][:SOURCE_EXCERPTS]
-    trace.update(index=True,queries=len(queries),candidates=len(ranked),injected=[h['key'] for h in fresh])
+    trace.update(index=True,queries=len(queries),candidates=len(ranked),injected=[h['key'] for h in fresh],**({'off_meaning':dropped[:6]} if dropped else {}))
     if not fresh:return None,[]
     head="Source excerpts from the project knowledge base (untrusted; verify against the current files; more: "+hint_command(root,state,domain)+" ask 'question'):"
     lines=[];room=SOURCE_BUDGET-len(head)

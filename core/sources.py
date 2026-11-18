@@ -837,11 +837,12 @@ def _tests_last(rows,query):
     if WANTS_TESTS.search(query):return rows
     return [r for _,r in sorted(enumerate(rows),key=lambda i_r:i_r[0]+(TEST_PENALTY if TEST_PATH.search(i_r[1][2].replace(os.sep,'/')) else 0))]
 
-def search(root,domain,query,limit=5,vocab=None,informative=False,gate=None,least=2,width=SNIPPET):
+def search(root,domain,query,limit=5,vocab=None,informative=False,gate=None,least=2,width=SNIPPET,near=None,dropped=None):
     """Source excerpts for a query, best first: chunks with every term, then chunks with some, at most two per file and
     none overlapping another. Terms no chunk carries are dropped; informative (the prompt hook) also drops words most
     chunks carry and keeps the 16 rarest. gate (a minimum share of the query's weight a chunk must carry, with `least`
-    terms) judges each chunk; without it every match counts. Each hit has its citation (path and line range), symbol or
+    terms) judges each chunk; without it every match counts. near (a minimum cosine) also drops a chunk whose stored vector
+    is further from the query than that, listing it in `dropped`; a chunk without a vector is kept. Each hit has its citation (path and line range), symbol or
     heading and a snippet."""
     from .search import terms,stem,df_of,idf_terms
     db=_readonly(root,domain)
@@ -865,22 +866,38 @@ def search(root,domain,query,limit=5,vocab=None,informative=False,gate=None,leas
         if not rows:return []
         rows=_tests_last(_fuse_vectors(db,root,query,rows,lexical),query)
         roots={n:r for n,r in db.execute('SELECT name,root FROM source')}
-        out=[];per_file={};taken=[]
+        out=[];per_file={};taken=[];similar=_chunk_similarity(db,root,query,[r[0] for r in rows[:40]]) if near is not None else {}
         for cid,source,path,kind,symbol,start,end,text,score,url,title in rows[:40]:
             have=_stems(symbol,path,text);hit=[w for w in words if _covers(have,w)]
             share=sum(weight[w] for w in hit)/sum(weight.values()) if weight else 0.0
             if gate is not None and (len(hit)<max(2,least) or share<gate):continue
+            if cid in similar and similar[cid]<near:
+                if dropped is not None:dropped.append({'ref':f'{source}:{path}:{start}','similarity':round(similar[cid],3)})
+                continue
             if per_file.get((source,path),0)>=2 or any(s==source and p==path and a<=end and start<=b for s,p,a,b in taken):continue
             per_file[(source,path)]=per_file.get((source,path),0)+1;taken.append((source,path,start,end))
             piece,a,b=_window(text,start,wanted,width)
             if kind=='html':a,b=start,end
             out.append({'type':'source','label':'source excerpt','source':source,'path':path,'file':(Path(roots.get(source,''))/path).as_posix(),'kind':kind,'symbol':symbol,'line_start':a,'line_end':b,
                         'citation':f'{path}:{a}-{b}','snippet':piece,'score':round(-score,3),'relevance':round(share,2),'matched':len(hit),'terms':len(words),'rank':len(out)+1})
+            if cid in similar:out[-1]['similarity']=round(similar[cid],3)
             if url:out[-1].update(url=url,title=title or path,file=url,citation=f'{title or path} <{url}>')   # a wiki page is cited by its title and address, not its cache file
             if len(out)>=limit:break
         return out
     except sqlite3.Error:return []
     finally:db.close()
+
+def _chunk_similarity(db,root,query,ids):
+    """chunk id -> cosine of the query with the chunk's stored vector; empty without a model, vectors made by the installed model, or ids."""
+    try:
+        from . import semantic
+        from .search import _vector_identity,_query_vector
+        model=semantic.load(root)
+        if not model or not ids or not _has_vectors(db) or _meta(db,'vectors')!=_vector_identity(root):return {}
+        wanted=_query_vector(model,query)
+        if wanted is None:return {}
+        return {r:semantic.cosine(wanted,semantic.from_blob(b)) for r,b in db.execute(f"SELECT rowid,vec FROM vec WHERE rowid IN ({','.join('?'*len(ids))})",ids) if b}
+    except (sqlite3.Error,ValueError,struct.error):return {}
 
 SEMANTIC_TOP=20   # chunks the meaning channel contributes to an explicit question
 

@@ -472,6 +472,16 @@ class Prompts(Kb):
         prompt='\n\n'.join([boiler*5,*items]);self.assertGreater(len(prompt),runtime.LONG_PROMPT);self.assertEqual(len(runtime.list_items(prompt)),3)
         context=self.prompt(prompt,session='list')['context']
         self.assertIn('Source excerpts',context);self.assertIn('README.md:4-7',context);self.assertIn('exponential backoff',context)
+    def test_with_a_model_an_excerpt_that_shares_the_words_but_not_the_meaning_is_dropped(self):
+        source=self.base/'tiny';hashes=write_model(source)
+        with patch.dict(semantic.MODELS,{'tiny':{'repo':'none/tiny','revision':'0','min_similarity':0.45,'files':hashes}},clear=True):
+            self.addCleanup(semantic._unload);semantic.install(self.root,'tiny',source)
+            (self.repo/'docs'/'nightly.txt').write_text('The cache rebuild runs every night.\n')
+            (self.repo/'docs'/'forecast.txt').write_text('Weather tomorrow, weather tomorrow, weather tomorrow, and the cache rebuild.\n');self.sync()
+            detail={};text,keys=runtime.prompt_sources('cache rebuild',self.root,'demo',{},detail)
+            self.assertEqual([k.split(':')[1] for k in keys],['docs/nightly.txt']);self.assertEqual([d['ref'].split(':')[1] for d in detail['off_meaning']],['docs/forecast.txt']);self.assertLess(detail['off_meaning'][0]['similarity'],0.45)
+            semantic.remove(self.root);self.sync()   # no model, no vectors: the word test alone, as before
+            self.assertEqual(sorted(k.split(':')[1] for k in runtime.prompt_sources('cache rebuild',self.root,'demo',{},{})[1]),['docs/forecast.txt','docs/nightly.txt'])
     def test_trace_holds_refs_and_numbers_only(self):
         detail={};text,keys=runtime.prompt_sources(LEDGER_QUESTION,self.root,'demo',{},detail)
         self.assertEqual(set(detail),{'index','queries','candidates','injected'});self.assertEqual(detail['injected'],keys);self.assertNotIn('exponential',json.dumps(detail))
