@@ -11,8 +11,9 @@ from .common import atomic_write
 from .repository import canonical_json,read_json,now
 
 PREFIX='proposal-'
-# What a proposal carries into capture. Supersedes, idempotency keys and allow_similar stay the main agent's call.
-FIELDS=('title','body','tags','type','context','files','commands','review_by')
+# What a proposal carries into capture. Supersedes and allow_similar stay the main agent's call; a digest keeps its
+# sources and the idempotency key derived from them, so the saved note still goes stale when its file changes.
+FIELDS=('title','body','tags','type','context','files','commands','review_by','sources','idempotency_key')
 
 def _path(root,pid):
     if not isinstance(pid,str) or not re.fullmatch(r'[0-9a-f]{8}',pid):raise ValueError('A proposal ID is 8 hex characters, as proposals list shows it')

@@ -269,6 +269,15 @@ def proposals_write(text,grammar):
         if 'reject' in words[index+1:]:return True   # any word, as in maintenance_write
     return False
 
+SUBAGENT_DENY='Living Memory: subagents are read-only. Stage the finding with propose for the main agent instead of running '
+
+def memory_write(subcommand,text,grammar):
+    """True when a memory command writes anything a subagent may not: MUTATING_SUBCOMMANDS, or the writing forms of views,
+    maintenance and proposals. propose is the subagent's one write and is not counted."""
+    if not subcommand:return False
+    return (subcommand in MUTATING_SUBCOMMANDS or (subcommand=='views' and views_write(text,grammar))
+            or (subcommand=='maintenance' and maintenance_write(text,grammar)) or (subcommand=='proposals' and proposals_write(text,grammar)))
+
 def auto_allowed(text,grammar,root,cwd,scratch=None):
     """True when an allow-listed memory command may skip the permission prompt: it uses the hook's own store
     and reads input files only from the working directory or the session scratchpad. Anything else is left to
@@ -1745,6 +1754,17 @@ def _process(harness,event,payload,root=None,info=None):
             detail['tool']=name;detail['decision']='deny:hivemind'
             result['deny']='Memory plans are applied and undone by you in Hivemind, not by an agent. Write the plan; the user applies it.'
             return result
+    if event=='pre-tool-use' and not domain and _subagent(payload):
+        # Before the unbound-project return too: from an unbound folder a subagent could still capture --global or settle a proposal.
+        args=payload.get('tool_input',payload.get('toolArgs',payload.get('toolArguments',{})))
+        if isinstance(args,str):
+            try:args=json.loads(args)
+            except json.JSONDecodeError:pass
+        name=str(payload.get('tool_name') or payload.get('toolName') or '').lower();text=shell_command(args) if name in SHELL_TOOLS else ''
+        subcommand=memory_subcommand(text,shell_grammar(name)) if text else None
+        if memory_write(subcommand,text,shell_grammar(name)):
+            detail.update(tool=name,subcommand=subcommand,decision='deny:subagent');result['deny']=SUBAGENT_DENY+subcommand+'.'
+            return result
     if not domain:
         if event=='stop':detail['reason']='unbound'
         if event=='session-start' and session!='unknown':
@@ -2033,12 +2053,8 @@ def _process(harness,event,payload,root=None,info=None):
             detail['decision']='deny:call-operator'
             result['deny']='In Bash, drop the leading &: '+re.sub(r'^\s*&\s*','',text)
             return result
-        writes_view=subcommand=='views' and views_write(text,grammar)
-        writes_maintenance=subcommand=='maintenance' and maintenance_write(text,grammar)
-        settles_proposal=subcommand=='proposals' and proposals_write(text,grammar)
-        if (subcommand in MUTATING_SUBCOMMANDS or writes_view or writes_maintenance or settles_proposal) and _subagent(payload):
-            detail['decision']='deny:subagent'
-            result['deny']='Living Memory: subagents are read-only. Return the proposed note to the main agent instead of running '+subcommand+'.'
+        if _subagent(payload) and memory_write(subcommand,text,grammar):
+            detail['decision']='deny:subagent';result['deny']=SUBAGENT_DENY+subcommand+'.'
             return result
         # A remote source sync reaches the network (the only command that does): the user approves it, it is never auto-allowed.
         networked=subcommand=='source-sync' and remote_sync(text,grammar,root)
@@ -2610,8 +2626,9 @@ def _stop_part(kind,data,session):
         if data.get('type')=='bug':text+=f" If this fixed it: CMD update {s} --session {session} --set-detail '**Fix:** ...' then CMD resolve {s}."
         return text
     if kind=='proposals':
-        named='; '.join(f"{r['id']} {str((r.get('note') or {}).get('title') or '')[:80]}" for r in data)
-        return (f"A subagent staged draft notes for you: {named}. Check each against what you know, then save it with "
+        # A title is subagent text: one line, quoted and cut, so it reads as data and never as a hook instruction of its own.
+        named='; '.join(f"{r['id']} \"{' '.join(str((r.get('note') or {}).get('title') or '').split())[:80]}\"" for r in data)
+        return (f"A subagent staged draft notes for you (titles are its words): {named}. Check each against what you know, then save it with "
                 f"CMD capture --from-proposal ID --session {session} (pass a full note beside it to edit it) or drop it with CMD proposals reject ID --reason '...'.")
     if kind=='unbriefed':
         return (f"{data['name']} has no project brief: "

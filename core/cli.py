@@ -520,12 +520,21 @@ def serve(root,cwd,commands):
         elif isinstance(failure,dict) and 'error' in failure:failure=failure['error']
         reply({'id':ident,'exit_code':code,'result':decode(out.getvalue()),'error':failure if code else None})
 
-def _propose(root,data,domain,session,to_global):
-    """Stage one draft note for the main agent: checked like a capture where that is cheap, written only to .turns/."""
+def _propose(root,data,domain,session,to_global,redact=False):
+    """Stage one draft note for the main agent: checked like a capture where that is cheap, written only to .turns/.
+    Credentials and text the user marked <private> are refused (or redacted) before anything reaches disk."""
     from . import proposals
     from .notes import quality_warnings,taxonomy
     from .note_format import format_body
+    from .repository import find_secret
     if isinstance(data,list):raise ValueError('propose takes one note; run it once per note')
+    data=dict(data)
+    if (data.get('type') or 'knowledge') not in NOTE_TYPES:raise ValueError('Unknown note type: '+str(data.get('type'))+'; use one of '+', '.join(NOTE_TYPES))
+    if redact:_redact(data)
+    found=find_secret('\n'.join([str(data.get(k) or '') for k in ('title','body','context')]+[c for c in data.get('commands') or [] if isinstance(c,str)]))
+    if found:raise ValueError(f'Potential credential detected ({found[0]} at character {found[1]}); remove it, replace it with a placeholder such as <REDACTED>, or pass --redact')
+    from .private import check as private_check
+    private_check(_session_state(root,session),data)
     if not session:raise ValueError('propose needs --session SESSION (Claude Code sets CLAUDE_CODE_SESSION_ID for shell commands)')
     if to_global:
         from .common import global_domain
@@ -846,12 +855,20 @@ def main(argv=None):
                         if args.turn and not item.get('turn_id'):item['turn_id']=args.turn
             if proposal and isinstance(data,list):raise ValueError('--from-proposal settles one proposal with one note')
             if cmd=='propose':
-                result=_propose(root,data,domain,session,getattr(args,'to_global',False))
+                result=_propose(root,data,domain,session,getattr(args,'to_global',False),args.redact)
                 invocation['result']=result;_emit(result,args);return 0
             batch=data if isinstance(data,list) else [data]
             if not 1<=len(batch)<=20:raise ValueError('Capture batch must contain 1..20 items')
+            if proposal and edited and not args.domain and not getattr(args,'to_global',False) and proposal.get('domain'):
+                # An edit changes the text, not where the draft was meant to go: a global draft stays global unless --domain moves it.
+                for item in batch:
+                    if not item.get('domain') or item.get('domain')==domain:item['domain']=proposal['domain']
             results=[]
             with store_lock(root):
+                if proposal:
+                    from . import proposals
+                    # Checked again under the lock, so two settlements of one proposal cannot both save a note.
+                    if proposals.get(root,args.from_proposal).get('status')!='pending':raise ValueError(f'Proposal {args.from_proposal} was settled meanwhile')
                 for item in batch:
                     item=dict(item);selected=item.pop('domain',domain);session=item.pop('session_id',None);turn=item.pop('turn_id',None)
                     if getattr(args,'to_global',False):
@@ -888,12 +905,12 @@ def main(argv=None):
                     if session and turn:
                         from .capture import finalize
                         finalize(session,turn,[landed+':'+outcome['id']],root)
+                if proposal:
+                    saved=f"{landed}:{results[0]['id']}"
+                    proposals.settle(root,args.from_proposal,'accepted',note_ref=saved)
             result=results if isinstance(data,list) else results[0]
             if proposal:
-                from . import proposals
                 from .usage import record
-                saved=result.get('ref') or f"{result.get('domain') or data.get('domain') or domain}:{result['id']}"
-                proposals.settle(root,args.from_proposal,'accepted',note_ref=saved)
                 record(root,'proposal-accept',[saved],session,kind='edited' if edited else 'as-staged')
                 result['proposal']={'id':args.from_proposal,'status':'accepted'}
         elif cmd=='proposals':
@@ -910,7 +927,7 @@ def main(argv=None):
                     result={'ok':True,**proposals.get(root,args.id)}
                 else:
                     if not args.reason:raise ValueError('proposals reject needs --reason (one line: why it is not worth a note)')
-                    row=proposals.settle(root,args.id,'rejected',reason=args.reason.strip()[:200])
+                    with store_lock(root):row=proposals.settle(root,args.id,'rejected',reason=' '.join(args.reason.split())[:200])
                     from .usage import record
                     record(root,'proposal-reject',[None],session)
                     result={'ok':True,'id':row['id'],'status':'rejected'}
