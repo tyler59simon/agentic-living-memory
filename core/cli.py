@@ -276,7 +276,7 @@ def _sectioned(args,body='',note_type=None):
 
 # source-sync writes only the derived knowledge-base index (as search --rebuild does the notes' one), so subagents and viewers may run it
 # (not for a remote source, which it would pull from the network: sources.sync refuses that for them).
-READ_ONLY={'help','config','status','search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','ask','sources','source-sync','ingest-scan','changes','views','wiki','log','maintenance','recap'}
+READ_ONLY={'help','config','status','search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','ask','sources','source-sync','ingest-scan','changes','views','wiki','log','maintenance','recap','proposals'}
 # Viewer: a human-facing app browsing the store. Read-only, and its reads are not usage evidence for the diary.
 VIEWER=READ_ONLY|{'taxonomy','review','diff','inspect-plan'}
 SERVE_API=2
@@ -481,6 +481,43 @@ def serve(root,cwd,commands):
         elif isinstance(failure,dict) and 'error' in failure:failure=failure['error']
         reply({'id':ident,'exit_code':code,'result':decode(out.getvalue()),'error':failure if code else None})
 
+def _propose(root,data,domain,session,to_global,redact=False):
+    """Stage one draft note for the main agent: checked like a capture where that is cheap, written only to .turns/.
+    Credentials and text the user marked <private> are refused (or redacted) before anything reaches disk."""
+    from . import proposals
+    from .notes import quality_warnings,taxonomy
+    from .note_format import format_body
+    from .repository import find_secret
+    if isinstance(data,list):raise ValueError('propose takes one note; run it once per note')
+    data=dict(data)
+    if (data.get('type') or 'knowledge') not in NOTE_TYPES:raise ValueError('Unknown note type: '+str(data.get('type'))+'; use one of '+', '.join(NOTE_TYPES))
+    if redact:_redact(data)
+    # Everything the draft file stores is screened, its digest metadata included.
+    found=find_secret('\n'.join([str(data.get(k) or '') for k in ('title','body','context','idempotency_key')]+[c for c in data.get('commands') or [] if isinstance(c,str)]
+                                +[json.dumps(data.get(k)) for k in ('files','sources') if data.get(k)]))
+    if found:raise ValueError(f'Potential credential detected ({found[0]} at character {found[1]}); remove it, replace it with a placeholder such as <REDACTED>, or pass --redact')
+    from .private import check as private_check
+    private_check(_session_state(root,session),data)
+    if not session:raise ValueError('propose needs --session SESSION (Claude Code sets CLAUDE_CODE_SESSION_ID for shell commands)')
+    if to_global:
+        from .common import global_domain
+        target=global_domain(root)
+    else:target=data.get('domain') or domain
+    if not target:raise ValueError('Project is unbound; pass --domain or bind it')
+    title=str(data.get('title') or '').strip()
+    if not title or not str(data.get('body') or '').strip():raise ValueError('A proposal needs a title and content (--summary, --section, --detail or a body)')
+    known=taxonomy(root);unknown=[t for t in data.get('tags') or [] if t not in known]
+    if unknown:raise ValueError('Unknown tags: '+', '.join(unknown)+'; use tags that taxonomy lists')
+    data=dict(data,title=title,body=format_body(data['body']))
+    warnings=quality_warnings({'title':title,'body':data['body'],'type':data.get('type') or 'knowledge'})
+    row=proposals.write(root,session,target,data,warnings)
+    from .usage import record
+    record(root,'propose',[None],session,kind=data.get('type') or 'knowledge')
+    result={'ok':True,'id':row['id'],'status':'proposed','domain':target,'title':title,
+            'next':f"Name proposal {row['id']} in your report; the main agent saves it with capture --from-proposal {row['id']} or rejects it."}
+    if warnings:result['quality_warnings']=warnings
+    return result
+
 def _maintenance_hint(root):
     """The `review` hint's sentence about automatic maintenance, only while it is enabled."""
     from . import maintenance_state as ms
@@ -488,7 +525,7 @@ def _maintenance_hint(root):
     except ValueError:on=False
     return 'Automatic maintenance is on for this store: within its policy it archives, resolves and supersedes notes without a plan and records why (maintenance history); restore REF undoes an archive. ' if on else ''
 
-HELP={'setup':'Choose or move the shared memory folder','bind':'Bind a domain to project folders','unbind':'Remove a domain binding','capture':'Save a note','search':'Find notes','read':'Show one note',
+HELP={'setup':'Choose or move the shared memory folder','bind':'Bind a domain to project folders','unbind':'Remove a domain binding','capture':'Save a note','propose':'Stage a draft note for the main agent (subagents)','proposals':'List, show or reject staged draft notes','search':'Find notes','read':'Show one note',
  'update':'Change a note','supersede':'Retire a note in favour of another','review':'Notes that are due, stale or duplicated','open':'Open plans, bugs, risks and action items','check':'Tick an action item',
  'timeline':'Notes around a date or note','ingest-plan':'Plan importing Claude auto-memory files','export':'Write notes to a zip file','import-plan':'Plan importing an exported zip','confirm':'Mark a note still true',
  'resolve':'Finish a plan, bug or risk','reopen':'Reopen a resolved note','restore':'Bring back an archived note','stats':'Usage over the last days','logs':'Show the operational log','plan':'Plan a change to one note',
@@ -504,7 +541,7 @@ HELP={'setup':'Choose or move the shared memory folder','bind':'Bind a domain to
 
 # The groups `alm --help` lists the commands under (CLI-2); every command is in exactly one.
 HELP_GROUPS=(
- ('Everyday',('help','capture','search','read','update','supersede','open','check','confirm','resolve','reopen','ask','list','timeline','links','log','recap','recall','capture-finalize','status','off','on')),
+ ('Everyday',('help','capture','propose','proposals','search','read','update','supersede','open','check','confirm','resolve','reopen','ask','list','timeline','links','log','recap','recall','capture-finalize','status','off','on')),
  ('Maintenance',('review','maintenance','stats','history','diff','undo','recover','restore','doctor','validate','rebuild','semantic','backup','logs')),
  ('Governance (plans)',('plan','apply','inspect-plan','rewrite-plan','merge-plan','retag-plan','remap-plan','promote-plan','taxonomy-plan','note-type-plan','migration-plan','baseline-plan','restore-plan',
    'import-plan','ingest-plan','project-plan','system-plan','source-plan','change-plan','overlay-teardown-plan')),
@@ -534,10 +571,17 @@ def build_parser():
     p=sub('unbind');p.add_argument('name',help='A bound domain with no notes left (move them with remap-plan first)')
     p.add_argument('--prefix',help='Remove only this folder from the binding and keep the domain and its notes (after a bound folder moved)')
     # Legacy forms keep working but are left out of help: --tags, --prefix and a third positional (tags).
-    p=sub('capture');p.add_argument('items',nargs='*',metavar='TITLE BODY',help='Title and body; or use --title and --summary');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='',help=argparse.SUPPRESS);p.add_argument('--prefix',help=argparse.SUPPRESS);p.add_argument('--type',choices=NOTE_TYPES,help='Note type (default: knowledge)');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help="REF of a note this one replaces; it is retired in the same transaction, and its links and files are carried over (see --drop-links)");p.add_argument('--drop-links',action='store_true',help='With --supersedes: do not carry the links and files of the replaced note over');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk/map/runbook/brief notes get a default');p.add_argument('--pin',action='store_true',help=PIN_HELP)
-    for facet in CAPTURE_FACETS:p.add_argument('--'+facet,action='append',default=[])
-    p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
-    sections_args(p);_file_flags(p)
+    def capture_flags(p):
+     p.add_argument('items',nargs='*',metavar='TITLE BODY',help='Title and body; or use --title and --summary');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='',help=argparse.SUPPRESS);p.add_argument('--prefix',help=argparse.SUPPRESS);p.add_argument('--type',choices=NOTE_TYPES,help='Note type (default: knowledge)');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help="REF of a note this one replaces; it is retired in the same transaction, and its links and files are carried over (see --drop-links)");p.add_argument('--drop-links',action='store_true',help='With --supersedes: do not carry the links and files of the replaced note over');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk/map/runbook/brief notes get a default');p.add_argument('--pin',action='store_true',help=PIN_HELP)
+     for facet in CAPTURE_FACETS:p.add_argument('--'+facet,action='append',default=[])
+     p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
+     sections_args(p);_file_flags(p)
+    p=sub('capture');capture_flags(p)
+    p.add_argument('--from-proposal',metavar='ID',help='Settle this subagent proposal: alone, save it as staged; with a full note (title and content), save that edited note instead')
+    p=sub('propose');capture_flags(p)
+    p=sub('proposals');p.add_argument('action',nargs='?',choices=['list','show','reject'],default='list');p.add_argument('id',nargs='?',help='show, reject: the proposal ID')
+    p.add_argument('--status',choices=['pending','accepted','rejected','any'],default='pending',help='list: which proposals (default pending)');p.add_argument('--session',help='list: only this session')
+    p.add_argument('--reason',help='reject: why, one line')
     p=sub('search');p.add_argument('query',nargs='?',default='');p.add_argument('--file',help='Notes about this file or folder: listed in their files property, or named in the body');p.add_argument('--scope',choices=['active','fallback','all'],default='fallback');p.add_argument('--limit',type=int,default=5);p.add_argument('--filter',action='append',default=[]);p.add_argument('--rebuild',action='store_true');p.add_argument('--sources',action='store_true',help='Source excerpts from the project knowledge base only');p.add_argument('--explain',action='store_true',help='Add why each note was found: backend, scores, gate and the section the prompt hook would deliver')
     p=sub('read');p.add_argument('reference');p.add_argument('--max-chars',type=int,default=16000);p.add_argument('--metadata-only',action='store_true');p.add_argument('--section',help='Only this section, by heading (as search evidence and prompt lines name it)')
     p=sub('update');p.add_argument('reference');p.add_argument('--title');p.add_argument('--body');p.add_argument('--body-file',type=Path);p.add_argument('--tag',action='append');p.add_argument('--type',choices=NOTE_TYPES);p.add_argument('--context');p.add_argument('--review-by');p.add_argument('--expected-revision');p.add_argument('--payload-file',type=Path);p.add_argument('--session');p.add_argument('--turn')
@@ -681,7 +725,9 @@ def main(argv=None):
             # Snapshots exist to repair a damaged store, so restoring must not depend on readable bindings.
             if cmd not in {'restore-plan','inspect-plan','apply','backup','history'}:raise
             domain=None
-        if args.actor=='subagent' and cmd not in READ_ONLY:raise ValueError('Subagents are read-only; return mutation proposals to the main agent')
+        # propose writes only a draft in .turns/, which the main agent accepts or rejects.
+        if args.actor=='subagent' and cmd not in READ_ONLY|{'propose'}:raise ValueError('Subagents are read-only; stage a draft with propose for the main agent')
+        if cmd=='proposals' and args.action=='reject' and args.actor in {'subagent','viewer'}:raise ValueError('Only the main agent rejects proposals; run it as --actor main')
         if args.actor=='viewer' and cmd not in VIEWER:raise ValueError('Viewers are read-only; run changes as --actor main')
         if cmd=='views' and (args.action or 'list')!='list' and args.actor in {'subagent','viewer'} and not (args.action=='render' and args.format=='json' and not args.out):
             raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' are read-only: views list and render --format json (no --out) are allowed; run the rest as --actor main')
@@ -715,10 +761,26 @@ def main(argv=None):
             from .init_domain import unbind_domain,unbind_prefix
             if args.prefix:result={'ok':True,'domain':args.name,'prefix':unbind_prefix(args.name,args.prefix,root),'status':'prefix_removed'}
             else:result={'ok':True,'domain':unbind_domain(args.name,root),'status':'unbound'}
-        elif cmd=='capture':
+        elif cmd in ('capture','propose'):
             from .notes import capture
             structured=any(getattr(args,k) for k in SECTION_ARGS)
-            if args.items or args.content_file or structured:
+            proposal=None
+            if cmd=='capture' and args.from_proposal:
+                from . import proposals
+                proposal=proposals.get(root,args.from_proposal)
+                if proposal.get('status')!='pending':raise ValueError(f"Proposal {args.from_proposal} is already {proposal.get('status')}")
+                # The draft's domain is the default target, set before files and sources resolve against it: an edit changes the text,
+                # not where the draft was meant to go. --domain, --global or a positional domain still choose another.
+                if not args.domain and not getattr(args,'to_global',False) and proposal.get('domain'):domain=proposal['domain']
+            edited=bool(args.items or args.content_file or structured or args.payload_file)
+            if proposal and not edited:
+                # Saved as staged. An edit passes the whole note, so a lone --title or --tag would be half an edit: refuse it.
+                beside=[flag for flag,given in (('--title',args.title),('--tag',args.tag),('--type',args.type),('--file',args.file),('--files',args.files)) if given]
+                if beside:raise ValueError('To edit a proposal pass the whole note (--title with --summary or a body) beside --from-proposal; '+', '.join(beside)+' alone would be lost')
+                data=dict(proposal['note'],domain=proposal.get('domain') or domain)
+                if args.turn and not args.session:raise ValueError('--turn needs --session')
+                if args.session:data.update(session_id=args.session,turn_id=_turn(root,args.session,args.turn))
+            elif args.items or args.content_file or structured:
                 # With --title, a positional value is a mistake (most often a second value after one --detail flag); read as the
                 # positional domain/title/body form it would silently replace the title or body, or name a wrong domain.
                 if args.title and args.items:
@@ -734,7 +796,7 @@ def main(argv=None):
                 tags += _facet_tags(args,CAPTURE_FACETS)
                 data={'title':title,'body':body,'tags':tags,'prefix':args.prefix,'type':args.type or 'knowledge','context':args.context,'idempotency_key':args.idempotency_key,'domain':domain}
                 if args.turn and not args.session:raise ValueError('--turn needs --session')
-                if args.session:data.update(session_id=args.session,turn_id=_turn(root,args.session,args.turn))
+                if args.session and cmd=='capture':data.update(session_id=args.session,turn_id=_turn(root,args.session,args.turn))
                 if args.allow_similar:data['allow_similar']=True
                 if args.supersedes:data['supersedes']=args.supersedes
                 if args.drop_links:data['drop_links']=True
@@ -761,10 +823,18 @@ def main(argv=None):
                     if isinstance(item,dict) and not item.get('session_id'):
                         item['session_id']=args.session
                         if args.turn and not item.get('turn_id'):item['turn_id']=args.turn
+            if proposal and isinstance(data,list):raise ValueError('--from-proposal settles one proposal with one note')
+            if cmd=='propose':
+                result=_propose(root,data,domain,session,getattr(args,'to_global',False),args.redact)
+                invocation['result']=result;_emit(result,args);return 0
             batch=data if isinstance(data,list) else [data]
             if not 1<=len(batch)<=20:raise ValueError('Capture batch must contain 1..20 items')
             results=[]
             with store_lock(root):
+                if proposal:
+                    from . import proposals
+                    # Checked again under the lock, so two settlements of one proposal cannot both save a note.
+                    if proposals.get(root,args.from_proposal).get('status')!='pending':raise ValueError(f'Proposal {args.from_proposal} was settled meanwhile')
                 for item in batch:
                     item=dict(item);selected=item.pop('domain',domain);session=item.pop('session_id',None);turn=item.pop('turn_id',None)
                     if getattr(args,'to_global',False):
@@ -801,7 +871,32 @@ def main(argv=None):
                     if session and turn:
                         from .capture import finalize
                         finalize(session,turn,[landed+':'+outcome['id']],root)
+                if proposal:
+                    saved=f"{landed}:{results[0]['id']}"
+                    proposals.settle(root,args.from_proposal,'accepted',note_ref=saved)
             result=results if isinstance(data,list) else results[0]
+            if proposal:
+                from .usage import record
+                record(root,'proposal-accept',[saved],session,kind='edited' if edited else 'as-staged')
+                result['proposal']={'id':args.from_proposal,'status':'accepted'}
+        elif cmd=='proposals':
+            from . import proposals
+            if args.action=='list':
+                if args.id or args.reason:raise ValueError('proposals list takes only --status and --session')
+                rows=proposals.rows(root,args.status,args.session)
+                result={'ok':True,'status':args.status,'proposals':[proposals.listing(r) for r in rows],
+                        'next':'capture --from-proposal ID saves one (alone as staged; with a full note, edited); proposals reject ID --reason R drops it'}
+            else:
+                if not args.id:raise ValueError(f'proposals {args.action} needs the proposal ID')
+                if args.action=='show':
+                    if args.reason:raise ValueError('--reason belongs to reject')
+                    result={'ok':True,**proposals.get(root,args.id)}
+                else:
+                    if not args.reason:raise ValueError('proposals reject needs --reason (one line: why it is not worth a note)')
+                    with store_lock(root):row=proposals.settle(root,args.id,'rejected',reason=' '.join(args.reason.split())[:200])
+                    from .usage import record
+                    record(root,'proposal-reject',[None],session)
+                    result={'ok':True,'id':row['id'],'status':'rejected'}
         elif cmd=='search':
             from .search import search_domains,search_domain
             if not domain:raise ValueError(UNBOUND)
