@@ -146,6 +146,23 @@ class RealStoreMode(StoreFixture):
         self.assertEqual(snapshot(), before)
         self.assertEqual(report['retrieval']['false_injection_by_kind']['maps']['rate'], 0.5)
         self.assertIsNone(report['copy'])
+        self.assertEqual(report['reindexed'], [])   # a current index is measured as it is
+
+    def test_copy_refreshes_a_stale_index_before_measuring(self):
+        # A schema bump leaves the index stale until SessionStart; the copy must not measure the lexical fallback.
+        from unittest.mock import patch
+        from core import search
+        deploy = capture('Deploy the package with install.py', 'Run install.py --plan, then --apply-plan.', TAGS, 'demo', self.root)
+        fixture = {'domain': 'demo', 'cwd': str(self.base / 'project'),
+                   'retrieval': [{'prompt': 'how do I deploy the package?', 'expect': ['demo:' + deploy['id']]}]}
+        path = self.base / 'fixture.json'
+        path.write_text(json.dumps(fixture), encoding='utf-8')
+        with patch.object(search, 'INDEX_VERSION', search.INDEX_VERSION + 1):
+            report = EVAL.run(path, self.root, copy=True)
+            live = search._fresh('demo', self.root, search.inventory('demo', self.root, retired=True))
+        self.assertIn('demo', report['reindexed'])
+        self.assertFalse(live)   # the store itself stays stale: only the copy was rebuilt
+        self.assertEqual(report['retrieval']['hit@3'], 1.0)
 
     def test_stale_ref_is_a_fixture_error(self):
         fixture = {'domain': 'demo', 'cwd': str(self.base / 'project'), 'retrieval': [{'prompt': 'x y', 'expect': ['demo:deadbeef']}]}

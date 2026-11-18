@@ -415,7 +415,12 @@ def run(fixture_path,root=None,semantic_mode=None,config=None,model_dir=None,cop
         folder=Path(tempfile.mkdtemp(prefix='living-memory-eval-copy-'))
         try:
             shutil.copytree(store,folder/'store',ignore=shutil.ignore_patterns(*COPY_SKIP))
-            try:return {**evaluate(fixture,folder/'store',hooked=True),'copy':str(folder/'store') if keep else None}
+            # Hooks never rebuild a stale index (built by older code) and fall back to lexical canonical scan; SessionStart
+            # refreshes it before any prompt, so the copy does too, or a schema bump would measure that fallback (INDEX-REBUILD).
+            from core.search import refresh_stale
+            domains=folder/'store'/'domains'
+            reindexed=[d.name for d in sorted(domains.iterdir()) if refresh_stale(d.name,folder/'store')] if domains.is_dir() else []
+            try:return {**evaluate(fixture,folder/'store',hooked=True),'reindexed':reindexed,'copy':str(folder/'store') if keep else None}
             finally:semantic._unload()   # Windows cannot delete a mapped model file
         finally:
             if not keep:shutil.rmtree(folder,ignore_errors=True)
@@ -507,6 +512,7 @@ def main(argv=None):
     os.environ.setdefault('LIVING_MEMORY_NO_BACKGROUND','1')   # the hook may start a source sync; an eval must not leave processes behind
     report=run(args.fixture,args.root,args.semantic,args.config,args.model_dir,args.copy,args.keep)
     if args.copy and report.get('copy'):print(f"Store copy kept: {report['copy']}",file=sys.stderr)
+    if report.get('reindexed'):print(f"Stale index rebuilt in the copy first: {', '.join(report['reindexed'])}",file=sys.stderr)
     print(json.dumps(report,indent=2,ensure_ascii=False) if args.json else _table(report))
 
 if __name__=='__main__':main()
