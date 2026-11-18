@@ -738,10 +738,15 @@ def prune_plans(root, applied_days=1, unapplied_days=30, require_plan=False):
                 created = parse_iso(str(value.get("created")))
             except (ValueError, AttributeError):
                 continue
-            if require_plan and not (value.get("id") == plan_path.stem and isinstance(value.get("kind"), str) and isinstance(value.get("changes"), dict)
-                                     and isinstance(value.get("digest"), str)
-                                     and value["digest"] == hashlib.sha256(canonical_json({k: v for k, v in value.items() if k != "digest"}).encode()).hexdigest()):
-                continue
+            if require_plan:
+                try:
+                    shaped = (value.get("id") == plan_path.stem and isinstance(value.get("kind"), str) and isinstance(value.get("changes"), dict)
+                              and isinstance(value.get("digest"), str)
+                              and value["digest"] == hashlib.sha256(canonical_json({k: v for k, v in value.items() if k != "digest"}).encode()).hexdigest())
+                except (UnicodeEncodeError, TypeError, ValueError):
+                    shaped = False   # a lone surrogate or an odd value cannot be a plan we wrote; keep it and go on to the next file
+                if not shaped:
+                    continue
             if created.tzinfo is None:
                 created = created.replace(tzinfo=timezone.utc)
             folder = Path(root) / ".operations" / plan_path.stem

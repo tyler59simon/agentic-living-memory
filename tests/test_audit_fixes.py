@@ -162,9 +162,10 @@ class Pruning(StoreFixture):
         young = {folder: make(folder, 'b', 5, 'committed') for folder in (home, claude, codex)}   # applied, but inside the 30 days
         stale = make(claude, 'c', 40)                                                              # never applied, past 30 days
         forged = make(claude, 'e', 400, 'committed', 'f' * 64)   # OPS-1b.1b: the right shape, but the digest is not the plan's
+        odd = claude / '.plans' / ('0' * 32 + '.json');odd.write_text('{"id": "' + '0' * 32 + '", "kind": "x", "changes": {}, "digest": "' + 'f' * 64 + '", "summary": "\\ud800", "created": "2001-01-01T00:00:00+00:00"}')   # R-03: sorts first and cannot be encoded; the sweep must go on
         foreign = claude / '.plans' / ('9' * 32 + '.json');foreign.write_text(json.dumps({'created': (datetime.now(timezone.utc) - timedelta(days=400)).isoformat()}))   # OPS-1b.1: not an ALM plan
         with patch.object(runtime, 'SCRIPT', home / 'app' / 'living_memory.py'):runtime._prune_journals(self.root)
-        self.assertFalse(any(p.exists() for p in old.values()) or stale.exists());self.assertTrue(foreign.exists() and forged.exists())
+        self.assertFalse(any(p.exists() for p in old.values()) or stale.exists());self.assertTrue(foreign.exists() and forged.exists() and odd.exists())
         self.assertTrue(all(p.exists() for p in young.values()))
         (home / 'app' / '.core-ownership-v1.json').unlink();kept = make(home, 'd', 40, 'committed')   # a source checkout leaves the install folder alone
         with patch.object(runtime, 'SCRIPT', home / 'app' / 'living_memory.py'), patch('core.runtime.clock.now', return_value=datetime.now(timezone.utc) + timedelta(days=2)):runtime._prune_journals(self.root)
