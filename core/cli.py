@@ -499,7 +499,8 @@ def _propose(root,data,domain,session,to_global,redact=False):
     data=dict(data)
     if (data.get('type') or 'knowledge') not in NOTE_TYPES:raise ValueError('Unknown note type: '+str(data.get('type'))+'; use one of '+', '.join(NOTE_TYPES))
     from .repository import RULE_TYPES,rule_type_error
-    if 'rule' in data and not isinstance(data['rule'],bool):raise ValueError('rule must be true or false')   # as capture checks it; the draft keeps it
+    for flag in ('rule','pinned'):
+        if flag in data and not isinstance(data[flag],bool):raise ValueError(f'{flag} must be true or false')   # as capture checks it; the draft keeps it
     if data.get('rule') is True and (data.get('type') or 'knowledge') not in RULE_TYPES:raise ValueError(rule_type_error(data.get('type')))
     if redact:_redact(data)
     # Everything the draft file stores is screened, its digest metadata included.
@@ -792,6 +793,7 @@ def main(argv=None):
                 if beside:raise ValueError('To edit a proposal pass the whole note (--title with --summary or a body) beside --from-proposal; '+', '.join(beside)+' alone would be lost')
                 data=dict(proposal['note'],domain=proposal.get('domain') or domain)
                 if args.rule:data['rule']=True   # the main agent may make the staged draft a rule; capture checks its type
+                if args.pin:data['pinned']=True
                 if args.turn and not args.session:raise ValueError('--turn needs --session')
                 if args.session:data.update(session_id=args.session,turn_id=_turn(root,args.session,args.turn))
             elif args.items or args.content_file or structured:
