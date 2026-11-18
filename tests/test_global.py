@@ -97,6 +97,25 @@ class Bindings(GlobalFixture):
         self.assertEqual(entry, {'prefixes': [str(self.base / 'keep')]})   # the legacy root field is gone, not left behind
         self.assertFalse([w for w in doctor(self.root, str(self.base))['warnings'] if "domain 'legacy'" in w])
 
+    def test_rebinding_keeps_legacy_binding_keys_and_the_old_folders_still_resolve(self):   # STO-4
+        from core.common import resolve_domain
+        config = load_bindings(self.root)
+        config['domains']['old-paths'] = {'paths': [str(self.base / 'paths-a'), str(self.base / 'paths-b')], 'note': 'kept'}
+        config['domains']['old-root'] = {'root': str(self.base / 'root-a')}
+        config['domains']['old-path'] = {'path': str(self.base / 'path-a')}
+        (self.root / 'bindings.json').write_text(json.dumps(config), encoding='utf-8')
+        for name, old in (('old-paths', 'paths-a'), ('old-paths', 'paths-b'), ('old-root', 'root-a'), ('old-path', 'path-a')):
+            self.assertEqual(resolve_domain(self.base / old, load_bindings(self.root)), name)
+        for name, new in (('old-paths', 'paths-new'), ('old-root', 'root-new'), ('old-path', 'path-new')):
+            self.assertEqual(self.cli('bind', name, str(self.base / new))[0], 0)
+        domains = load_bindings(self.root)['domains']
+        self.assertEqual(domains['old-paths']['paths'], [str(self.base / 'paths-a'), str(self.base / 'paths-b')]);self.assertEqual(domains['old-paths']['note'], 'kept')
+        self.assertEqual(domains['old-paths']['prefixes'], sorted(str(self.base / n) for n in ('paths-a', 'paths-b', 'paths-new')))   # the old paths folders are carried into prefixes
+        self.assertEqual(domains['old-root']['root'], str(self.base / 'root-a'));self.assertEqual(domains['old-path']['path'], str(self.base / 'path-a'))
+        for name, old, new in (('old-paths', 'paths-a', 'paths-new'), ('old-paths', 'paths-b', 'paths-new'), ('old-root', 'root-a', 'root-new'), ('old-path', 'path-a', 'path-new')):
+            self.assertEqual(resolve_domain(self.base / old, domains), name, f'{old} stopped resolving after re-bind')
+            self.assertEqual(resolve_domain(self.base / new, domains), name)
+
     def test_unbind_prefix_refuses_an_unknown_folder_and_the_last_folder(self):
         capture('Keep me', 'A note in the domain.', TAGS, 'demo', self.root)
         only = load_bindings(self.root)['domains']['demo']['prefixes']
