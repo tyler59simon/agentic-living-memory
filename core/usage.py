@@ -13,7 +13,9 @@ from .common import parse_iso
 
 # surface: a candidate the prompt hook found relevant but did not inject (cut by its cap); it is never evidence of
 # use or of disuse. An inject row may carry 'l', the delivery level (pointer, evidence or expanded; core/delivery.py).
-EVENTS=('inject','read','update','check','supersede','confirm','duplicate','resolve','reopen','restore','reminder','signal-capture','surface')
+# propose, proposal-accept (kind as-staged or edited) and proposal-reject track the subagent proposal inbox (core/proposals.py).
+PROPOSAL_EVENTS=('propose','proposal-accept','proposal-reject')
+EVENTS=('inject','read','update','check','supersede','confirm','duplicate','resolve','reopen','restore','reminder','signal-capture','surface')+PROPOSAL_EVENTS
 USE=('read','update','check','supersede','confirm','duplicate','resolve','reopen','restore')   # evidence that a note mattered
 NOISY_MIN=3
 # Injection kinds that are standing context rather than an answer retrieved for a question: session-start
@@ -101,7 +103,7 @@ def _tally(rows,domains):
     counts={};sessions=set()
     for row in rows:
         event=row['e'];ref=row.get('ref')
-        if event in {'reminder','signal-capture','surface'} or not isinstance(ref,str) or ref.split(':',1)[0] not in domains:continue   # surfaced is neither shown nor used
+        if event in {'reminder','signal-capture','surface',*PROPOSAL_EVENTS} or not isinstance(ref,str) or ref.split(':',1)[0] not in domains:continue   # surfaced is neither shown nor used
         entry=counts.setdefault(ref,dict.fromkeys(('inject','standing')+USE,0))
         # Standing context is delivered whatever the prompt, so going unread says nothing about the note.
         entry['standing' if event=='inject' and row.get('k') in STANDING else event]+=1
@@ -134,9 +136,12 @@ def stats(root,domains,days=30,limit=10):
     reminders by kind and captures made on turns that carried a durable signal, per ISO week."""
     from .repository import inventory
     from .notes import short_ref
-    rows=events(root,days);reminders={};weekly={}
+    rows=events(root,days);reminders={};weekly={};proposed=dict.fromkeys(('proposed','accepted','accepted_edited','rejected'),0)
     for row in rows:
         event=row['e']
+        if event=='propose':proposed['proposed']+=1
+        elif event=='proposal-accept':proposed['accepted_edited' if row.get('k')=='edited' else 'accepted']+=1
+        elif event=='proposal-reject':proposed['rejected']+=1
         if event=='reminder':reminders[row.get('k') or 'unknown']=reminders.get(row.get('k') or 'unknown',0)+1
         elif event=='signal-capture':
             try:year,week,_=parse_iso(row['t']).isocalendar();key=f'{year}-W{week:02d}'
@@ -156,6 +161,6 @@ def stats(root,domains,days=30,limit=10):
             'notes':len(counts),
             'noisy':[item(r,c) for r,c in _noisy(counts)[:limit]],
             'used':[item(r,c) for r,c in top[:limit]],
-            'reminders':reminders,'signal_captures':dict(sorted(weekly.items())),'capture_coverage':capture_coverage(root,domains,days),
+            'reminders':reminders,'proposals':proposed,'signal_captures':dict(sorted(weekly.items())),'capture_coverage':capture_coverage(root,domains,days),
             'hint':'noisy = retrieved for a prompt or a file at least %d times and never read, updated, confirmed or re-captured: consider a sharper title or summary, or confirm it. '
                    'The injected snippet alone may have been enough, so treat it as a lead, not a verdict.'%NOISY_MIN}

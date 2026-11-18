@@ -14,8 +14,9 @@ SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 # Tools that cannot change files; anything else marks the turn as mutating.
 READ_TOOLS={'read','read_file','glob','grep','search','view_image','view','ls','list','webfetch','websearch','web_fetch','web_search','todowrite','task','agent','toolsearch','askuserquestion','exitplanmode','enterplanmode'}
 SHELL_TOOLS={'bash','powershell','shell','run_shell_command','exec_command','local_shell','execute'}
-ALLOWED_SUBCOMMANDS={'ask','sources','source-sync','ingest-scan','search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','promote-plan','projects','systems','changes','views','resolve','reopen','restore','log','maintenance','recap','status','help'}
-# Subagents are read-only: these are denied for them even though the main agent gets them auto-allowed.
+ALLOWED_SUBCOMMANDS={'ask','sources','source-sync','ingest-scan','search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','promote-plan','projects','systems','changes','views','resolve','reopen','restore','log','maintenance','recap','status','help','propose','proposals'}
+# Subagents are read-only: these are denied for them even though the main agent gets them auto-allowed. Their one write is
+# propose, a draft in .turns/ that only the main agent turns into a note (capture --from-proposal) or rejects.
 MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm','resolve','reopen','restore','off','on'}
 GLOBAL_OPTIONS={'--root','--domain','--cwd','--actor'}
 HOOK_LOCK_TIMEOUT=5
@@ -258,6 +259,14 @@ def maintenance_write(text,grammar):
         index=0
         while index<len(words) and words[index]!='maintenance':index+=2 if words[index] in GLOBAL_OPTIONS else 1
         if {'run','enable','disable'}&set(words[index+1:]):return True   # any word, so an option value before the action cannot hide it
+    return False
+
+def proposals_write(text,grammar):
+    """True when a `proposals` command settles one (reject); list and show only read."""
+    for words in _parsed(text,grammar) or []:
+        index=0
+        while index<len(words) and words[index]!='proposals':index+=2 if words[index] in GLOBAL_OPTIONS else 1
+        if 'reject' in words[index+1:]:return True   # any word, as in maintenance_write
     return False
 
 def auto_allowed(text,grammar,root,cwd,scratch=None):
@@ -1988,15 +1997,21 @@ def _process(harness,event,payload,root=None,info=None):
         if harness in STEERED:result['instructions']=steering(root,state)
         detail['steered']=bool(result.get('instructions'))
     elif event=='subagent-start':
-        result['context']='Living Memory: subagents may only search/read via scripts. Return capture proposals to the main agent; do not write canonical state.'
+        # A subagent's context has no CMD, so this is the whole command; PowerShell needs the call operator before a quoted path.
+        cmd=command(root,domain);call='; Bash: as written, PowerShell: put & in front' if os.name=='nt' and not cmd.startswith('alm ') else ''
+        # Its one write is a draft for the main agent (core/proposals.py), so the evidence it found survives the hand-back
+        # while notes still come only from the main agent.
+        result['context']=('Living Memory: subagents may only search/read via scripts, plus one staging write. To keep a verified finding a future '
+                           f"session needs (a cause with its evidence, an exact command, a constraint), run {cmd} propose"+(f' --session {session}' if session!='unknown' else '')+
+                           " --type TYPE --title 'Title' --summary 'The fact' [--section 'Heading' 'Text'] [--detail 'Fact']"+call+
+                           '. Include file:line evidence and exact commands; skip progress and guesses. Name each returned proposal ID in your report; '
+                           'the main agent saves or rejects it. Do not capture, update or confirm notes.')
         # Maps of the repos this session works in, so a subagent starts from them instead of exploring from scratch.
         maps=list(dict.fromkeys(r['map'] for r in _repos(state).values() if isinstance(r,dict) and r.get('map')))[-3:]
         named=_titled(root,maps) if maps else []
         detail['maps']=maps
-        # A subagent's context has no CMD, so this is the whole command; PowerShell needs the call operator before a quoted path.
-        cmd=command(root,domain)
         if named:result['context']+=(f"\nCodebase maps for the repos this session is working in (read the one for your repo before exploring it: "
-                                     f"{cmd} read REF"+('; Bash: as written, PowerShell: put & in front' if os.name=='nt' and not cmd.startswith('alm ') else '')+"): "+'; '.join(named))
+                                     f"{cmd} read REF"+call+"): "+'; '.join(named))
     elif event=='pre-tool-use':
         name=str(payload.get('tool_name') or payload.get('toolName') or '').lower()
         args=payload.get('tool_input',payload.get('toolArgs',payload.get('toolArguments',{})))
@@ -2020,7 +2035,8 @@ def _process(harness,event,payload,root=None,info=None):
             return result
         writes_view=subcommand=='views' and views_write(text,grammar)
         writes_maintenance=subcommand=='maintenance' and maintenance_write(text,grammar)
-        if (subcommand in MUTATING_SUBCOMMANDS or writes_view or writes_maintenance) and _subagent(payload):
+        settles_proposal=subcommand=='proposals' and proposals_write(text,grammar)
+        if (subcommand in MUTATING_SUBCOMMANDS or writes_view or writes_maintenance or settles_proposal) and _subagent(payload):
             detail['decision']='deny:subagent'
             result['deny']='Living Memory: subagents are read-only. Return the proposed note to the main agent instead of running '+subcommand+'.'
             return result
@@ -2163,6 +2179,7 @@ def _process(harness,event,payload,root=None,info=None):
             s['briefed']=list(dict.fromkeys(list(s.get('briefed',[]))+[k for k,d in used if k in BRIEF_KINDS]))
             s['followed']=list(dict.fromkeys(list(s.get('followed',[]))+[d['ref'] for k,d in used if k=='follow']+[n['ref'] for k,d in used if k=='doc' for n in d['notes']]))[-MAX_HINTED:]
             s['stale_told']=list(dict.fromkeys(list(s.get('stale_told',[]))+[d[1]['ref'] for k,d in used if k=='stale']))[-MAX_HINTED:]
+            s['proposals_told']=list(dict.fromkeys(list(s.get('proposals_told',[]))+[r['id'] for k,d in used if k=='proposals' for r in d]))[-MAX_HINTED:]
         _update(root,session,reminded)
         maps=[(data[0],kind) for kind,data in used if kind in MAP_KINDS]
         if maps:
@@ -2238,11 +2255,12 @@ TURN_STATE=('open_turns','mutating','signal','signal_hash','signal_hashes','sign
 MAP_KINDS=('unmapped','grown','stale')
 BRIEF_KINDS=('unbriefed','brief')
 # Kinds that name their own reminder in the usage diary; the map kinds report as 'explored' or 'grown'.
-STOP_KINDS=frozenset(BLOCKING_SIGNALS|{'doc','follow','stale','fix'}|set(BRIEF_KINDS))
+STOP_KINDS=frozenset(BLOCKING_SIGNALS|{'doc','follow','stale','fix','proposals'}|set(BRIEF_KINDS))
 STOP_TEXT_CAP=700
 STOP_DOCS=2
 STOP_NOTES=2
 STOP_FOLLOW=5   # notes about edited files one Stop reminder names, in a single sentence
+STOP_PROPOSALS=3   # subagent proposals one Stop reminder names
 CHANGE_GUARD_COMMITS=3;CHANGE_GUARD_FILES=30   # more than this changed under a shell command is a pull or checkout, not the agent's work
 FOLLOW_BATCH_FILES=30
 BOILERPLATE_HEADINGS={'context','decision','decisions','consequences','status','background','summary','overview','alternatives','options','notes','rationale','changelog','unreleased'}
@@ -2293,6 +2311,17 @@ def stop_pending(root,bindings,state,session,turns,domain=None,cwd=None,planning
             # A note a document reminder already offers to update is not asked about a second time.
             named={n['ref'] for kind,data in pending if kind=='doc' for n in data['notes']}
             pending+=[(kind,data) for kind,data in found if not (kind=='follow' and data['ref'] in named)]
+    # Drafts a subagent staged this session (core/proposals.py): each is asked about once, receipt or not, because the
+    # turn's own receipt says nothing about them. Plan mode cannot save, so they wait for the next Stop outside it.
+    if not planning:
+        try:
+            from .proposals import rows
+            told=set(state.get('proposals_told') or [])
+            fresh=[r for r in rows(root,'pending',session) if r.get('id') not in told]
+            if fresh:pending.append(('proposals',fresh[:STOP_PROPOSALS]))
+        except Exception as exc:
+            from .logs import swallowed
+            swallowed('runtime.proposals_pending',exc,root)
     if domain and cwd and not planning:
         try:pending+=brief_pending(root,bindings,state,session,turns,domain,cwd,pending,receipted)
         except Exception as exc:
@@ -2580,6 +2609,10 @@ def _stop_part(kind,data,session):
               f"changed: CMD update {s} --session {session} --set-detail '**Label:** ...'.")
         if data.get('type')=='bug':text+=f" If this fixed it: CMD update {s} --session {session} --set-detail '**Fix:** ...' then CMD resolve {s}."
         return text
+    if kind=='proposals':
+        named='; '.join(f"{r['id']} {str((r.get('note') or {}).get('title') or '')[:80]}" for r in data)
+        return (f"A subagent staged draft notes for you: {named}. Check each against what you know, then save it with "
+                f"CMD capture --from-proposal ID --session {session} (pass a full note beside it to edit it) or drop it with CMD proposals reject ID --reason '...'.")
     if kind=='unbriefed':
         return (f"{data['name']} has no project brief: "
                 f"CMD capture --session {session} --type brief --file '{data['dir']}' --title '{data['name']} project brief' --summary '...' "

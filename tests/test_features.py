@@ -159,6 +159,59 @@ class ClaudeIntegrationFixes(StoreFixture):
                 self.assertIn('allow',self.run_hook('pre-tool-use',event))
         event=self.payload(tool_name='Bash',tool_input={'command':self.memory("search 'q'")},agent_id='a1')
         self.assertIn('allow',self.run_hook('pre-tool-use',event))
+    def cli(self,*argv):
+        import contextlib
+        from core.cli import main
+        out,err=io.StringIO(),io.StringIO()
+        with contextlib.redirect_stdout(out),contextlib.redirect_stderr(err):code=main(['--json','--root',str(self.root),'--domain','demo',*argv])
+        return code,json.loads(out.getvalue() or err.getvalue())
+    def propose(self,title='Dates need TZ=UTC',session='s1'):
+        code,result=self.cli('propose','--session',session,'--type','decision','--title',title,'--summary','tests/test_dates.py:42 fails unless TZ=UTC is set.')
+        self.assertEqual(code,0,result);return result['id']
+    def test_subagents_may_stage_proposals_but_not_settle_them(self):
+        for rest,decision in (("propose --session s1 --title 'T' --summary 'S'",'allow'),('proposals list','allow'),('proposals show abcd1234','allow'),
+                              ("proposals reject abcd1234 --reason 'x'",'deny'),('capture --from-proposal abcd1234','deny')):
+            with self.subTest(rest=rest):
+                event=self.payload(tool_name='Bash',tool_input={'command':self.memory(rest)},agent_id='a1')
+                self.assertIn(decision,self.run_hook('pre-tool-use',event))
+                self.assertIn('allow',self.run_hook('pre-tool-use',self.payload(tool_name='Bash',tool_input={'command':self.memory(rest)})))
+        self.assertEqual(self.cli('propose','--actor','subagent','--session','s1','--title','T','--summary','A fact.')[0],0)
+        self.assertNotEqual(self.cli('capture','--actor','subagent','--from-proposal','abcd1234')[0],0)
+        self.assertNotEqual(self.cli('proposals','reject','abcd1234','--reason','x','--actor','subagent')[0],0)
+    def test_subagent_start_names_the_propose_command(self):
+        context=self.run_hook('subagent-start',self.payload(agent_id='a1'))['context']
+        self.assertIn('propose --session s1',context);self.assertIn('Do not capture',context)
+    def test_a_proposal_is_staged_outside_the_notes_until_the_main_agent_accepts_it(self):
+        pid=self.propose()
+        self.assertTrue((self.root/'.turns'/f'proposal-{pid}.json').exists())
+        self.assertEqual(inventory('demo',self.root),[])
+        code,result=self.cli('capture','--from-proposal',pid,'--title','Edited')   # half an edit is refused
+        self.assertNotEqual(code,0);self.assertIn('whole note',result['error']['message'])
+        code,result=self.cli('capture','--from-proposal',pid,'--type','decision','--title','Run date tests with TZ=UTC','--summary','tests/test_dates.py:42 needs TZ=UTC.')
+        self.assertEqual(code,0,result);self.assertEqual(result['proposal'],{'id':pid,'status':'accepted'})
+        self.assertEqual([n['title'] for n in inventory('demo',self.root)],['Run date tests with TZ=UTC'])
+        code,result=self.cli('capture','--from-proposal',pid);self.assertNotEqual(code,0);self.assertIn('already accepted',result['error']['message'])
+        other=self.propose('Second finding')
+        self.assertEqual(self.cli('capture','--from-proposal',other)[0],0)   # alone: saved as staged
+        self.assertIn('Second finding',[n['title'] for n in inventory('demo',self.root)])
+        third=self.propose('Third finding')
+        self.assertNotEqual(self.cli('proposals','reject',third)[0],0)   # a reason is required
+        self.assertEqual(self.cli('proposals','reject',third,'--reason','already known')[1]['status'],'rejected')
+        self.assertEqual(self.cli('proposals')[1]['proposals'],[])
+        self.assertEqual(self.cli('stats')[1]['proposals'],{'proposed':3,'accepted':1,'accepted_edited':1,'rejected':1})
+    def test_stop_asks_once_about_pending_proposals_of_its_own_session(self):
+        self.run_hook('user-prompt',self.payload(prompt='look into the date tests',timestamp='t1'))
+        pid=self.propose();self.propose('Elsewhere',session='s2')
+        first=self.run_hook('stop',self.payload())
+        self.assertIn(pid,first['continue_reason']);self.assertNotIn('Elsewhere',first['continue_reason'])
+        self.assertIn('capture --from-proposal',first['continue_reason'])
+        self.run_hook('user-prompt',self.payload(prompt='and the next thing',timestamp='t2'))
+        self.assertEqual(self.run_hook('stop',self.payload()),{})   # asked once
+        self.run_hook('user-prompt',self.payload(prompt='plan the rest',timestamp='t3'))
+        later=self.propose('Later finding')
+        self.assertEqual(self.run_hook('stop',self.payload(permission_mode='plan')),{})   # plan mode cannot save
+        self.run_hook('user-prompt',self.payload(prompt='go ahead',timestamp='t4'))
+        self.assertIn(later,self.run_hook('stop',self.payload())['continue_reason'])
     def on_path(self,foreign=False):
         folder=self.base/'bin';folder.mkdir(exist_ok=True)
         if foreign:(folder/launcher.FILE).write_bytes(b'MZ foreign')
