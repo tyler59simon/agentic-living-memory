@@ -14,7 +14,7 @@ SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 # Tools that cannot change files; anything else marks the turn as mutating.
 READ_TOOLS={'read','read_file','glob','grep','search','view_image','view','ls','list','webfetch','websearch','web_fetch','web_search','todowrite','task','agent','toolsearch','askuserquestion','exitplanmode','enterplanmode'}
 SHELL_TOOLS={'bash','powershell','shell','run_shell_command','exec_command','local_shell','execute'}
-ALLOWED_SUBCOMMANDS={'ask','sources','source-sync','ingest-scan','search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','promote-plan','projects','systems','changes','views','resolve','reopen','restore','log','maintenance','recap','status','help','propose','proposals'}
+ALLOWED_SUBCOMMANDS={'ask','sources','source-sync','ingest-scan','search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','promote-plan','projects','systems','changes','views','wiki','resolve','reopen','restore','log','maintenance','recap','status','help','propose','proposals'}
 # Subagents are read-only: these are denied for them even though the main agent gets them auto-allowed. Their one write is
 # propose, a draft in .turns/ that only the main agent turns into a note (capture --from-proposal) or rejects.
 MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm','resolve','reopen','restore','off','on'}
@@ -250,7 +250,21 @@ def views_write(text,grammar):
         if not rest:continue
         action=next((w for w in rest if not w.startswith('-')),'list')
         if action in {'add','remove','published'}:return True
-        if action=='render' and (_option_values(rest,('--out',)) or 'json' not in _option_values(rest,('--format',))):return True
+        if action=='render' and (_option_values(rest,('--out',)) or not _json_format(rest)):return True
+    return False
+
+def _json_format(words):
+    """True when these words end up as `--format json`: argparse keeps the last value, so `--format json --format html` is html."""
+    return _option_values(words,('--format',))[-1:]==['json']
+
+def wiki_write(text,grammar):
+    """True when a `wiki` command writes a file: anything but `--format json` with no --out."""
+    for words in _parsed(text,grammar) or []:
+        index=0
+        while index<len(words) and words[index]!='wiki':index+=2 if words[index] in GLOBAL_OPTIONS else 1
+        if index>=len(words):continue
+        rest=words[index+1:]
+        if _option_values(rest,('--out',)) or not _json_format(rest):return True
     return False
 
 def maintenance_write(text,grammar):
@@ -273,10 +287,11 @@ SUBAGENT_DENY='Living Memory: subagents are read-only. Stage the finding with pr
 
 def memory_write(subcommand,text,grammar):
     """True when a memory command writes anything a subagent may not: MUTATING_SUBCOMMANDS, or the writing forms of views,
-    maintenance and proposals. propose is the subagent's one write and is not counted."""
+    maintenance, wiki and proposals. propose is the subagent's one write and is not counted."""
     if not subcommand:return False
     return (subcommand in MUTATING_SUBCOMMANDS or (subcommand=='views' and views_write(text,grammar))
-            or (subcommand=='maintenance' and maintenance_write(text,grammar)) or (subcommand=='proposals' and proposals_write(text,grammar)))
+            or (subcommand=='maintenance' and maintenance_write(text,grammar)) or (subcommand=='wiki' and wiki_write(text,grammar))
+            or (subcommand=='proposals' and proposals_write(text,grammar)))
 
 def auto_allowed(text,grammar,root,cwd,scratch=None):
     """True when an allow-listed memory command may skip the permission prompt: it uses the hook's own store
