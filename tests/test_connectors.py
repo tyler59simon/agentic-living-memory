@@ -1,7 +1,7 @@
 """Project knowledge base, layer 3: the Confluence and Notion connectors against a local http.server (127.0.0.1, ephemeral port; no real network):
 registry validation, pagination, auth, retries, caps, the incremental cache, indexing with page title and URL citations, and the guarantee that
 only an explicit `source-sync NAME` (or --all-remote) reaches the network: never a hook, never the background sync, never auto-allowed."""
-import base64,contextlib,http.server,io,itertools,json,os,re,sys,threading,unittest
+import base64,contextlib,http.server,io,itertools,json,os,re,sys,threading,time,unittest
 from unittest.mock import patch
 from urllib.parse import parse_qs,urlsplit
 from test_core import StoreFixture
@@ -308,7 +308,8 @@ class NoNetwork(Wiki):
     def test_plain_source_sync_and_rebuild_only_reindex_the_cache(self):
         with patch.object(connectors,'pull',side_effect=AssertionError('network pull')):
             for argv in (('source-sync',),('source-sync','--rebuild')):self.assertEqual(self.cli(*argv)[0],0)
-        self.assertEqual(self.fake.log,[]);self.cache().joinpath('refund-policy-100.html').write_text('<p>changed pelican</p>',encoding='utf-8');self.assertTrue(sources.stale(self.root,'demo',limit=10))   # FLAKY-1: the 0.1 s cap can run out under a loaded suite
+        self.assertEqual(self.fake.log,[]);page=self.cache().joinpath('refund-policy-100.html');page.write_text('<p>changed pelican</p>',encoding='utf-8')
+        later=time.time_ns()+10**9;os.utime(page,ns=(later,later));self.assertTrue(sources.stale(self.root,'demo',limit=10))   # FLAKY-1: a fresh write's file time can be at or before the sync-start epoch (coarse file clock), so set it clearly later
     def test_a_source_never_pulled_does_not_break_the_startup_check(self):
         self.register(name='fresh',space='OTHER');self.assertTrue(sources.stale(self.root,'demo',limit=10));self.assertEqual(self.cli('source-sync')[0],0);self.assertEqual(self.fake.log,[])
     def test_only_a_named_remote_source_or_all_remote_pulls(self):
