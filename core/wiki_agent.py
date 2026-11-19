@@ -409,6 +409,14 @@ def load_edition(path):
     return value
 
 
+def saved_edition(path, scope):
+    """The saved edition of `scope`, or None. A file that holds another scope's edition (copied or renamed by hand) is refused, never overwritten."""
+    edition = load_edition(path)
+    if edition is not None and edition.get('scope') != scope:
+        raise ValueError(f"{path} holds the agent wiki of {edition.get('scope')!r}, not {scope!r}; delete it and build again")
+    return edition
+
+
 def _iso():
     return clock_now().isoformat(timespec='seconds')
 
@@ -687,6 +695,8 @@ class Build:
             return False
         with self.mu:
             self.calls[kind] += 1
+            if self.cancelled:    # a signal after the answer came back but before it is saved: keep only what was saved before it
+                value, reason = None, 'cancelled'
             if value is not None:
                 apply()
                 self.save()
@@ -694,7 +704,10 @@ class Build:
                     self.total = 1 + len(todo_pages(self.edition, self.revisions, set(self.notes)))
         self.tick(kind, None, None, value is not None)
         if value is None:
-            self.error, self.stop = f'the {kind} call failed: {reason}', 'error'
+            if self.budget.overrun and (reason or '').startswith('provider_budget'):    # the provider hit its cap and charged more: a budget stop, as for pages
+                self.stop = 'budget'
+            else:
+                self.error, self.stop = f'the {kind} call failed: {reason}', 'error'
         return value is not None
 
     def page(self, pid):
@@ -710,6 +723,8 @@ class Build:
             return
         with self.mu:
             self.calls['pages'] += 1
+            if self.cancelled:
+                value, reason = None, 'cancelled'
             if value is None:
                 self.failed.append({'page': pid, 'reason': reason})
             else:
@@ -816,10 +831,10 @@ def build(root, domain, project=None, restructure=False, model=DEFAULT_MODEL, bu
         raise ValueError(f'no active notes to write a wiki from in {project or domain}')
     path = edition_path(root, domain, scope)
     if dry_run:
-        return _dry_run(domain, scope, model, budget_micro, notes_by_id, revisions, load_edition(path), restructure)
+        return _dry_run(domain, scope, model, budget_micro, notes_by_id, revisions, saved_edition(path, scope), restructure)
     try:
         with file_lock(path.parent / (path.name + '.lock'), timeout=0):
-            edition = load_edition(path)    # read under the lock: a build that just finished may have changed it
+            edition = saved_edition(path, scope)    # read under the lock: a build that just finished may have changed it
             found = _provider(executable)
             if not found['ok']:
                 raise ValueError(f"claude is not available ({found['reason_code']}" + (f": {found['detail']}" if found.get('detail') else '') + ')')
@@ -920,7 +935,7 @@ def agent_view_model(edition, base, revisions):
 def read_model(root, domain, project=None):
     check_project(project)
     edition = load_edition(edition_path(root, domain, project or 'domain'))
-    if edition is None:
+    if edition is None or edition.get('scope') != (project or 'domain'):
         raise ValueError(f'no agent wiki for {project or domain} yet; run wiki --agent --build' + (f' --project {project}' if project else ''))
     base, _, revisions = gather(domain, root, project, strict=False)
     return agent_view_model(edition, base, revisions)

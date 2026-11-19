@@ -11,7 +11,7 @@ from core.notes import change
 
 # A stand-in for `claude -p`: it answers each kind of call from the packet it reads on stdin, so a test only chooses the mode.
 # FAKE_PAGES: pages in the outline (default 2); FAKE_COST: dollars per call; FAKE_FAIL: a task ("page", "outline", "place") or
-# "page:Title" that answers with a provider error; FAKE_BAD: a task whose answer breaks the contract; FAKE_PLACE: new | omit; FAKE_SLEEP: seconds a call waits before it answers.
+# "page:Title" that answers with a provider error (its subtype is FAKE_SUBTYPE); FAKE_BAD: a task whose answer breaks the contract; FAKE_PLACE: new | omit; FAKE_SLEEP: seconds a call waits before it answers.
 FAKE='''import json,os,sys,time
 args=sys.argv[1:]
 if '--help' in args:
@@ -25,7 +25,7 @@ def done(report):
     print(json.dumps({'type':'result','subtype':'success','is_error':False,'result':'','structured_output':report,'total_cost_usd':float(env('FAKE_COST','0.01'))}))
 fail=env('FAKE_FAIL','')
 if fail in (task,task+':'+str(title)):
-    print(json.dumps({'type':'result','subtype':'error_during_execution','is_error':True,'total_cost_usd':float(env('FAKE_COST','0.01'))}));sys.exit(1)
+    print(json.dumps({'type':'result','subtype':env('FAKE_SUBTYPE','error_during_execution'),'is_error':True,'total_cost_usd':float(env('FAKE_COST','0.01'))}));sys.exit(1)
 bad=env('FAKE_BAD','')==task
 if task=='outline':
     keys=[n['key'] for n in packet['notes']];count=min(int(env('FAKE_PAGES','2')),len(keys));groups=[keys[i::count] for i in range(count)]
@@ -253,6 +253,26 @@ class Build(Base):
             r=self.build(env={'FAKE_SLEEP':'120'});thread.join()
             self.assertLess(time.monotonic()-start,60,sig);self.assertEqual((r['ok'],r['stopped'],r['error'],r['written']),(False,'error','cancelled',[]),sig)
             self.assertIs(signal.getsignal(sig),old);self.assertEqual({p['id']:p['body'] for p in self.edition()['pages'].values()},{i:p['body'] for i,p in ed['pages'].items()})
+    def cancel_after(self,*kinds):
+        real=wa.Build.ask
+        def ask(job,kind,packet,validate):
+            out=real(job,kind,packet,validate)
+            if kind in kinds:job.cancel()   # the signal lands after the answer came back
+            return out
+        return patch.object(wa.Build,'ask',ask)
+    def test_an_answer_that_arrives_after_a_signal_is_not_applied(self):   # AW-24
+        ids=self.sample()
+        with self.cancel_after('outline'):r=self.build()
+        self.assertEqual((r['ok'],r['stopped'],r['error'],r['written']),(False,'error','cancelled',[]));self.assertFalse(wa.edition_path(self.root,'demo','domain').exists())
+        self.build();ed=self.edition();shape=lambda e:({i:(p['title'],p['body']) for i,p in e['pages'].items()},[s['key'] for s in e['sections']])
+        with self.cancel_after('outline'):r=self.build(restructure=True,env={'FAKE_PAGES':'3'})   # a cancelled --restructure keeps the saved outline
+        self.assertEqual((r['error'],r['written']),('cancelled',[]));self.assertEqual(shape(self.edition()),shape(ed))
+        self.add('Fresh note','Something new.')
+        with self.cancel_after('place'):r=self.build(env={'FAKE_PLACE':'new'})
+        self.assertEqual((r['error'],r['written']),('cancelled',[]));self.assertEqual(shape(self.edition()),shape(ed))
+        owner=next(p for p in ed['pages'].values() if ids['bug'] in [s['id'] for s in p['sources']]);change(ids['bug'],'demo','update',self.root,body='The app crashed on start; fixed in 1.2.')
+        with patch.object(wa,'WORKERS',1),self.cancel_after('page'):r=self.build()
+        self.assertEqual((r['error'],r['written']),('cancelled',[]));self.assertEqual(self.edition()['pages'][owner['id']]['body'],owner['body'])
     def test_a_build_off_the_main_thread_installs_no_handler(self):   # AW-14
         self.sample();box=[];thread=threading.Thread(target=lambda:box.append(self.build()));thread.start();thread.join();self.assertTrue(box[0]['ok'])
     def test_claude_is_taken_from_LIVING_MEMORY_CLAUDE_before_PATH(self):   # AW-18
@@ -318,6 +338,12 @@ class Build(Base):
             r=self.build(env=env);self.assertEqual((r['ok'],r['stopped'],r['calls'],r['written']),(False,'error',{'outline':1,'place':0,'pages':0},[]));self.assertIn('outline call failed',r['error'])
             self.assertFalse(wa.edition_path(self.root,'demo','domain').exists())
         self.assertGreater(r['cost_usd'],0)
+    def test_a_budget_error_with_an_overrun_is_a_budget_stop_for_outline_and_place(self):   # AW-26
+        self.sample();over={'FAKE_SUBTYPE':'error_max_budget_usd','FAKE_COST':'2.5'}
+        r=self.build(env={'FAKE_FAIL':'outline',**over});self.assertEqual((r['ok'],r['stopped'],r['calls']['outline'],r['written'],'error' in r),(True,'budget',1,[],False));self.assertAlmostEqual(r['overrun_usd'],0.5)
+        self.assertFalse(wa.edition_path(self.root,'demo','domain').exists());self.build();self.add('Fresh note','Something new.')
+        r=self.build(env={'FAKE_FAIL':'place',**over});self.assertEqual((r['ok'],r['stopped'],r['calls']['place']),(True,'budget',1));self.assertIn('overrun_usd',r)
+        r=self.build(env={'FAKE_FAIL':'place','FAKE_SUBTYPE':'error_max_budget_usd','FAKE_COST':'0.5'});self.assertEqual((r['ok'],r['stopped']),(False,'error'))   # no overrun: still an error
     def test_a_failed_page_keeps_its_previous_version(self):
         ids=self.sample();self.build();ed=self.edition()
         owner=next(p for p in ed['pages'].values() if ids['bug'] in [s['id'] for s in p['sources']]);change(ids['bug'],'demo','update',self.root,body='The app crashed on start; fixed in 1.2.')
@@ -418,6 +444,14 @@ class Model(Base):
             out=real(report,manifest,titles);out['body']+=' A claim' + chr(0x2014) + 'with a dash, and a seamless fix.[^1]';return out
         with patch.object(wa,'validate_page',dashes):self.build()
         self.assertTrue(any('em or en dash' in w for p in self.edition()['pages'].values() for w in p['warnings']))
+    def test_an_edition_saved_for_another_scope_is_not_this_scopes_edition(self):   # AW-23
+        self.sample();self.build(project='hive');hive=wa.edition_path(self.root,'demo','hive');domain=wa.edition_path(self.root,'demo','domain');domain.write_bytes(hive.read_bytes())
+        with self.assertRaises(ValueError) as c:wa.read_model(self.root,'demo')
+        self.assertIn('no agent wiki for demo yet',str(c.exception));calls=len(self.calls())
+        for kw in ({},{'dry_run':True}):
+            with self.assertRaises(ValueError,msg=kw) as c:self.build(**kw)
+            self.assertIn(str(domain),str(c.exception));self.assertIn("'hive', not 'domain'",str(c.exception))
+        self.assertEqual(len(self.calls()),calls);self.assertEqual(domain.read_bytes(),hive.read_bytes());self.assertEqual(wa.read_model(self.root,'demo','hive')['scope'],'hive')
     def test_no_edition_yet_is_an_error_that_says_how_to_build(self):
         self.sample();code,err=self.cli_json('wiki','--agent','--format','json');self.assertNotEqual(code,0);self.assertIn('no agent wiki for demo yet; run wiki --agent --build',err['error']['message'])
         code,err=self.cli_json('wiki','--agent','--project','hive');self.assertNotEqual(code,0);self.assertIn('no agent wiki for hive yet',err['error']['message'])
@@ -458,6 +492,21 @@ class Page(Base):
         got=json.loads(done.stdout)
         self.assertEqual(got[0],'Fact.');self.assertEqual(got[1],['sup','cite','a','#n-aaaa1111','A']);self.assertEqual(got[2],' More')
         self.assertEqual(got[3],['sup','cite','a','#n-bbbb2222','B (changed since this page was written)']);self.assertEqual(got[5][3:],['','C (archived or deleted)']);self.assertEqual(got[7],'[^9]')
+    @unittest.skipUnless(__import__('shutil').which('node'),'needs node')
+    def test_code_nested_under_a_list_item_is_code_for_the_validator_and_the_renderer(self):   # AW-25
+        body='- Item.[N1]\n  ```\n  x[N1] [[P1]] [^1]\n  ```\n- Next.[N1]\n'
+        out=wa.validate_page({'lead':'Lead.[N1]','body':body,'cited':['N1']},{'notes':{'N1':'a'},'pages':{'P1':'pg1'}},{'P1':'Other'})
+        self.assertEqual(out['body'],'- Item.[^1]\n  ```\n  x[N1] [[P1]] [^1]\n  ```\n- Next.[^1]')
+        js=wiki.JS;start=js.index('var INLINE=');end=js.index('// ---- building blocks')
+        stub=("var N={},CITE={page:{sources:[{id:'a',title:'A',current:true,missing:false}]}},AG=true;"
+              "function mk(t){var e={tag:t,kids:[],lastChild:null,appendChild:function(k){this.kids.push(k);this.lastChild=k;return k},setAttribute:function(){}};return e}"
+              "var document={createTextNode:function(t){return {text:t}},createElement:mk,createDocumentFragment:function(){return mk('frag')}};"
+              "function el(t,c,x){var e=mk(t);e.className=c;if(x!=null)e.textContent=x;return e}function link(h,c,x){return el('a',c,x)}function nh(n){return '#'}")
+        run=stub+js[start:end]+("var f=markdown("+json.dumps(out['body'])+");"
+              "function show(n){return n.tag?[n.tag,n.textContent||null,n.kids.map(show)]:n.text}console.log(JSON.stringify(show(f)))")
+        done=subprocess.run(['node','-e',run],capture_output=True,text=True,timeout=30);self.assertEqual(done.returncode,0,done.stderr)
+        ul=json.loads(done.stdout)[2][0];self.assertEqual(ul[0],'ul');first,second=ul[2]
+        self.assertEqual([k[0] for k in first[2]].count('sup'),1);pre=[k for k in first[2] if k[0]=='pre'];self.assertEqual(len(pre),1);self.assertEqual(pre[0][2][0][1],'  x[N1] [[P1]] [^1]')   # one citation link, outside the code
     def test_a_theme_picker_serves_both_editions(self):
         self.sample();self.build();agent_page=self.html();plain=wiki.render_html(wiki.wiki_model('demo',self.root))
         for page in (agent_page,plain):

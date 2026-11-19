@@ -561,6 +561,7 @@ function markdown(text,heads){
           if(t){li.className='task'+(t[1]!==' '?' done':'');var cb=el('input');cb.type='checkbox';cb.disabled=true;cb.checked=t[1]!==' ';cb.setAttribute('aria-label',t[1]!==' '?'Done':'Open');li.appendChild(cb);var sp=el('span');inline(sp,t[2]);li.appendChild(sp)}
           else inline(li,m[3]);
           stack[stack.length-1].list.appendChild(li);i++;continue}
+        if(/^\s+```/.test(l)&&stack.length){var fb=[];i++;while(i<lines.length&&!/^\s*```/.test(lines[i]))fb.push(lines[i++]);i++;var fp=el('pre');fp.appendChild(el('code',null,fb.join('\n')));stack[stack.length-1].list.lastChild.appendChild(fp);continue}
         if(/^\s+\S/.test(l)&&stack.length){var last=stack[stack.length-1].list.lastChild,tgt=last.querySelector(':scope>span')||last;tgt.appendChild(document.createTextNode(' '));inline(tgt,l.trim());i++;continue}
         break}
       continue}
