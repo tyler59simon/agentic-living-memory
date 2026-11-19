@@ -66,7 +66,7 @@ PLACE_POLICY = f"""You place new project memory notes into an existing wiki. You
 
 {TRUST}
 
-Task. The packet has the wiki's current outline (sections S1, S2, ... with their pages P1, P2, ...) and the new notes (N1, N2, ...) that no page uses yet. Give exactly one placement for every new note: the page it is a source for (a P key of the outline, or an NP key you define in new_pages; a page takes at most as many new notes as its capacity says, and a new page at most {SOURCES_MAX}), or null when it would mislead a reader (obsolete, a duplicate, a transient status), with a reason. A note about a feature, command or page that another note says was removed or replaced is obsolete (judge which came later by the dates the notes state). Prefer an existing page. Add a page in new_pages only when no page fits: give its NP key (NP1, NP2, ...), the section (an S key), a unique plain title (leave out [ ] | and #) and a one-sentence purpose. Copy keys exactly. {SENTENCE_CASE}
+Task. The packet has the wiki's current outline (sections S1, S2, ... with their pages P1, P2, ...) and the new notes (N1, N2, ...) that no page uses yet. Give exactly one placement for every new note: the page it is a source for (a P key of the outline, or an NP key you define in new_pages; a page takes at most as many new notes as its capacity says, and a new page at most {SOURCES_MAX}), or null when it would mislead a reader (obsolete, a duplicate, a transient status), with a reason. A note about a feature, command or page that another note says was removed or replaced is obsolete (judge which came later by the dates the notes state; the updated date is only a hint, since a note can be edited after the event it records, and when the text does not show that the removal came later, place the note). Prefer an existing page. Add a page in new_pages only when no page fits: give its NP key (NP1, NP2, ...), the section (an S key), a unique plain title (leave out [ ] | and #) and a one-sentence purpose. Copy keys exactly. {SENTENCE_CASE}
 
 {WRITING_RULES}"""
 
@@ -351,10 +351,12 @@ INLINE_CODE = re.compile(r'`[^`\n]+`')     # the page renders the body line by l
 LEAD_CODE = re.compile(r'`[^`]+`')         # and the lead as one run of text, with no fences
 # The fence rule of markdown() in core/wiki.py, which renders the page: a line of three or more backticks opens a block at
 # any quote depth and in any list item; the block ends at a line of the same depth holding only a backtick run at least as
-# long, at the end of its quote, or at the end of the text. Whitespace is any but a line break, as JavaScript's \s.
-_QUOTE = re.compile(r'[^\S\n]*>[^\S\n]?')
-_OPEN = re.compile(r'[^\S\n]*(`{3,})')
-_SHUT = re.compile(r'[^\S\n]*(`+)[^\S\n]*$')
+# long, at the end of its quote, or at the end of the text. Whitespace is JavaScript's \s but a line break (Python's \s
+# differs: it has U+001C to U+001F and U+0085, and lacks U+FEFF).
+_WS = r'[\t\v\f\r    -     　﻿]'
+_QUOTE = re.compile(_WS + r'*>' + _WS + '?')
+_OPEN = re.compile(_WS + r'*(`{3,})')
+_SHUT = re.compile(_WS + r'*(`+)' + _WS + r'*$')
 
 
 def _unquote(line, most=None):
@@ -430,8 +432,8 @@ def title_case(text):
     letters, all capitalised. All-caps words, words with digits and code spans are left out, and two such words are allowed,
     since a product name ("Visual Studio Code", "GitHub Actions") often has them. A warning heuristic: it cannot tell a
     proper name from a habit."""
-    words = re.findall(r"[^\W\d_][\w'-]*", _blank_code(text))
-    long = [w for w in words[1:] if len(w) > 3 and not w.isupper()]
+    words = re.findall(r"[\w'-]+", _blank_code(text))
+    long = [w for w in words[1:] if len(w) > 3 and w[0].isalpha() and not w.isupper() and not any(c.isdigit() for c in w)]
     return len(long) >= 3 and all(w[0].isupper() for w in long)
 
 
@@ -439,9 +441,17 @@ def case_warning(text):
     return f'Title Case heading ("{text}"); write titles and headings in sentence case'
 
 
+def page_warnings(page, section, pid):
+    """A page's saved style warnings plus its Title Case warnings, worked out when the wiki is read from its current title,
+    body and section, so a rename never leaves an old one. Case warnings an older build saved are dropped, and a repeated
+    warning is shown once."""
+    saved = [w for w in page['warnings'] if not w.startswith('Title Case heading')]
+    case = case_warnings(page['title'], page['body'] or '') if page['written'] else []
+    return list(dict.fromkeys(saved + case + section_warnings(section, pid)))
+
+
 def section_warnings(section, pid):
-    """The warning for a section title in Title Case, on the section's first page only. Worked out from the current outline
-    when the wiki is read, so a renamed section never keeps an old warning."""
+    """The warning for a section title in Title Case, on the section's first page only."""
     return [case_warning(section['title'])] if section['pages'] and section['pages'][0] == pid and title_case(section['title']) else []
 
 
@@ -834,8 +844,7 @@ class Build:
         page, now = self.edition['pages'][pid], _iso()
         page.update(lead=value['lead'], body=value['body'], written=True, dirty=False, built=now, model=self.model, cost_micro=cost, created=page['created'] or now,
                     sources=[_source(self.notes[i], self.revisions.get(i)) for i in value['sources']],
-                    warnings=list(dict.fromkeys(style_warnings({'title': page['title'], 'body': value['lead'] + '\n\n' + value['body'], 'type': 'article'})
-                                                + case_warnings(page['title'], value['body']))))
+                    warnings=list(dict.fromkeys(style_warnings({'title': page['title'], 'body': value['lead'] + '\n\n' + value['body'], 'type': 'article'}))))
 
     def guarded(self, pid):
         try:
@@ -1003,7 +1012,7 @@ def agent_view_model(edition, base, revisions):
                            'updated': updated, 'created': _date(page['created']) or first_day, 'lead': page['lead'] or page['purpose'], 'body': page['body'],
                            'out': linked + [s['id'] for s in sources if not s['missing']], 'backlinks': [], 'project': slug, 'section': sec['key'], 'folder': None, 'filename': '',
                            'page': {'purpose': page['purpose'], 'written': page['written'], 'stale': stale, 'built': page['built'], 'model': page['model'],
-                                    'cost_usd': round(page['cost_micro'] / MICRO, 6), 'warnings': list(page['warnings']) + section_warnings(sec, pid),
+                                    'cost_usd': round(page['cost_micro'] / MICRO, 6), 'warnings': page_warnings(page, sec, pid),
                                     'sources': sources}})
         sections.setdefault(sec['key'], []).append(pid)
     for note in page_notes:

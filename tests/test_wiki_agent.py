@@ -208,7 +208,8 @@ class Validation(unittest.TestCase):
             self.assertTrue(wa.title_case(title),title)
         # Product names often carry two capitalised words, so two are not enough.
         for title in ('Settings and watcher','Living Memory hooks','Claude Code','How the API uses OAuth tokens','Overview','`Build.Run Method` notes',
-                      'Run Docker on Windows','Configure GitHub Actions','Visual Studio Code','Hivemind Executive Workspace'):
+                      'Run Docker on Windows','Configure GitHub Actions','Visual Studio Code','Hivemind Executive Workspace',
+                      'Compare Win32, Direct3D and OpenGL'):   # words with digits do not count (Codex re-review F7)
             self.assertFalse(wa.title_case(title),title)
         self.assertEqual(wa.case_warnings('Payments overview','## Fine heading\n## Core Pages And Services Today\n```\n## Not A Heading Here At All\n```'),
                          ['Title Case heading ("Core Pages And Services Today"); write titles and headings in sentence case'])
@@ -473,9 +474,15 @@ class Model(Base):
         def titled(report,manifest,titles):
             out=real(report,manifest,titles);out['body']+='\n\n## Settings And Watcher Flow Details\n\nText.[^1]\n\n## How the API uses tokens\n\nMore.[^1]';return out
         with patch.object(wa,'validate_page',titled):self.build()
-        warned=[w for p in self.edition()['pages'].values() for w in p['warnings'] if 'sentence case' in w]
-        self.assertEqual(warned,['Title Case heading ("Settings And Watcher Flow Details"); write titles and headings in sentence case'])
+        def warned():
+            return [w for n in wa.read_model(self.root,'demo')['notes'] if n['type']=='article' for w in n['page']['warnings'] if 'sentence case' in w]
+        self.assertEqual(warned(),['Title Case heading ("Settings And Watcher Flow Details"); write titles and headings in sentence case'])
         self.assertTrue(any('## Settings And Watcher Flow Details' in p['body'] for p in self.edition()['pages'].values()), 'the text is kept as written')
+        # Worked out on read, so a fixed heading, or a warning an older build saved, leaves nothing behind (Codex re-review F8).
+        ed=self.edition();page=next(p for p in ed['pages'].values() if '## Settings And' in p['body'])
+        page['body']=page['body'].replace('Settings And Watcher Flow Details','Settings and watcher flow');page['warnings'].append(wa.case_warning('Old Saved Title Case Heading'))
+        wa.edition_path(self.root,'demo','domain').write_text(json.dumps(ed),encoding='utf-8')
+        self.assertEqual(warned(),[])
     def test_an_edition_saved_for_another_scope_is_not_this_scopes_edition(self):   # AW-23
         self.sample();self.build(project='hive');hive=wa.edition_path(self.root,'demo','hive');domain=wa.edition_path(self.root,'demo','domain');domain.write_bytes(hive.read_bytes())
         with self.assertRaises(ValueError) as c:wa.read_model(self.root,'demo')
@@ -588,8 +595,17 @@ class Page(Base):
     def test_a_quote_inside_a_list_item_is_a_quote_to_both(self):   # Codex R2 on 680f5f6
         out=self.check('- Item.[N1]\n  > ```\n  > x[N1]\n  > ```\n')
         self.assertIn('> x[N1]',out['body'])
-        frag=self.render(out['body']);self.assertEqual([k[0] for k in frag[2]],['ul','blockquote'],frag)
-        self.assertEqual([k[0] for k in frag[2][1][2][0][2]],['pre'])
+        frag=self.render(out['body']);self.assertEqual([k[0] for k in frag[2]],['ul'],frag)
+        li=frag[2][0][2][0];bq=[k for k in li[2] if isinstance(k,list) and k[0]=='blockquote']
+        self.assertEqual([k[0] for k in bq[0][2][0][2]],['pre'])
+        # The quote stays in its item, so the list goes on after it (Codex re-review F2).
+        frag=self.render('1. First\n   > Quote\n2. Second');self.assertEqual([k[0] for k in frag[2]],['ol'])
+        self.assertEqual([k[0] for k in frag[2][0][2]],['li','li'])
+
+    def test_the_check_and_the_page_share_one_whitespace_set(self):   # Codex re-review F1
+        # U+0085 is whitespace to Python but not to JavaScript, so the page's block does not close; U+FEFF is the reverse.
+        self.assertIn('After.[N1]',self.check('Text.[N1]\n```\nx\n```\u0085\nAfter.[N1]')['body'])
+        self.assertIn('After.[^1]',self.check('Text.[N1]\n```\nx\n```﻿\nAfter.[N1]')['body'])
 
     def test_a_lead_code_span_may_cross_a_line(self):   # Codex R3 on 680f5f6
         out=self.check('Body.[N1]',lead='Run `x\ny[N1]` first.[N1]')

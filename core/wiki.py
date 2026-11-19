@@ -580,8 +580,9 @@ function markdown(text,heads){
           for(var s=stack.length-1;s>=0;s--)if(stack[s].col<=fi){k=s;break}
           if(k<0)break;
           stack.length=k+1;stack[k].list.lastChild.appendChild(code(l,lf));continue}
-        // A quote ends the list, so it is a quote here as it is for the citation check.
-        if(/^\s+>/.test(l))break;
+        // An indented quote belongs to the latest item, so it is a quote here as it is for the citation check, and the list
+        // goes on after it.
+        if(/^\s+>/.test(l)&&stack.length){var iq=[];while(i<lines.length&&/^\s+>/.test(lines[i]))iq.push(lines[i++].replace(/^\s*>\s?/,''));var ibq=el('blockquote');ibq.appendChild(markdown(iq.join('\n')));stack[stack.length-1].list.lastChild.appendChild(ibq);continue}
         if(/^\s+\S/.test(l)&&stack.length){var last=stack[stack.length-1].list.lastChild,tgt=last.querySelector(':scope>span')||last;tgt.appendChild(document.createTextNode(' '));inline(tgt,l.trim());i++;continue}
         break}
       continue}
