@@ -197,6 +197,8 @@ class Validation(unittest.TestCase):
         self.assertIn('[N3]',wa.PAGE_POLICY);self.assertIn('Never invent',wa.PAGE_POLICY)
         for kind,policy in wa.POLICIES.items():self.assertIn('sentence case',policy,kind)   # AW-37
         self.assertNotIn('Overview, Architecture and Services',wa.OUTLINE_POLICY)
+        for policy in (wa.OUTLINE_POLICY,wa.PLACE_POLICY):self.assertIn('removed or replaced',policy)   # AW-38
+        self.assertIn('the date it was last updated',wa.OUTLINE_POLICY)
 
     def test_title_case_is_told_from_sentence_case(self):   # AW-37
         for title in ('Tauri Core, Settings and Watcher','Review Page and Learning','Hivemind Executive Workspace','The `x` Method And Flow'):
@@ -390,7 +392,9 @@ class Build(Base):
         with self.assertRaises(ValueError) as c:wa.outline_packet('demo','domain',notes)
         self.assertIn('--project',str(c.exception))
         text,manifest=wa.outline_packet('demo','domain',notes[:3]);data=json.loads(text);self.assertEqual([n['key'] for n in data['notes']],['N1','N2','N3']);self.assertNotIn('B'*50,text)
-        self.assertEqual(set(data['notes'][0]),{'key','title','type','tags','project','files','lead','headings'});self.assertEqual(manifest['notes']['N1'],'1')
+        self.assertEqual(set(data['notes'][0]),{'key','title','type','tags','project','updated','files','lead','headings'});self.assertEqual(manifest['notes']['N1'],'1')
+        # The date lets the outline see that a later note records a removal (AW-38).
+        dated=json.loads(wa.outline_packet('demo','domain',[dict(notes[0],updated='2026-11-16')])[0]);self.assertEqual(dated['notes'][0]['updated'],'2026-11-16')
     def test_a_project_builds_its_own_edition(self):
         ids=self.sample();r=self.build(project='hive');self.assertEqual((r['scope'],Path(r['path']).name),('hive','project-hive.json'))
         used={i for p in self.edition('hive')['pages'].values() for i in p['plan']};self.assertTrue(used);self.assertNotIn(ids['general'],used);self.assertNotIn(ids['both'],used)

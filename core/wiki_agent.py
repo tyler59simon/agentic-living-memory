@@ -58,7 +58,7 @@ OUTLINE_POLICY = f"""You plan the structure of a wiki for one domain of project 
 
 {TRUST}
 
-Task. Choose the structure that fits this domain, the way a reader would look for things. For a payments domain that might be sections named "Overview", "Architecture" and "Services", with one page per service. The packet lists every note with its key (N1, N2, ...), title, type, tags, project, first files, lead and headings; it has no bodies. Answer with a summary of the wiki (one or two sentences), at most {SECTIONS_MAX} sections (S1, S2, ...) each with a title and a one-sentence blurb, and in them at most {PAGES_MAX} pages in all (P1, P2, ...). A page has a unique plain title (page titles are used in [[links]], so leave out [ ] | and #), a purpose (one sentence on what the reader learns) and the notes it will be written from, at most {SOURCES_MAX}. A note may be a source for more than one page. Copy note keys exactly; never repeat a key within a list. Put a note in omit, with a short reason, only when it would mislead a reader (obsolete, a duplicate of another note, a transient status). Do not omit a note you also use. Prefer fewer, fuller pages over many thin ones. {SENTENCE_CASE}
+Task. Choose the structure that fits this domain, the way a reader would look for things. For a payments domain that might be sections named "Overview", "Architecture" and "Services", with one page per service. The packet lists every note with its key (N1, N2, ...), title, type, tags, project, the date it was last updated, first files, lead and headings; it has no bodies. Answer with a summary of the wiki (one or two sentences), at most {SECTIONS_MAX} sections (S1, S2, ...) each with a title and a one-sentence blurb, and in them at most {PAGES_MAX} pages in all (P1, P2, ...). A page has a unique plain title (page titles are used in [[links]], so leave out [ ] | and #), a purpose (one sentence on what the reader learns) and the notes it will be written from, at most {SOURCES_MAX}. A note may be a source for more than one page. Copy note keys exactly; never repeat a key within a list. Put a note in omit, with a short reason, only when it would mislead a reader (obsolete, a duplicate of another note, a transient status). A note is obsolete when a later note says the feature, command or page it describes was removed or replaced: omit it, and plan no page about that feature as if it were current; if its history matters, say in the purpose of the page that uses it that the feature is gone. Do not omit a note you also use. Prefer fewer, fuller pages over many thin ones. {SENTENCE_CASE}
 
 {WRITING_RULES}"""
 
@@ -66,7 +66,7 @@ PLACE_POLICY = f"""You place new project memory notes into an existing wiki. You
 
 {TRUST}
 
-Task. The packet has the wiki's current outline (sections S1, S2, ... with their pages P1, P2, ...) and the new notes (N1, N2, ...) that no page uses yet. Give exactly one placement for every new note: the page it is a source for (a P key of the outline, or an NP key you define in new_pages; a page takes at most as many new notes as its capacity says, and a new page at most {SOURCES_MAX}), or null when it would mislead a reader (obsolete, a duplicate, a transient status), with a reason. Prefer an existing page. Add a page in new_pages only when no page fits: give its NP key (NP1, NP2, ...), the section (an S key), a unique plain title (leave out [ ] | and #) and a one-sentence purpose. Copy keys exactly. {SENTENCE_CASE}
+Task. The packet has the wiki's current outline (sections S1, S2, ... with their pages P1, P2, ...) and the new notes (N1, N2, ...) that no page uses yet. Give exactly one placement for every new note: the page it is a source for (a P key of the outline, or an NP key you define in new_pages; a page takes at most as many new notes as its capacity says, and a new page at most {SOURCES_MAX}), or null when it would mislead a reader (obsolete, a duplicate, a transient status), with a reason. A note about a feature, command or page that a later note says was removed or replaced is obsolete. Prefer an existing page. Add a page in new_pages only when no page fits: give its NP key (NP1, NP2, ...), the section (an S key), a unique plain title (leave out [ ] | and #) and a one-sentence purpose. Copy keys exactly. {SENTENCE_CASE}
 
 {WRITING_RULES}"""
 
@@ -140,7 +140,8 @@ def _keyed(notes):
 def _entry(key, note):
     heads = [' '.join(h.split())[:80] for h in re.findall(r'(?m)^#{1,6}[ \t]+(.+)$', note['body'])][:8]
     return {'key': key, 'title': _clean(note['title'])[:200], 'type': note['type'], 'tags': note['tags'][:12], 'project': note['project'],
-            'files': [_clean(f) for f in note['files'][:3]], 'lead': _clean(note['lead'])[:300], 'headings': [_clean(h) for h in heads]}
+            'updated': str(note.get('updated') or '')[:10], 'files': [_clean(f) for f in note['files'][:3]], 'lead': _clean(note['lead'])[:300],
+            'headings': [_clean(h) for h in heads]}
 
 
 def outline_packet(domain, scope, notes):
