@@ -666,7 +666,12 @@ def build_parser():
     p.add_argument('--all',action='store_true',help='render: every registered view');p.add_argument('--target',choices=['local','artifact'],default='local',help="render: local (dark, reloads itself) or artifact (follows the viewer's theme)")
     p.add_argument('--format',choices=['html','json'],default='html',help='render: the page, or the view model as JSON');p.add_argument('--out',type=Path,help='render: write here instead of the standard path');p.add_argument('--url',help='published: where the artifact page lives')
     p=sub('wiki');p.add_argument('--archived',action='store_true',help='Include retired notes')
-    p.add_argument('--format',choices=['html','json'],default='html',help='The page, or the wiki model as JSON (json without --out prints it)');p.add_argument('--out',type=Path,help='Write here instead of <store>/.views/<domain>/wiki.html')
+    p.add_argument('--format',choices=['html','json'],default='html',help='The page, or the wiki model as JSON (json without --out prints it)');p.add_argument('--out',type=Path,help='Write here instead of <store>/.views/<domain>/wiki.html (agent edition: agent-wiki.html)')
+    p.add_argument('--theme',choices=['purple','emerald','emerald-light'],help='The theme the page starts in (default: follow the system); the page has a picker')
+    p.add_argument('--agent',action='store_true',help='The agent-written edition: show the saved one (no model call), or with --build write it');p.add_argument('--project',help='--agent: one project slug instead of the whole domain')
+    p.add_argument('--build',action='store_true',help='--agent: call the model to plan and write the pages (costs money; main agent only; the harness asks first)');p.add_argument('--restructure',action='store_true',help='--build: plan the sections and pages again (default: keep them and write only new or changed pages)')
+    p.add_argument('--model',help='--build: the Claude model alias (default sonnet)');p.add_argument('--budget',help='--build: most to spend, in USD (default 5.00); the build stops when it is used and the next one continues')
+    p.add_argument('--dry-run',action='store_true',help='--build: print the calls it would make, packet sizes and the budget; spends nothing');p.add_argument('--progress',action='store_true',help='--build: one JSON line per finished call on stderr')
     p=sub('batch');p.add_argument('--payload-file',type=Path)
     p=sub('retag-plan');p.add_argument('--payload-file',type=Path)
     p=sub('remap');p.add_argument('--payload-file',type=Path)
@@ -745,6 +750,15 @@ def main(argv=None):
         if args.actor=='viewer' and cmd not in VIEWER:raise ValueError('Viewers are read-only; run changes as --actor main')
         if cmd=='views' and (args.action or 'list')!='list' and args.actor in {'subagent','viewer'} and not (args.action=='render' and args.format=='json' and not args.out):
             raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' are read-only: views list and render --format json (no --out) are allowed; run the rest as --actor main')
+        if cmd=='wiki':
+            stray=[f for f,v in (('--restructure',args.restructure),('--model',args.model),('--budget',args.budget),('--dry-run',args.dry_run),('--progress',args.progress)) if v and not args.build]
+            if args.build and not args.agent:raise ValueError('--build needs --agent')
+            if args.project and not args.agent:raise ValueError('--project needs --agent')
+            if stray:raise ValueError(', '.join(stray)+(' only applies' if len(stray)==1 else ' only apply')+' with --agent --build')
+        if cmd=='wiki' and args.build:
+            if args.actor in {'subagent','viewer'}:raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' cannot build the agent wiki (it calls a model and costs money); run it as --actor main')
+            if os.environ.get('HIVEMIND_SESSION'):raise ValueError('hivemind: Building the agent wiki spends money, so the user starts it from Hivemind or a terminal, not an agent session.')
+            if os.environ.get('LIVING_MEMORY_MAINTENANCE_CHILD'):raise ValueError('The agent wiki cannot be built from inside a model call')
         if cmd=='wiki' and (args.out or args.format!='json') and args.actor in {'subagent','viewer'}:
             raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' are read-only: wiki --format json (no --out) is allowed; run the rest as --actor main')
         if cmd=='config' and args.action=='set' and args.actor in {'subagent','viewer'}:
@@ -1005,7 +1019,7 @@ def main(argv=None):
             result=note_links(root,domains,args.status)
         elif cmd=='version':
             from .installer_lifecycle import CORE_RELEASE,installed_stamp
-            result={'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'restore':1,'pin':1,'rule':1,'direct_writes':1,'history':3,'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']}}}
+            result={'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'restore':1,'pin':1,'rule':1,'direct_writes':1,'history':3,'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']},'wiki_agent':{'version':1}}}
         elif cmd=='update':
             from .notes import change
             d,n=_reference(args.reference,domain,root)
@@ -1397,8 +1411,15 @@ def main(argv=None):
         elif cmd=='wiki':
             from . import wiki
             if not domain:raise ValueError(UNBOUND)
-            if args.format=='json' and not args.out:result={'ok':True,'model':wiki.wiki_model(domain,root,args.archived)}
-            else:result=wiki.export(domain,root,args.archived,args.out,args.format)
+            if args.agent:
+                from . import wiki_agent
+                if args.build:
+                    def progress(event):print(json.dumps(event,separators=(',',':')),file=sys.stderr,flush=True)
+                    result=wiki_agent.build(root,domain,args.project,args.restructure,args.model or wiki_agent.DEFAULT_MODEL,args.budget or wiki_agent.DEFAULT_BUDGET,args.dry_run,progress if args.progress else None)
+                elif args.format=='json' and not args.out:result={'ok':True,'model':wiki_agent.read_model(root,domain,args.project)}
+                else:result=wiki_agent.export(domain,root,args.project,args.out,args.format,args.theme)
+            elif args.format=='json' and not args.out:result={'ok':True,'model':wiki.wiki_model(domain,root,args.archived)}
+            else:result=wiki.export(domain,root,args.archived,args.out,args.format,args.theme)
         elif cmd=='taxonomy' and args.action=='add':
             from .tag_taxonomy import add_tags
             if not args.tags:raise ValueError('taxonomy add takes one or more tags, for example concern/security')
@@ -1452,7 +1473,8 @@ def main(argv=None):
             from .sync import sync,build_overlay
             result=sync(domain,args.vault,root) if cmd=='sync' else build_overlay(domain,args.vault,root)
         else:raise ValueError('Unsupported command')
-        invocation['result']=result;_emit(result,args);return 0
+        code=1 if cmd=='wiki' and isinstance(result,dict) and result.get('ok') is False else 0   # a build that stopped on an error
+        invocation['result']=result;invocation['code']=code;_emit(result,args);return code
     except (OSError,ValueError,TimeoutError,KeyError,TypeError) as exc:
         message=str(exc);code=error_code(message,exc)
         invocation.update(code=report_error(message,code,args.json,f'alm {args.command}'),error={'code':code,'message':message});return invocation['code']

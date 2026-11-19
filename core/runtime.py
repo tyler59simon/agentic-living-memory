@@ -257,8 +257,17 @@ def _json_format(words):
     """True when these words end up as `--format json`: argparse keeps the last value, so `--format json --format html` is html."""
     return _option_values(words,('--format',))[-1:]==['json']
 
+def wiki_build(text,grammar):
+    """True when a `wiki` command is `--agent --build`, or an argparse abbreviation of --build: it calls a model and costs money."""
+    for words in _parsed(text,grammar) or []:
+        index=0
+        while index<len(words) and words[index]!='wiki':index+=2 if words[index] in GLOBAL_OPTIONS else 1
+        if any(len(name)>=4 and '--build'.startswith(name) for name in (w.partition('=')[0] for w in words[index+1:] if w.startswith('--'))):return True
+    return False
+
 def wiki_write(text,grammar):
-    """True when a `wiki` command writes a file: anything but `--format json` with no --out."""
+    """True when a `wiki` command writes a file or spends money: anything but `--format json` with no --out, and any --build."""
+    if wiki_build(text,grammar):return True
     for words in _parsed(text,grammar) or []:
         index=0
         while index<len(words) and words[index]!='wiki':index+=2 if words[index] in GLOBAL_OPTIONS else 1
@@ -306,7 +315,7 @@ def auto_allowed(text,grammar,root,cwd,scratch=None):
     and reads input files only from the working directory or the session scratchpad. Anything else is left to
     the harness's normal permission prompt (this never denies)."""
     parsed=_parsed(text,grammar)
-    if not parsed:return False
+    if not parsed or wiki_build(text,grammar):return False   # a build costs money: the harness's own permission prompt decides
     try:
         store=Path(root).resolve();bases=[Path(cwd).resolve()]+([Path(scratch).resolve()] if scratch else [])
         for words in parsed:

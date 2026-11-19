@@ -170,7 +170,7 @@ class Restore(StoreFixture):
         version = self.ok('version')
         self.assertIn('restore', version['commands'])
         self.assertEqual(version['capabilities'], {'restore': 1, 'pin': 1, 'rule': 1, 'direct_writes': 1, 'history': 3,
-                                                   'maintenance': {'version': 1, 'actions': ['status', 'preview', 'run', 'enable', 'disable', 'history']}})
+                                                   'maintenance': {'version': 1, 'actions': ['status', 'preview', 'run', 'enable', 'disable', 'history']}, 'wiki_agent': {'version': 1}})
 
     def test_the_log_shows_restored_and_the_archive_row(self):
         a = self.note('Cache policy', 'The cache is rebuildable.')

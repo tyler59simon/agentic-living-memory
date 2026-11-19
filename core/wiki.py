@@ -6,17 +6,20 @@ chosen by its type, and, when it names files and is knowledge, in a folder tree 
 render_html() turns that model into one self-contained page in Hivemind's shell; Hivemind's Wiki page renders the
 same model natively (`wiki --format json`). The page is rendered on demand only: nothing re-renders it on write.
 
+The agent edition (core/wiki_agent.py) gives the same page a model of its own shape (`edition: "agent"`): pages written by a model, cited
+sources and a Sources list, and no code tree. The theme picker (Purple, Emerald Dark, Emerald Light) serves both editions.
+
 The page needs no network: styles, script, font and logo are inline, and the data is a JSON block that the script
 turns into elements with textContent only. Note text is agent-written, so it is never put into markup unescaped."""
 from __future__ import annotations
-import hashlib,html,json,os
+import hashlib,html,json,os,re
 from datetime import datetime,timezone
 from pathlib import Path
 from .common import atomic_write
 from .note_types import NOTE_TYPES
 
 # Bump when the model or the page changes shape.
-WIKI_RENDERER=1
+WIKI_RENDERER=2
 SECTIONS=(('overview','Overview','Project briefs, charters and the context a newcomer reads first.'),
           ('architecture','Architecture','Codebase maps and notes on how the system is put together.'),
           ('decisions','Decisions','Decisions, policies and preferences, newest first, each with its reasons.'),
@@ -188,8 +191,8 @@ def wiki_model(domain,root,archived=False):
 # ---- the page ----
 
 def _tokens(spec):return ''.join(f'--{k}:{v};' for k,v in (p.split('=') for p in spec.split()))
-# Hivemind's Emerald Enterprise and Emerald Enterprise Light themes (agentic-hivemind-app/src/App.css), plus the note-type
-# colours of its .type-* classes as --t-<type>. Both sets carry the same tokens.
+# Hivemind's themes (agentic-hivemind-app/src/App.css): Emerald Enterprise (DARK), Emerald Enterprise Light (LIGHT) and the original
+# Purple (the bare :root there), plus the note-type colours of its .type-* classes as --t-<type>. All three sets carry the same tokens.
 DARK=_tokens('bg=#002d2a bg-alt=#0c3835 bg-hover=#194441 fg=#f5f5f5 muted=#a7b9b7 border=#1b4340 accent=#7ecf1c accent-soft=#23462b '
              'error=#ff8f8f mark=#5a4a14 bg-sidebar=#002420 bg-topbar=#002926 bg-input=#002522 bg-code=#001f1c bg-active=#214846 '
              'border-soft=#103532 border-strong=#426461 warn-fg=#f7d65e warn-bg=#3a3218 warn-border=#a88b2a fg-soft=#c8d2d2 fg-meta=#c8d2d2 '
@@ -206,6 +209,16 @@ LIGHT=_tokens('bg=#f5f5f5 bg-alt=#ffffff bg-hover=#e9ecec fg=#002d2a muted=#4264
               'overlay=rgba(0,45,42,.35) '
               't-knowledge=#475569 t-decision=#1d4ed8 t-preference=#7e22ce t-context=#475569 t-status=#0f766e t-bug=#b91c1c t-plan=#166534 '
               't-risk=#92400e t-research=#155e75 t-policy=#854d0e t-map=#9a3412 t-runbook=#be185d t-brief=#16794c')+'color-scheme:light;'
+PURPLE=_tokens('bg=#1b0626 bg-alt=#251332 bg-hover=#341848 fg=#f6f1fa muted=#b7a6c6 border=#3a224c accent=#c884f4 accent-soft=#442558 '
+               'error=#ff7a90 mark=#5c4712 bg-sidebar=#190621 bg-topbar=#1b0727 bg-input=#200c2c bg-code=#170d24 bg-active=#4c2d64 '
+               'border-soft=#291738 border-strong=#6d5188 warn-fg=#fde329 warn-bg=#44281c warn-border=#b99a2a fg-soft=#dccbe8 fg-meta=#e9def2 '
+               'switcher-bg=#21102e switcher-border=#3a264e nav-on-end=#523168 nav-on-marker=transparent row-on=#361a45 badge-bg=#391e48 '
+               'chip-bg=#2b2136 chip-ok-bg=#192b30 chip-ok-border=#165848 chip-ok-fg=#7df3c6 selected=#01dca4 scrollbar=#4c2d64 '
+               'overlay=rgba(10,2,16,.6) '
+               't-knowledge=#94a3b8 t-decision=#7fb0ff t-preference=#c58bff t-context=#94a3b8 t-status=#14b8a6 t-bug=#ff7a7a t-plan=#4ade80 '
+               't-risk=#f59e0b t-research=#22d3ee t-policy=#eab308 t-map=#fb923c t-runbook=#f472b6 t-brief=#62d6a2')+'color-scheme:dark;'
+MARKER=re.compile(r'\[\^[0-9]+\]')   # a [^k] citation marker, left out of plain-text previews
+THEMES=(('purple','Purple'),('emerald','Emerald Dark'),('emerald-light','Emerald Light'))
 # The page tree stays dark in the light theme, as Hivemind's sidebar does.
 SIDEBAR_LIGHT='--bg-sidebar:#002d2a;'
 SIDEBAR_DARK='--bg-sidebar:#002420;'
@@ -378,6 +391,23 @@ h1,h2,h3{line-height:1.2}
 .pager small{color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-size:.72rem;font-weight:700}
 .pager span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
 .empty{color:var(--muted)}
+.themes{display:flex;gap:2px;flex:none;padding:2px;border:1px solid var(--border-strong);border-radius:.45rem;background:var(--bg-alt)}
+.themes button{border:none;padding:.2rem .6rem;border-radius:.35rem;font-size:.84rem;color:var(--muted)}
+.themes button:hover{color:var(--fg)}
+.themes button[aria-pressed="true"]{background:var(--accent-soft);color:var(--fg);font-weight:650;box-shadow:inset 0 0 0 1px var(--accent)}
+.sw{width:.65rem;height:.65rem;border-radius:50%;border:1px solid var(--border-strong);display:inline-block}
+.sw-purple{background:#c884f4}
+.sw-emerald{background:#002d2a}
+.sw-emerald-light{background:#f5f5f5}
+.type-article{color:var(--accent)}
+sup.cite{font-size:.72em;line-height:0;font-weight:700}
+sup.cite a{color:var(--accent);padding:0 .08em}
+sup.cite a:hover{text-decoration:underline}
+.flag{display:inline-block;padding:0 .42rem;border-radius:.4rem;border:1px solid var(--warn-border);background:var(--warn-bg);color:var(--warn-fg);font-size:.72rem;font-weight:650;line-height:1.5;white-space:nowrap}
+.flag.plan{border-color:var(--border-strong);background:var(--badge-bg);color:var(--muted)}
+.src-list{margin:0;padding-left:1.5rem;display:flex;flex-direction:column;gap:.55rem}
+.src-list li{padding-left:.2rem}
+.src-meta{display:flex;flex-wrap:wrap;align-items:center;gap:.3rem .6rem;color:var(--muted);font-size:.84rem}
 
 @media (max-width:1100px){
 /* One column: the lead, then the infobox and contents, then the rest of the body. */
@@ -412,6 +442,8 @@ h1,h2,h3{line-height:1.2}
 .markdown pre{font-size:.8rem}
 .pager{grid-template-columns:1fr}
 .pager a.next{grid-column:1}
+.themes button span{display:none}
+.themes button{padding:.25rem .45rem}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 '''
@@ -421,8 +453,6 @@ ICONS={
     'search':'<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
     'home':'<path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
     'chev':'<path d="m9 18 6-6-6-6"/>',
-    'sun':'<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
-    'moon':'<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
     'book':'<path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/>',
     'file':'<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
     'folder':'<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
@@ -446,6 +476,11 @@ D.notes.forEach(function(n){N[n.id]=n;R[n.ref]=n;var k=n.title.trim().toLowerCas
 D.projects.forEach(function(p){P[p.slug]=p});
 D.folders.forEach(function(f){F[f.id]=f});
 D.sections.forEach(function(s){S[s.key]=s});
+// The agent edition: its sections are the model's own, so the structured edition's chronological months, code tree and "Start here" never apply;
+// the notes in the hidden sources section are routable but not listed. LIST is what A to Z and Recent changes count.
+var AG=D.edition==='agent',CITE=null;
+if(AG)S.sources={key:'sources',label:'Source notes',blurb:''};
+var LIST=AG?D.notes.filter(function(n){return n.type==='article'}):D.notes;
 var CHRONO={decisions:1,plans:1,issues:1,research:1};
 function el(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e}
 function link(href,cls,text){var a=el('a',cls,text);a.href=href;return a}
@@ -463,7 +498,7 @@ function pathPrefix(n){var i=n.title.indexOf(': ');return n.files.length&&i>0&&n
 function shortTitle(n){var p=pathPrefix(n);return p?n.title.slice(p.length+2):n.title}
 
 // ---- Markdown: headings, paragraphs, nested lists with task boxes, blockquotes, fenced code, pipe tables ----
-var INLINE=/(`[^`]+`|\*\*[^*]+\*\*|\*[^*\s][^*]*\*|\[\[[^\]]+\]\]|\[[^\]]+\]\([^)\s]*\))/;
+var INLINE=/(`[^`]+`|\*\*[^*]+\*\*|\*[^*\s][^*]*\*|\[\[[^\]]+\]\]|\[\^\d+\]|\[[^\]]+\]\([^)\s]*\))/;
 function inline(parent,text){
   String(text).split(INLINE).forEach(function(s,i){
     if(!s)return;
@@ -472,6 +507,7 @@ function inline(parent,text){
     else if(s.slice(0,2)==='**'){var b=el('strong');inline(b,s.slice(2,-2));parent.appendChild(b)}
     else if(s.slice(0,2)==='[[')parent.appendChild(wikilink(s.slice(2,-2)));
     else if(s.charAt(0)==='*'){var em=el('em');inline(em,s.slice(1,-1));parent.appendChild(em)}
+    else if(s.slice(0,2)==='[^')parent.appendChild(cite(+s.slice(2,-1)));
     else{var m=/^\[([^\]]+)\]\(([^)\s]*)\)$/.exec(s);
       if(/^https?:\/\//i.test(m[2])){var a=link(m[2],null,m[1]);a.target='_blank';a.rel='noopener noreferrer';parent.appendChild(a)}
       else parent.appendChild(document.createTextNode(m[1]))}
@@ -486,6 +522,14 @@ function wikilink(raw){
   if(x){var s=el('span','wikilink external',label);s.appendChild(el('small',null,x.domain));s.title='In the '+x.domain+' domain, not part of this wiki';return s}
   var u=el('span','wikilink unresolved',label);u.title='No page has this title yet';return u;
 }
+// [^k] cites the k-th source of the page being drawn (CITE): a superscript link to that note's page.
+function cite(k){
+  var src=CITE&&CITE.page&&CITE.page.sources[k-1];
+  if(!src)return document.createTextNode('[^'+k+']');
+  var sup=el('sup','cite'),n=N[src.id],a=n?link(nh(n),null,String(k)):el('span',null,String(k));
+  a.title=src.title+(src.missing?' (archived or deleted)':!src.current?' (changed since this page was written)':'');sup.appendChild(a);return sup;
+}
+function plain(t){return AG?String(t).replace(/\[\^\d+\]/g,''):t}
 function markdown(text,heads){
   var box=document.createDocumentFragment(),lines=String(text||'').replace(/\r/g,'').split('\n'),i=0;
   function isList(l){return /^(\s*)([-*+]|\d+\.)\s+/.test(l)}
@@ -541,7 +585,8 @@ function setCrumbs(parts){
 function chainOf(f){var chain=[];while(f){chain.unshift(f);f=F[f.parent]}return chain}
 function isCode(n){return n.section==='code'&&n.folder&&F[n.folder]}
 function noteCrumbs(n){
-  var p=P[n.project],c=[['Wiki','#'],[p.name,'#p-'+p.slug],[S[n.section].label,sh(p.slug,n.section)]];
+  var p=P[n.project],c=[['Wiki','#'],[p.name,'#p-'+p.slug]];
+  if(n.section!=='sources')c.push([S[n.section].label,sh(p.slug,n.section)]);
   if(isCode(n))chainOf(F[n.folder]).forEach(function(x){c.push([x.name,'#'+x.id])});
   c.push([isCode(n)&&n.filename?n.filename:shortTitle(n),nh(n)]);return c;
 }
@@ -558,10 +603,11 @@ function row(n,opts){
   m.appendChild(t);
   var meta=el('div','lib-row-meta');meta.appendChild(badge(n.type));
   if(n.retired)meta.appendChild(el('span',null,n.status));
+  if(AG&&n.page)meta.appendChild(!n.page.written?el('span','flag plan','planned'):n.page.stale?el('span','flag','out of date'):el('span',null,'written'));
   if(opts.where)meta.appendChild(el('span',null,P[n.project].name+' \u203a '+S[n.section].label));
   if(opts.file&&n.filename)meta.appendChild(el('span',null,shortTitle(n)));
   meta.appendChild(el('span',null,n.updated));m.appendChild(meta);
-  if(n.lead&&!opts.noLead)m.appendChild(el('span','lib-row-text',n.lead));
+  if(n.lead&&!opts.noLead)m.appendChild(el('span','lib-row-text',plain(n.lead)));
   a.appendChild(m);li.appendChild(a);return li;
 }
 function rows(ns,opts){var ol=el('ol','lib-list');ns.forEach(function(n){ol.appendChild(row(n,opts))});if(!ns.length)ol.appendChild(el('li','empty','Nothing here yet.'));return ol}
@@ -593,7 +639,30 @@ function sectionNotes(p,key){var s=p.sections[key];return s&&s.notes?s.notes.map
 function byUpdated(a,b){return a.updated<b.updated?1:a.updated>b.updated?-1:0}
 
 // ---- pages ----
+function usd(x){return '$'+x.toFixed(2)}
+function agentHome(){
+  var p=D.projects[0],b=D.build;setCrumbs([['Wiki','#']]);
+  page.appendChild(head('Agent-written wiki',cap(p.name)+' wiki',p.description,'Built '+b.built.slice(0,10)));
+  var body=[],items=[],num=0;
+  if(b.pending)body.push(el('div','banner',plural(b.pending,'page')+' to write or refresh. Run alm wiki --agent --build to continue.'));
+  D.sections.forEach(function(s){
+    var x=p.sections[s.key];if(!x)return;num++;
+    var sec=wsec('sec-'+s.key,s.label,x.count,s.blurb);items.push({num:num,text:s.label,id:'sec-'+s.key,count:x.count});
+    sec.appendChild(rows(sectionNotes(p,s.key)));body.push(sec);
+  });
+  if(b.omitted.length){
+    var om=wsec('omitted','Left out',b.omitted.length,'Notes the outline left out of this edition.'),ol=el('ol','lib-list');
+    b.omitted.forEach(function(o){var li=el('li','lib-row'),m=el('div','lib-row-main');m.appendChild(el('span','lib-row-title',o.title));m.appendChild(el('span','lib-row-text',o.reason));li.appendChild(m);ol.appendChild(li)});
+    om.appendChild(ol);body.push(om);items.push({text:'Left out',id:'omitted'});
+  }
+  var rail=[infobox('Build','box',[['Scope',p.name],['Pages',String(b.pages)],['Written',String(b.written)],['Out of date',b.stale?String(b.stale):null],['To write',b.pending?String(b.pending):null],
+    ['Left out',b.omitted.length?String(b.omitted.length):null],['Model',b.model],['Cost',usd(b.cost_usd)],['Built',b.built.slice(0,10)]])];
+  var br=infobox('Browse','list',[]),bl=el('div','link-list');bl.appendChild(arrowRow('#az','A to Z index','list',LIST.length));br.appendChild(bl);rail.push(br);
+  if(items.length)rail.push(toc(items,wide()));
+  page.appendChild(article(rail,body));
+}
 function mainPage(){
+  if(AG)return agentHome();
   setCrumbs([['Wiki','#']]);
   page.appendChild(head(D.domain+' \u00b7 wiki',cap(D.domain)+' wiki','The working memory of the '+D.domain+' domain, organised by project. Open a project for its overview, decisions, guides and code reference, or search every page.','Generated '+D.generated));
   var sp=wsec('projects','Projects',D.projects.length),grid=el('div','portals');
@@ -615,6 +684,7 @@ function mainPage(){
   page.appendChild(article(rail,[rs]));
 }
 function projectPage(p){
+  if(AG)return agentHome();
   setCrumbs([['Wiki','#'],[p.name,'#p-'+p.slug]]);
   page.appendChild(head('Project',p.name,p.description,null));
   var body=[],items=[],num=0,leadNote=p.charter?N[p.charter]:(p.briefs[0]?N[p.briefs[0]]:null);
@@ -660,46 +730,67 @@ function siblings(n){
   if(isCode(n))return F[n.folder].notes.map(function(id){return N[id]}).filter(function(m){return m.section==='code'});
   return sectionNotes(P[n.project],n.section);
 }
+function sourcesBlock(n){
+  var pg=n.page,s=wsec('sources',pg.written?'Sources':'Planned sources',pg.sources.length),ol=el('ol','src-list');
+  pg.sources.forEach(function(x,i){
+    var li=el('li'),m=N[x.id],meta=el('div','src-meta');li.id='src-'+(i+1);li.appendChild(m?link(nh(m),null,x.title):document.createTextNode(x.title));
+    meta.appendChild(badge(x.type));
+    if(x.missing)meta.appendChild(el('span','flag','archived or deleted'));else if(!x.current)meta.appendChild(el('span','flag','changed since'));
+    if(m)meta.appendChild(el('span',null,'updated '+m.updated));
+    li.appendChild(meta);ol.appendChild(li)});
+  s.appendChild(ol);return s;
+}
 function notePage(n){
-  setCrumbs(noteCrumbs(n));
+  CITE=n;setCrumbs(noteCrumbs(n));
   var p=P[n.project],hd=el('header','page-head'),d=el('div','page-title');
   d.appendChild(el('div','eyebrow',p.name+' \u00b7 '+S[n.section].label));d.appendChild(el('h1',null,shortTitle(n)));
   var path=pathPrefix(n)||(n.section==='code'?n.files[0]||'':'');if(path){var pl=el('div');pl.appendChild(el('span','path-line',path));d.appendChild(pl)}
   hd.appendChild(d);page.appendChild(hd);
   if(n.retired)page.appendChild(el('div','banner','This page is '+n.status+'. It is kept for history and may be out of date.'));
+  var pg=n.page;
+  if(pg&&!pg.written)page.appendChild(el('div','banner','This page is planned and not written yet. Run alm wiki --agent --build to write it from the notes listed under Planned sources.'));
+  else if(pg&&pg.stale)page.appendChild(el('div','banner','A source of this page changed or was archived after it was written. Run alm wiki --agent --build to refresh it.'));
   var heads=[],md=el('div','markdown');md.appendChild(markdown(n.body,heads));
   var body=[];
   if(n.lead){var lead=el('p','lead lead-block');inline(lead,n.lead);body.push(lead)}
   body.push(md);
+  if(pg)body.push(sourcesBlock(n));
   var sa=el('section','wsec');sa.id='see-also';sa.appendChild(el('h2',null,'See also'));var grid=el('div','see-also');
-  [['Links to',n.out],['Linked from',n.backlinks]].forEach(function(pair){var b=el('div'),ll=el('div','link-list');b.appendChild(el('h3',null,pair[0]+' ('+pair[1].length+')'));
+  [['Links to',n.out],['Linked from',n.backlinks]].forEach(function(pair){var b=el('div'),ll=el('div','link-list');
+    // A page's sources are listed under Sources, so See also keeps to the other pages.
+    if(pg)pair[1]=pair[1].filter(function(id){return N[id]&&N[id].type==='article'});
+    b.appendChild(el('h3',null,pair[0]+' ('+pair[1].length+')'));
     pair[1].forEach(function(id){var m=N[id];if(m)ll.appendChild(arrowRow(nh(m),shortTitle(m),null,null,m.type))});if(!pair[1].length)ll.appendChild(el('span','empty','None'));b.appendChild(ll);grid.appendChild(b)});
   sa.appendChild(grid);body.push(sa);
   var sib=siblings(n),i=sib.indexOf(n);
-  if(sib.length>1&&i>=0){var pg=el('nav','pager');pg.setAttribute('aria-label','Previous and next page');
-    if(i>0){var pv=link(nh(sib[i-1]),'prev');pv.appendChild(el('small',null,'Previous'));pv.appendChild(el('span',null,shortTitle(sib[i-1])));pg.appendChild(pv)}
-    if(i<sib.length-1){var nx=link(nh(sib[i+1]),'next');nx.appendChild(el('small',null,'Next'));nx.appendChild(el('span',null,shortTitle(sib[i+1])));pg.appendChild(nx)}
-    body.push(pg)}
+  if(sib.length>1&&i>=0){var pager=el('nav','pager');pager.setAttribute('aria-label','Previous and next page');
+    if(i>0){var pv=link(nh(sib[i-1]),'prev');pv.appendChild(el('small',null,'Previous'));pv.appendChild(el('span',null,shortTitle(sib[i-1])));pager.appendChild(pv)}
+    if(i<sib.length-1){var nx=link(nh(sib[i+1]),'next');nx.appendChild(el('small',null,'Next'));nx.appendChild(el('span',null,shortTitle(sib[i+1])));pager.appendChild(nx)}
+    body.push(pager)}
   var tags=null;if(n.tags.length){tags=el('div','tags');n.tags.forEach(function(t){tags.appendChild(el('span','tag',t))})}
-  var rail=[infobox('Page details','file',[['Type',badge(n.type)],['Status',el('span','status-chip'+(n.retired?' retired':''),n.status)],['Project',link('#p-'+p.slug,null,p.name)],
-    ['Section',link(sh(p.slug,n.section),null,S[n.section].label)],['Updated',n.updated],['Created',n.created],['Files',n.files.map(function(f){return el('span','mono',f)})],
+  var cited=AG&&n.section==='sources'?n.backlinks.filter(function(id){return N[id]&&N[id].type==='article'}).map(function(id){return link(nh(N[id]),null,N[id].title)}):null;
+  var rail=[pg?infobox('Page details','file',[['Type',badge(n.type)],['Status',el('span','status-chip'+(!pg.written||pg.stale?' retired':''),!pg.written?'Planned':pg.stale?'Out of date':'Current')],
+      ['Section',link(sh(p.slug,n.section),null,S[n.section].label)],['Built',pg.built?pg.built.slice(0,10):null],['Model',pg.model],['Cost',pg.written?usd(pg.cost_usd):null],['Sources',String(pg.sources.length)],
+      ['Checks',pg.warnings.map(function(w){return el('span',null,w)})]])
+    :infobox('Page details','file',[['Type',badge(n.type)],['Status',el('span','status-chip'+(n.retired?' retired':''),n.status)],['Project',cited?null:link('#p-'+p.slug,null,p.name)],
+    ['Section',cited?null:link(sh(p.slug,n.section),null,S[n.section].label)],['Cited on',cited],['Updated',n.updated],['Created',n.created],['Files',n.files.map(function(f){return el('span','mono',f)})],
     ['Tags',tags],['Ref',el('span','mono',D.domain+':'+n.ref)]])];
-  if(heads.length){var items=heads.map(function(h){return {text:h.text,id:h.id,sub:h.level===3}});items.push({text:'See also',id:'see-also'});rail.push(toc(items,wide()))}
-  page.appendChild(article(rail,body));
+  if(heads.length||pg){var items=heads.map(function(h){return {text:h.text,id:h.id,sub:h.level===3}});if(pg)items.push({text:pg.written?'Sources':'Planned sources',id:'sources'});items.push({text:'See also',id:'see-also'});rail.push(toc(items,wide()))}
+  page.appendChild(article(rail,body));CITE=null;
   document.title=shortTitle(n)+' \u00b7 '+cap(D.domain)+' wiki';
 }
 function azPage(){
   setCrumbs([['Wiki','#'],['A to Z index','#az']]);
-  page.appendChild(head('Browse','A to Z index',plural(D.notes.length,'page')+' in alphabetical order.'));
+  page.appendChild(head('Browse','A to Z index',plural(LIST.length,'page')+' in alphabetical order.'));
   var groups={},order=[];
-  D.notes.slice().sort(function(a,b){return shortTitle(a).localeCompare(shortTitle(b),undefined,{sensitivity:'base'})}).forEach(function(n){var c=shortTitle(n).charAt(0).toUpperCase();if(!/[A-Z]/.test(c))c='#';if(!groups[c]){groups[c]=[];order.push(c)}groups[c].push(n)});
+  LIST.slice().sort(function(a,b){return shortTitle(a).localeCompare(shortTitle(b),undefined,{sensitivity:'base'})}).forEach(function(n){var c=shortTitle(n).charAt(0).toUpperCase();if(!/[A-Z]/.test(c))c='#';if(!groups[c]){groups[c]=[];order.push(c)}groups[c].push(n)});
   var bar=el('div','letters');order.forEach(function(c,i){var b=el('button',null,c);b.type='button';b.addEventListener('click',function(){document.getElementById('az-'+i).scrollIntoView({behavior:'smooth'})});bar.appendChild(b)});page.appendChild(bar);
   order.forEach(function(c,i){var s=wsec('az-'+i,c,groups[c].length);s.appendChild(rows(groups[c],{where:true,noLead:true}));page.appendChild(s)});
 }
 function recentPage(){
   setCrumbs([['Wiki','#'],['Recent changes','#recent']]);
   page.appendChild(head('Browse','Recent changes','The 80 most recently updated pages, by day.'));
-  var cur=null,list=null;D.notes.slice().sort(byUpdated).slice(0,80).forEach(function(n){if(n.updated!==cur||!list){cur=n.updated;var sec=wsec('d-'+(cur||'none'),cur||'Undated',null);list=el('ol','lib-list');sec.appendChild(list);page.appendChild(sec)}list.appendChild(row(n,{where:true,noLead:true}))});
+  var cur=null,list=null;LIST.slice().sort(byUpdated).slice(0,80).forEach(function(n){if(n.updated!==cur||!list){cur=n.updated;var sec=wsec('d-'+(cur||'none'),cur||'Undated',null);list=el('ol','lib-list');sec.appendChild(list);page.appendChild(sec)}list.appendChild(row(n,{where:true,noLead:true}))});
 }
 function searchPage(s){
   var k=s.toLowerCase(),hits=[];
@@ -721,7 +812,15 @@ function treeRow(href,label,iconName,count,kids,key,top){
 }
 function drawTree(){
   treeBox.textContent='';
-  treeBox.appendChild(treeRow('#','Main page','home',null,null,null,true));
+  treeBox.appendChild(treeRow('#',AG?'Contents':'Main page','home',null,null,null,true));
+  if(AG){
+    var ap=D.projects[0];
+    D.sections.forEach(function(s){var x=ap.sections[s.key];if(!x)return;
+      treeBox.appendChild(treeRow(sh(ap.slug,s.key),s.label,null,x.count,function(){return x.notes.map(function(id){return treeRow(nh(N[id]),shortTitle(N[id]))})},'a-'+s.key))});
+    treeBox.appendChild(el('div','tree-label','Browse'));
+    treeBox.appendChild(treeRow('#az','A to Z index','list',null,null,null,true));
+    mark();return;
+  }
   if(D.projects.length)treeBox.appendChild(el('div','tree-label','Projects'));
   D.projects.forEach(function(p){
     treeBox.appendChild(treeRow('#p-'+p.slug,p.name,'box',null,function(){
@@ -753,6 +852,7 @@ function expand(){
   else if(n){proj=n.project;code=!!isCode(n)}
   else if(F[h]){proj=F[h].project;code=true}
   if(proj){open['p-'+proj]=true;if(code)open['code-'+proj]=true}
+  if(AG){var sec=n?n.section:null;if(!sec&&h.indexOf('s-')===0){var hit=sectionRoute(h);if(hit)sec=hit[1]}if(sec)open['a-'+sec]=true}
 }
 
 // ---- routing ----
@@ -780,11 +880,19 @@ document.getElementById('menu').addEventListener('click',function(){shell.classL
 document.getElementById('close').addEventListener('click',closeNav);
 document.getElementById('scrim').addEventListener('click',closeNav);
 document.addEventListener('keydown',function(e){if(e.key==='Escape')closeNav();if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus()}});
-var themeBtn=document.getElementById('theme');
-function current(){return document.documentElement.getAttribute('data-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light')}
-function paint(){var t=current();themeBtn.textContent='';themeBtn.appendChild(icon(t==='dark'?'sun':'moon',20));themeBtn.setAttribute('aria-label',t==='dark'?'Use the light theme':'Use the dark theme');themeBtn.title=themeBtn.getAttribute('aria-label')}
-themeBtn.addEventListener('click',function(){var t=current()==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',t);try{localStorage.setItem('wiki-theme',t)}catch(e){}paint()});
-try{var saved=localStorage.getItem('wiki-theme');if(saved==='dark'||saved==='light')document.documentElement.setAttribute('data-theme',saved)}catch(e){}
+// Themes: the picker (or --theme) sets data-hm on <html>; with none set the page follows the host's data-theme, else the system.
+var root=document.documentElement,THEMES=['purple','emerald','emerald-light'],START=@@THEME@@;
+function applied(){
+  var hm=root.getAttribute('data-hm');if(hm)return hm;
+  var host=root.getAttribute('data-theme');
+  return host?(host==='dark'?'emerald':'emerald-light'):(matchMedia('(prefers-color-scheme: dark)').matches?'emerald':'emerald-light');
+}
+function paint(){var t=applied();document.querySelectorAll('.themes button').forEach(function(b){b.setAttribute('aria-pressed',String(b.dataset.t===t))})}
+document.querySelectorAll('.themes button').forEach(function(b){b.addEventListener('click',function(){root.setAttribute('data-hm',b.dataset.t);try{localStorage.setItem('wiki-theme',b.dataset.t)}catch(e){}paint()})});
+try{var saved=localStorage.getItem('wiki-theme');saved=saved==='dark'?'emerald':saved==='light'?'emerald-light':saved;if(THEMES.indexOf(saved)>=0)root.setAttribute('data-hm',saved)}catch(e){}
+if(START)root.setAttribute('data-hm',START);
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change',paint);
+new MutationObserver(paint).observe(root,{attributes:true,attributeFilter:['data-theme']});
 paint();window.addEventListener('hashchange',function(){q.value='';route()});route();
 })();
 '''
@@ -793,45 +901,54 @@ def _css():
     from .views import _asset
     face=('@font-face{font-family:"Plus Jakarta Sans Variable";font-style:normal;font-display:swap;font-weight:200 800;'
           'src:url(data:font/woff2;base64,'+_asset('plus-jakarta-sans-latin-wght-normal.woff2.b64')+') format("woff2")}')
+    # Without a picked theme the page follows the host's data-theme, else the system. The picker (and --theme) sets data-hm, which comes
+    # last so it wins over both; its dark sidebar stays a dark island in Emerald Light, and Purple's is its own.
     theme=(':root{'+LIGHT+'}.sidebar{'+DARK+SIDEBAR_LIGHT+'}'
            '@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){'+DARK+'}:root:not([data-theme="light"]) .sidebar{'+SIDEBAR_DARK+'}}'
-           ':root[data-theme="dark"]{'+DARK+'}:root[data-theme="dark"] .sidebar{'+SIDEBAR_DARK+'}')
+           ':root[data-theme="dark"]{'+DARK+'}:root[data-theme="dark"] .sidebar{'+SIDEBAR_DARK+'}'
+           ':root[data-hm="emerald"]{'+DARK+'}:root[data-hm="emerald"] .sidebar{'+SIDEBAR_DARK+'}'
+           ':root[data-hm="emerald-light"]{'+LIGHT+'}:root[data-hm="emerald-light"] .sidebar{'+DARK+SIDEBAR_LIGHT+'}'
+           ':root[data-hm="purple"],:root[data-hm="purple"] .sidebar{'+PURPLE+'}')
     types=''.join(f'.type-{t}{{color:var(--t-{t})}}' for t in NOTE_TYPES)
     return face+theme+CSS.replace('@@LOGO@@',_asset('hivemind-logo.png.b64')).replace('@@TYPES@@',types)
 
-def render_html(model,document=True):
+def render_html(model,document=True,theme=None):
     """One self-contained page for the model. document=False leaves out the doctype, html, head and body wrapper (a
-    claude.ai artifact adds its own); the content is otherwise the same."""
-    esc=lambda v:html.escape(str(v),quote=True)
+    claude.ai artifact adds its own); the content is otherwise the same. `theme` (purple, emerald or emerald-light) is the one the
+    page starts in; without it the page follows the system, or the host's data-theme."""
+    if theme is not None and theme not in {k for k,_ in THEMES}:raise ValueError('--theme is purple, emerald or emerald-light')
+    esc=lambda v:html.escape(str(v),quote=True);agent=model.get('edition')=='agent'
+    pages=[n for n in model['notes'] if n['type']=='article'] if agent else model['notes']
     data=json.dumps(model,ensure_ascii=False).replace('<','\\u003c').replace('>','\\u003e').replace('&','\\u0026').replace('\u2028','\\u2028').replace('\u2029','\\u2029')
-    domain=model['domain'];title=f'{domain[:1].upper()}{domain[1:]} memory wiki'
-    noscript=''.join(f'<li>{esc(n["title"])}: {esc(n["lead"])}</li>' for n in model['notes'])
+    domain=model['domain'];title=f'{domain[:1].upper()}{domain[1:]} {"agent" if agent else "memory"} wiki'
+    noscript=''.join(f'<li>{esc(n["title"])}: {esc(MARKER.sub("",n["lead"]))}</li>' for n in pages)
+    picker='<div class="themes" role="group" aria-label="Theme">'+''.join(f'<button type="button" data-t="{k}" aria-label="{l}" title="{l}"><i class="sw sw-{k}"></i><span>{l}</span></button>' for k,l in THEMES)+'</div>'
     content=(f'<title>{esc(title)}</title><meta name="claude:viewport-fit-sides" content="cover"><style>{_css()}</style>'
              '<div class="shell" id="shell"><aside class="sidebar" id="sidebar" aria-label="Wiki pages">'
              f'<div class="brand-block"><span class="logo" aria-hidden="true"></span><span>Hivemind</span><button type="button" class="icon-button close" id="close" aria-label="Close navigation">{_svg("x")}</button></div>'
-             f'<div class="switcher">{_svg("book")}<span>{esc(domain)}</span><span class="muted">wiki</span></div>'
+             f'<div class="switcher">{_svg("book")}<span>{esc(domain)}</span><span class="muted">{"agent wiki" if agent else "wiki"}</span></div>'
              '<nav class="tree" id="tree"></nav>'
-             f'<div class="sidebar-foot">{len(model["notes"])} pages. Generated <span class="nowrap">{esc(model["generated"])}</span> from Living Memory.</div></aside>'
+             f'<div class="sidebar-foot">{len(pages)} pages. Generated <span class="nowrap">{esc(model["generated"])}</span> from Living Memory.</div></aside>'
              '<div class="scrim" id="scrim"></div><div class="main"><header class="topbar">'
              f'<button type="button" class="icon-button menu" id="menu" aria-label="Open navigation">{_svg("menu")}</button>'
              '<nav class="crumbs" id="crumbs" aria-label="Breadcrumb"></nav>'
              f'<label class="top-search">{_svg("search",18)}<input id="q" type="search" placeholder="Search the wiki" aria-label="Search the wiki" autocomplete="off"></label>'
-             '<button type="button" class="icon-button" id="theme" aria-label="Switch theme"></button></header>'
+             +picker+'</header>'
              '<main class="page" id="page"></main></div></div>'
              f'<noscript><ul>{noscript}</ul></noscript>'
-             f'<script type="application/json" id="wiki-data">{data}</script><script>{JS.replace("@@ICONS@@",json.dumps(ICONS))}</script>')
+             f'<script type="application/json" id="wiki-data">{data}</script><script>{JS.replace("@@ICONS@@",json.dumps(ICONS)).replace("@@THEME@@",json.dumps(theme))}</script>')
     if not document:return content
-    return ('<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
+    return ('<!doctype html>\n<html lang="en"'+(f' data-hm="{theme}"' if theme else '')+'><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
             '</head><body>'+content+'</body></html>\n')
 
 def default_path(root,domain):return Path(root)/'.views'/domain/'wiki.html'
 
-def export(domain,root,archived=False,out=None,fmt='html'):
+def export(domain,root,archived=False,out=None,fmt='html',theme=None):
     """Write the wiki of one domain: html to `out` or <store>/.views/<domain>/wiki.html, or the json model to `out`.
     --out inside the store is refused unless it is under .views (it would overwrite canonical files unjournaled)."""
     from .views import _out_path
     root=Path(root).resolve();model=wiki_model(domain,root,archived)
     path=_out_path(root,out) if out is not None else default_path(root,domain)
-    text=json.dumps(model,ensure_ascii=False,indent=1)+'\n' if fmt=='json' else render_html(model)
+    text=json.dumps(model,ensure_ascii=False,indent=1)+'\n' if fmt=='json' else render_html(model,theme=theme)
     atomic_write(path,text)
     return {'ok':True,'domain':domain,'path':str(path),'pages':len(model['notes']),'format':fmt}
