@@ -538,11 +538,13 @@ function markdown(text,heads){
   function fence(l){var f=/^\s*(`{3,})/.exec(l);return f?f[1].length:0}
   function shut(l,n){var f=/^\s*(`+)\s*$/.exec(l);return !!f&&f[1].length>=n}
   function cols(s){return s.replace(/\t/g,'    ').length}
-  function dedent(l,n){var k=0,c=0;while(k<l.length&&c<n&&(l[k]===' '||l[k]==='\t')){c+=l[k]==='\t'?4:1;k++}return l.slice(k)}
+  // Up to n columns of indentation off a line; a tab that reaches past n leaves the rest of its width as spaces.
+  function dedent(l,n){var k=0,c=0;while(k<l.length&&c<n&&(l[k]===' '||l[k]==='\t')){var w=l[k]==='\t'?4:1;if(c+w>n)return ' '.repeat(c+w-n)+l.slice(k+1);c+=w;k++}return l.slice(k)}
+  function code(l,n){var buf=[],fi=cols(/^\s*/.exec(l)[0]);i++;while(i<lines.length&&!shut(lines[i],n))buf.push(dedent(lines[i++],fi));i++;var pre=el('pre');pre.appendChild(el('code',null,buf.join('\n')));return pre}
   while(i<lines.length){
     var line=lines[i],fo=fence(line);
     if(!line.trim()){i++;continue}
-    if(fo){var buf=[];i++;while(i<lines.length&&!shut(lines[i],fo))buf.push(lines[i++]);i++;var pre=el('pre');pre.appendChild(el('code',null,buf.join('\n')));box.appendChild(pre);continue}
+    if(fo){box.appendChild(code(line,fo));continue}
     var h=/^(#{1,6})\s+(.*)$/.exec(line);
     if(h){var lvl=h[1].length<=2?2:3,hx=el('h'+lvl);inline(hx,h[2]);if(heads){hx.id='h-'+heads.length;heads.push({level:lvl,text:hx.textContent,id:hx.id})}box.appendChild(hx);i++;continue}
     if(/^\s*>/.test(line)){var q=[];while(i<lines.length&&/^\s*>/.test(lines[i]))q.push(lines[i++].replace(/^\s*>\s?/,''));var bq=el('blockquote');bq.appendChild(markdown(q.join('\n')));box.appendChild(bq);continue}
@@ -558,7 +560,8 @@ function markdown(text,heads){
       while(i<lines.length){
         var l=lines[i];
         if(!l.trim()){if(i+1<lines.length&&(isList(lines[i+1])||/^\s{2,}\S/.test(lines[i+1]))){i++;continue}break}
-        var m=/^(\s*)([-*+]|\d+\.)(\s+)(.*)$/.exec(l);
+        // [\s\S], not ., so that every line isList accepts is consumed (a U+2028 in it would otherwise loop forever).
+        var m=/^(\s*)([-*+]|\d+\.)(\s+)([\s\S]*)$/.exec(l);
         if(m){
           var ind=cols(m[1]),ordered=/\d/.test(m[2]);
           while(stack.length&&stack[stack.length-1].ind>ind)stack.pop();
@@ -571,12 +574,14 @@ function markdown(text,heads){
           stack[stack.length-1].list.appendChild(li);i++;continue}
         var lf=fence(l);
         if(lf&&/^\s/.test(l)&&stack.length){
-          // The deepest item whose text column the fence reaches owns it; deeper lists end. The code loses that indentation.
-          var fi=cols(/^\s*/.exec(l)[0]),k=0;
+          // The deepest item whose text column the fence reaches owns it; deeper lists end, and the code loses that indentation.
+          // A fence that reaches no item ends the list.
+          var fi=cols(/^\s*/.exec(l)[0]),k=-1;
           for(var s=stack.length-1;s>=0;s--)if(stack[s].col<=fi){k=s;break}
-          stack.length=k+1;
-          var fb=[];i++;while(i<lines.length&&!shut(lines[i],lf))fb.push(dedent(lines[i++],fi));i++;
-          var fp=el('pre');fp.appendChild(el('code',null,fb.join('\n')));stack[k].list.lastChild.appendChild(fp);continue}
+          if(k<0)break;
+          stack.length=k+1;stack[k].list.lastChild.appendChild(code(l,lf));continue}
+        // A quote ends the list, so it is a quote here as it is for the citation check.
+        if(/^\s+>/.test(l))break;
         if(/^\s+\S/.test(l)&&stack.length){var last=stack[stack.length-1].list.lastChild,tgt=last.querySelector(':scope>span')||last;tgt.appendChild(document.createTextNode(' '));inline(tgt,l.trim());i++;continue}
         break}
       continue}

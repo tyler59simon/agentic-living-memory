@@ -199,15 +199,23 @@ class Validation(unittest.TestCase):
         self.assertNotIn('Overview, Architecture and Services',wa.OUTLINE_POLICY)
         for policy in (wa.OUTLINE_POLICY,wa.PLACE_POLICY):self.assertIn('removed or replaced',policy)   # AW-38
         self.assertIn('the date it was last updated',wa.OUTLINE_POLICY)
+        # An obsolete note kept for its history is a source, not omitted: the outline refuses a note that is both.
+        self.assertIn('keep it as a source (not in omit)',wa.OUTLINE_POLICY);self.assertIn('the updated date is only a hint',wa.OUTLINE_POLICY)
+        for kind,schema in wa.SCHEMAS.items():self.assertEqual(json.loads(schema),json.loads(json.dumps(getattr(wa,kind.upper()+'_SCHEMA'))))
 
     def test_title_case_is_told_from_sentence_case(self):   # AW-37
-        for title in ('Tauri Core, Settings and Watcher','Review Page and Learning','Hivemind Executive Workspace','The `x` Method And Flow'):
+        for title in ('Tauri Core, Settings and Watcher','Settings And Watcher Flow Details','The `x` Method And Flow Notes'):
             self.assertTrue(wa.title_case(title),title)
-        for title in ('Settings and watcher','Living Memory hooks','Claude Code','How the API uses OAuth tokens','Overview','`Build.Run Method` notes'):
+        # Product names often carry two capitalised words, so two are not enough.
+        for title in ('Settings and watcher','Living Memory hooks','Claude Code','How the API uses OAuth tokens','Overview','`Build.Run Method` notes',
+                      'Run Docker on Windows','Configure GitHub Actions','Visual Studio Code','Hivemind Executive Workspace'):
             self.assertFalse(wa.title_case(title),title)
-        self.assertEqual(wa.case_warnings('Payments overview','Core Pages And Services','## Fine heading\n```\n## Not A Heading Here\n```'),
-                         ['Title Case heading ("Core Pages And Services"); write titles and headings in sentence case'])
-        for kind,schema in wa.SCHEMAS.items():self.assertEqual(json.loads(schema),json.loads(json.dumps(getattr(wa,kind.upper()+'_SCHEMA'))))
+        self.assertEqual(wa.case_warnings('Payments overview','## Fine heading\n## Core Pages And Services Today\n```\n## Not A Heading Here At All\n```'),
+                         ['Title Case heading ("Core Pages And Services Today"); write titles and headings in sentence case'])
+        section={'key':'a1','title':'Core Pages And Services Today','pages':['pg1','pg2']}
+        self.assertEqual(wa.section_warnings(section,'pg1'),['Title Case heading ("Core Pages And Services Today"); write titles and headings in sentence case'])
+        self.assertEqual(wa.section_warnings(section,'pg2'),[],'once per section')
+        self.assertEqual(wa.section_warnings(dict(section,title='Core pages and services'),'pg1'),[])
 
 class Build(Base):
     def test_a_first_build_plans_then_writes_every_page(self):
@@ -463,11 +471,11 @@ class Model(Base):
         change(next(iter(ed['pages'][pid]['plan'])),'demo','update',self.root,body='Changed again.')
         real=wa.validate_page
         def titled(report,manifest,titles):
-            out=real(report,manifest,titles);out['body']+='\n\n## Settings And Watcher Flow\n\nText.[^1]\n\n## How the API uses tokens\n\nMore.[^1]';return out
+            out=real(report,manifest,titles);out['body']+='\n\n## Settings And Watcher Flow Details\n\nText.[^1]\n\n## How the API uses tokens\n\nMore.[^1]';return out
         with patch.object(wa,'validate_page',titled):self.build()
         warned=[w for p in self.edition()['pages'].values() for w in p['warnings'] if 'sentence case' in w]
-        self.assertEqual(warned,['Title Case heading ("Settings And Watcher Flow"); write titles and headings in sentence case'])
-        self.assertTrue(any('## Settings And Watcher Flow' in p['body'] for p in self.edition()['pages'].values()), 'the text is kept as written')
+        self.assertEqual(warned,['Title Case heading ("Settings And Watcher Flow Details"); write titles and headings in sentence case'])
+        self.assertTrue(any('## Settings And Watcher Flow Details' in p['body'] for p in self.edition()['pages'].values()), 'the text is kept as written')
     def test_an_edition_saved_for_another_scope_is_not_this_scopes_edition(self):   # AW-23
         self.sample();self.build(project='hive');hive=wa.edition_path(self.root,'demo','hive');domain=wa.edition_path(self.root,'demo','domain');domain.write_bytes(hive.read_bytes())
         with self.assertRaises(ValueError) as c:wa.read_model(self.root,'demo')
@@ -567,6 +575,33 @@ class Page(Base):
         outer=self.render('- Outer\n  - Inner\n    ```\n    x\n    ```\n')[2][0][2][0]
         inner=[k for k in outer[2] if isinstance(k,list)][0][2][0]
         self.assertEqual([k for k in inner[2] if isinstance(k,list) and k[0]=='pre'][0][2][0][1],'x')
+
+    def check(self,body,lead='Lead.[N1]'):
+        return wa.validate_page({'lead':lead,'body':body,'cited':['N1']},{'notes':{'N1':'a'},'pages':{}},{})
+
+    def test_the_check_reads_line_breaks_and_spaces_as_the_page_does(self):   # Codex R1 on 680f5f6
+        out=self.check('```\r\nx[N1]\r\n```\r\nAfter.[N1]')   # a CRLF closer still closes, so the prose after it cites
+        self.assertEqual(out['body'],'```\nx[N1]\n```\nAfter.[^1]')
+        out=self.check(' ```\nx[N1]\n```\nAfter.[N1]')   # a no-break space before the opener is whitespace to both
+        self.assertIn('x[N1]',out['body']);self.assertEqual([k[0] for k in self.render(out['body'])[2]],['pre','p'])
+
+    def test_a_quote_inside_a_list_item_is_a_quote_to_both(self):   # Codex R2 on 680f5f6
+        out=self.check('- Item.[N1]\n  > ```\n  > x[N1]\n  > ```\n')
+        self.assertIn('> x[N1]',out['body'])
+        frag=self.render(out['body']);self.assertEqual([k[0] for k in frag[2]],['ul','blockquote'],frag)
+        self.assertEqual([k[0] for k in frag[2][1][2][0][2]],['pre'])
+
+    def test_a_lead_code_span_may_cross_a_line(self):   # Codex R3 on 680f5f6
+        out=self.check('Body.[N1]',lead='Run `x\ny[N1]` first.[N1]')
+        self.assertEqual(out['lead'],'Run `x\ny[N1]` first.[^1]')
+
+    def test_odd_lists_end_and_keep_code_columns(self):   # Codex R4, R5, R6 on 680f5f6
+        self.assertEqual(self.render('- one two')[2][0][0],'ul')   # it used to loop forever
+        pre=self.render('- Item\n  ```\n  if True:\n\tpass\n  ```')[2][0][2][0][2][1]
+        self.assertEqual(pre[2][0][1],'if True:\n  pass')   # a tab past the item's column keeps the rest of its width
+        frag=self.render('10. Item\n  ```\n  x\n  ```')   # the fence does not reach the item's text column
+        self.assertEqual([k[0] for k in frag[2]],['ol','pre']);self.assertEqual(frag[2][1][2][0][1],'x')
+
     def test_a_theme_picker_serves_both_editions(self):
         self.sample();self.build();agent_page=self.html();plain=wiki.render_html(wiki.wiki_model('demo',self.root))
         for page in (agent_page,plain):

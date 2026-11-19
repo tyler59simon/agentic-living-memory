@@ -58,7 +58,7 @@ OUTLINE_POLICY = f"""You plan the structure of a wiki for one domain of project 
 
 {TRUST}
 
-Task. Choose the structure that fits this domain, the way a reader would look for things. For a payments domain that might be sections named "Overview", "Architecture" and "Services", with one page per service. The packet lists every note with its key (N1, N2, ...), title, type, tags, project, the date it was last updated, first files, lead and headings; it has no bodies. Answer with a summary of the wiki (one or two sentences), at most {SECTIONS_MAX} sections (S1, S2, ...) each with a title and a one-sentence blurb, and in them at most {PAGES_MAX} pages in all (P1, P2, ...). A page has a unique plain title (page titles are used in [[links]], so leave out [ ] | and #), a purpose (one sentence on what the reader learns) and the notes it will be written from, at most {SOURCES_MAX}. A note may be a source for more than one page. Copy note keys exactly; never repeat a key within a list. Put a note in omit, with a short reason, only when it would mislead a reader (obsolete, a duplicate of another note, a transient status). A note is obsolete when a later note says the feature, command or page it describes was removed or replaced: omit it, and plan no page about that feature as if it were current; if its history matters, say in the purpose of the page that uses it that the feature is gone. Do not omit a note you also use. Prefer fewer, fuller pages over many thin ones. {SENTENCE_CASE}
+Task. Choose the structure that fits this domain, the way a reader would look for things. For a payments domain that might be sections named "Overview", "Architecture" and "Services", with one page per service. The packet lists every note with its key (N1, N2, ...), title, type, tags, project, the date it was last updated, first files, lead and headings; it has no bodies. Answer with a summary of the wiki (one or two sentences), at most {SECTIONS_MAX} sections (S1, S2, ...) each with a title and a one-sentence blurb, and in them at most {PAGES_MAX} pages in all (P1, P2, ...). A page has a unique plain title (page titles are used in [[links]], so leave out [ ] | and #), a purpose (one sentence on what the reader learns) and the notes it will be written from, at most {SOURCES_MAX}. A note may be a source for more than one page. Copy note keys exactly; never repeat a key within a list. Put a note in omit, with a short reason, only when it would mislead a reader (obsolete, a duplicate of another note, a transient status). A note is obsolete when another note says the feature, command or page it describes was removed or replaced. Judge which came later by the dates the notes state; the updated date is only a hint, since a note can be edited after the event it records. Omit an obsolete note and plan no page about that feature as if it were current, unless its history matters: then keep it as a source (not in omit) of a page whose purpose says the feature is gone. Do not omit a note you also use. Prefer fewer, fuller pages over many thin ones. {SENTENCE_CASE}
 
 {WRITING_RULES}"""
 
@@ -66,7 +66,7 @@ PLACE_POLICY = f"""You place new project memory notes into an existing wiki. You
 
 {TRUST}
 
-Task. The packet has the wiki's current outline (sections S1, S2, ... with their pages P1, P2, ...) and the new notes (N1, N2, ...) that no page uses yet. Give exactly one placement for every new note: the page it is a source for (a P key of the outline, or an NP key you define in new_pages; a page takes at most as many new notes as its capacity says, and a new page at most {SOURCES_MAX}), or null when it would mislead a reader (obsolete, a duplicate, a transient status), with a reason. A note about a feature, command or page that a later note says was removed or replaced is obsolete. Prefer an existing page. Add a page in new_pages only when no page fits: give its NP key (NP1, NP2, ...), the section (an S key), a unique plain title (leave out [ ] | and #) and a one-sentence purpose. Copy keys exactly. {SENTENCE_CASE}
+Task. The packet has the wiki's current outline (sections S1, S2, ... with their pages P1, P2, ...) and the new notes (N1, N2, ...) that no page uses yet. Give exactly one placement for every new note: the page it is a source for (a P key of the outline, or an NP key you define in new_pages; a page takes at most as many new notes as its capacity says, and a new page at most {SOURCES_MAX}), or null when it would mislead a reader (obsolete, a duplicate, a transient status), with a reason. A note about a feature, command or page that another note says was removed or replaced is obsolete (judge which came later by the dates the notes state). Prefer an existing page. Add a page in new_pages only when no page fits: give its NP key (NP1, NP2, ...), the section (an S key), a unique plain title (leave out [ ] | and #) and a one-sentence purpose. Copy keys exactly. {SENTENCE_CASE}
 
 {WRITING_RULES}"""
 
@@ -347,13 +347,14 @@ def validate_place(report, manifest, page_count):
 CITATION = re.compile(r'\[(N[0-9]+(?:\s*,\s*N[0-9]+)*)\]')
 PAGE_LINK = re.compile(r'\[\[(P[0-9]+)\]\]')
 FOOTNOTE = re.compile(r'\[\^[0-9]+\]')
-INLINE_CODE = re.compile(r'`[^`\n]+`')
+INLINE_CODE = re.compile(r'`[^`\n]+`')     # the page renders the body line by line
+LEAD_CODE = re.compile(r'`[^`]+`')         # and the lead as one run of text, with no fences
 # The fence rule of markdown() in core/wiki.py, which renders the page: a line of three or more backticks opens a block at
 # any quote depth and in any list item; the block ends at a line of the same depth holding only a backtick run at least as
-# long, at the end of its quote, or at the end of the text.
-_QUOTE = re.compile(r'[ \t]*>[ \t]?')
-_OPEN = re.compile(r'[ \t]*(`{3,})')
-_SHUT = re.compile(r'[ \t]*(`+)[ \t]*$')
+# long, at the end of its quote, or at the end of the text. Whitespace is any but a line break, as JavaScript's \s.
+_QUOTE = re.compile(r'[^\S\n]*>[^\S\n]?')
+_OPEN = re.compile(r'[^\S\n]*(`{3,})')
+_SHUT = re.compile(r'[^\S\n]*(`+)[^\S\n]*$')
 
 
 def _unquote(line, most=None):
@@ -393,8 +394,10 @@ def _fences(text):
     return spans
 
 
-def _code_spans(text):
-    """(start, end) of every fenced block and every inline code span outside them, in order."""
+def _code_spans(text, lead=False):
+    """(start, end) of every fenced block and every inline code span outside them, in order. A lead has inline spans only."""
+    if lead:
+        return [m.span() for m in LEAD_CODE.finditer(text)]
     spans, last = [], 0
     for start, end in _fences(text) + [(len(text), len(text))]:
         spans += [(last + m.start(), last + m.end()) for m in INLINE_CODE.finditer(text[last:start])]
@@ -404,37 +407,48 @@ def _code_spans(text):
     return spans
 
 
-def _outside_code(text, fn):
+def _outside_code(text, fn, lead=False):
     """`text` with fn applied to everything but code spans and fenced blocks, which stay as written."""
     out, last = [], 0
-    for start, end in _code_spans(text):
+    for start, end in _code_spans(text, lead):
         out += [fn(text[last:start]), text[start:end]]
         last = end
     return ''.join(out + [fn(text[last:])])
 
 
-def title_case(text):
-    """Whether a title or heading looks like Title Case: three or more words, and at least two after the first that are longer
-    than three letters, all capitalised. All-caps words, words with digits and code spans are left out. A warning heuristic: it
-    cannot tell a proper name from a habit."""
-    words = re.findall(r"[^\W\d_][\w'-]*", _blank_code(text))
-    long = [w for w in words[1:] if len(w) > 3 and not w.isupper()]
-    return len(words) >= 3 and len(long) >= 2 and all(w[0].isupper() for w in long)
-
-
-def case_warnings(title, section, body):
-    """Style warnings for a page's title, its section's title and its ## headings written in Title Case."""
-    heads = [title, section] + re.findall(r'(?m)^#{2,6}[ \t]+(.+?)[ \t#]*$', _blank_code(body))
-    return [f'Title Case heading ("{h}"); write titles and headings in sentence case' for h in heads if h and title_case(h)]
-
-
-def _blank_code(text):
+def _blank_code(text, lead=False):
     """`text` with each code span and fenced block replaced by a space."""
     out, last = [], 0
-    for start, end in _code_spans(text):
+    for start, end in _code_spans(text, lead):
         out += [text[last:start], ' ']
         last = end
     return ''.join(out + [text[last:]])
+
+
+def title_case(text):
+    """Whether a title or heading looks like Title Case: at least three words after the first that are longer than three
+    letters, all capitalised. All-caps words, words with digits and code spans are left out, and two such words are allowed,
+    since a product name ("Visual Studio Code", "GitHub Actions") often has them. A warning heuristic: it cannot tell a
+    proper name from a habit."""
+    words = re.findall(r"[^\W\d_][\w'-]*", _blank_code(text))
+    long = [w for w in words[1:] if len(w) > 3 and not w.isupper()]
+    return len(long) >= 3 and all(w[0].isupper() for w in long)
+
+
+def case_warning(text):
+    return f'Title Case heading ("{text}"); write titles and headings in sentence case'
+
+
+def section_warnings(section, pid):
+    """The warning for a section title in Title Case, on the section's first page only. Worked out from the current outline
+    when the wiki is read, so a renamed section never keeps an old warning."""
+    return [case_warning(section['title'])] if section['pages'] and section['pages'][0] == pid and title_case(section['title']) else []
+
+
+def case_warnings(title, body):
+    """Style warnings for a page's title and its ## headings written in Title Case."""
+    heads = [title] + re.findall(r'(?m)^#{2,6}[ \t]+(.+?)[ \t#]*$', _blank_code(body))
+    return [case_warning(h) for h in heads if h and title_case(h)]
 
 
 def validate_page(report, manifest, titles):
@@ -442,9 +456,10 @@ def validate_page(report, manifest, titles):
     appearance (the lead first), and [[P4]] becomes [[Page title]]. `titles` maps the packet's P keys to page titles."""
     _shape(report, ('lead', 'body', 'cited'), 'page')
     notes = manifest['notes']
-    lead, body = _text(report['lead'], 'lead', LEAD_MAX), _text(report['body'], 'body', BODY_MAX)
+    # The page drops every carriage return before it renders, so the check must see the text the same way.
+    lead, body = (_text(report[k], k, limit).replace('\r', '') for k, limit in (('lead', LEAD_MAX), ('body', BODY_MAX)))
     _keys(report['cited'], notes, 'cited', SOURCES_MAX, NOTE_KEY)
-    if FOOTNOTE.search(_blank_code(lead)) or FOOTNOTE.search(_blank_code(body)):
+    if FOOTNOTE.search(_blank_code(lead, True)) or FOOTNOTE.search(_blank_code(body)):
         raise WikiError('the text has [^k] footnotes of its own; it must cite with [N1] markers')
     order = []
 
@@ -462,7 +477,7 @@ def validate_page(report, manifest, titles):
         if match.group(1) not in titles:
             raise WikiError(f'{match.group(1)} is not a page key of this packet')
         return f'[[{titles[match.group(1)]}]]'
-    lead, body = (_outside_code(text, lambda part: PAGE_LINK.sub(link, CITATION.sub(cite, part))) for text in (lead, body))
+    lead, body = (_outside_code(text, lambda part: PAGE_LINK.sub(link, CITATION.sub(cite, part)), is_lead) for text, is_lead in ((lead, True), (body, False)))
     if not order:
         raise WikiError('the page cites no source')
     if len(lead) > LEAD_MAX or len(body) > BODY_MAX:
@@ -820,10 +835,7 @@ class Build:
         page.update(lead=value['lead'], body=value['body'], written=True, dirty=False, built=now, model=self.model, cost_micro=cost, created=page['created'] or now,
                     sources=[_source(self.notes[i], self.revisions.get(i)) for i in value['sources']],
                     warnings=list(dict.fromkeys(style_warnings({'title': page['title'], 'body': value['lead'] + '\n\n' + value['body'], 'type': 'article'})
-                                                + case_warnings(page['title'], self.section_title(page), value['body']))))
-
-    def section_title(self, page):
-        return next((sec['title'] for sec in self.edition['sections'] if sec['key'] == page.get('section')), '')
+                                                + case_warnings(page['title'], value['body']))))
 
     def guarded(self, pid):
         try:
@@ -991,7 +1003,8 @@ def agent_view_model(edition, base, revisions):
                            'updated': updated, 'created': _date(page['created']) or first_day, 'lead': page['lead'] or page['purpose'], 'body': page['body'],
                            'out': linked + [s['id'] for s in sources if not s['missing']], 'backlinks': [], 'project': slug, 'section': sec['key'], 'folder': None, 'filename': '',
                            'page': {'purpose': page['purpose'], 'written': page['written'], 'stale': stale, 'built': page['built'], 'model': page['model'],
-                                    'cost_usd': round(page['cost_micro'] / MICRO, 6), 'warnings': list(page['warnings']), 'sources': sources}})
+                                    'cost_usd': round(page['cost_micro'] / MICRO, 6), 'warnings': list(page['warnings']) + section_warnings(sec, pid),
+                                    'sources': sources}})
         sections.setdefault(sec['key'], []).append(pid)
     for note in page_notes:
         note['backlinks'] = backlinks.get(note['id'], [])
