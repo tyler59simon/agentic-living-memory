@@ -190,9 +190,10 @@ def provider(cfg=None, executable=None):
     return {'ok': True, 'argv': argv}
 
 
-def build_argv(argv, cfg, run):
+def build_argv(argv, cfg, run, policy=POLICY, schema_json=SCHEMA_JSON):
+    # The wiki builder (core/wiki_agent.py) passes its own policy and schema; maintenance keeps the defaults.
     return [*argv, '-p', '--output-format', 'json', '--model', cfg['model'], '--tools', '', '--safe-mode', '--strict-mcp-config',
-            '--no-session-persistence', '--disable-slash-commands', '--system-prompt', POLICY, '--json-schema', SCHEMA_JSON,
+            '--no-session-persistence', '--disable-slash-commands', '--system-prompt', policy, '--json-schema', schema_json,
             '--max-budget-usd', format_usd(run['budget_passed_micro'])]
 
 
@@ -260,7 +261,7 @@ def _kill(process, job):
         pass
 
 
-def _spawn(argv, cwd, stdin_bytes, timeout):
+def _spawn(argv, cwd, stdin_bytes, timeout, stdout_max=STDOUT_MAX):
     """(returncode, stdout bytes, stderr bytes, flags). flags: 'timeout' or 'overflow' when the child was killed for it."""
     kwargs = {'creationflags': getattr(subprocess, 'CREATE_NO_WINDOW', 0)} if os.name == 'nt' else {'start_new_session': True}
     process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd, env=_env(), **kwargs)
@@ -287,7 +288,7 @@ def _spawn(argv, cwd, stdin_bytes, timeout):
             process.stdin.close()
         except (OSError, ValueError):
             pass
-    threads = [threading.Thread(target=drain, args=(process.stdout, 'out', STDOUT_MAX), daemon=True),
+    threads = [threading.Thread(target=drain, args=(process.stdout, 'out', stdout_max), daemon=True),
                threading.Thread(target=drain, args=(process.stderr, 'err', STDERR_MAX), daemon=True),
                threading.Thread(target=feed, daemon=True)]
     for t in threads:
