@@ -1,6 +1,6 @@
 """The agent-written wiki edition: packets, validation, the build loop (with a fake `claude`), the saved edition's model, the page, the
 command's guards and the hook rules. No test calls a real model: the provider is an argv prefix that runs FAKE below."""
-import contextlib,io,json,os,re,subprocess,sys,unittest
+import contextlib,io,json,os,re,signal,subprocess,sys,threading,time,unittest
 from pathlib import Path
 from unittest.mock import patch
 import test_wiki as tw
@@ -11,8 +11,8 @@ from core.notes import change
 
 # A stand-in for `claude -p`: it answers each kind of call from the packet it reads on stdin, so a test only chooses the mode.
 # FAKE_PAGES: pages in the outline (default 2); FAKE_COST: dollars per call; FAKE_FAIL: a task ("page", "outline", "place") or
-# "page:Title" that answers with a provider error; FAKE_BAD: a task whose answer breaks the contract; FAKE_PLACE: new | omit.
-FAKE='''import json,os,sys
+# "page:Title" that answers with a provider error; FAKE_BAD: a task whose answer breaks the contract; FAKE_PLACE: new | omit; FAKE_SLEEP: seconds a call waits before it answers.
+FAKE='''import json,os,sys,time
 args=sys.argv[1:]
 if '--help' in args:
     print('Usage: claude [options]\\n'+'\\n'.join('  '+f+' <value>' for f in %r));sys.exit(0)
@@ -20,6 +20,7 @@ packet=json.loads(sys.stdin.read());task=packet['task'];env=os.environ.get
 title=packet['page']['title'] if task=='page' else None
 open(env('FAKE_LOG'),'a').write(json.dumps({'task':task,'title':title,'budget':args[args.index('--max-budget-usd')+1],'model':args[args.index('--model')+1],
     'policy':args[args.index('--system-prompt')+1],'sources':len(packet.get('sources',[])),'bodies':[len(s['body']) for s in packet.get('sources',[])]})+'\\n')
+time.sleep(float(env('FAKE_SLEEP','0')))
 def done(report):
     print(json.dumps({'type':'result','subtype':'success','is_error':False,'result':'','structured_output':report,'total_cost_usd':float(env('FAKE_COST','0.01'))}))
 fail=env('FAKE_FAIL','')
@@ -113,7 +114,7 @@ class Validation(unittest.TestCase):
         r=self.good();r['sections'][0]['pages'][0]['title']='C# [and] a|bar'
         self.assertEqual(wa.validate_outline(r,self.outline)['sections'][0]['pages'][0]['title'],'C and a bar')
     def test_placement_rules(self):
-        m={'notes':{'N1':'a','N2':'b'},'pages':{'P1':'pg1'},'sections':{'S1':'a1'}}
+        m={'notes':{'N1':'a','N2':'b'},'pages':{'P1':'pg1'},'sections':{'S1':'a1'},'capacity':{'P1':2},'titles':set()}
         ok=wa.validate_place({'placements':[{'note':'N1','page':'P1'},{'note':'N2','page':'NP1'}],'new_pages':[{'key':'NP1','section':'S1','title':'New','purpose':'p'}]},m,1)
         self.assertEqual([p['page'] for p in ok['placements']],['P1','NP1'])
         for bad in ({'placements':[{'note':'N3','page':'P1'}],'new_pages':[]},{'placements':[{'note':'N1','page':'P2'}],'new_pages':[]},
@@ -134,6 +135,48 @@ class Validation(unittest.TestCase):
             with self.assertRaises(wa.WikiError,msg=kw):wa.validate_page(r,m,{'P1':'Other'})
         bad(body='Unknown.[N7]');bad(lead='No marker.',body='Nor here.');bad(cited=['N1','N1']);bad(cited=['N5']);bad(body='A footnote.[^1][N1]')
         bad(body='A link [[P4]] to nowhere.[N1]');bad(lead='x'*(wa.LEAD_MAX+1));bad(body='x'*(wa.BODY_MAX+1));bad(body='  ');bad(extra=1)
+    def test_the_place_packet_gives_page_capacity_and_validation_enforces_it(self):   # AW-5
+        note=lambda i:{'id':i,'title':i,'type':'knowledge','tags':[],'files':[],'updated':'2026-01-01','lead':'','body':'b','project':'p'}
+        edition={'sections':[{'key':'a1','title':'Core','blurb':'b','pages':['pg1','pg2']}],'pages':{
+            'pg1':{'title':'Full','purpose':'p','plan':[f'x{i}' for i in range(wa.SOURCES_MAX)]},'pg2':{'title':'Roomy','purpose':'q','plan':['x0']}}}
+        text,m=wa.place_packet('demo','domain',edition,[note('n1'),note('n2')]);pages=json.loads(text)['outline']['sections'][0]['pages']
+        self.assertEqual([(p['key'],p['capacity']) for p in pages],[('P1',0),('P2',wa.SOURCES_MAX-1)]);self.assertEqual(m['capacity'],{'P1':0,'P2':wa.SOURCES_MAX-1})
+        wa.validate_place({'placements':[{'note':'N1','page':'P2'},{'note':'N2','page':'P2'}],'new_pages':[]},m,2)
+        for page in ('P1',):
+            with self.assertRaises(wa.WikiError,msg='a full page'):wa.validate_place({'placements':[{'note':'N1','page':page},{'note':'N2','page':'P2'}],'new_pages':[]},m,2)
+        m['capacity']['P2']=1
+        with self.assertRaises(wa.WikiError,msg='more notes than the page has room for'):wa.validate_place({'placements':[{'note':'N1','page':'P2'},{'note':'N2','page':'P2'}],'new_pages':[]},m,2)
+    def test_a_new_page_may_not_reuse_a_saved_title(self):   # AW-6
+        note=lambda i:{'id':i,'title':i,'type':'knowledge','tags':[],'files':[],'updated':'2026-01-01','lead':'','body':'b','project':'p'}
+        edition={'sections':[{'key':'a1','title':'Core','blurb':'b','pages':['pg1']}],'pages':{'pg1':{'title':'Hive Overview','purpose':'p','plan':['x']}}}
+        _,m=wa.place_packet('demo','domain',edition,[note('n1')])
+        report=lambda title:{'placements':[{'note':'N1','page':'NP1'}],'new_pages':[{'key':'NP1','section':'S1','title':title,'purpose':'p'}]}
+        with self.assertRaises(wa.WikiError):wa.validate_place(report('hive overview'),m,1)
+        self.assertEqual(wa.validate_place(report('Another page'),m,1)['new_pages'][0]['title'],'Another page')
+    def test_a_placement_must_cover_every_new_note(self):   # AW-7
+        m={'notes':{'N1':'a','N2':'b'},'pages':{'P1':'pg1'},'sections':{'S1':'a1'},'capacity':{'P1':5},'titles':set()}
+        with self.assertRaises(wa.WikiError) as c:wa.validate_place({'placements':[{'note':'N1','page':'P1'}],'new_pages':[]},m,1)
+        self.assertIn('N2',str(c.exception))
+        self.assertEqual(len(wa.validate_place({'placements':[{'note':'N2','page':'P1'},{'note':'N1','page':'P1'}],'new_pages':[]},m,1)['placements']),2)
+    def test_equal_bodies_are_cut_together_to_the_cap(self):   # AW-8
+        edition={'sections':[{'key':'a1','title':'Core','blurb':'b','pages':['pg1']}],'pages':{'pg1':{'title':'One','purpose':'p','section':'a1','plan':['x','y']}}}
+        note=lambda i,size:{'id':i,'title':i,'type':'knowledge','tags':[],'files':[],'updated':'2026-01-01','lead':'','body':'w'*size}
+        for sizes in ((80_000,80_000),(80_000,80_000,3_000),(60_000,60_000,60_000)):
+            plan=[f'n{i}' for i in range(len(sizes))];edition['pages']['pg1']['plan']=plan
+            packet=json.loads(wa.page_packet('demo','domain',edition,'pg1',{p:note(p,n) for p,n in zip(plan,sizes)})[0])
+            got=[len(s['body']) for s in packet['sources']];self.assertLessEqual(sum(got),wa.PAGE_SOURCES_MAX,sizes);self.assertTrue(all(g>=min(n,wa.SOURCE_BODY_MIN) for g,n in zip(got,sizes)))
+            self.assertTrue(all(s.get('cut') for s,n in zip(packet['sources'],sizes) if n>=60_000),sizes)
+        self.assertEqual(got,[50_000]*3)
+    def test_code_is_left_alone_by_citations_and_page_links(self):   # AW-9
+        m={'notes':{'N1':'a','N2':'b'},'pages':{'P1':'pg1'}}
+        body='Use `[N9]` or `[[P7]]` here.[N1] See [[P1]].\n```js\nx[N2]; [[P9]]; re=/[^1]/\n```\nAfter.[N1]\n'
+        out=wa.validate_page({'lead':'Fact `[N8]`.[N1]','body':body,'cited':['N1']},m,{'P1':'Other'})
+        self.assertEqual(out['body'],'Use `[N9]` or `[[P7]]` here.[^1] See [[Other]].\n```js\nx[N2]; [[P9]]; re=/[^1]/\n```\nAfter.[^1]');self.assertEqual((out['lead'],out['sources']),('Fact `[N8]`.[^1]',['a']))
+        with self.assertRaises(wa.WikiError):wa.validate_page({'lead':'Lead.[N1]','body':'Prose [N9] and `code`.','cited':['N1']},m,{'P1':'Other'})   # prose is still checked
+        with self.assertRaises(wa.WikiError):wa.validate_page({'lead':'Lead.[N1]','body':'A footnote.[^1]\n```\ncode\n```\n','cited':['N1']},m,{'P1':'Other'})
+    def test_project_editions_are_files_with_a_prefix(self):   # AW-11
+        self.assertEqual(wa.edition_path('r','demo','domain').name,'domain.json')
+        for slug in ('hive','con','nul','com1','aux','prn'):self.assertEqual(wa.edition_path('r','demo',slug).name,f'project-{slug}.json')
     def test_page_packets_cut_the_longest_bodies_first(self):
         edition={'sections':[{'key':'a1','title':'Core','blurb':'b','pages':['pg1','pg2']}],'pages':{'pg1':{'title':'One','purpose':'p','section':'a1','plan':['x','y','z']},'pg2':{'title':'Two','purpose':'q'}}}
         note=lambda i,size:{'id':i,'title':i,'type':'knowledge','tags':[],'files':[],'updated':'2026-01-01','lead':'','body':'w'*size}
@@ -167,6 +210,66 @@ class Build(Base):
         self.assertEqual([(e['kind'],e['done'],e['total']) for e in events[1:4]],[('outline',1,3),('page',2,3),('page',3,3)]);self.assertEqual(events[-1]['ok'],True)
         self.assertEqual({c['model'] for c in self.calls()},{'sonnet'});self.assertTrue(all(c['policy']==wa.POLICIES[c['task']] for c in self.calls()))
         self.assertEqual([c['budget'] for c in self.calls() if c['task']=='outline'],['2.00'])
+    def test_a_cost_above_the_grant_stops_further_calls(self):   # AW-1
+        self.sample()
+        with patch.object(wa,'WORKERS',1):r=self.build(budget='20',env={'FAKE_PAGES':'3','FAKE_COST':'1.2'})
+        self.assertEqual((r['ok'],r['stopped'],r['calls'],len(r['written']),len(r['pending'])),(True,'budget',{'outline':1,'place':0,'pages':1},1,2));self.assertAlmostEqual(r['overrun_usd'],0.2);self.assertAlmostEqual(r['cost_usd'],2.4)
+        self.assertEqual(self.kinds(),{'outline':1,'place':0,'page':1});self.assertNotIn('overrun_usd',self.build(budget='20',env={'FAKE_PAGES':'3','FAKE_COST':'0.01'}))
+    def test_the_edition_is_read_under_the_lock(self):   # AW-2
+        self.sample();path=wa.edition_path(self.root,'demo','domain');seen=[];real=wa.load_edition
+        def probe(p):
+            try:
+                with file_lock(path.parent/(path.name+'.lock'),timeout=0):seen.append('free')
+            except TimeoutError:seen.append('locked')
+            return real(p)
+        with patch.object(wa,'load_edition',probe):self.build();self.build(dry_run=True)
+        self.assertEqual(seen,['locked','free'])   # a real build reads it under the lock; a dry run may read it without
+    def test_note_text_and_revision_come_from_one_read(self):   # AW-3
+        from core import repository
+        ids=self.sample();nid=ids['bug'];real=repository.inventory;state=[];old={n['id']:n for n in real('demo',self.root)}[nid]
+        def once(*a,**k):
+            out=real(*a,**k)
+            if not state:state.append(1);change(nid,'demo','update',self.root,body='Changed after the first read.')
+            return out
+        with patch.object(repository,'inventory',once),patch.object(wa,'inventory',once):_,notes,revisions=wa.gather('demo',self.root)
+        self.assertNotEqual(old['revision'],{n['id']:n for n in real('demo',self.root)}[nid]['revision'])
+        self.assertEqual((revisions[nid],notes[nid]['lead']),(old['revision'],'The app crashed.'))
+    def test_progress_counters_never_go_backward(self):   # AW-12
+        events=[]
+        def progress(e):
+            if e['event']=='call' and e['done']==2:time.sleep(1.0)   # a slow listener must not let the next call overtake it
+            events.append(e)
+        self.sample();self.build(progress=progress);self.assertEqual([e['done'] for e in events if e['event']=='call'],[1,2,3])
+    def test_a_signal_cancels_the_build_and_kills_the_running_calls(self):   # AW-14
+        self.sample();self.build();ed=self.edition()
+        for page in ed['pages'].values():change(page['plan'][0],'demo','update',self.root,body='A changed body for '+page['title'])
+        for sig in (signal.SIGTERM,signal.SIGINT):
+            before=len(self.calls());old=signal.getsignal(sig)
+            def fire():
+                end=time.monotonic()+30
+                while time.monotonic()<end and len(self.calls())<before+2:time.sleep(0.05)
+                signal.raise_signal(sig)
+            thread=threading.Thread(target=fire);thread.start();start=time.monotonic()
+            r=self.build(env={'FAKE_SLEEP':'120'});thread.join()
+            self.assertLess(time.monotonic()-start,60,sig);self.assertEqual((r['ok'],r['stopped'],r['error'],r['written']),(False,'error','cancelled',[]),sig)
+            self.assertIs(signal.getsignal(sig),old);self.assertEqual({p['id']:p['body'] for p in self.edition()['pages'].values()},{i:p['body'] for i,p in ed['pages'].items()})
+    def test_a_build_off_the_main_thread_installs_no_handler(self):   # AW-14
+        self.sample();box=[];thread=threading.Thread(target=lambda:box.append(self.build()));thread.start();thread.join();self.assertTrue(box[0]['ok'])
+    def test_claude_is_taken_from_LIVING_MEMORY_CLAUDE_before_PATH(self):   # AW-18
+        self.sample();seen=[];real=agent.provider
+        def spy(cfg=None,executable=None):
+            seen.append(executable);return real(cfg,self.exe)
+        shim=self.base/'claude.cmd';shim.write_text('@echo off',encoding='utf-8')
+        with patch.object(agent,'provider',spy):
+            with patch.dict(os.environ,{'LIVING_MEMORY_CLAUDE':str(self.script)}):self.assertTrue(wa.build(self.root,'demo')['ok'])
+            self.assertEqual(seen,[[str(self.script)]])
+            with patch.dict(os.environ,{'LIVING_MEMORY_CLAUDE':str(self.script)}):wa.build(self.root,'demo',executable=self.exe)   # an explicit executable wins
+            self.assertEqual(seen[1],self.exe)
+            with patch.dict(os.environ,{'LIVING_MEMORY_CLAUDE':''}):wa.build(self.root,'demo');self.assertIsNone(seen[2])   # unset: PATH, as before
+            for value,text in ((str(shim),'script shim'),('claude',"absolute path"),(str(self.base/'missing'/'claude'),'absolute path')):
+                with patch.dict(os.environ,{'LIVING_MEMORY_CLAUDE':value}),self.assertRaises(ValueError,msg=value) as c:wa.build(self.root,'demo')
+                self.assertIn('claude is not available',str(c.exception));self.assertIn(text,str(c.exception))
+        self.assertEqual(len(seen),3)
     def test_an_untouched_wiki_makes_no_calls(self):
         self.sample();self.build();before=len(self.calls())
         r=self.build();self.assertEqual((r['calls'],r['written'],r['cost_usd'],r['stopped']),({'outline':0,'place':0,'pages':0},[],0,None));self.assertEqual(len(self.calls()),before)
@@ -253,7 +356,7 @@ class Build(Base):
         text,manifest=wa.outline_packet('demo','domain',notes[:3]);data=json.loads(text);self.assertEqual([n['key'] for n in data['notes']],['N1','N2','N3']);self.assertNotIn('B'*50,text)
         self.assertEqual(set(data['notes'][0]),{'key','title','type','tags','project','files','lead','headings'});self.assertEqual(manifest['notes']['N1'],'1')
     def test_a_project_builds_its_own_edition(self):
-        ids=self.sample();r=self.build(project='hive');self.assertEqual((r['scope'],Path(r['path']).name),('hive','hive.json'))
+        ids=self.sample();r=self.build(project='hive');self.assertEqual((r['scope'],Path(r['path']).name),('hive','project-hive.json'))
         used={i for p in self.edition('hive')['pages'].values() for i in p['plan']};self.assertTrue(used);self.assertNotIn(ids['general'],used);self.assertNotIn(ids['both'],used)
         m=wa.read_model(self.root,'demo','hive');self.assertEqual((m['scope'],m['projects'][0]['name']),('hive','Hive'))
         with self.assertRaises(ValueError):wa.read_model(self.root,'demo')   # the domain edition is separate
@@ -394,6 +497,21 @@ class Command(Base):
         r=self.ok('wiki','--agent','--format','json','--out',str(self.base/'out'/'a.json'));self.assertEqual(json.loads(Path(r['path']).read_text(encoding='utf-8'))['edition'],'agent')
         self.assertEqual(self.ok('wiki','--theme','purple')['format'],'html');self.assertIn('data-hm="purple"',(self.root/'.views'/'demo'/'wiki.html').read_text(encoding='utf-8'))
         self.add('Fresh note','New.',['project/hive']);self.ok('wiki','--agent','--build','--project','hive');self.assertEqual(self.ok('wiki','--agent','--project','hive')['path'].endswith('agent-wiki-hive.html'),True)
+    def test_an_empty_budget_is_refused_not_replaced_by_the_default(self):   # AW-4
+        self.sample()
+        for extra in ((),('--dry-run',)):
+            code,err=self.cli_json('wiki','--agent','--build','--budget','',*extra);self.assertNotEqual(code,0,extra);self.assertIn('Invalid --budget',err['error']['message'])
+        self.assertFalse(self.log.exists());code,r=self.cli_json('wiki','--agent','--build','--dry-run');self.assertEqual((code,r['budget_usd']),(0,5.0))   # absent: the default
+    def test_the_hints_name_the_project_when_the_scope_is_one(self):   # AW-10
+        self.sample()
+        for argv,text in ((('wiki','--agent'),'run wiki --agent --build'),(('wiki','--agent','--project','hive'),'run wiki --agent --build --project hive')):
+            code,err=self.cli_json(*argv,'--format','json');self.assertNotEqual(code,0);self.assertTrue(err['error']['message'].startswith('no agent wiki for '),err);self.assertTrue(err['error']['message'].endswith(text),err)
+        js=wiki.JS;self.assertNotIn('Run alm wiki --agent --build',js);self.assertEqual(js.count('buildCmd()'),4)
+        if __import__('shutil').which('node'):
+            start=js.index('function buildCmd()');end=js.index('\n',start)
+            for scope,want in (('domain','alm wiki --agent --build'),('hive','alm wiki --agent --build --project hive')):
+                done=subprocess.run(['node','-e','var D={scope:'+json.dumps(scope)+'};'+js[start:end]+';console.log(buildCmd())'],capture_output=True,text=True,timeout=30)
+                self.assertEqual((done.returncode,done.stdout.strip()),(0,want),done.stderr)
     def test_a_stopped_build_exits_nonzero_with_its_result(self):
         self.sample();code,out,err=self.run_cli('wiki','--agent','--build');self.assertEqual(code,0)
         self.add('Fresh note','New.');code,out,err=self.run_cli('wiki','--agent','--build');self.assertEqual(code,0)

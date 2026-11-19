@@ -6,18 +6,21 @@ parsing as maintenance), with this module's own policies and schemas. The model 
 section) and never a ref, a path or a revision, so a miscopied identifier cannot reach the store; validation maps keys back and refuses
 anything unknown, repeated or over its limit. A call that fails validation changes nothing.
 
-The edition is derived output, not notes: it is saved as <store>/.views/<domain>/agent-wiki/<scope>.json after every finished call
+The edition is derived output, not notes: it is saved as <store>/.views/<domain>/agent-wiki/domain.json (or project-<slug>.json) after every finished call
 (atomic write), so an interrupted build loses at most one call, and it is not journaled. Reading it (`read_model`, `export`) makes no
 model call. Money is counted in microdollars like maintenance_state; the build stops when its budget is used and the next build
 continues from the saved edition."""
 from __future__ import annotations
+import contextlib
 import json
+import os
 import re
 import secrets
 import shutil
+import signal
 import tempfile
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
 from . import maintenance_agent as agent
 from .clock import now as clock_now
@@ -61,7 +64,7 @@ PLACE_POLICY = f"""You place new project memory notes into an existing wiki. You
 
 {TRUST}
 
-Task. The packet has the wiki's current outline (sections S1, S2, ... with their pages P1, P2, ...) and the new notes (N1, N2, ...) that no page uses yet. Give exactly one placement for every new note: the page it is a source for (a P key of the outline, or an NP key you define in new_pages), or null when it would mislead a reader (obsolete, a duplicate, a transient status), with a reason. Prefer an existing page. Add a page in new_pages only when no page fits: give its NP key (NP1, NP2, ...), the section (an S key), a unique plain title (leave out [ ] | and #) and a one-sentence purpose. Copy keys exactly.
+Task. The packet has the wiki's current outline (sections S1, S2, ... with their pages P1, P2, ...) and the new notes (N1, N2, ...) that no page uses yet. Give exactly one placement for every new note: the page it is a source for (a P key of the outline, or an NP key you define in new_pages; a page takes at most as many new notes as its capacity says, and a new page at most {SOURCES_MAX}), or null when it would mislead a reader (obsolete, a duplicate, a transient status), with a reason. Prefer an existing page. Add a page in new_pages only when no page fits: give its NP key (NP1, NP2, ...), the section (an S key), a unique plain title (leave out [ ] | and #) and a one-sentence purpose. Copy keys exactly.
 
 {WRITING_RULES}"""
 
@@ -155,7 +158,7 @@ def _outline_view(edition):
         for pid in sec['pages']:
             pkeys[f'P{len(pkeys) + 1}'] = pid
             page = edition['pages'][pid]
-            entries.append({'key': f'P{len(pkeys)}', 'title': page['title'], 'purpose': page['purpose']})
+            entries.append({'key': f'P{len(pkeys)}', 'title': page['title'], 'purpose': page['purpose'], 'capacity': max(0, SOURCES_MAX - len(page['plan']))})
         sections.append({'key': f'S{i}', 'title': sec['title'], 'blurb': sec['blurb'], 'pages': entries})
     return sections, skeys, pkeys
 
@@ -164,7 +167,9 @@ def place_packet(domain, scope, edition, new_notes):
     sections, skeys, pkeys = _outline_view(edition)
     keys = _keyed(new_notes)
     text = _json({'task': 'place', 'domain': domain, 'scope': scope, 'outline': {'sections': sections}, 'notes': [_entry(k, n) for k, n in keys.items()]})
-    return text, {'notes': {k: n['id'] for k, n in keys.items()}, 'sections': skeys, 'pages': pkeys}
+    capacity = {k: max(0, SOURCES_MAX - len(edition['pages'][pid]['plan'])) for k, pid in pkeys.items()}
+    return text, {'notes': {k: n['id'] for k, n in keys.items()}, 'sections': skeys, 'pages': pkeys, 'capacity': capacity,
+                  'titles': {p['title'].casefold() for p in edition['pages'].values()}}
 
 
 def page_packet(domain, scope, edition, pid, notes_by_id):
@@ -179,14 +184,16 @@ def page_packet(domain, scope, edition, pid, notes_by_id):
     cut = set()
     total = sum(len(b) for b in bodies.values())
     while total > PAGE_SOURCES_MAX:
-        longest = max(bodies, key=lambda k: len(bodies[k]))
-        second = max([len(b) for k, b in bodies.items() if k != longest] or [0])
-        size = max(SOURCE_BODY_MIN, second, len(bodies[longest]) - (total - PAGE_SOURCES_MAX))
-        if size >= len(bodies[longest]):
+        top = max(len(b) for b in bodies.values())
+        tied = [k for k, b in bodies.items() if len(b) == top]    # bodies of equal length are cut together, so every pass reduces the total
+        second = max([len(b) for b in bodies.values() if len(b) < top] or [0])
+        size = max(SOURCE_BODY_MIN, second, top - -(-(total - PAGE_SOURCES_MAX) // len(tied)))
+        if size >= top:
             break
-        total -= len(bodies[longest]) - size
-        bodies[longest] = bodies[longest][:size]
-        cut.add(longest)
+        total -= (top - size) * len(tied)
+        for k in tied:
+            bodies[k] = bodies[k][:size]
+            cut.add(k)
     section = next(s for s in edition['sections'] if s['key'] == page['section'])
     others, pkeys = [], {}
     for sec in edition['sections']:
@@ -297,7 +304,7 @@ def validate_place(report, manifest, page_count):
     """{placements: [{id, page: P key | NP key | None, reason}], new_pages: [{key, section, title, purpose}]}; keys stay keys until applied."""
     _shape(report, ('placements', 'new_pages'), 'placement')
     notes, pages, sections = manifest['notes'], manifest['pages'], manifest['sections']
-    new, titles = [], set()
+    new, titles = [], set(manifest['titles'])    # the saved pages' titles count too: [[Title]] must stay unambiguous
     for item in _items(report, 'new_pages', PAGES_MAX, ('key', 'section', 'title', 'purpose')):
         key = item['key']
         if not isinstance(key, str) or not re.fullmatch(NEW_PAGE_KEY, key) or any(key == n['key'] for n in new):
@@ -321,12 +328,32 @@ def validate_place(report, manifest, page_count):
             raise WikiError(f'{str(target)[:20]!r} is not a page of the outline or a new page')
         reason = _text(item.get('reason'), 'reason', REASON_MAX) if target is None else None    # only an omission needs its reason
         placements.append({'id': notes[key], 'page': target, 'reason': reason})
+    if seen != set(notes):
+        raise WikiError('every new note needs exactly one placement; missing: ' + ', '.join(sorted(set(notes) - seen)[:10]))
+    load = {}
+    for item in placements:
+        if item['page'] is not None:
+            load[item['page']] = load.get(item['page'], 0) + 1
+    for target, count in load.items():
+        room = SOURCES_MAX if target.startswith('NP') else manifest['capacity'][target]
+        if count > room:
+            raise WikiError(f'{target} takes at most {room} more notes; {count} were placed on it')
     return {'placements': placements, 'new_pages': new}
 
 
 CITATION = re.compile(r'\[(N[0-9]+(?:\s*,\s*N[0-9]+)*)\]')
 PAGE_LINK = re.compile(r'\[\[(P[0-9]+)\]\]')
 FOOTNOTE = re.compile(r'\[\^[0-9]+\]')
+CODE = re.compile(r'^[ \t]*```[^\n]*\n.*?(?:^[ \t]*```[^\n]*$|\Z)|`[^`\n]+`', re.M | re.S)    # a fenced block (as the page renders it) or an inline code span
+
+
+def _outside_code(text, fn):
+    """`text` with fn applied to everything but code spans and fenced blocks, which stay as written."""
+    out, last = [], 0
+    for m in CODE.finditer(text):
+        out += [fn(text[last:m.start()]), m.group()]
+        last = m.end()
+    return ''.join(out + [fn(text[last:])])
 
 
 def validate_page(report, manifest, titles):
@@ -336,7 +363,7 @@ def validate_page(report, manifest, titles):
     notes = manifest['notes']
     lead, body = _text(report['lead'], 'lead', LEAD_MAX), _text(report['body'], 'body', BODY_MAX)
     _keys(report['cited'], notes, 'cited', SOURCES_MAX, NOTE_KEY)
-    if FOOTNOTE.search(lead) or FOOTNOTE.search(body):
+    if FOOTNOTE.search(CODE.sub(' ', lead)) or FOOTNOTE.search(CODE.sub(' ', body)):
         raise WikiError('the text has [^k] footnotes of its own; it must cite with [N1] markers')
     order = []
 
@@ -354,7 +381,7 @@ def validate_page(report, manifest, titles):
         if match.group(1) not in titles:
             raise WikiError(f'{match.group(1)} is not a page key of this packet')
         return f'[[{titles[match.group(1)]}]]'
-    lead, body = (PAGE_LINK.sub(link, CITATION.sub(cite, text)) for text in (lead, body))
+    lead, body = (_outside_code(text, lambda part: PAGE_LINK.sub(link, CITATION.sub(cite, part))) for text in (lead, body))
     if not order:
         raise WikiError('the page cites no source')
     if len(lead) > LEAD_MAX or len(body) > BODY_MAX:
@@ -365,7 +392,8 @@ def validate_page(report, manifest, titles):
 # ---- the edition on disk
 
 def edition_path(root, domain, scope):
-    return Path(root) / '.views' / domain / 'agent-wiki' / f'{scope}.json'
+    # A project slug may be a Windows reserved name (con, nul, com1), so project files carry a prefix.
+    return Path(root) / '.views' / domain / 'agent-wiki' / ('domain.json' if scope == 'domain' else f'project-{scope}.json')
 
 
 def html_path(root, domain, project=None):
@@ -394,11 +422,12 @@ def gather(domain, root, project=None, strict=True):
     """(scoped model, in-scope notes by id, {id: revision}). The notes are the active ones of wiki.wiki_model, limited to one project when
     asked. The revision is the note's own (the value maintenance uses), which wiki_model leaves out."""
     from . import wiki
-    base = wiki.wiki_model(domain, root)
+    records = inventory(domain, root)    # one read: the note text and its revision must come from the same records
+    base = wiki.wiki_model(domain, root, records=records)
     if project is not None and strict and project not in {p['slug'] for p in base['projects']}:
         raise ValueError(f'no notes for project {project}: the projects command lists the registered ones')
     notes = [n for n in base['notes'] if project is None or n['project'] == project]
-    revisions = {n['id']: n['revision'] for n in inventory(domain, root)}
+    revisions = {n['id']: n['revision'] for n in records}
     return dict(base, notes=notes), {n['id']: n for n in notes}, revisions
 
 
@@ -507,10 +536,14 @@ class _Budget:
     (the provider enforces it with --max-budget-usd) and settles with its real cost, or with the whole cap when the cost is unknown."""
     def __init__(self, total):
         self.total, self.spent, self.reserved, self.cv, self.exhausted = total, 0, 0, threading.Condition(), False
+        self.overrun = 0    # microdollars the provider charged above what its calls were granted; once set, no further call is granted
 
     def reserve(self, cap):
         with self.cv:
             while True:
+                if self.overrun:
+                    self.exhausted = True
+                    return 0
                 available = self.total - self.spent - self.reserved
                 if available >= MIN_CALL_MICRO:
                     grant = min(cap, available)
@@ -525,7 +558,31 @@ class _Budget:
         with self.cv:
             self.reserved -= grant
             self.spent += grant if usage is None else usage
+            if usage is not None and usage > grant:
+                self.overrun += usage - grant
             self.cv.notify_all()
+
+
+class _Live:
+    """The provider children that are running, so a cancel can kill them (they run in sessions of their own and miss a signal sent to the builder's group)."""
+    def __init__(self):
+        self.lock, self.children, self.closed = threading.RLock(), {}, False
+
+    def add(self, process, job):
+        with self.lock:
+            self.children[id(process)] = (process, job)
+            if self.closed:
+                agent._kill(process, job)
+
+    def remove(self, process):
+        with self.lock:
+            self.children.pop(id(process), None)
+
+    def kill_all(self):
+        with self.lock:
+            self.closed = True
+            for process, job in list(self.children.values()):
+                agent._kill(process, job)
 
 
 class Build:
@@ -536,8 +593,13 @@ class Build:
         self.calls = {'outline': 0, 'place': 0, 'pages': 0}
         self.written, self.failed = [], []
         self.done, self.total, self.error, self.stop = 0, None, None, None
+        self.live, self.cancelled = _Live(), False
 
     # -- plumbing
+    def cancel(self, signum=None, frame=None):
+        self.cancelled = True
+        self.live.kill_all()
+
     def emit(self, event):
         if self.progress:
             self.progress(event)
@@ -553,19 +615,23 @@ class Build:
     def tick(self, kind, pid, title, ok):
         with self.mu:
             self.done += 1
-            event = {'event': 'call', 'kind': kind, 'page': pid, 'title': title, 'ok': ok, 'done': self.done, 'total': self.total, 'cost_usd': self.cost_usd()}
-        self.emit(event)
+            self.emit({'event': 'call', 'kind': kind, 'page': pid, 'title': title, 'ok': ok, 'done': self.done, 'total': self.total, 'cost_usd': self.cost_usd()})    # under the lock, so counters never go backward
 
     def call(self, kind, packet):
         """One provider call: {ok, report | reason, skipped, cost}. Its cost is charged to the budget and to the edition whatever the outcome."""
+        if self.cancelled:
+            return {'ok': False, 'skipped': True, 'reason': 'cancelled', 'cost': 0}
         grant = self.budget.reserve(CALL_CAP_MICRO[kind])
         if not grant:
             return {'ok': False, 'skipped': True, 'reason': 'the budget is used up', 'cost': 0}
+        if self.cancelled:
+            self.budget.settle(grant, 0)
+            return {'ok': False, 'skipped': True, 'reason': 'cancelled', 'cost': 0}
         result, usage, cwd = {'ok': False}, None, None    # an unknown cost is charged at the cap
         try:
             cwd = tempfile.mkdtemp(prefix='alm-wiki-')
             argv = agent.build_argv(self.found['argv'], {'model': self.model}, {'budget_passed_micro': grant}, POLICIES[kind], SCHEMAS[kind])
-            code, out, err, flags = agent._spawn(argv, cwd, packet.encode('utf-8'), CALL_TIMEOUT[kind], PAGE_STDOUT_MAX)
+            code, out, err, flags = agent._spawn(argv, cwd, packet.encode('utf-8'), CALL_TIMEOUT[kind], PAGE_STDOUT_MAX, self.live)
             if 'timeout' in flags:
                 result['reason'] = 'the call timed out'
             elif 'overflow' in flags:
@@ -685,8 +751,9 @@ class Build:
         self.total = extra + len(todo)
         with ThreadPoolExecutor(WORKERS) as pool:
             for future in [pool.submit(self.guarded, pid) for pid in todo]:
-                future.result()
-        return 'budget' if self.budget.exhausted else None
+                while not future.done():    # a timeout keeps the main thread running Python code, where a cancel signal is handled
+                    wait([future], timeout=0.2)
+        return 'budget' if self.budget.exhausted or self.budget.overrun else None
 
     def pending(self):
         """Pages that still need a call and were not tried in this build (tried and failed pages are in `failed`)."""
@@ -701,9 +768,40 @@ class Build:
         out = {'ok': stopped != 'error', 'domain': self.domain, 'scope': self.scope, 'dry_run': False, 'model': self.model, 'calls': dict(self.calls),
                'written': sorted(self.written, key=rank), 'failed': sorted(self.failed, key=lambda f: rank(f['page'])), 'pending': self.pending(),
                'stopped': stopped, 'cost_usd': self.cost_usd(), 'budget_usd': round(budget_micro / MICRO, 6), 'path': str(self.path)}
+        if self.budget.overrun:
+            out['overrun_usd'] = round(self.budget.overrun / MICRO, 6)    # the provider charged more than it was granted; maintenance would block itself (provider_budget)
         if self.error:
             out['error'] = self.error
         return out
+
+
+def _provider(executable):
+    """agent.provider, except that LIVING_MEMORY_CLAUDE (the absolute path of the native claude executable) is tried before PATH."""
+    chosen = os.environ.get('LIVING_MEMORY_CLAUDE', '').strip()
+    if executable is None and chosen:
+        if not Path(chosen).is_absolute() or not Path(chosen).is_file():
+            return {'ok': False, 'reason_code': 'provider_unavailable', 'detail': 'LIVING_MEMORY_CLAUDE is not the absolute path of an existing file'}
+        if chosen.lower().endswith(('.cmd', '.bat')):
+            return {'ok': False, 'reason_code': 'provider_unsupported', 'detail': 'claude is a script shim; a native executable is required'}
+        executable = [chosen]
+    return agent.provider(None, executable)
+
+
+@contextlib.contextmanager
+def _cancel_on_signal(job):
+    """SIGTERM and SIGINT cancel the build: every running provider call is killed and the build ends with the edition as saved. Off the
+    main thread, where signal handlers cannot be installed, it does nothing."""
+    previous = {}
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            previous[sig] = signal.signal(sig, job.cancel)
+        except (ValueError, OSError):
+            pass
+    try:
+        yield
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 def build(root, domain, project=None, restructure=False, model=DEFAULT_MODEL, budget=DEFAULT_BUDGET, dry_run=False, progress=None, executable=None):
@@ -717,16 +815,19 @@ def build(root, domain, project=None, restructure=False, model=DEFAULT_MODEL, bu
     if not notes_by_id:
         raise ValueError(f'no active notes to write a wiki from in {project or domain}')
     path = edition_path(root, domain, scope)
-    edition = load_edition(path)
     if dry_run:
-        return _dry_run(domain, scope, model, budget_micro, notes_by_id, revisions, edition, restructure)
+        return _dry_run(domain, scope, model, budget_micro, notes_by_id, revisions, load_edition(path), restructure)
     try:
         with file_lock(path.parent / (path.name + '.lock'), timeout=0):
-            found = agent.provider(None, executable)
+            edition = load_edition(path)    # read under the lock: a build that just finished may have changed it
+            found = _provider(executable)
             if not found['ok']:
                 raise ValueError(f"claude is not available ({found['reason_code']}" + (f": {found['detail']}" if found.get('detail') else '') + ')')
             job = Build(domain, scope, notes_by_id, revisions, edition, path, found, model, budget_micro, progress)
-            stopped = job.run(restructure)
+            with _cancel_on_signal(job):
+                stopped = job.run(restructure)
+            if job.cancelled:
+                stopped, job.error = 'error', 'cancelled'
             if job.persist and any(job.calls.values()):
                 job.edition['omit'] = [o for o in job.edition['omit'] if o['id'] in notes_by_id]
                 job.save()
@@ -820,7 +921,7 @@ def read_model(root, domain, project=None):
     check_project(project)
     edition = load_edition(edition_path(root, domain, project or 'domain'))
     if edition is None:
-        raise ValueError(f'no agent wiki for {project or domain} yet; run wiki --agent --build')
+        raise ValueError(f'no agent wiki for {project or domain} yet; run wiki --agent --build' + (f' --project {project}' if project else ''))
     base, _, revisions = gather(domain, root, project, strict=False)
     return agent_view_model(edition, base, revisions)
 

@@ -78,15 +78,15 @@ def _split_lead(body,summary):
     lead=(summary or '').strip();text=(body or '').lstrip()
     return text[len(lead):].lstrip('\n') if lead and text.startswith(lead) else (body or '')
 
-def wiki_model(domain,root,archived=False):
+def wiki_model(domain,root,archived=False,records=None):
     """The JSON-safe wiki of one domain: notes (as articles), projects with their sections, the code folder tree,
-    the section list, and the targets of links into other domains."""
+    the section list, and the targets of links into other domains. `records` is an inventory the caller already read (so it can pair the text with revisions of the same read)."""
     from .repository import inventory
     from .note_format import parts,plain
     from .links import note_links
     from . import projects as registry
     root=Path(root)
-    raw=[dict(n,domain=domain) for n in inventory(domain,root,retired=archived)]
+    raw=[dict(n,domain=domain) for n in (inventory(domain,root,retired=archived) if records is None else records)]
     graph=note_links(root,[domain],'any' if archived else 'active')
     nodes={n['ref']:n for n in graph['nodes']};out={};back={};external={}
     for edge in graph['edges']:
@@ -640,11 +640,12 @@ function byUpdated(a,b){return a.updated<b.updated?1:a.updated>b.updated?-1:0}
 
 // ---- pages ----
 function usd(x){return '$'+x.toFixed(2)}
+function buildCmd(){return 'alm wiki --agent --build'+(D.scope&&D.scope!=='domain'?' --project '+D.scope:'')}
 function agentHome(){
   var p=D.projects[0],b=D.build;setCrumbs([['Wiki','#']]);
   page.appendChild(head('Agent-written wiki',cap(p.name)+' wiki',p.description,'Built '+b.built.slice(0,10)));
   var body=[],items=[],num=0;
-  if(b.pending)body.push(el('div','banner',plural(b.pending,'page')+' to write or refresh. Run alm wiki --agent --build to continue.'));
+  if(b.pending)body.push(el('div','banner',plural(b.pending,'page')+' to write or refresh. Run '+buildCmd()+' to continue.'));
   D.sections.forEach(function(s){
     var x=p.sections[s.key];if(!x)return;num++;
     var sec=wsec('sec-'+s.key,s.label,x.count,s.blurb);items.push({num:num,text:s.label,id:'sec-'+s.key,count:x.count});
@@ -748,8 +749,8 @@ function notePage(n){
   hd.appendChild(d);page.appendChild(hd);
   if(n.retired)page.appendChild(el('div','banner','This page is '+n.status+'. It is kept for history and may be out of date.'));
   var pg=n.page;
-  if(pg&&!pg.written)page.appendChild(el('div','banner','This page is planned and not written yet. Run alm wiki --agent --build to write it from the notes listed under Planned sources.'));
-  else if(pg&&pg.stale)page.appendChild(el('div','banner','A source of this page changed or was archived after it was written. Run alm wiki --agent --build to refresh it.'));
+  if(pg&&!pg.written)page.appendChild(el('div','banner','This page is planned and not written yet. Run '+buildCmd()+' to write it from the notes listed under Planned sources.'));
+  else if(pg&&pg.stale)page.appendChild(el('div','banner','A source of this page changed or was archived after it was written. Run '+buildCmd()+' to refresh it.'));
   var heads=[],md=el('div','markdown');md.appendChild(markdown(n.body,heads));
   var body=[];
   if(n.lead){var lead=el('p','lead lead-block');inline(lead,n.lead);body.push(lead)}

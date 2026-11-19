@@ -1415,7 +1415,7 @@ def main(argv=None):
                 from . import wiki_agent
                 if args.build:
                     def progress(event):print(json.dumps(event,separators=(',',':')),file=sys.stderr,flush=True)
-                    result=wiki_agent.build(root,domain,args.project,args.restructure,args.model or wiki_agent.DEFAULT_MODEL,args.budget or wiki_agent.DEFAULT_BUDGET,args.dry_run,progress if args.progress else None)
+                    result=wiki_agent.build(root,domain,args.project,args.restructure,args.model or wiki_agent.DEFAULT_MODEL,wiki_agent.DEFAULT_BUDGET if args.budget is None else args.budget,args.dry_run,progress if args.progress else None)
                 elif args.format=='json' and not args.out:result={'ok':True,'model':wiki_agent.read_model(root,domain,args.project)}
                 else:result=wiki_agent.export(domain,root,args.project,args.out,args.format,args.theme)
             elif args.format=='json' and not args.out:result={'ok':True,'model':wiki.wiki_model(domain,root,args.archived)}

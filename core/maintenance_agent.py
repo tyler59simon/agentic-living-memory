@@ -261,11 +261,14 @@ def _kill(process, job):
         pass
 
 
-def _spawn(argv, cwd, stdin_bytes, timeout, stdout_max=STDOUT_MAX):
-    """(returncode, stdout bytes, stderr bytes, flags). flags: 'timeout' or 'overflow' when the child was killed for it."""
+def _spawn(argv, cwd, stdin_bytes, timeout, stdout_max=STDOUT_MAX, live=None):
+    """(returncode, stdout bytes, stderr bytes, flags). flags: 'timeout' or 'overflow' when the child was killed for it. `live`, when given,
+    is told of the child (add(process, job)) while it runs and when it ends (remove(process)), so a caller can kill it."""
     kwargs = {'creationflags': getattr(subprocess, 'CREATE_NO_WINDOW', 0)} if os.name == 'nt' else {'start_new_session': True}
     process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd, env=_env(), **kwargs)
     job = _Job(process) if os.name == 'nt' else None
+    if live is not None:
+        live.add(process, job)
     flags, buffers, stop = set(), {'out': bytearray(), 'err': bytearray()}, threading.Event()
 
     def drain(stream, key, cap):
@@ -314,6 +317,8 @@ def _spawn(argv, cwd, stdin_bytes, timeout, stdout_max=STDOUT_MAX):
             stream.close()
         except OSError:
             pass
+    if live is not None:
+        live.remove(process)
     if job is not None:
         job.close()
     return process.returncode, bytes(buffers['out']), bytes(buffers['err']), flags
