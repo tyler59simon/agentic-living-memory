@@ -195,6 +195,16 @@ class Validation(unittest.TestCase):
         for kind,policy in wa.POLICIES.items():
             for phrase in ('untrusted data','You have no tools','em or en dashes','Lead with the fact','one name','delve, tapestry, seamless, showcase, vibrant, meticulous, additionally'):self.assertIn(phrase,policy,kind)
         self.assertIn('[N3]',wa.PAGE_POLICY);self.assertIn('Never invent',wa.PAGE_POLICY)
+        for kind,policy in wa.POLICIES.items():self.assertIn('sentence case',policy,kind)   # AW-37
+        self.assertNotIn('Overview, Architecture and Services',wa.OUTLINE_POLICY)
+
+    def test_title_case_is_told_from_sentence_case(self):   # AW-37
+        for title in ('Tauri Core, Settings and Watcher','Review Page and Learning','Hivemind Executive Workspace','The `x` Method And Flow'):
+            self.assertTrue(wa.title_case(title),title)
+        for title in ('Settings and watcher','Living Memory hooks','Claude Code','How the API uses OAuth tokens','Overview','`Build.Run Method` notes'):
+            self.assertFalse(wa.title_case(title),title)
+        self.assertEqual(wa.case_warnings('Payments overview','Core Pages And Services','## Fine heading\n```\n## Not A Heading Here\n```'),
+                         ['Title Case heading ("Core Pages And Services"); write titles and headings in sentence case'])
         for kind,schema in wa.SCHEMAS.items():self.assertEqual(json.loads(schema),json.loads(json.dumps(getattr(wa,kind.upper()+'_SCHEMA'))))
 
 class Build(Base):
@@ -444,6 +454,16 @@ class Model(Base):
             out=real(report,manifest,titles);out['body']+=' A claim' + chr(0x2014) + 'with a dash, and a seamless fix.[^1]';return out
         with patch.object(wa,'validate_page',dashes):self.build()
         self.assertTrue(any('em or en dash' in w for p in self.edition()['pages'].values() for w in p['warnings']))
+    def test_title_case_headings_are_warned_about_not_rewritten(self):   # AW-37
+        self.sample();self.build();ed=self.edition();pid=next(iter(ed['pages']))
+        change(next(iter(ed['pages'][pid]['plan'])),'demo','update',self.root,body='Changed again.')
+        real=wa.validate_page
+        def titled(report,manifest,titles):
+            out=real(report,manifest,titles);out['body']+='\n\n## Settings And Watcher Flow\n\nText.[^1]\n\n## How the API uses tokens\n\nMore.[^1]';return out
+        with patch.object(wa,'validate_page',titled):self.build()
+        warned=[w for p in self.edition()['pages'].values() for w in p['warnings'] if 'sentence case' in w]
+        self.assertEqual(warned,['Title Case heading ("Settings And Watcher Flow"); write titles and headings in sentence case'])
+        self.assertTrue(any('## Settings And Watcher Flow' in p['body'] for p in self.edition()['pages'].values()), 'the text is kept as written')
     def test_an_edition_saved_for_another_scope_is_not_this_scopes_edition(self):   # AW-23
         self.sample();self.build(project='hive');hive=wa.edition_path(self.root,'demo','hive');domain=wa.edition_path(self.root,'demo','domain');domain.write_bytes(hive.read_bytes())
         with self.assertRaises(ValueError) as c:wa.read_model(self.root,'demo')
