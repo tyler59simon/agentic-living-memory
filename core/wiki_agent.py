@@ -344,16 +344,79 @@ def validate_place(report, manifest, page_count):
 CITATION = re.compile(r'\[(N[0-9]+(?:\s*,\s*N[0-9]+)*)\]')
 PAGE_LINK = re.compile(r'\[\[(P[0-9]+)\]\]')
 FOOTNOTE = re.compile(r'\[\^[0-9]+\]')
-CODE = re.compile(r'^[ \t]*```[^\n]*\n.*?(?:^[ \t]*```[^\n]*$|\Z)|`[^`\n]+`', re.M | re.S)    # a fenced block (as the page renders it) or an inline code span
+INLINE_CODE = re.compile(r'`[^`\n]+`')
+# The fence rule of markdown() in core/wiki.py, which renders the page: a line of three or more backticks opens a block at
+# any quote depth and in any list item; the block ends at a line of the same depth holding only a backtick run at least as
+# long, at the end of its quote, or at the end of the text.
+_QUOTE = re.compile(r'[ \t]*>[ \t]?')
+_OPEN = re.compile(r'[ \t]*(`{3,})')
+_SHUT = re.compile(r'[ \t]*(`+)[ \t]*$')
+
+
+def _unquote(line, most=None):
+    """How many quote markers the page strips from `line` (at most `most`), and the text after them."""
+    depth = 0
+    while (most is None or depth < most) and (m := _QUOTE.match(line)):
+        line, depth = line[m.end():], depth + 1
+    return depth, line
+
+
+def _fences(text):
+    """(start, end) of every fenced block in `text`, from its opening line to the end of its closing line."""
+    lines = text.split('\n')
+    starts = [0]
+    for line in lines:
+        starts.append(starts[-1] + len(line) + 1)
+    spans, i = [], 0
+    while i < len(lines):
+        depth, rest = _unquote(lines[i])
+        opener = _OPEN.match(rest)
+        if not opener:
+            i += 1
+            continue
+        run, j, end = len(opener.group(1)), i + 1, len(text)
+        while j < len(lines):
+            inner, rest = _unquote(lines[j], depth)
+            if inner < depth:   # the quote ended, and the block with it
+                end = starts[j] - 1
+                break
+            shut = _SHUT.match(rest)
+            j += 1
+            if shut and len(shut.group(1)) >= run:
+                end = starts[j] - 1
+                break
+        spans.append((starts[i], min(end, len(text))))
+        i = j
+    return spans
+
+
+def _code_spans(text):
+    """(start, end) of every fenced block and every inline code span outside them, in order."""
+    spans, last = [], 0
+    for start, end in _fences(text) + [(len(text), len(text))]:
+        spans += [(last + m.start(), last + m.end()) for m in INLINE_CODE.finditer(text[last:start])]
+        if start < end:
+            spans.append((start, end))
+        last = end
+    return spans
 
 
 def _outside_code(text, fn):
     """`text` with fn applied to everything but code spans and fenced blocks, which stay as written."""
     out, last = [], 0
-    for m in CODE.finditer(text):
-        out += [fn(text[last:m.start()]), m.group()]
-        last = m.end()
+    for start, end in _code_spans(text):
+        out += [fn(text[last:start]), text[start:end]]
+        last = end
     return ''.join(out + [fn(text[last:])])
+
+
+def _blank_code(text):
+    """`text` with each code span and fenced block replaced by a space."""
+    out, last = [], 0
+    for start, end in _code_spans(text):
+        out += [text[last:start], ' ']
+        last = end
+    return ''.join(out + [text[last:]])
 
 
 def validate_page(report, manifest, titles):
@@ -363,7 +426,7 @@ def validate_page(report, manifest, titles):
     notes = manifest['notes']
     lead, body = _text(report['lead'], 'lead', LEAD_MAX), _text(report['body'], 'body', BODY_MAX)
     _keys(report['cited'], notes, 'cited', SOURCES_MAX, NOTE_KEY)
-    if FOOTNOTE.search(CODE.sub(' ', lead)) or FOOTNOTE.search(CODE.sub(' ', body)):
+    if FOOTNOTE.search(_blank_code(lead)) or FOOTNOTE.search(_blank_code(body)):
         raise WikiError('the text has [^k] footnotes of its own; it must cite with [N1] markers')
     order = []
 

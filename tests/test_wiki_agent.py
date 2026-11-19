@@ -497,16 +497,52 @@ class Page(Base):
         body='- Item.[N1]\n  ```\n  x[N1] [[P1]] [^1]\n  ```\n- Next.[N1]\n'
         out=wa.validate_page({'lead':'Lead.[N1]','body':body,'cited':['N1']},{'notes':{'N1':'a'},'pages':{'P1':'pg1'}},{'P1':'Other'})
         self.assertEqual(out['body'],'- Item.[^1]\n  ```\n  x[N1] [[P1]] [^1]\n  ```\n- Next.[^1]')
+        ul=self.render(out['body'])[2][0];self.assertEqual(ul[0],'ul');first,second=ul[2]
+        # One citation link, outside the code; the code loses the list's indentation (AW-36).
+        self.assertEqual([k[0] for k in first[2]].count('sup'),1);pre=[k for k in first[2] if k[0]=='pre'];self.assertEqual(len(pre),1);self.assertEqual(pre[0][2][0][1],'x[N1] [[P1]] [^1]')
+
+    def render(self,body):
+        """markdown() from the page's script run under node on `body`, as a [tag, text, kids] tree."""
         js=wiki.JS;start=js.index('var INLINE=');end=js.index('// ---- building blocks')
         stub=("var N={},CITE={page:{sources:[{id:'a',title:'A',current:true,missing:false}]}},AG=true;"
               "function mk(t){var e={tag:t,kids:[],lastChild:null,appendChild:function(k){this.kids.push(k);this.lastChild=k;return k},setAttribute:function(){}};return e}"
               "var document={createTextNode:function(t){return {text:t}},createElement:mk,createDocumentFragment:function(){return mk('frag')}};"
               "function el(t,c,x){var e=mk(t);e.className=c;if(x!=null)e.textContent=x;return e}function link(h,c,x){return el('a',c,x)}function nh(n){return '#'}")
-        run=stub+js[start:end]+("var f=markdown("+json.dumps(out['body'])+");"
+        run=stub+js[start:end]+("var f=markdown("+json.dumps(body)+");"
               "function show(n){return n.tag?[n.tag,n.textContent||null,n.kids.map(show)]:n.text}console.log(JSON.stringify(show(f)))")
         done=subprocess.run(['node','-e',run],capture_output=True,text=True,timeout=30);self.assertEqual(done.returncode,0,done.stderr)
-        ul=json.loads(done.stdout)[2][0];self.assertEqual(ul[0],'ul');first,second=ul[2]
-        self.assertEqual([k[0] for k in first[2]].count('sup'),1);pre=[k for k in first[2] if k[0]=='pre'];self.assertEqual(len(pre),1);self.assertEqual(pre[0][2][0][1],'  x[N1] [[P1]] [^1]')   # one citation link, outside the code
+        return json.loads(done.stdout)
+
+    def test_a_longer_fence_holds_a_shorter_one_for_the_validator_and_the_renderer(self):   # AW-35
+        body='Intro.[N1]\n\n- Item\n  ````md\n  ```python\n  x[N9]\n  ```\n  ````\n\nAfter.[N1]\n'
+        out=wa.validate_page({'lead':'Lead.[N1]','body':body,'cited':['N1']},{'notes':{'N1':'a'},'pages':{}},{})
+        self.assertIn('x[N9]',out['body']);self.assertTrue(out['body'].endswith('After.[^1]'))
+        frag=self.render(out['body']);tags=[k[0] for k in frag[2]]
+        self.assertEqual(tags,['p','ul','p'],frag)   # the prose after the real closer is prose again
+        pre=[k for k in frag[2][1][2][0][2] if k[0]=='pre'];self.assertEqual(pre[0][2][0][1],'```python\nx[N9]\n```')
+        # A closer needs only backticks on its line, and a run at least as long as the opener.
+        self.assertEqual([k[0] for k in self.render('````\na\n```\n`````  \nb')[2]],['pre','p'])
+
+    def test_a_fence_in_a_quote_is_code_for_the_validator_and_the_renderer(self):   # AW-34
+        body='> Quoted.[N1]\n> ```\n> x[N1] [N9]\n> ```\n\nAfter.[N1]\n'
+        out=wa.validate_page({'lead':'Lead.[N1]','body':body,'cited':['N1']},{'notes':{'N1':'a'},'pages':{}},{})
+        self.assertIn('> x[N1] [N9]',out['body']);self.assertIn('> Quoted.[^1]',out['body'])
+        quote=self.render(out['body'])[2][0];self.assertEqual(quote[0],'blockquote')
+        self.assertEqual([k[0] for k in quote[2][0][2]],['p','pre']);self.assertEqual(quote[2][0][2][1][2][0][1],'x[N1] [N9]')
+        # An unclosed fence in a quote ends with the quote.
+        out=wa.validate_page({'lead':'Lead.[N1]','body':'> ```\n> x[N9]\n\nAfter.[N1]','cited':['N1']},{'notes':{'N1':'a'},'pages':{}},{})
+        self.assertTrue(out['body'].endswith('After.[^1]'))
+
+    def test_a_fence_belongs_to_the_item_its_indentation_reaches(self):   # AW-36
+        frag=self.render('- Outer\n  - Inner\n  ```py\n  print(1)\n  ```\n- Next\n')
+        outer=frag[2][0][2][0];self.assertEqual(outer[0],'li')
+        kids=[k for k in outer[2] if isinstance(k,list)]
+        self.assertEqual([k[0] for k in kids],['ul','pre'],outer);self.assertEqual(kids[1][2][0][1],'print(1)')
+        inner=kids[0][2][0];self.assertFalse([k for k in inner[2] if isinstance(k,list)])
+        # Deeper indentation goes to the inner item.
+        outer=self.render('- Outer\n  - Inner\n    ```\n    x\n    ```\n')[2][0][2][0]
+        inner=[k for k in outer[2] if isinstance(k,list)][0][2][0]
+        self.assertEqual([k for k in inner[2] if isinstance(k,list) and k[0]=='pre'][0][2][0][1],'x')
     def test_a_theme_picker_serves_both_editions(self):
         self.sample();self.build();agent_page=self.html();plain=wiki.render_html(wiki.wiki_model('demo',self.root))
         for page in (agent_page,plain):

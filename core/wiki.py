@@ -533,10 +533,16 @@ function plain(t){return AG?String(t).replace(/\[\^\d+\]/g,''):t}
 function markdown(text,heads){
   var box=document.createDocumentFragment(),lines=String(text||'').replace(/\r/g,'').split('\n'),i=0;
   function isList(l){return /^(\s*)([-*+]|\d+\.)\s+/.test(l)}
+  // A fence opens with three or more backticks and closes on a line holding only a run at least as long; the citation
+  // check in core/wiki_agent.py (_fences) follows the same rule.
+  function fence(l){var f=/^\s*(`{3,})/.exec(l);return f?f[1].length:0}
+  function shut(l,n){var f=/^\s*(`+)\s*$/.exec(l);return !!f&&f[1].length>=n}
+  function cols(s){return s.replace(/\t/g,'    ').length}
+  function dedent(l,n){var k=0,c=0;while(k<l.length&&c<n&&(l[k]===' '||l[k]==='\t')){c+=l[k]==='\t'?4:1;k++}return l.slice(k)}
   while(i<lines.length){
-    var line=lines[i];
+    var line=lines[i],fo=fence(line);
     if(!line.trim()){i++;continue}
-    if(/^\s*```/.test(line)){var buf=[];i++;while(i<lines.length&&!/^\s*```/.test(lines[i]))buf.push(lines[i++]);i++;var pre=el('pre');pre.appendChild(el('code',null,buf.join('\n')));box.appendChild(pre);continue}
+    if(fo){var buf=[];i++;while(i<lines.length&&!shut(lines[i],fo))buf.push(lines[i++]);i++;var pre=el('pre');pre.appendChild(el('code',null,buf.join('\n')));box.appendChild(pre);continue}
     var h=/^(#{1,6})\s+(.*)$/.exec(line);
     if(h){var lvl=h[1].length<=2?2:3,hx=el('h'+lvl);inline(hx,h[2]);if(heads){hx.id='h-'+heads.length;heads.push({level:lvl,text:hx.textContent,id:hx.id})}box.appendChild(hx);i++;continue}
     if(/^\s*>/.test(line)){var q=[];while(i<lines.length&&/^\s*>/.test(lines[i]))q.push(lines[i++].replace(/^\s*>\s?/,''));var bq=el('blockquote');bq.appendChild(markdown(q.join('\n')));box.appendChild(bq);continue}
@@ -552,16 +558,25 @@ function markdown(text,heads){
       while(i<lines.length){
         var l=lines[i];
         if(!l.trim()){if(i+1<lines.length&&(isList(lines[i+1])||/^\s{2,}\S/.test(lines[i+1]))){i++;continue}break}
-        var m=/^(\s*)([-*+]|\d+\.)\s+(.*)$/.exec(l);
+        var m=/^(\s*)([-*+]|\d+\.)(\s+)(.*)$/.exec(l);
         if(m){
-          var ind=m[1].replace(/\t/g,'    ').length,ordered=/\d/.test(m[2]);
+          var ind=cols(m[1]),ordered=/\d/.test(m[2]);
           while(stack.length&&stack[stack.length-1].ind>ind)stack.pop();
           if(!stack.length||stack[stack.length-1].ind<ind){var lst=el(ordered?'ol':'ul');if(stack.length)stack[stack.length-1].list.lastChild.appendChild(lst);else box.appendChild(lst);stack.push({ind:ind,list:lst})}
-          var li=el('li'),t=/^\[([ xX])\]\s+(.*)$/.exec(m[3]);
+          // Where the latest item's text starts: a fence indented that far or more belongs to it.
+          stack[stack.length-1].col=ind+m[2].length+cols(m[3]);
+          var li=el('li'),t=/^\[([ xX])\]\s+(.*)$/.exec(m[4]);
           if(t){li.className='task'+(t[1]!==' '?' done':'');var cb=el('input');cb.type='checkbox';cb.disabled=true;cb.checked=t[1]!==' ';cb.setAttribute('aria-label',t[1]!==' '?'Done':'Open');li.appendChild(cb);var sp=el('span');inline(sp,t[2]);li.appendChild(sp)}
-          else inline(li,m[3]);
+          else inline(li,m[4]);
           stack[stack.length-1].list.appendChild(li);i++;continue}
-        if(/^\s+```/.test(l)&&stack.length){var fb=[];i++;while(i<lines.length&&!/^\s*```/.test(lines[i]))fb.push(lines[i++]);i++;var fp=el('pre');fp.appendChild(el('code',null,fb.join('\n')));stack[stack.length-1].list.lastChild.appendChild(fp);continue}
+        var lf=fence(l);
+        if(lf&&/^\s/.test(l)&&stack.length){
+          // The deepest item whose text column the fence reaches owns it; deeper lists end. The code loses that indentation.
+          var fi=cols(/^\s*/.exec(l)[0]),k=0;
+          for(var s=stack.length-1;s>=0;s--)if(stack[s].col<=fi){k=s;break}
+          stack.length=k+1;
+          var fb=[];i++;while(i<lines.length&&!shut(lines[i],lf))fb.push(dedent(lines[i++],fi));i++;
+          var fp=el('pre');fp.appendChild(el('code',null,fb.join('\n')));stack[k].list.lastChild.appendChild(fp);continue}
         if(/^\s+\S/.test(l)&&stack.length){var last=stack[stack.length-1].list.lastChild,tgt=last.querySelector(':scope>span')||last;tgt.appendChild(document.createTextNode(' '));inline(tgt,l.trim());i++;continue}
         break}
       continue}
