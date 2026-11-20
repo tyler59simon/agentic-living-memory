@@ -412,9 +412,41 @@ class PacketBounds(Base):
         for block in packed:
             files=[e for e in block['evidence'] if e['kind']=='file']
             self.assertLessEqual(len(files),maintenance.EXCERPTS)
-            for e in files:self.assertLessEqual(len(e.get('excerpt','')),(maintenance.FILE_EXCERPT_CHARS if e.get('whole') else maintenance.EXCERPT_CHARS)+200)   # redaction markers can lengthen text
+            for e in files:self.assertLessEqual(len(e.get('excerpt','')),(maintenance.EXCERPT_CHARS if not e.get('whole') else maintenance.FILE_WITH_DIFF_CHARS if 'diff' in e else maintenance.FILE_EXCERPT_CHARS)+200)   # redaction markers can lengthen text
         evidence=[e for e in manifest['evidence'].values() if e['kind']=='file'];self.assertTrue(evidence);self.assertTrue(all(e['sha256'] and e['lines'] for e in evidence))
         self.assertEqual(sorted(manifest['evidence'],key=lambda i:int(i[1:]))[0],'E1')
+
+class ByFile(Base):
+    """QUEUE-3: notes about one changed file are reviewed together, the file is sent once, with its diff since each note was verified."""
+    def three(self):
+        self.src('x.py','retry = 3\n');self.src('y.py','size = 1\n')
+        b=self.mk('Retry limit in x','The retry limit is 3 (x.py:1).',files=['src/x.py'])
+        d=self.mk('Size in y','The size is 1 (y.py:1).',files=['src/y.py'])
+        c=self.mk('Retry default in x','x.py sets the retry default (x.py:1).',files=['src/x.py'])
+        self.src('x.py','retry = 9\n');self.src('y.py','size = 2\n')
+        return b,d,c
+    def test_notes_about_one_changed_file_share_a_batch(self):
+        b,d,c=self.three()
+        self.assertEqual([x['ref'] for x in self.cands(2)],[self.ref(b),self.ref(c)])
+    def test_the_file_is_sent_once_with_its_diff_and_both_notes_may_cite_it(self):
+        b,d,c=self.three()
+        sel=self.cands(2);text,manifest=maintenance.packet(self.root,sel,'r1')
+        first,second=[[e for e in blk['evidence'] if e['kind']=='file'][0] for blk in json.loads(text)['candidates']]
+        self.assertIn('-retry = 3',first['diff']);self.assertIn('+retry = 9',first['diff'])
+        self.assertEqual((second['id'],second['shown_in']),(first['id'],'C1'));self.assertNotIn('excerpt',second)
+        self.assertIn(first['id'],manifest['candidates'][self.ref(c)]['evidence_ids'])
+        self.assertEqual(manifest['evidence'][first['id']]['diff_base'],sha('retry = 3\n'))
+    def test_a_larger_file_with_a_diff_is_sent_whole(self):
+        text=lambda v:'import os\n'+'value = 1\n'*2500+f'retry = {v}\n'
+        self.src('m.py',text(3));n=self.mk('Retry in m','The retry limit is 3 (m.py:2502).',files=['src/m.py']);self.src('m.py',text(4))
+        _,_,packed=self.prepare();e=[x for x in json.loads(packed)['candidates'][0]['evidence'] if x['kind']=='file'][0]
+        self.assertGreater(len(text(4)),maintenance.FILE_EXCERPT_CHARS);self.assertTrue(e['whole']);self.assertIn('+retry = 4',e['diff'])
+    def test_a_note_with_five_files_is_confirmed_on_evidence_for_the_one_that_changed(self):
+        for i in range(5):self.src(f'f{i}.py',f'v{i} = 1\n')
+        n=self.mk('Five files','Each file sets its value to 1.',files=[f'src/f{i}.py' for i in range(5)])
+        self.src('f4.py','v4 = 1  # still one\n')
+        res=self.go((n,'confirm',{'evidence':['own','file']}))
+        self.assertEqual(res['confirmed'],1,res);self.assertEqual(digests.changed(self.get(n)['file_hashes'],'demo',self.root),[])
 
 class Service(Base):
     def test_dry_run_spends_the_allowance_and_writes_no_notes(self):
@@ -468,9 +500,9 @@ class Gate(StoreFixture):
         import tempfile
         from unittest import mock
         from scripts import eval_maintenance as gate
-        labels={}
+        labels={};self.packets=[]
         def adapter(req):
-            decisions=[]
+            self.packets.append(json.loads(req['packet']));decisions=[]
             for ref,cand in req['manifest']['candidates'].items():
                 d=choose(labels[ref]['label'],cand)
                 if d and d['action']=='supersede':d={**d,'successor':next(iter(cand['successors']))}
@@ -487,6 +519,10 @@ class Gate(StoreFixture):
     def test_a_correct_reviewer_passes_and_every_case_is_selected(self):
         out=self.gate(lambda label,cand:self.GOOD.get(label,{'action':'keep'}))
         self.assertTrue(out['ok'],out['checks']);self.assertEqual(out['cost_usd'],'0.001234')
+        # QUEUE-3: the changed source comes with its diff from the version the note was written against.
+        block=next(b for b in self.packets[0]['candidates'] if b['title']=='Request timeout and retries')
+        diff=next(e for e in block['evidence'] if e['kind']=='file')['diff']
+        self.assertIn('-TIMEOUT = 30',diff);self.assertIn('+TIMEOUT = 60',diff)
     def test_archiving_a_valuable_decision_fails_the_gate(self):
         out=self.gate(lambda label,cand:{'action':'archive','rule':'obsolete_content'} if label=='valuable_decision' else self.GOOD.get(label,{'action':'keep'}))
         self.assertFalse(out['ok']);self.assertFalse(out['checks']['no_protected_retired'])

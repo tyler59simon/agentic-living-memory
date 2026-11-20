@@ -20,10 +20,12 @@ from .repository import canonical_json, digest, redact, store_lock, find_secret,
 
 PACKET_MAX = 128 * 1024
 BODY_MAX = 24 * 1024
-EXCERPTS = 4
+EXCERPTS = 5                   # files with evidence per note: as many as a note hashes (notes.HASHED_FILES_MAX)
 RUN_ID_ROOM = 100
 EXCERPT_CHARS = 1200
 FILE_EXCERPT_CHARS = 16000     # a file up to this size is sent whole
+FILE_WITH_DIFF_CHARS = 48000   # ...and up to this size when its diff since the note was verified is sent too
+DIFF_CHARS = 24000             # a larger diff is not sent
 OUTLINE_CHARS = 3000           # the outline of a larger file
 FILE_READ_MAX = 1 << 20
 EXCLUDED = ('preference', 'policy')            # normative: never reviewed by the model
@@ -238,8 +240,26 @@ def candidates(root, cfg, state, now=None, limit=10):
     while len(chosen) < limit and any(queues.get(d) for d in order):
         for d in order:
             if queues.get(d) and len(chosen) < limit:
-                chosen.append(queues[d].pop(0)[4])
+                picked = queues[d].pop(0)[4]
+                chosen.append(picked)
+                # The other queued notes about a file this one's change touched come along, so one packet reviews the change once.
+                shared = _changed_files(picked)
+                if shared:
+                    for other in order:
+                        keep = []
+                        for item in queues.get(other) or []:
+                            if len(chosen) < limit and _changed_files(item[4]) & shared:
+                                chosen.append(item[4])
+                            else:
+                                keep.append(item)
+                        if other in queues:
+                            queues[other] = keep
     return chosen
+
+
+def _changed_files(cand):
+    """The files a candidate's review is about: those changed since it was verified, by absolute path."""
+    return {os.path.normcase(f['abs']) for f in cand['files'] if f['state'] == 'changed' and f['abs']}
 
 
 def queued_pairs(root, notes, domains):
@@ -412,6 +432,20 @@ def _read_text(path):
     return None if b'\0' in raw else raw.decode('utf-8', 'replace')
 
 
+def _diff(root, path, base, text):
+    """The unified diff from the version of `path` whose hash is `base` (the one the note was verified against, from the re-baselining cache
+    or git history) to `text`, the file now; None without that version or when the diff is over DIFF_CHARS."""
+    import difflib
+    from . import rebaseline
+    old = rebaseline.baseline(root, path, base, store=False)   # a preview writes nothing
+    if old is None:
+        return None
+    before = old.decode('utf-8', 'replace').replace('\r\n', '\n').splitlines(True)
+    after = text.replace('\r\n', '\n').splitlines(True)
+    change = ''.join(difflib.unified_diff(before, after, 'verified', 'now', n=3))
+    return change if len(change) <= DIFF_CHARS else None
+
+
 def packet(root, cands, run_id):
     """(packet text, manifest). The text is JSON of at most PACKET_MAX bytes, all of it redacted. The manifest is private: it maps each
     evidence id (E1, E2, ...) to the real note revision or file hash, and records what each candidate may do."""
@@ -419,6 +453,7 @@ def packet(root, cands, run_id):
     manifest = {'version': 1, 'run_id': run_id, 'evidence': {}, 'candidates': {}, 'deferred': {}, 'dropped': [], 'keys': {}}
     empty = 2 + RUN_ID_ROOM + 40   # fixed room for the id, so a trial packet drops the same notes as the real one
     blocks, size, counter = [], empty, 0
+    shown = {}   # (domain, path, hash now, verified hash) -> (evidence id, key of the candidate that shows it): a file is sent once per packet
 
     def new_id():
         nonlocal counter
@@ -431,9 +466,11 @@ def packet(root, cands, run_id):
             manifest['deferred'][ref] = {'reason_code': 'note_too_large', 'revision': cand['revision'], 'fingerprint': cand['fingerprint'], 'hold': cand.get('hold', ref)}
             continue
         mark = counter
+        recorded = {s['path']: s.get('sha256') for s in (note.get('sources') or []) + (note.get('file_hashes') or [])}
         for whole_ok in (True, False):
             counter = mark
-            evidence, entries = {}, []
+            evidence, entries, reused, showing = {}, [], [], {}
+            key = f"C{len(manifest['keys']) + 1}"
             own = new_id()
             evidence[own] = {'candidate': ref, 'kind': 'note', 'ref': ref, 'revision': cand['revision'], 'role': 'candidate'}
             entries.append({'id': own, 'kind': 'note', 'role': 'candidate'})
@@ -447,12 +484,25 @@ def packet(root, cands, run_id):
                 successors.append({'evidence_id': sid, 'ref': pref, 'revision': pair['revision'], 'title': pair.get('title'), 'type': _type(pair), 'created': pair.get('created'),
                                    'updated': pair.get('updated'), 'body': pair.get('body', '')})
             for f in cand['files'][:EXCERPTS]:
+                base = recorded.get(f['path']) if f['state'] == 'changed' else None
+                share = (cand['domain'], f['path'], f['sha256'], base)
+                if share in shown:
+                    fid, where = shown[share]
+                    reused.append(fid)
+                    entries.append({'id': fid, 'kind': 'file', 'path': f['path'], 'state': f['state'], 'shown_in': where})
+                    continue
                 fid = new_id()
                 record = {'candidate': ref, 'kind': 'file', 'path': f['path'], 'state': f['state'], 'sha256': f['sha256'], 'abs': f['abs'], 'lines': None}
                 entry = {'id': fid, 'kind': 'file', 'path': f['path'], 'state': f['state']}
                 text = _read_text(f['abs']) if f['abs'] and f['state'] in ('current', 'changed') else None
+                if text is not None and base:
+                    change = _diff(root, f['abs'], base, text)
+                    if change is not None:
+                        entry['diff'] = change
+                        record['diff_base'] = base
+                showing[share] = (fid, key)
                 if text is not None:
-                    if whole_ok and len(text) <= FILE_EXCERPT_CHARS:
+                    if whole_ok and len(text) <= (FILE_WITH_DIFF_CHARS if 'diff' in entry else FILE_EXCERPT_CHARS):
                         entry['excerpt'], first, last = text, 1, max(1, len(text.splitlines()))
                         entry['whole'] = True
                     else:
@@ -463,7 +513,6 @@ def packet(root, cands, run_id):
                 evidence[fid] = record
                 entries.append(entry)
             permits = permitted(note, cand['kinds'], cand['pair_same'], bool(successors))
-            key = f"C{len(manifest['keys']) + 1}"
             block = {'key': key, 'title': note.get('title'), 'type': cand['type'], 'status': note.get('status', 'active'),
                      'pinned': cand['pinned'], 'tags': note.get('tags') or [], 'created': note.get('created'), 'updated': note.get('updated'),
                      'checked': note.get('checked'), 'confirmed': note.get('confirmed') or [], 'review_by': note.get('review_by'), 'files': note.get('files') or [],
@@ -483,8 +532,9 @@ def packet(root, cands, run_id):
         blocks.append(text)
         manifest['keys'][key] = ref
         manifest['evidence'].update(evidence)
+        shown.update(showing)
         manifest['candidates'][ref] = {'key': key, 'revision': cand['revision'], 'domain': cand['domain'], 'kinds': cand['kinds'], 'pair_same': cand['pair_same'], 'permitted': permits,
-                                       'evidence_ids': list(evidence), 'successors': successor_refs, 'fingerprint': cand['fingerprint'], 'hold': cand.get('hold', ref),
+                                       'evidence_ids': list(evidence) + reused, 'successors': successor_refs, 'fingerprint': cand['fingerprint'], 'hold': cand.get('hold', ref),
                                        'pair': next(iter(successor_refs), None) if 'replaced' in cand['kinds'] else None,
                                        'files': {f['path']: {'state': f['state'], 'sha256': f['sha256'], 'kind': f['kind']} for f in cand['files']},
                                        'currency_state': (cand['currency'] or {}).get('state'), 'type': cand['type']}
@@ -613,7 +663,8 @@ def _decide(root, run, ref, dec, manifest, now, deadline, clock):
                 return end('skipped' if code == 'stale_revision' else 'deferred', code, code != 'stale_revision')
         tracked = cand['files']
         covered = {ev['path'] for ev in evidence if ev['kind'] == 'file'}
-        full = set(tracked) <= covered and all(f['state'] in ('current', 'changed') for f in tracked.values())
+        # A current file is unchanged since the note was verified, so only the others need evidence.
+        full = {p for p, f in tracked.items() if f['state'] != 'current'} <= covered and all(f['state'] in ('current', 'changed') for f in tracked.values())
         t = cand['type']
         rule, values, retire = dec['rule'], {}, action in ('resolve', 'archive', 'supersede')
         if action == 'resolve':
