@@ -779,9 +779,6 @@ def run(root, dry_run=False, adapter=None, now=None, allow_disabled=False, domai
             verdict = ms.eligibility(root, start, cfg)
             if not verdict['eligible']:
                 return _skipped(verdict['skip_reason'], verdict['next_eligible_at'])
-            if not dry_run:   # free, and it may clear notes this run would otherwise pay to review
-                from . import rebaseline
-                rebaseline.before_review(root, cfg['domains'])
             try:
                 backfill_related(root, cfg, start)
                 prune_queue(root, cfg)
@@ -791,6 +788,13 @@ def run(root, dry_run=False, adapter=None, now=None, allow_disabled=False, domai
             st = ms.state(root, start)
             remaining = cfg['max_notes_per_day'] - st['reviewed'] - st['reserved_notes']
             selected = candidates(root, cfg, st, start, min(remaining, agent.BATCH_MAX))
+            if selected and not dry_run:
+                # Free, and before any reservation: a picked note whose file change touched nothing it cites is re-baselined, not paid for.
+                # At most a quarter of the run's time, so the provider call keeps the rest.
+                from . import rebaseline
+                if rebaseline.before_review(root, selected, min(rebaseline.SWEEP_SECONDS, 0.25 * cfg['timeout_seconds'])):
+                    st = ms.state(root, start)
+                    selected = candidates(root, cfg, st, start, min(remaining, agent.BATCH_MAX))
             # Notes that would not fit in the packet are left out before the reservation, so they cost no allowance.
             dropped = set(packet(root, selected, '')[1]['dropped'])
             selected = [c for c in selected if c['ref'] not in dropped]

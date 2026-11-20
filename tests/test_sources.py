@@ -400,6 +400,8 @@ class Hooks(Kb):
         super().setUp()
         enabled=patch.dict(os.environ,{'LIVING_MEMORY_NO_BACKGROUND':''});enabled.start();self.addCleanup(enabled.stop)
         self.popen=patch.object(sources.subprocess,'Popen');self.spawned=self.popen.start();self.addCleanup(self.popen.stop)
+        from core import rebaseline
+        quiet=patch.object(rebaseline,'_spawn');quiet.start();self.addCleanup(quiet.stop)   # the hourly re-baselining sweep is not a source sync
     def start(self,session='s1'):return self.hook('session-start',session)
     def test_session_start_starts_one_detached_sync_and_says_so(self):
         text=self.start()['context'];self.assertEqual(self.spawned.call_count,1)

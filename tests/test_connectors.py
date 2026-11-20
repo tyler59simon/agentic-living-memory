@@ -300,7 +300,7 @@ class NoNetwork(Wiki):
     def decision(self,rest,**extra):
         return runtime.process('claude','pre-tool-use',{'cwd':str(self.project),'session_id':'allow','tool_name':'Bash','tool_input':{'command':self.command(rest)},**extra},self.root)
     def test_session_start_and_its_background_sync_never_touch_the_network(self):
-        with patch.dict(os.environ,{'LIVING_MEMORY_NO_BACKGROUND':''}),patch.object(sources.subprocess,'Popen') as spawned,patch.object(connectors,'pull',side_effect=AssertionError('network pull from a hook')):
+        with patch.dict(os.environ,{'LIVING_MEMORY_NO_BACKGROUND':''}),patch.object(sources.subprocess,'Popen') as spawned,patch('core.rebaseline._spawn'),patch.object(connectors,'pull',side_effect=AssertionError('network pull from a hook')):
             sources.db_path(self.root,'demo').unlink();context=runtime.process('claude','session-start',{'cwd':str(self.project),'session_id':'s1'},self.root)['context']
             self.assertEqual(spawned.call_count,1);argv=spawned.call_args.args[0];self.assertEqual(argv[-1],'source-sync');self.assertNotIn('wiki',argv);self.assertFalse([a for a in argv if a.startswith('--a')]);self.assertIn('Knowledge base',context)
             self.assertEqual(sources.sync(self.root,'demo')['sources'][0]['name'],'wiki')   # what the spawned process runs: the cache is indexed, nothing is pulled

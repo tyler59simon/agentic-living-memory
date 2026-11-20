@@ -56,10 +56,10 @@ SECRET_PATTERNS = [(name, re.compile(pattern, flags)) for name, pattern, flags i
     # Basic credentials are base64; prose after "Basic" has no digits or symbols.
     ("basic auth credentials", r"\bBasic\s+(?=[A-Za-z0-9+/]*[0-9+/])[A-Za-z0-9+/]{16,}={0,2}", 0),
 )]
-# key = value assignments: DB_PASSWORD=..., client_secret: ..., api-key=..., aws_secret_access_key = ...
+# key = value assignments: DB_PASSWORD=..., client_secret: ..., api-key=..., aws_secret_access_key = ..., and quoted keys ("password": "...")
 ASSIGNMENT = re.compile(
     _EDGE + r"(?:[A-Za-z0-9]+[_.-])*(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?key|auth[_-]?token|token)"
-    r"\s*[:=]\s*[\"']?([^\s\"',;]{8,})", re.I)
+    r"[\"']?\s*[:=]\s*[\"']?([^\s\"',;]{8,})", re.I)
 PLACEHOLDER = re.compile(r"^(?:<.*>|\$\{?.*|%.*%|\{\{.*|.*(?:redacted|example|changeme|placeholder|your[_-]).*|\*+|x{6,}|.*os\.environ.*|.*process\.env.*|.*getenv.*)$", re.I)
 
 

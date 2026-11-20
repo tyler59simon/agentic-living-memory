@@ -19,7 +19,7 @@ Installing or upgrading never turns it on. `maintenance.json` starts disabled, a
 
 ## Before the model: re-baselining
 
-A note goes stale when any byte of a file it lists changes. Before anything reaches the reviewer, an hourly sweep with no model (`rebaseline`, see SCRIPT_REFERENCE.md) re-baselines the notes whose cited lines, definitions and identifiers the change did not touch, and shifts their line citations. A maintenance run does the same sweep for its domains before it picks notes. Only the rest are left stale for the reviewer.
+A note goes stale when any byte of a file it lists changes. Before anything reaches the reviewer, an hourly sweep with no model (`rebaseline`, see SCRIPT_REFERENCE.md) re-baselines the notes whose cited lines, definitions and identifiers the change did not touch, and shifts their line citations. A maintenance run does the same for the notes it picked, before it reserves anything, and then picks again. Only the rest are left stale for the reviewer.
 
 ## Enable and disable
 

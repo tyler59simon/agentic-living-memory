@@ -89,6 +89,24 @@ class Assess(unittest.TestCase):
         self.assertLess(time.perf_counter()-start,2.0)
         self.assertEqual(sum(i2-i1 for t,i1,i2,_,_ in ops),len(a));self.assertEqual(sum(j2-j1 for t,_,_,j1,j2 in ops),len(b))
 
+    # -- Codex re-review of c1ec616
+    def test_a_file_named_between_without_qualifying_the_line_leaves_it_ambiguous(self):
+        found=rebaseline.citations('See r.txt:3. Unlike defaults.toml, this file sets the limit at line 20.',['r.txt'])
+        self.assertEqual([(c['start'],c['ambiguous']) for c in found],[(3,False),(20,True)])
+        found=rebaseline.citations('See r.txt:3 and defaults.toml, line 20.',['r.txt','defaults.toml'])
+        self.assertEqual([(sorted(c['files']),c['ambiguous']) for c in found],[(['r.txt'],False),(['defaults.toml'],False)])
+    def test_a_citation_whose_lines_now_occur_twice_stays_stale(self):
+        old=MOD+''.join(f'pad{i} = {i}\n' for i in range(40))
+        lines=old.split('\n');new='\n'.join(lines[:5]+['# copy above']+lines)
+        v=rebaseline.assess('The limit is set at mod.py:2.','src/mod.py',['src/mod.py'],old,new)
+        self.assertTrue(v['relevant']);self.assertIn('more than once',v['reason'])
+    def test_members_are_indexed_once(self):
+        import time
+        old=''.join(f'def f{i}(x):\n    return x + {i}\n\n\n' for i in range(3000))
+        new=old+'def extra():\n    return 0\n';start=time.perf_counter()
+        v=rebaseline.assess('These functions add (m.py:1-11000).','src/m.py',['src/m.py'],old,new)
+        self.assertLess(time.perf_counter()-start,0.5);self.assertFalse(v['relevant'],v['reason'])   # 1.3 s with a scan per cited symbol
+
 class Base(StoreFixture):
     def setUp(self):
         super().setUp()
@@ -164,7 +182,20 @@ class Sweep(Base):
         self.assertIs(settings.validate('auto_rebaseline',False),False)
         bindings=json.loads((self.root/'bindings.json').read_text(encoding='utf-8'));bindings['auto_rebaseline']=False
         (self.root/'bindings.json').write_text(json.dumps(bindings),encoding='utf-8')
-        self.assertEqual(rebaseline.before_review(self.root,['demo']),'disabled')
+        made=self.cap('gamma subtracts one (mod.py:14-15).');self.edit_alpha()
+        self.assertEqual(rebaseline.before_review(self.root,[{'note':self.get(made),'domain':'demo'}],5),0)
+        self.assertEqual(self.stale(made),['src/mod.py'])
+
+    def test_a_quoted_credential_key_or_a_long_line_is_not_cached(self):
+        from core.repository import find_secret
+        self.assertTrue(find_secret('{"password": "hunter2hunter2"}'))
+        self.mod.write_bytes((MOD+'CONFIG = {"password": "hunter2hunter2"}\n').encode());self.assertIsNone(rebaseline.keep(self.root,self.mod))
+        self.mod.write_bytes((MOD+'NAME = "'+'a_'*1500+'"\n').encode());self.assertIsNone(rebaseline.keep(self.root,self.mod))
+    def test_the_pre_review_pass_rebaselines_only_the_picked_notes_within_its_time(self):
+        made=self.cap('gamma subtracts one (mod.py:14-15).');other=self.cap('gamma again (mod.py:14-15).',title='Mod gamma two');self.edit_alpha()
+        self.assertEqual(rebaseline.before_review(self.root,[{'note':self.get(made),'domain':'demo'}],0),0)
+        self.assertEqual(rebaseline.before_review(self.root,[{'note':self.get(made),'domain':'demo'}],5),1)
+        self.assertEqual(self.stale(made),[]);self.assertEqual(self.stale(other),['src/mod.py'])
 
 @unittest.skipUnless(GIT,'git is not installed')
 class Backfill(Base):
@@ -190,6 +221,13 @@ class Backfill(Base):
         shutil.rmtree(self.root/'.cache'/'baselines');self.edit_alpha()
         res=rebaseline.sweep(self.root,dry_run=True)
         self.assertEqual(res['rebaselined'],1,res);self.assertIsNone(rebaseline.load(self.root,recorded))
+
+    def test_a_partial_clone_is_not_read(self):
+        self.git('init','-q');self.git('add','-A');self.git('commit','-q','-m','one');self.git('config','remote.origin.promisor','true')
+        made=self.cap('gamma subtracts one (mod.py:14-15).');shutil.rmtree(self.root/'.cache'/'baselines');self.edit_alpha()
+        rebaseline._PARTIAL.clear()
+        res=rebaseline.sweep(self.root,dry_run=True)
+        self.assertEqual(res['rebaselined'],0,res);self.assertIn('no baseline',res['notes'][0]['files'][0]['reason'])
 
 class Schedule(Base):
     def go(self,bindings=None,**kw):
