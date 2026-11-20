@@ -21,7 +21,10 @@ CONFIG = 'maintenance.json'
 STATE = 'maintenance/state.json'
 RUNS = 'maintenance/runs'
 POLICY_VERSION = 1
-RETRY_DAYS = 7
+# A note held after a review that changed nothing waits 7, then 14, then 30 days (and 30 after that) before it is picked again.
+BACKOFF_DAYS = (7, 14, 30)
+# An expired hold is kept this long so the next hold of the same revision continues the count.
+RETRY_KEEP_DAYS = 60
 MICRO = 1_000_000
 DEFAULTS = {'version': 1, 'enabled': False, 'domains': [], 'policy_version': POLICY_VERSION, 'model': 'sonnet', 'max_notes_per_day': 10,
             'timeout_seconds': 300, 'daily_budget_usd': '1.00', 'min_interval_seconds': 86400, 'enabled_at': None}
@@ -586,23 +589,32 @@ def running(root):
 
 # ---- retry checkpoints
 
-def retry_hold(st, ref, revision, fingerprint, now=None):
-    """The retry entry while it still holds (same revision and fingerprint, not yet due), else None."""
+def retry_hold(st, ref, revision, now=None):
+    """The retry entry while it still holds (same note revision, not yet due), else None. A change to the note's files does not lift it:
+    a file edited every day would otherwise put the note back in every run. An edit to the note itself does."""
     entry = (st.get('retry') or {}).get(ref)
-    if (entry and entry.get('revision') == revision and entry.get('fingerprint') == fingerprint
-            and _parse(entry['retry_after']) > _aware(now)):
+    if entry and entry.get('revision') == revision and _parse(entry['retry_after']) > _aware(now):
         return entry
     return None
 
 
-def set_retry(root, ref, revision, fingerprint, result, now=None, days=RETRY_DAYS):
-    """Hold a note's review until `days` pass or its revision or fingerprint changes. Never touches `checked`."""
+def backoff_days(count):
+    """How long the `count`th hold in a row of the same revision lasts."""
+    return BACKOFF_DAYS[min(max(count, 1), len(BACKOFF_DAYS)) - 1]
+
+
+def set_retry(root, ref, revision, fingerprint, result, now=None):
+    """Hold a note's review: 7, then 14, then 30 days for successive holds of the same revision (an edit to the note starts the count
+    again). The fingerprint is recorded for reference only. Never touches `checked`."""
     with store_lock(root):
         now = _aware(now)
         acc, _ = accounting(root, now)
         before = _file_digest(root, STATE)
-        acc['retry'] = {k: v for k, v in acc['retry'].items() if _parse(v['retry_after']) > now}
-        acc['retry'][ref] = {'revision': revision, 'fingerprint': fingerprint, 'retry_after': _iso(now + timedelta(days=days)), 'result': result}
+        acc['retry'] = {k: v for k, v in acc['retry'].items() if _parse(v['retry_after']) + timedelta(days=RETRY_KEEP_DAYS) > now}
+        prev = acc['retry'].get(ref)
+        count = (prev.get('count') or 1) + 1 if prev and prev.get('revision') == revision else 1
+        acc['retry'][ref] = {'revision': revision, 'fingerprint': fingerprint, 'retry_after': _iso(now + timedelta(days=backoff_days(count))),
+                             'result': result, 'count': count}
         return transaction(root, {STATE: canonical_json(acc)}, 'maintenance_run', expected={STATE: before})
 
 
@@ -662,7 +674,11 @@ def _merge_state(cur, snap):
     retry = dict(snap['retry'])
     for ref, entry in cur['retry'].items():
         theirs = retry.get(ref)
-        retry[ref] = entry if not theirs or _parse(entry['retry_after']) >= _parse(theirs['retry_after']) else theirs
+        won = entry if not theirs or _parse(entry['retry_after']) >= _parse(theirs['retry_after']) else theirs
+        if theirs and theirs.get('revision') == entry.get('revision'):
+            # The same revision's holds: keep the higher count with the later hold, so a restore never shortens the next one.
+            won = dict(won, count=max(entry.get('count') or 1, theirs.get('count') or 1))
+        retry[ref] = won
     out['retry'] = retry
     return out
 

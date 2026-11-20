@@ -215,7 +215,7 @@ def candidates(root, cfg, state, now=None, limit=10):
         completed = _completed(note)
         files = _file_entries(root, note, note['domain'], bindings, row.get('currency'))
         fingerprint = _fingerprint(files, row['kinds'])
-        if ms.retry_hold(state, row['ref'], note['revision'], fingerprint, now):
+        if ms.retry_hold(state, row['ref'], note['revision'], now):
             continue
         pair, same = None, False
         if row.get('pair') and row['pair']['ref'] in notes and notes[row['pair']['ref']]['domain'] == note['domain']:
@@ -273,7 +273,7 @@ def replaced_candidates(root, state, notes, now, taken, domains):
         if p['old'] in used:
             continue
         fingerprint = digest(canonical_json(['replaced', p['new'], new['revision']]).encode())
-        if ms.retry_hold(state, replaced_hold(p['old']), old['revision'], fingerprint, now):
+        if ms.retry_hold(state, replaced_hold(p['old']), old['revision'], now):
             continue
         used.add(p['old'])
         out.append({'ref': p['old'], 'domain': old['domain'], 'title': old.get('title'), 'type': _type(old), 'revision': old['revision'], 'level': 10,
@@ -493,7 +493,7 @@ def _decision_record(root, run, ref, action, result, code, rule=None, reason=Non
 
 
 def _close(root, run, ref, action, result, code, info, now, hold=False, rule=None, reason=None):
-    """Record a decision that changes no note, with a retry hold when asked (the same revision and evidence are not reviewed again for 7 days)."""
+    """Record a decision that changes no note, with a retry hold when asked (the same revision is not reviewed again for 7, then 14, then 30 days)."""
     out = {'ref': ref, 'action': action, 'result': result, 'reason_code': code}
     try:
         _decision_record(root, run, ref, action, result, code, rule, reason)

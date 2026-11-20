@@ -119,7 +119,8 @@ class Policy(Base):
         self.src('a.py','retry = 3  # tuned\n')
         res=self.go((n,'confirm',{}))
         self.assertEqual((self.one(res)['result'],self.one(res)['reason_code']),('rejected','evidence_incomplete'))
-        self.src('a.py','retry = 4\n')   # a held note is asked about again only when its evidence moves
+        self.src('a.py','retry = 4\n');self.assertEqual(self.cands(),[])   # a changed file does not lift the hold
+        self.now+=timedelta(days=8)
         res=self.go((n,'confirm',{'evidence':['own','file']}))
         self.assertEqual(res['confirmed'],1);self.assertEqual(digests.changed(self.get(n)['file_hashes'],'demo',self.root),[])
     def test_9_removed_source_retires_with_independent_evidence_and_keeps_the_missing_file_visible(self):
