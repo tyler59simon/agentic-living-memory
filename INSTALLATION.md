@@ -57,6 +57,16 @@ Migration plans and phase journals are stored beside the shared configuration in
 
 Use `setup --inspect-plan PLAN_ID` to compare an approved relocation snapshot with the current store without exposing note contents. If the source changed before copying started, rerun setup to produce a fresh preview and review the differences before applying. A destination containing only the migration lock file is still considered empty.
 
+## Proxies and offline machines
+
+Living Memory's only network calls are the optional `semantic install` download and `source-sync` for registered Confluence or Notion sources. Both use Python's standard `urllib`:
+
+- An `HTTPS_PROXY` (or `https_proxy`) environment variable works, and on Windows so does the proxy set in Internet Options (read from the registry). Certificates are checked against the Windows certificate store, so a proxy that inspects TLS with a company root certificate works when that certificate is installed there.
+- PAC files (automatic proxy configuration scripts) are not read, and proxies that need NTLM or Kerberos sign-in are not supported.
+- `semantic install` downloads three pinned files from huggingface.co, which redirects to its CDN; a proxy allow list needs both hosts.
+
+On a machine that cannot reach huggingface.co, download `config.json`, `tokenizer.json` and `model.safetensors` for `minishlab/potion-retrieval-32M` at the revision pinned in `core/semantic.py` on another machine, copy them into one folder, and run `semantic install --from DIR`. The files are checked against the same pinned SHA-256 hashes.
+
 ## Package management and verification
 
 `install.py --plan` saves a package plan without applying it. `--apply-plan ID --expected-plan-sha256 HASH` applies exactly that plan. `--uninstall-plan` proposes removal of the owned package files. It refuses while any harness hook configuration still runs a script from the installed `app/` folder, and the error names each harness file and the `setup.py HARNESS --uninstall-plan` command that unwires it; apply those plans first. It checks the default harness homes, plus any home you set up with `setup.py --home PATH`, which you pass as `--home HARNESS=PATH` (repeatable). Applying a saved uninstall plan repeats the check, with the homes recorded in the plan and any `--home` given to `--apply-plan`. Neither deletes memory data. Source payload and target revision checks preserve unowned or modified files as conflicts. Package transactions are rooted at the install folder (the parent of `app/`). Harness wiring transactions are rooted at each harness's home. Each root keeps its plan files in `.plans/`, and the plans of a harness hold full copies of its settings. Daily housekeeping (once a day, from a session start or end hook) deletes ALM plan files (those with the id, kind, changes and digest fields) that were applied and created more than 30 days ago, and plans never applied that are older than 30 days, counting from the plan's creation time, from `~/.claude/.plans`, `~/.codex/.plans`, the Copilot and Factory homes and, when the hook runs from the installed copy, the install folder's `.plans`. `undo` and `recover` read the operation journals in `.operations/`, not plan files, so pruning does not affect them.
