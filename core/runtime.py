@@ -936,7 +936,7 @@ def prompt_maps(cwd,prompt,root,bindings,state,trace=None,briefed=None,session=N
             if not _repos(state).get(key,{}).get('told'):
                 lines.append(f"{repo_name(repo)} has no codebase map yet. If you explore it, capture one afterwards: "
                              f"{hint_command(root,state)} capture --type map --file '{key}' --title '{repo_name(repo)} codebase map' --summary '...' "
-                             "--detail '**Layout:** ...' --detail '**Entry points:** ...' --detail '**Build/test:** ...'")
+                             "--detail '**Layout:** ...' --detail '**Entry points:** ...' --detail '**Build/test:** ...', plus --section 'Data flow' with a small Mermaid flowchart if it helps")
     # pointers: {ref: revision key} of maps given as a pointer line; the caller keeps them out of this prompt's note hits,
     # which would otherwise record a snippet as the delivery of the map.
     if isinstance(trace,dict):trace['maps']={'repos':[r.name for r in repos],'injected':list(delivered),'pointers':pointers,'unmapped':[Path(k).name for k,v in seen.items() if v is None]}
@@ -2337,7 +2337,7 @@ def map_sentence(key,kind,data,session):
     if kind=='unmapped':
         return (f"this turn explored {name}, which has no codebase map. If that would spare a future session re-exploring it: "
                 f"CMD capture --session {session} --type map --file '{key}' --title '{name} codebase map' --summary '...' "
-                "--detail '**Layout:** ...' (and Entry points, Key modules, Data flow, Build/test/run, Conventions).")
+                "--detail '**Layout:** ...' (and Entry points, Key modules, Data flow, Build/test/run, Conventions), plus --section 'Data flow' with a small Mermaid flowchart if it helps.")
     if kind=='stale':
         paths=data['paths'];names=', '.join(paths[:2])+(f' and {len(paths)-2} more' if len(paths)>2 else '');short=data['short']
         return (f"{data['what']} {short} is stale ({names} changed since it was written): CMD read {short}, then CMD update {short} --session {session} "

@@ -377,7 +377,15 @@ def _cap(text,budget):
     """Last resort for the budget: whole lines while they fit, then a hard cut."""
     if len(text)<=budget:return text
     cut=text.rfind('\n',0,budget-1)
-    return text[:cut] if cut>0 else text[:max(0,budget-1)]+'…'
+    out=text[:cut] if cut>0 else text[:max(0,budget-1)]+'…'
+    # A cut inside a code fence (a map's Mermaid diagram) would leave it open: drop that fence whole.
+    opened=None;pos=0
+    for line in out.split('\n'):
+        m=re.match(r' {0,3}(`{3,}|~{3,})',line)
+        if m and opened is None:opened=(pos,m.group(1))
+        elif m and m.group(1)[0]==opened[1][0] and len(m.group(1))>=len(opened[1]) and not line.strip(' '+m.group(1)[0]):opened=None
+        pos+=len(line)+1
+    return out[:opened[0]].rstrip('\n') if opened else out
 
 def render_context(cwd: str,root: Path|None=None,budget: int=BUDGET)->str|None:
     return build_context(cwd,root,budget)[0]

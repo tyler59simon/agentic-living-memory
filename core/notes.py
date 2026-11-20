@@ -267,9 +267,12 @@ QUALITY_CHECKS=(
     (INTERIM,'this reads as an interim hypothesis: say so in the note (e.g. **Hypothesis:** ...) and update REF once it is confirmed'),
 )
 
+# A diagram's node and state names (Pending --> Done, todo) are labels, not the note's state.
+MERMAID_FENCE=re.compile(r'(?ms)^ {0,3}(`{3,}|~{3,})[ \t]*mermaid\b.*?^ {0,3}\1[^\n]*$')
+
 def quality_checks(note):
     """The content checks of QUALITY_CHECKS that a note trips (no style checks); the review worklist recomputes these."""
-    title=note.get('title','');body=note.get('body','')
+    title=note.get('title','');body=MERMAID_FENCE.sub(' ',note.get('body',''))
     found=[]
     for pattern,message in QUALITY_CHECKS:
         unfinished=message.startswith('describes an unfinished')

@@ -39,6 +39,10 @@ class Style(StoreFixture):
                 '> **Important:** keep the lock.\n\n## Details\n- **Cause:** a stale key.\n- See [[A pivotal note]] and https://example.com/showcase.')
         self.assertEqual(style_warnings({'type': 'context', 'title': 'Paths', 'body': body}), [])
 
+    def test_mermaid_arrows_are_not_dashes(self):
+        body = 'Writes go from the CLI to the repository.\n\n```mermaid\nflowchart LR\n  cli -- write --> notes --> repository\n  a --- b\n```'
+        self.assertEqual(style_warnings({'type': 'knowledge', 'title': 'Writes', 'body': body}), [])
+
     def test_long_and_cut_off_text(self):
         long = ' '.join(['word'] * 70) + '.'
         found = ' | '.join(style_warnings({'type': 'context', 'title': 'T', 'body': long + '\n\n## Details\n- ' + long}))

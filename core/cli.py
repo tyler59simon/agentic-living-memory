@@ -230,7 +230,7 @@ def sections_args(p,update=False):
     """Structured note sections (see core/note_format.py); each replaces only its own section."""
     whole=' On update this replaces the whole section.' if update else ''
     p.add_argument('--summary',help='The summary that opens the note: the fact or decision in one or two plain sentences')
-    p.add_argument('--section',nargs=2,action='append',metavar=('HEADING','TEXT'),help="A section by heading, e.g. 'Why' 'We chose ...'. A decision has Why and Alternatives considered; a bug Cause, Fix and How to check; a runbook When to use, When not to use, Steps, Check and Roll back; research Findings, Sources and Open questions; a knowledge note sections named after what they explain (repeatable; on update it replaces that section only)")
+    p.add_argument('--section',nargs=2,action='append',metavar=('HEADING','TEXT'),help="A section by heading, e.g. 'Why' 'We chose ...'. A decision has Why and Alternatives considered; a bug Cause, Fix and How to check; a runbook When to use, When not to use, Steps, Check and Roll back; research Findings, Sources and Open questions; a knowledge note sections named after what they explain. A section can hold a ```mermaid diagram after a sentence saying what it shows (repeatable; on update it replaces that section only)")
     p.add_argument('--detail',action='append',help='Details bullet: a fact, or "**Label:** fact" when the label names something (repeatable).'+whole)
     p.add_argument('--link',action='append',help='Links bullet: [[Note]], a URL or a REF (repeatable).'+whole)
     p.add_argument('--action',action='append',help='Open action item; plan, bug and risk notes only (repeatable).'+whole)

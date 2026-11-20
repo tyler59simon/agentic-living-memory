@@ -27,6 +27,11 @@ class Quality(StoreFixture):
         # Ingest writes a file digest's layout; the agent cannot add the section to it.
         self.assertFalse(any(said in w for w in quality_warnings(dict(bare, sources=[{'path': 'README.md'}]))))
 
+    def test_mermaid_state_names_are_not_an_unfinished_state(self):
+        diagram = 'The job moves through three states.\n\n```mermaid\nstateDiagram-v2\n  Pending --> Running --> Done\n  Running --> todo\n```'
+        self.assertEqual(quality_warnings({'type': 'knowledge', 'title': 'Job states', 'body': diagram}), [])
+        self.assertTrue(any('unfinished' in w for w in quality_warnings({'type': 'knowledge', 'title': 'Job states', 'body': 'Pending --> Running'})))
+
     def test_lasting_knowledge_has_no_warnings(self):
         result = capture('Use the venv interpreter', 'System Python lacks pytest; run tests with .venv/Scripts/python.exe.', TAGS, 'demo', self.root)
         self.assertNotIn('quality_warnings', result)

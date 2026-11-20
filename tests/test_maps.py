@@ -467,4 +467,16 @@ class Staleness(StoreFixture):
         self.assertEqual(reason.count('is stale'),2);self.assertEqual(reason.count('Living Memory:'),1)
         self.assertIn('Also: ',reason)
 
+class MapCut(unittest.TestCase):
+    def test_a_cut_inside_a_diagram_drops_the_whole_fence(self):
+        from core.maps import map_block
+        body=('Purpose.\n\n## Details\n'+''.join(f'- **Layout {i}:** {"x"*60}\n' for i in range(30))+
+              '\n## Data flow\n\nReads go hook to search.\n\n```mermaid\nflowchart LR\n'+''.join(f'  n{i} --> n{i+1}\n' for i in range(20))+'```')
+        hit={'domain':'d','id':'0123456789abcdef','title':'repo map','body':body,'updated':'2026-11-20'}
+        with patch('core.maps.freshness',return_value='fresh'):
+            for budget in (2500,2560,2640):
+                text=map_block(hit,'C:/repo',budget=budget)
+                self.assertEqual(text.count('```')%2,0,budget);self.assertIn('(truncated; read the rest',text)
+            self.assertIn('n19 --> n20\n```',map_block(hit,'C:/repo',budget=len(body)+10))
+
 if __name__=='__main__':unittest.main()

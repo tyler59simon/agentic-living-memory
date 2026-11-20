@@ -39,6 +39,39 @@ Every note starts with the summary and an optional caveat (`--important`, shown 
 
 Write a section with `--section 'Heading' 'Text'` on `capture` or `update`. On `update` it replaces only that section. `--drop-section 'Heading'` removes one. Links go under Links (`--link`), and open steps of a plan, bug or risk go under Action items (`--action`).
 
+## Diagrams
+
+Draw a Mermaid diagram when a flow, sequence, state change or module layout is easier to see than to read. Obsidian draws them, and so does the Hivemind note view; the terminal and the dashboard show the source.
+
+| Type | A diagram that usually helps |
+|---|---|
+| map | a `Data flow` section with a flowchart of how a request or a write moves between modules |
+| runbook | the steps when they branch, or the roll-back path |
+| knowledge | a request flow (`sequenceDiagram`), a lifecycle or a state machine (`stateDiagram-v2`) |
+| decision | the shape before and after the change, in Why or its own section |
+| bug | the failing call path, in Cause |
+
+Leave diagrams out of preferences, policies, briefs, one-line facts and anything a short list says as well.
+
+- Put the diagram in a section, after a sentence that says what it shows. Search and the prompt hook read that sentence; they do not read the diagram well.
+- Use `flowchart`, `sequenceDiagram` or `stateDiagram-v2`, with about 12 nodes at most and one diagram per section.
+- Label nodes with the real module, command or state names, and quote a label that holds punctuation: `A["alm read"]`.
+- Update the diagram with the note. A diagram that disagrees with the text is worse than none.
+- Pass it with `--section 'Data flow' '...'` (real newlines inside the quotes) or with `--content-file FILE`. In PowerShell use `--content-file`. Not with `--detail`, which makes a bullet of the first line.
+
+````markdown
+## Data flow
+
+A write goes from the CLI through governed notes to the journaled repository, which writes the Markdown.
+
+```mermaid
+flowchart LR
+  cli[core/cli.py] --> notes[core/notes.py] --> repository[core/repository.py] --> md[(notes/*.md)]
+```
+````
+
+The content checks skip Mermaid fences, so state names such as `Pending` or `todo` in a diagram do not raise the unfinished-state warning, and the style checks skip all fenced code.
+
 ## Action items for a dashboard
 
 Any plan, bug or risk note can be shown as a dashboard (`views add REF`, see [SCRIPT_REFERENCE.md](SCRIPT_REFERENCE.md)). The dashboard reads an Action item's text by one convention, and a note that does not follow it still shows, only without tags and IDs.
