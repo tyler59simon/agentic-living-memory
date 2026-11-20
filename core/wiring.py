@@ -109,6 +109,9 @@ def check(harness,setup):
         result['problems'].append(f'the hook script {script} is missing, so every hooked event fails; {fix}')
     if runs is False:
         result['problems'].append(f'the hook interpreter {result["interpreter"] or "(none)"} is missing, so every hooked event fails; {fix}')
+    if harness=='copilot' and not setup._copilot_file(config):
+        result['config_ok']=False
+        result['problems'].append(f'{path} is not a Copilot hooks file of version 1, so Copilot may not load it and setup refuses it; set "version" to 1 (or remove it), then {fix}')
     if here:
         # Only this copy can say what its own handlers and instruction block should look like.
         try:result['handlers_current']=_current(harness,config,setup)
@@ -137,4 +140,4 @@ def wiring():
 
 def broken(found):
     """True when a wired harness's hooks cannot run at all."""
-    return any(isinstance(row,dict) and row.get('wired') and (row.get('script_exists') is False or row.get('interpreter_ok') is False) for row in found.values())
+    return any(isinstance(row,dict) and row.get('wired') and (row.get('script_exists') is False or row.get('interpreter_ok') is False or row.get('config_ok') is False) for row in found.values())

@@ -144,9 +144,11 @@ class Relocation(StoreFixture):
         config=read_json(path);handlers=[h for hs in config['hooks'].values() for h in hs]
         self.assertEqual(len(handlers),5);self.assertNotIn(str(moved),json.dumps(config))
         self.assertFalse(wiring._current('copilot',{**config,'version':2},setup))   # doctor: Copilot would not load it
+        path.write_text(json.dumps({**config,'version':2}))
+        row=wiring.check('copilot',setup);self.assertIn('version 1',' '.join(row['problems']));self.assertTrue(wiring.broken({'copilot':row}))
     def test_an_unowned_copilot_file_is_merged_unless_it_is_not_a_hooks_file(self):   # CODEX-R1B
         home,path=self.copilot();mine=self.COPILOT_HOOK
-        for bad in ('[1, 2]',json.dumps({'hooks':{'agentStop':'echo'}}),json.dumps({'hooks':[]}),json.dumps({'version':None,'hooks':{}})):
+        for bad in ('[1, 2]',json.dumps({'hooks':{'agentStop':'echo'}}),json.dumps({'hooks':[]}),json.dumps({'version':None,'hooks':{}}),json.dumps({'version':True,'hooks':{}})):
             path.write_text(bad)
             with self.assertRaisesRegex(ValueError,'Unknown existing Copilot file preserved'):setup.setup_plan('copilot',home)
         path.write_text(json.dumps({'version':1,'hooks':{'agentStop':[mine]}}))

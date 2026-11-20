@@ -56,7 +56,8 @@ def _events(config,harness):return config.get('hooks',{}) if harness in NESTED e
 def _copilot_file(config):
     """A Copilot hooks file: an object of version 1 (the one Copilot documents) whose hooks, if any, map each event to a list of handlers."""
     events=config.get('hooks',{}) if isinstance(config,dict) else None
-    return isinstance(events,dict) and config.get('version',1)==1 and all(isinstance(handlers,list) for handlers in events.values())
+    version=config.get('version',1) if isinstance(config,dict) else None
+    return isinstance(events,dict) and version==1 and not isinstance(version,bool) and all(isinstance(handlers,list) for handlers in events.values())
 
 def managed_handlers(config,harness):
     if harness=='copilot':   # Copilot lists handlers under each event directly, with no groups
