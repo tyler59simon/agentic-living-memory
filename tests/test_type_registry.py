@@ -229,4 +229,20 @@ class ReReviewFixes(Fixture):
         with patch('core.maintenance.permitted',spy):worklist._maintenance({'type':'knowledge','body':'x'},['due'],False,False,self.root)
         self.assertEqual(seen,[self.root])
 
+class FinalReviewFixes(Fixture):
+    """Regressions for the last Codex review round (2026-11-20)."""
+    def test_a_non_string_legacy_type_is_not_a_custom_type(self):
+        from core.type_registry import _custom
+        self.assertEqual(_custom([{'type':['bug']},{'type':{'a':1}},{'type':'incident'}]),{'incident':[{'type':'incident'}]})
+
+    def test_restore_keeps_usable_entries_of_a_registry_with_a_bad_entry(self):
+        from core.type_registry import restore_registry
+        self.create(name='postmortem',actions=False,review_days=None,concern=None)
+        older=(self.root/'note_types.json').read_text(encoding='utf-8')
+        self.create();code,r=self.capture();self.assertEqual(code,0,r)
+        live=json.loads((self.root/'note_types.json').read_text(encoding='utf-8'));live['types'].append(None)
+        (self.root/'note_types.json').write_text(json.dumps(live),encoding='utf-8')
+        kept=json.loads(restore_registry(self.root,{'note_types.json':older}))
+        self.assertIn('incident',[t['name'] for t in kept['types']])
+
 if __name__=='__main__':unittest.main()

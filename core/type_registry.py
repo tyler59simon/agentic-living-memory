@@ -135,8 +135,9 @@ def _custom(notes):
     """{type: [notes]} for the notes whose type is neither built-in nor legacy."""
     found = {}
     for note in notes:
-        if note.get('type') and note.get('type') not in NOTE_TYPES and note.get('type') not in LEGACY_TYPES:
-            found.setdefault(note.get('type'), []).append(note)
+        kind = note.get('type')
+        if isinstance(kind, str) and kind and kind not in NOTE_TYPES and kind not in LEGACY_TYPES:
+            found.setdefault(kind, []).append(note)
     return found
 
 
@@ -214,10 +215,7 @@ def restore_registry(root, changes):
     if text is None:
         return None
     restored = {t['name']: t for t in _json(text).get('types', []) if isinstance(t, dict) and isinstance(t.get('name'), str)}
-    try:
-        current = {t['name']: t for t in load(root)['types']}
-    except ValueError:
-        current = {}   # a damaged live registry: the snapshot's replaces it
+    current = dict(custom_types(root))   # the usable live entries, also from a registry with a bad entry; none from unreadable JSON
     kept = []
     for name, notes in _after(root, changes).items():
         entry = restored.get(name)
