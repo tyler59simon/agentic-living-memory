@@ -238,6 +238,12 @@ class Retry(Base):
         self.assertEqual(ms.state(self.root,T0+60*DAY)['retry']['demo:a']['count'],2)
         ms.set_retry(self.root,'demo:a','r1','f','deferred',T0+200*DAY)
         self.assertEqual(ms.state(self.root,T0+200*DAY)['retry']['demo:a']['count'],1)
+    def test_a_strict_hold_matches_and_counts_only_its_own_fingerprint(self):
+        ms.set_retry(self.root,'demo:a#replaced','r1','pair-a','deferred',T0,strict=True);st=ms.state(self.root,T0)
+        self.assertTrue(ms.retry_hold(st,'demo:a#replaced','r1',T0+H,'pair-a'))
+        self.assertIsNone(ms.retry_hold(st,'demo:a#replaced','r1',T0+H,'pair-b'))
+        ms.set_retry(self.root,'demo:a#replaced','r1','pair-b','deferred',T0+H,strict=True)
+        self.assertEqual(ms.state(self.root,T0+H)['retry']['demo:a#replaced']['count'],1)
     def test_an_entry_without_a_count_is_its_first_hold(self):
         ms.set_retry(self.root,'demo:a','r1','f','kept',T0);st=json.loads((self.root/'maintenance/state.json').read_text(encoding='utf-8'))
         del st['retry']['demo:a']['count'];(self.root/'maintenance/state.json').write_text(json.dumps(st),encoding='utf-8')
@@ -288,6 +294,11 @@ class RestoreMerge(Base):
         merged=json.loads(ms.merge_restore(current,{'maintenance/state.json':json.dumps(old)})['maintenance/state.json'])
         self.assertEqual((merged['day'],merged['reviewed']),(state['day'],state['reviewed']));self.assertEqual(merged['retry']['demo:a']['retry_after'],'2030-01-01T00:00:00+00:00')
         self.assertEqual(merged['last_attempt_at'],state['last_attempt_at'])
+    def test_a_restore_ignores_a_count_past_its_60_day_memory(self):
+        self.finished(T0,n=2);ms.set_retry(self.root,'demo:a','r1','f1','kept',T0);current=self.files();state=json.loads(current['maintenance/state.json'])
+        old=dict(state,retry={'demo:a':dict(state['retry']['demo:a'],count=3,retry_after='2020-01-01T00:00:00+00:00')})
+        merged=json.loads(ms.merge_restore(current,{'maintenance/state.json':json.dumps(old)})['maintenance/state.json'])['retry']['demo:a']
+        self.assertEqual(merged['count'],1)
     def test_a_restore_keeps_the_higher_hold_count_of_the_same_revision(self):
         self.finished(T0,n=2);ms.set_retry(self.root,'demo:a','r1','f1','kept',T0);current=self.files();state=json.loads(current['maintenance/state.json'])
         old=dict(state,retry={'demo:a':dict(state['retry']['demo:a'],count=3,retry_after='2026-03-11T00:00:00+00:00')})

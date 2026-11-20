@@ -90,6 +90,14 @@ class Candidates(Pairs):
             ms.finish(self.root,run,0,'completed',self.now);self.now+=timedelta(days=1)
         self.assertEqual(self.cands(),[])
         self.assertEqual(self.queue(),[self.pair(old,new)])
+    def test_a_deferred_pair_comes_back_when_its_successor_is_edited(self):
+        # The replaced review's hold names the successor and its revision: a hold on one pair never holds back another.
+        old,new=self.old_new()
+        run,manifest,_=self.prepare();self.assertEqual(manifest['candidates'][self.ref(old)]['kinds'],['replaced'])
+        self.apply(run,manifest,[self.d(manifest,old,'defer')]);ms.finish(self.root,run,0,'completed',self.now)
+        self.assertEqual(self.cands(),[])
+        notes.change(new['id'],'demo','update',self.root,body=NEW_BODY+' It was reviewed again.')
+        self.assertEqual([(c['ref'],c['kinds']) for c in self.cands()],[(self.ref(old),['replaced'])])
     def test_the_budget_is_shared_with_the_other_kinds(self):
         self.same_utc_day(3)
         self.cfg=ms.validate({**self.cfg,'max_notes_per_day':2});ms.set_config(self.root,self.cfg)

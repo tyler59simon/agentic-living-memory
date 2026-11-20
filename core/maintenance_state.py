@@ -589,11 +589,14 @@ def running(root):
 
 # ---- retry checkpoints
 
-def retry_hold(st, ref, revision, now=None):
+def retry_hold(st, ref, revision, now=None, fingerprint=None):
     """The retry entry while it still holds (same note revision, not yet due), else None. A change to the note's files does not lift it:
-    a file edited every day would otherwise put the note back in every run. An edit to the note itself does."""
+    a file edited every day would otherwise put the note back in every run. An edit to the note itself does. With `fingerprint` (a
+    replaced-pair review, whose fingerprint names the successor and its revision) the entry must match it too, so a hold on one pair
+    never holds back a review of another."""
     entry = (st.get('retry') or {}).get(ref)
-    if entry and entry.get('revision') == revision and _parse(entry['retry_after']) > _aware(now):
+    if (entry and entry.get('revision') == revision and (fingerprint is None or entry.get('fingerprint') == fingerprint)
+            and _parse(entry['retry_after']) > _aware(now)):
         return entry
     return None
 
@@ -603,16 +606,18 @@ def backoff_days(count):
     return BACKOFF_DAYS[min(max(count, 1), len(BACKOFF_DAYS)) - 1]
 
 
-def set_retry(root, ref, revision, fingerprint, result, now=None):
+def set_retry(root, ref, revision, fingerprint, result, now=None, strict=False):
     """Hold a note's review: 7, then 14, then 30 days for successive holds of the same revision (an edit to the note starts the count
-    again). The fingerprint is recorded for reference only. Never touches `checked`."""
+    again). The fingerprint is recorded; with `strict` (a replaced-pair hold) the count also starts again when it differs. Never touches
+    `checked`."""
     with store_lock(root):
         now = _aware(now)
         acc, _ = accounting(root, now)
         before = _file_digest(root, STATE)
         acc['retry'] = {k: v for k, v in acc['retry'].items() if _parse(v['retry_after']) + timedelta(days=RETRY_KEEP_DAYS) > now}
         prev = acc['retry'].get(ref)
-        count = (prev.get('count') or 1) + 1 if prev and prev.get('revision') == revision else 1
+        same = prev and prev.get('revision') == revision and (not strict or prev.get('fingerprint') == fingerprint)
+        count = (prev.get('count') or 1) + 1 if same else 1
         acc['retry'][ref] = {'revision': revision, 'fingerprint': fingerprint, 'retry_after': _iso(now + timedelta(days=backoff_days(count))),
                              'result': result, 'count': count}
         return transaction(root, {STATE: canonical_json(acc)}, 'maintenance_run', expected={STATE: before})
@@ -671,11 +676,15 @@ def _merge_state(cur, snap):
         out[k] = source[k]
     out['blocked'] = cur['blocked'] or snap['blocked']
     out['domain_cursor'] = cur['domain_cursor'] or snap['domain_cursor']
-    retry = dict(snap['retry'])
-    for ref, entry in cur['retry'].items():
+    # An entry past its 60-day memory (counted from the newer checkpoint's day) no longer counts: it would hand an old count to a live hold.
+    kept = datetime.combine(date.fromisoformat(newer['day']), datetime.min.time(), timezone.utc) - timedelta(days=RETRY_KEEP_DAYS)
+    def live(entries):
+        return {k: v for k, v in entries.items() if _parse(v['retry_after']) > kept}
+    retry = live(snap['retry'])
+    for ref, entry in live(cur['retry']).items():
         theirs = retry.get(ref)
         won = entry if not theirs or _parse(entry['retry_after']) >= _parse(theirs['retry_after']) else theirs
-        if theirs and theirs.get('revision') == entry.get('revision'):
+        if theirs and theirs.get('revision') == entry.get('revision') and theirs.get('fingerprint') == entry.get('fingerprint'):
             # The same revision's holds: keep the higher count with the later hold, so a restore never shortens the next one.
             won = dict(won, count=max(entry.get('count') or 1, theirs.get('count') or 1))
         retry[ref] = won

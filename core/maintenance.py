@@ -273,7 +273,7 @@ def replaced_candidates(root, state, notes, now, taken, domains):
         if p['old'] in used:
             continue
         fingerprint = digest(canonical_json(['replaced', p['new'], new['revision']]).encode())
-        if ms.retry_hold(state, replaced_hold(p['old']), old['revision'], now):
+        if ms.retry_hold(state, replaced_hold(p['old']), old['revision'], now, fingerprint):
             continue
         used.add(p['old'])
         out.append({'ref': p['old'], 'domain': old['domain'], 'title': old.get('title'), 'type': _type(old), 'revision': old['revision'], 'level': 10,
@@ -498,7 +498,7 @@ def _close(root, run, ref, action, result, code, info, now, hold=False, rule=Non
     try:
         _decision_record(root, run, ref, action, result, code, rule, reason)
         if hold and info:
-            ms.set_retry(root, info.get('hold', ref), info['revision'], info['fingerprint'], code or result, now)
+            ms.set_retry(root, info.get('hold', ref), info['revision'], info['fingerprint'], code or result, now, strict=info.get('hold', ref) != ref)
     except (OSError, ValueError, TimeoutError, ms.Unavailable):
         out['record_failed'] = True
     return out
@@ -794,7 +794,7 @@ def run(root, dry_run=False, adapter=None, now=None, allow_disabled=False, domai
             text, manifest = packet(root, selected, record['id'])
             if not manifest['candidates']:
                 for ref, info in manifest['deferred'].items():
-                    ms.set_retry(root, info.get('hold', ref), info['revision'], info['fingerprint'], info['reason_code'], clock())
+                    ms.set_retry(root, info.get('hold', ref), info['revision'], info['fingerprint'], info['reason_code'], clock(), strict=info.get('hold', ref) != ref)
                 ms.release(root, record, 'no_candidates', clock())
                 return _skipped('no_candidates')
             adapter = adapter or agent.review
