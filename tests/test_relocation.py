@@ -101,6 +101,47 @@ class Relocation(StoreFixture):
         proposed=setup.setup_plan('claude',self.claude,adopt=True);self.assertIn('-My own rule.',proposed['summary']['adopt']['CLAUDE.md'])
         self.apply(self.claude,proposed);after=path.read_text(encoding='utf-8')
         self.assertNotIn('My own rule.',after);self.assertTrue(after.startswith('Mine before.'));self.assertEqual(after.count('agentic-living-memory:begin'),1)
+    COPILOT_HOOK={'type':'command','bash':'echo mine','powershell':'echo mine','timeoutSec':5}
+    def copilot(self):
+        home=Path(os.environ['COPILOT_HOME']);(home/'hooks').mkdir(parents=True,exist_ok=True)
+        return home,home/setup.CONFIG['copilot']
+    def copilot_ours(self,config):return [h for hs in config['hooks'].values() for h in hs if setup._ours(h,'copilot')]
+    def test_copilot_owns_only_its_handlers(self):   # CODEX-R1B
+        from core import wiring
+        home,path=self.copilot();mine=self.COPILOT_HOOK
+        self.apply(home,setup.setup_plan('copilot',home))
+        config=read_json(path);config['hooks']['agentStop'].append(mine);config['hooks']['postToolUse']=[mine];path.write_text(json.dumps(config))
+        self.apply(home,setup.setup_plan('copilot',home))   # a rerun keeps the user's hooks and is not refused
+        config=read_json(path);self.assertIn(mine,config['hooks']['agentStop']);self.assertEqual(config['hooks']['postToolUse'],[mine])
+        self.assertEqual(len(self.copilot_ours(config)),5);self.assertTrue(wiring._current('copilot',config,setup))
+        config['hooks']['sessionStart'][0]['timeoutSec']=99;path.write_text(json.dumps(config))
+        with self.assertRaisesRegex(ValueError,'Modified managed handlers.*--adopt'):setup.setup_plan('copilot',home)
+        proposed=setup.setup_plan('copilot',home,adopt=True);diff=proposed['summary']['adopt'][setup.CONFIG['copilot']]
+        self.assertIn('"timeoutSec": 99',diff);self.assertNotIn('echo mine',diff)   # the diff is our handlers only
+        self.apply(home,proposed);config=read_json(path)
+        self.assertEqual(config['hooks']['sessionStart'][0]['timeoutSec'],15);self.assertEqual(config['hooks']['postToolUse'],[mine])
+        self.apply(home,setup.setup_plan('copilot',home,uninstall=True))   # uninstall leaves the user's hooks only
+        self.assertEqual(read_json(path),{'version':1,'hooks':{'agentStop':[mine],'postToolUse':[mine]}});self.assertFalse((home/'.living-memory-ownership.json').exists())
+        self.apply(home,setup.setup_plan('copilot',home))   # and setup works again over that file
+        config=read_json(path);self.assertEqual(len(self.copilot_ours(config)),5);self.assertEqual(config['hooks']['postToolUse'],[mine])
+    def test_copilot_whole_file_ownership_moves_to_handlers_and_adopt_keeps_user_hooks(self):   # CODEX-R1B
+        home,path=self.copilot();mine=self.COPILOT_HOOK;name=setup.CONFIG['copilot']
+        self.apply(home,setup.setup_plan('copilot',home));config=read_json(path)
+        state=read_json(home/'.living-memory-ownership.json');state['handlers']={};state['files'][name]=digest(canonical_json(config).encode())   # as builds before this one wrote it
+        (home/'.living-memory-ownership.json').write_text(canonical_json(state))
+        config['hooks']['postToolUse']=[mine];path.write_text(json.dumps(config))
+        with self.assertRaisesRegex(ValueError,'--adopt'):setup.setup_plan('copilot',home)
+        proposed=setup.setup_plan('copilot',home,adopt=True);self.assertNotIn('echo mine',proposed['summary']['adopt'][name])
+        self.apply(home,proposed);self.assertEqual(read_json(path)['hooks']['postToolUse'],[mine])
+        self.assertIn(name,read_json(home/'.living-memory-ownership.json')['handlers'])
+    def test_an_unowned_copilot_file_is_merged_unless_it_is_not_a_hooks_file(self):   # CODEX-R1B
+        home,path=self.copilot();mine=self.COPILOT_HOOK
+        for bad in ('[1, 2]',json.dumps({'hooks':{'agentStop':'echo'}}),json.dumps({'hooks':[]})):
+            path.write_text(bad)
+            with self.assertRaisesRegex(ValueError,'Unknown existing Copilot file preserved'):setup.setup_plan('copilot',home)
+        path.write_text(json.dumps({'version':1,'hooks':{'agentStop':[mine]}}))
+        self.apply(home,setup.setup_plan('copilot',home));config=read_json(path)
+        self.assertEqual(config['hooks']['agentStop'][0],mine);self.assertEqual(len(self.copilot_ours(config)),5)
     def test_adopt_is_a_plan_flag_only(self):
         with self.assertRaises(SystemExit):setup.main(['claude','--home',str(self.claude),'--apply-plan','a'*32,'--expected-plan-sha256','b'*64,'--adopt'])
     def test_claude_home_follows_claude_config_dir_unless_claude_home_is_set(self):   # INST-6

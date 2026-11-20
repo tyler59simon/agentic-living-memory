@@ -46,14 +46,22 @@ def _runs(text,script):
 def _ours(handler,harness):
     """A handler this package manages: it runs our adapter script from this copy, the installed copy, its source checkout or the legacy location."""
     if not isinstance(handler,dict):return False
-    text=' '.join([str(handler.get('command','')),str(handler.get('commandWindows',''))]+[str(a) for a in handler.get('args',[]) or []])
+    text=' '.join([str(handler.get(key,'')) for key in ('command','commandWindows','bash','powershell')]+[str(a) for a in handler.get('args',[]) or []])
     if any(_runs(text,marker) for marker in [c/'hooks'/(harness+'_hooks.py') for c in _copies()]+[_legacy_script(harness)]):return True
     # The old Codex installer recognised its handlers by these two names (its Windows command may be encoded).
     return harness=='codex' and 'agentic-living-memory' in text and any(_runs(text,lead+'codex_hooks.py') for lead in ('/','\\',' ','"',"'"))   # the whole file name: not my_codex_hooks.py
 
 def _events(config,harness):return config.get('hooks',{}) if harness in NESTED else config
 
+def _copilot_file(config):
+    """A Copilot hooks file: an object whose hooks, if any, map each event to a list of handlers."""
+    events=config.get('hooks',{}) if isinstance(config,dict) else None
+    return isinstance(events,dict) and all(isinstance(handlers,list) for handlers in events.values())
+
 def managed_handlers(config,harness):
+    if harness=='copilot':   # Copilot lists handlers under each event directly, with no groups
+        events=config.get('hooks',{}) if _copilot_file(config) else {}
+        return {event:[h for h in handlers if _ours(h,harness)] for event,handlers in events.items() if any(_ours(h,harness) for h in handlers)}
     events=_events(config,harness)
     return {event:[{**group,'hooks':[h for h in group.get('hooks',[]) if _ours(h,harness)]} for group in groups if any(_ours(h,harness) for h in group.get('hooks',[]))] for event,groups in events.items() if isinstance(groups,list) and any(isinstance(group,dict) and any(_ours(h,harness) for h in group.get('hooks',[])) for group in groups)}
 
@@ -165,11 +173,19 @@ def setup_plan(harness,home=None,enable_hooks=False,uninstall=False,adopt=False)
                 edited=pretty(managed_handlers(current,harness))
         elif config_name in owned and digest(canonical_json(current).encode())!=owned[config_name]:
             if not adopt:_refuse('Modified managed hook configuration',config_path,harness,uninstall)
-            edited=pretty(current)
+            edited=pretty(managed_handlers(current,harness) if harness=='copilot' else current)   # Copilot keeps the user's hooks, so the diff is ours only
         generated=hooks(harness)
         if harness=='copilot':
-            if current and config_name not in owned:raise ValueError('Unknown existing Copilot file preserved')
-            updated=None if uninstall else generated
+            # Our handlers are replaced and every other hook and key is kept; uninstall deletes the file only when nothing else is in it.
+            if current and not _copilot_file(current):raise ValueError('Unknown existing Copilot file preserved')
+            events=dict(current.get('hooks',{})) if current else {}
+            for event in list(events)+[e for e in generated['hooks'] if e not in events]:
+                kept=[h for h in events.get(event,[]) if not _ours(h,harness)]
+                if not uninstall:kept+=generated['hooks'].get(event,[])
+                if kept:events[event]=kept
+                else:events.pop(event,None)
+            updated={'version':generated['version'],**(current or {}),'hooks':events}
+            if uninstall and not events and set(updated)<={'version','hooks'}:updated=None
         else:
             updated=dict(current);events=dict(_events(updated,harness))
             for event in sorted(set(generated)|set(EVENTS)):
@@ -185,11 +201,11 @@ def setup_plan(harness,home=None,enable_hooks=False,uninstall=False,adopt=False)
             if harness=='codex' and not uninstall:updated.setdefault('description','Codex user-level lifecycle hooks.')
         changes[config_name]=pretty(updated) if updated is not None else None
         if edited is not None:
-            managed=pretty(updated if harness=='copilot' else managed_handlers(updated,harness)) if updated is not None else pretty({})
+            managed=pretty(managed_handlers(updated,harness)) if updated is not None else pretty({})
             adopted[config_name]=(edited,managed)
         if updated is not None:owned[config_name]=digest(canonical_json(updated).encode())
     handler_state=dict(state.get('handlers',{}))
-    if config_name in changes and harness!='copilot' and not uninstall:handler_state[config_name]=digest(canonical_json(managed_handlers(updated,harness)).encode())
+    if config_name in changes and not uninstall:handler_state[config_name]=digest(canonical_json(managed_handlers(updated,harness)).encode())
     changes['.living-memory-ownership.json']=None if uninstall else canonical_json({'schema':2,'files':owned,'handlers':handler_state,'instruction_hash':digest(block.encode())})
     summary={'harness':harness,'hooks':harness!='factory' or enable_hooks,'package':str(ROOT),'interpreter':sys.executable,'sandbox':'unchanged','trust':'native user review required'}
     if adopted:summary['adopt']={name:_diff(name,*texts) for name,texts in adopted.items()}
