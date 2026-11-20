@@ -115,7 +115,7 @@ def hooks(harness):
         if event=='PreToolUse':group={'matcher':PRE_TOOL_MATCHER,**group}
         groups[event]=[group]
     if harness=='claude':
-        # Session end syncs managed Obsidian vaults (a no-op without one), takes the daily backup and prunes old journals.
+        # Session end syncs managed Obsidian vaults (a no-op without one), takes a backup when one is due and prunes old journals.
         groups['SessionEnd']=[{'hooks':[{'type':'command','command':sys.executable,'args':[str(script),'session-end'],'timeout':60}]}]
     return groups
 
