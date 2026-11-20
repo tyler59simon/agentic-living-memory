@@ -187,6 +187,10 @@ def restore_plan(root,source):
         else:changes[rel]=text
     for rel in current:
         if rel not in wanted and rel not in skipped and rel not in TOP_LEVEL:changes[rel]=None
+    if changes.get('note_types.json') is not None:
+        # An older registry must not drop a custom type that notes left after the restore still use.
+        from .type_registry import restore_registry
+        changes['note_types.json']=restore_registry(root,changes)
     current_maint={}
     for rel in _maintenance_files(root):
         try:current_maint[rel]=(root/rel).read_bytes().decode('utf-8-sig')

@@ -143,4 +143,55 @@ class Surfaces(Fixture):
         self.assertIn('Custom note types (--type NAME): incident (Timeline, Impact, Follow-up, action items): A production incident',text)
         self.write('retire',name='incident');self.assertNotIn('Custom note types',protocol(self.root,'demo','claude'))
 
+class ReviewFixes(Fixture):
+    """Regressions for the Codex review of the first custom types commit (2026-11-20)."""
+    def test_headings_the_renderer_treats_as_equal_are_one_heading(self):
+        code,r=self.write('create',**{**INCIDENT,'sections':['Follow-up','Follow up']});self.assertNotEqual(code,0,r);self.assertIn('twice',json.dumps(r))
+
+    def test_a_plain_action_section_keeps_actions_on(self):
+        from core.notes import capture
+        self.create()
+        capture('Checkout outage','Checkout returned 500s.\n\n## Action items\n- add a canary',['subject/project','concern/bug'],'demo',self.root,type='incident')
+        code,r=self.write('update',name='incident',actions=False);self.assertNotEqual(code,0,r)
+
+    def test_template_uses_the_custom_subject(self):
+        self.create(subject='subject/user');self.assertIn('subject/user',_template('incident',self.root))
+
+    def test_a_new_note_needs_an_active_type(self):
+        from core.notes import build_note
+        self.create();self.write('retire',name='incident')
+        with self.assertRaisesRegex(ValueError,'retired'):
+            build_note('Checkout outage','Checkout returned 500s.',['subject/project','concern/bug'],'demo',self.root,'incident')
+
+    def test_maintenance_treats_an_action_type_as_work_tracking(self):
+        from core.maintenance import permitted
+        self.create();code,r=self.capture();self.assertEqual(code,0,r)
+        note=find_note(r['id'],'demo',self.root)[1]
+        self.assertNotIn('supersede',permitted(note,['due'],True,True,self.root))
+        code,k=self.cli('--domain','demo','capture','--title','Cache','--summary','The cache is rebuildable.','--concern','architecture')
+        self.assertIn('supersede',permitted(find_note(k['id'],'demo',self.root)[1],['due'],True,True,self.root))
+
+    def test_undo_is_judged_on_the_store_it_leaves(self):
+        from core.type_registry import check_undo
+        self.create();code,r=self.capture();self.assertEqual(code,0,r)
+        rel=find_note(r['id'],'demo',self.root)[0].relative_to(self.root.resolve()).as_posix()
+        with self.assertRaises(ValueError):check_undo(self.root,{'note_types.json':None})
+        check_undo(self.root,{'note_types.json':None,rel:None})   # the undo removes the type and its only note together
+
+    def test_undo_cannot_bring_back_action_items_the_type_no_longer_takes(self):
+        self.create();code,r=self.capture('--action','Add a canary');self.assertEqual(code,0,r)
+        code,edited=self.cli('--domain','demo','update',r['id'],'--drop-section','Action items');self.assertEqual(code,0,edited)
+        self.assertEqual(self.write('update',name='incident',actions=False)[0],0)
+        code,refused=self.cli('undo',edited['operation_id']);self.assertNotEqual(code,0,refused);self.assertIn('action items',json.dumps(refused))
+
+    def test_restore_keeps_a_type_that_notes_left_after_it_use(self):
+        from core.type_registry import restore_registry
+        self.create(name='postmortem',actions=False,review_days=None,concern=None)
+        older=(self.root/'note_types.json').read_text(encoding='utf-8')
+        self.create();code,r=self.capture();self.assertEqual(code,0,r)
+        rel=find_note(r['id'],'demo',self.root)[0].relative_to(self.root.resolve()).as_posix()
+        kept=json.loads(restore_registry(self.root,{'note_types.json':older}))
+        self.assertEqual(sorted(t['name'] for t in kept['types']),['incident','postmortem'])
+        self.assertEqual(restore_registry(self.root,{'note_types.json':older,rel:None}),older)   # the restore also removes the note
+
 if __name__=='__main__':unittest.main()

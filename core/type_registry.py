@@ -4,6 +4,7 @@ A custom type states its description, summary prompt, sections, whether it takes
 concern and subject tags (core/note_types.definition reads them). Types are created and changed only through `type` (direct,
 journaled, undoable); a type is retired, never deleted, so notes of it keep working."""
 from __future__ import annotations
+import json, re
 from pathlib import Path
 from .note_types import NOTE_TYPES, LEGACY_TYPES, TYPE_NAME, REGISTRY, definition, builtin_definition, custom_types
 from .repository import read_json, canonical_json, find_secrets, store_lock, now
@@ -48,9 +49,10 @@ def _sections(value):
             raise ValueError(f'section heading {heading!r} needs letters')
         if key in LAYOUT_HEADINGS or key in ('executive summary', 'key details', 'resource links', 'important note'):
             raise ValueError(f'section heading {heading!r} is a layout section every note already has')
-        if key in seen:
+        same = ' '.join(re.sub(r'[^\w ]', ' ', heading.casefold()).split())   # how the renderer compares headings (note_format._same_heading)
+        if same in seen:
             raise ValueError(f'section heading {heading!r} is listed twice')
-        seen.add(key)
+        seen.add(same)
         out.append(heading)
     return out
 
@@ -109,8 +111,11 @@ def _domains(root):
     return sorted(p.name for p in base.iterdir() if p.is_dir()) if base.is_dir() else []
 
 
-def notes_by_type(root):
-    """{type: [notes]} for every note in the store (all domains, any status) whose type is neither built-in nor legacy."""
+NOTE_FILE = re.compile(r'domains/[^/]+/(?:notes|archive)/[^/]+\.md')
+
+
+def _all_notes(root):
+    """{store-relative path: note} for every note in the store (all domains, any status)."""
     from .repository import inventory
     found = {}
     for domain in _domains(root):
@@ -119,21 +124,38 @@ def notes_by_type(root):
         except (OSError, ValueError):
             continue
         for note in notes:
-            if note.get('type') and note.get('type') not in NOTE_TYPES and note.get('type') not in LEGACY_TYPES:
-                found.setdefault(note.get('type'), []).append(note)
+            try:
+                found[Path(note['path']).resolve().relative_to(Path(root).resolve()).as_posix()] = note
+            except (KeyError, ValueError):
+                continue
     return found
 
 
+def _custom(notes):
+    """{type: [notes]} for the notes whose type is neither built-in nor legacy."""
+    found = {}
+    for note in notes:
+        if note.get('type') and note.get('type') not in NOTE_TYPES and note.get('type') not in LEGACY_TYPES:
+            found.setdefault(note.get('type'), []).append(note)
+    return found
+
+
+def notes_by_type(root):
+    """{type: [notes]} for every note in the store (all domains, any status) whose type is neither built-in nor legacy."""
+    return _custom(_all_notes(root).values())
+
+
 def _with_actions(notes):
-    from .note_format import action_items
-    return [n for n in notes if n.get('status') == 'resolved' or action_items(n.get('body') or '')]
+    """Notes that need their type to take action items: resolved, or with an Action items section (what note_format.check refuses)."""
+    from .note_format import sections
+    return [n for n in notes if n.get('status') == 'resolved' or 'actions' in sections(n.get('body') or '')]
 
 
-def check_registry(root, entries):
+def check_registry(root, entries, by_type=None):
     """ValueError when a registry holding `entries` would leave notes invalid: a note of a type it does not register, or a note
-    with action items (or resolved) of a type that takes none. Used by `type update` and by undo of a type write."""
+    with action items (or resolved) of a type that takes none. `by_type` ({type: [notes]}) defaults to the store's notes now."""
     by_name = {e['name']: e for e in entries}
-    for name, notes in sorted(notes_by_type(root).items(), key=lambda kv: str(kv[0])):
+    for name, notes in sorted((notes_by_type(root) if by_type is None else by_type).items(), key=lambda kv: str(kv[0])):
         entry = by_name.get(name)
         if entry is None:
             raise ValueError(f'{len(notes)} note(s) use type {name}, which would no longer be registered (for example {notes[0].get("domain")}:{str(notes[0].get("id"))[:8]})')
@@ -142,6 +164,60 @@ def check_registry(root, entries):
             if acting:
                 raise ValueError(f'{len(acting)} note(s) of type {name} have action items or are resolved, so {name} must keep taking action items (for example {acting[0].get("domain")}:{str(acting[0].get("id"))[:8]})')
 
+
+
+def check_undo(root, changes):
+    """ValueError when an undo writing `changes` (store-relative path: text, or None to remove) would leave a note whose custom type
+    is not registered, or has action items its type does not take. It judges the store as the undo leaves it: the restored registry
+    and restored or removed notes. Only notes the undo restores are checked unless it restores the registry."""
+    from .repository import parse_text
+    notes = {rel: text for rel, text in changes.items() if NOTE_FILE.fullmatch(rel)}
+    if 'note_types.json' not in changes:
+        restored = [parse_text(text, str(Path(root) / rel)) for rel, text in notes.items() if text is not None]
+        by_type = _custom(n for n in restored if n)
+        if not by_type:
+            return
+        check_registry(root, load(root)['types'], by_type)
+        return
+    text = changes['note_types.json']
+    entries = [t for t in (json.loads(text).get('types', []) if text else []) if isinstance(t, dict) and isinstance(t.get('name'), str)]
+    after = _all_notes(root)
+    for rel, text in notes.items():
+        after.pop(rel, None)
+        note = parse_text(text, str(Path(root) / rel)) if text is not None else None
+        if note:
+            after[rel] = note
+    check_registry(root, entries, _custom(after.values()))
+
+
+def _after(root, changes):
+    """{type: [notes]} of custom-type notes as the store would be after writing `changes` (store-relative path: text or None)."""
+    from .repository import parse_text
+    after = _all_notes(root)
+    for rel, text in changes.items():
+        if NOTE_FILE.fullmatch(rel):
+            after.pop(rel, None)
+            note = parse_text(text, str(Path(root) / rel)) if text is not None else None
+            if note:
+                after[rel] = note
+    return _custom(after.values())
+
+
+def restore_registry(root, changes):
+    """The registry text a backup restore writes: the snapshot's, plus the current definition of every type that notes left after
+    the restore need (a note in a domain the snapshot does not cover, of a type added since). None when changes leave the registry."""
+    text = changes.get('note_types.json')
+    if text is None:
+        return None
+    restored = {t['name']: t for t in json.loads(text).get('types', []) if isinstance(t, dict) and isinstance(t.get('name'), str)}
+    current = {t['name']: t for t in load(root)['types']}
+    kept = []
+    for name, notes in _after(root, changes).items():
+        entry = restored.get(name)
+        if name in current and (entry is None or (not entry.get('actions') and _with_actions(notes))):
+            restored[name] = current[name]
+            kept.append(name)
+    return _registry(list(restored.values())) if kept else text
 
 def type_write(root, action, payload):
     """A direct, journaled write creating, updating or retiring one custom type (kinds type_create, type_update, type_retire)."""

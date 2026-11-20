@@ -29,7 +29,7 @@ QUIET_SECONDS=30
 # Losing this many managed copies at once is a vault reset or move, not a request to delete notes.
 MASS_MISSING=(5,0.2)
 from .note_format import sections,HEADINGS,TITLE_MARK,CALLOUT
-from .note_types import TEMPLATE_PROMPTS,definition,type_names   # the summary line of each built-in type's template
+from .note_types import TEMPLATE_PROMPTS,definition,type_names,check_type   # the summary line of each built-in type's template
 
 def _hash(path):
     try:return digest(path.read_bytes())
@@ -310,6 +310,7 @@ def sync(domain,vault,root=None,trigger=None):
                             keep_baseline(updated) if updated['body']==note['body'] else None   # a cosmetic vault edit keeps the verification baseline
                             updated['updated']=now()
                             if updated['body']!=note['body'] and updated.get('checked'):updated['checked']=updated['updated']   # a body edited in the vault is the author's word for the facts
+                        if updated.get('type')!=note.get('type'):check_type(updated.get('type'),root)   # retyping in the vault needs an active type, as update --type does
                         canonical_target,changes,expected=_canonical_changes(note,updated,domain,root)
                         receipt=transaction(root,changes,'overlay_auto_update',expected);wrote_canonical=True
                         log('Edited',note_id,updated['title'],receipt.get('operation_id'))
@@ -486,7 +487,8 @@ def _template(note_type,root=None):
     """Frontmatter and section skeleton in the note layout; sections left unfilled are dropped at capture."""
     found=definition(note_type,root)
     concern='concern/knowledge' if found['builtin'] else found['concern'] or 'concern/knowledge'
-    meta={'title':'{{title}}','type':note_type,'status':'active','tags':['subject/project',concern],'context':''}
+    subject='subject/project' if found['builtin'] else found['subject']
+    meta={'title':'{{title}}','type':note_type,'status':'active','tags':[subject,concern],'context':''}
     parts=[TITLE_MARK+'{{title}}',_prompt(found),CALLOUT+' ']
     parts+=['## '+heading for heading in found['sections']]
     if not found['sections'] and note_type!='knowledge':parts.append('## '+HEADINGS['details']+'\n- ')

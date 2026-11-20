@@ -494,7 +494,9 @@ def validate(note, domain, root=None, new=False, extra_tags=()):
     if note.get("domain") != domain or not isinstance(note.get("status"), str) or note["status"] not in STATUSES:
         raise ValueError("Invalid domain or lifecycle status")
     if new or note.get('schema_version') == 3:
-        from .note_types import prefix_for, takes_actions
+        from .note_types import prefix_for, takes_actions, check_type
+        if new:
+            check_type(note.get('type'), Path(root or memory_root()))   # a new note needs a built-in or active custom type
         prefix = prefix_for(note.get('type'), legacy=not new, root=Path(root or memory_root()))
         if note.get('schema_version') != 3 or note.get('prefix') != prefix:
             raise ValueError('Prefix must be derived from type; use capture or the note-type-plan migration')

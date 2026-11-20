@@ -59,27 +59,27 @@ def _completed(note):
     return bool(items) and all(done for done, _ in items)
 
 
-def permitted(note, kinds=(), pair_same=False, has_successor=False):
+def permitted(note, kinds=(), pair_same=False, has_successor=False, root=None):
     """The actions the policy table (spec 2.1) allows for this note as it is now. Usage alone (a noisy row with no other signal) never retires."""
     if 'replaced' in kinds:
-        return _replaced_permitted(note, has_successor)
-    out = _permitted(note, kinds, pair_same, has_successor)
+        return _replaced_permitted(note, has_successor, root)
+    out = _permitted(note, kinds, pair_same, has_successor, root)
     return [a for a in out if a not in ('archive', 'supersede')] if kinds and set(kinds) <= {'noisy'} else out
 
 
-def _replaced_permitted(note, has_successor):
+def _replaced_permitted(note, has_successor, root=None):
     """The actions for the older note of a queued pair: it may be recorded as distinct from the newer one, and superseded by it where the policy table
     allows a supersede (never a pinned or limited note, which the reviewer may still record distinct). Normative notes never get here: queued_pairs drops them."""
     if not has_successor:
         return ['keep', 'defer']
     out = ['keep', 'defer', 'distinct']
-    if not _excluded(note) and 'supersede' in _permitted(note, ['replaced'], True, True):
+    if not _excluded(note) and 'supersede' in _permitted(note, ['replaced'], True, True, root):
         out.append('supersede')
     return out
 
 
-def _permitted(note, kinds, pair_same, has_successor):
-    from .note_format import note_takes_actions
+def _permitted(note, kinds, pair_same, has_successor, root=None):
+    from .note_types import takes_actions
     t = _type(note)
     out = ['keep', 'defer']
     if t in EXCLUDED:
@@ -87,7 +87,7 @@ def _permitted(note, kinds, pair_same, has_successor):
     out += ['confirm', 'update']
     if note.get('pinned') is True or t in LIMITED:
         return out
-    if note_takes_actions(note):
+    if takes_actions(t, root):
         if _completed(note):
             out.append('resolve')
         out.append('archive')
@@ -101,7 +101,7 @@ def _permitted(note, kinds, pair_same, has_successor):
     return out
 
 
-def refusal(note, action):
+def refusal(note, action, root=None):
     """The reason code for an action the policy table does not allow."""
     t = _type(note)
     if t in EXCLUDED:
@@ -112,8 +112,8 @@ def refusal(note, action):
         if t in LIMITED:
             return 'protected_type'
     if action == 'resolve':
-        from .note_format import note_takes_actions
-        return 'open_actions' if note_takes_actions(note) else 'not_permitted'
+        from .note_types import takes_actions
+        return 'open_actions' if takes_actions(t, root) else 'not_permitted'
     if action in ('archive', 'supersede'):
         return 'evidence_incomplete'
     return 'not_permitted'
@@ -227,7 +227,7 @@ def candidates(root, cfg, state, now=None, limit=10):
         cand = {'ref': row['ref'], 'domain': note['domain'], 'title': note.get('title'), 'type': _type(note), 'revision': note['revision'],
                 'level': _level(row['kinds'], note, completed), 'kinds': list(row['kinds']), 'reason': row['reason'], 'pinned': note.get('pinned') is True,
                 'currency': row.get('currency'), 'pair': pair['id'] if pair else None, 'pair_note': pair, 'pair_same': same, 'fingerprint': fingerprint, 'files': files, 'note': note,
-                'permitted': permitted(note, row['kinds'], same, pair is not None)}
+                'permitted': permitted(note, row['kinds'], same, pair is not None, root)}
         queues.setdefault(note['domain'], []).append((cand['level'], verified_at(note), position, row['ref'], cand))
         queued.add(row['ref'])
     # A row held by retry_hold is not queued, so an older note of a queued pair still gets its replaced review.
@@ -307,7 +307,7 @@ def replaced_candidates(root, state, notes, now, taken, domains):
         out.append({'ref': p['old'], 'domain': old['domain'], 'title': old.get('title'), 'type': _type(old), 'revision': old['revision'], 'level': 10,
                     'kinds': ['replaced'], 'reason': f"queued as possibly replaced by {p['new']} \"{new.get('title')}\"", 'pinned': old.get('pinned') is True,
                     'currency': None, 'pair': new['id'], 'pair_note': new, 'pair_same': True, 'fingerprint': fingerprint, 'files': [], 'note': old,
-                    'hold': replaced_hold(p['old'], p['new']), 'permitted': permitted(old, ['replaced'], True, True)})
+                    'hold': replaced_hold(p['old'], p['new']), 'permitted': permitted(old, ['replaced'], True, True, root)})
     return out
 
 
@@ -579,7 +579,7 @@ def packet(root, cands, run_id):
                     showing[share] = (fid, key)   # a window is chosen for this note's body, so only a whole file is shared
                 evidence[fid] = record
                 entries.append(entry)
-            permits = permitted(note, cand['kinds'], cand['pair_same'], bool(successors))
+            permits = permitted(note, cand['kinds'], cand['pair_same'], bool(successors), root)
             block = {'key': key, 'title': note.get('title'), 'type': cand['type'], 'status': note.get('status', 'active'),
                      'pinned': cand['pinned'], 'tags': note.get('tags') or [], 'created': note.get('created'), 'updated': note.get('updated'),
                      'checked': note.get('checked'), 'confirmed': note.get('confirmed') or [], 'review_by': note.get('review_by'), 'files': note.get('files') or [],
@@ -712,8 +712,8 @@ def _decide(root, run, ref, dec, manifest, now, deadline, clock):
         replaced = 'replaced' in cand['kinds']
         if _excluded(note):
             return end('rejected', 'protected_type', True)
-        if action not in permitted(note, cand['kinds'], cand['pair_same'], bool(cand['successors'])):
-            return end('rejected', refusal(note, action), True)
+        if action not in permitted(note, cand['kinds'], cand['pair_same'], bool(cand['successors']), root):
+            return end('rejected', refusal(note, action, root), True)
         if action == 'keep':
             return end('kept', None, True)
         if action == 'defer':
@@ -1056,7 +1056,7 @@ def preview(root, limit=10, now=None, domains=None):
     for c in selected:
         ref = c['ref']
         rows.append({'ref': ref, 'title': c['title'], 'type': c['type'], 'level': c['level'], 'kinds': c['kinds'], 'permitted': c['permitted'],
-                     'protected': None if 'archive' in c['permitted'] else refusal(c['note'], 'archive'), 'bytes': len(c['note'].get('body', '').encode('utf-8')),
+                     'protected': None if 'archive' in c['permitted'] else refusal(c['note'], 'archive', root), 'bytes': len(c['note'].get('body', '').encode('utf-8')),
                      'in_packet': ref in manifest['candidates']})
     return {'ok': True, 'domains': cfg['domains'], 'candidates': rows, 'too_large': sorted(manifest['deferred']), 'dropped': manifest['dropped'],
             'estimated_packet_bytes': len(text.encode('utf-8'))}

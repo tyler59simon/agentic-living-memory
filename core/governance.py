@@ -194,12 +194,11 @@ def undo(root,operation_id):
             guards={'unused_tags':dropped}
             try:_check_guards(root,{'guards':{'unused_tags':sorted(dropped)},'domains':sorted(domains),'changes':changes})
             except ValueError as exc:raise ValueError('Undo would remove tags that notes still use; retag those notes first ('+str(exc).split(': ',1)[-1]+')') from None
-        # Restoring an older type registry can drop a custom type, or its action items, that notes written since depend on.
-        if 'note_types.json' in changes:
-            from .type_registry import check_registry
-            restored=json.loads(changes['note_types.json']) if changes['note_types.json'] else {'types':[]}
-            try:check_registry(root,[t for t in restored.get('types',[]) if isinstance(t,dict) and isinstance(t.get('name'),str)])
-            except ValueError as exc:raise ValueError('Undo would break notes that use a custom type: '+str(exc)+'; retype those notes first') from None
+        # Restoring an older type registry can drop a custom type, or its action items, that notes written since depend on; restoring an
+        # older note can bring back action items its custom type no longer takes. Judged on the store as the undo leaves it.
+        from .type_registry import check_undo
+        try:check_undo(root,changes)
+        except ValueError as exc:raise ValueError('Undo would break notes that use a custom type: '+str(exc)+'; retype those notes first') from None
         kind,judged_effects=str(value['kind']),raw_effects
         while kind.startswith('undo:'):   # an undo of X: judged by X's kind
             try:judged=read_json(root/'.operations'/kind[5:]/'journal.json');kind=str(judged['kind']);judged_effects=judged.get('effects') or []
