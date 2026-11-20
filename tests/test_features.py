@@ -211,7 +211,7 @@ class ClaudeIntegrationFixes(StoreFixture):
         self.assertNotEqual(code,0);self.assertIn('credential',result['error']['message'])   # digest metadata is screened too
         payload=self.base/'p.json';payload.write_text(json.dumps({'title':'T','body':'A fact.','type':'nonsense'}))
         code,result=self.cli('propose','--session','s1','--payload-file',str(payload))
-        self.assertNotEqual(code,0);self.assertIn('Unknown note type',result['error']['message'])
+        self.assertNotEqual(code,0);self.assertIn('Invalid note type',result['error']['message'])
     def test_an_edited_proposal_keeps_its_domain_and_its_sources(self):
         from core import proposals
         import contextlib
