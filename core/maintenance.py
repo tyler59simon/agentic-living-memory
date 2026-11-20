@@ -779,6 +779,9 @@ def run(root, dry_run=False, adapter=None, now=None, allow_disabled=False, domai
             verdict = ms.eligibility(root, start, cfg)
             if not verdict['eligible']:
                 return _skipped(verdict['skip_reason'], verdict['next_eligible_at'])
+            if not dry_run:   # free, and it may clear notes this run would otherwise pay to review
+                from . import rebaseline
+                rebaseline.before_review(root, cfg['domains'])
             try:
                 backfill_related(root, cfg, start)
                 prune_queue(root, cfg)

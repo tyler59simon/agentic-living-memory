@@ -8,11 +8,12 @@ from .common import load_bindings,safe_domain
 from .repository import canonical_json,digest,read_json,roll_forward_pending,store_lock,transaction
 
 DEFAULTS={'search_scope':{'global_domains':['_global'],'foreign_domains':[]},'repo_aliases':{},
-          'suggest_bind':True,'auto_resolve':True,'cross_project':True}
+          'suggest_bind':True,'auto_resolve':True,'auto_rebaseline':True,'cross_project':True}
 HELP={'search_scope':'global_domains and foreign_domains: the domains search adds beyond the active, parent and child ones',
       'repo_aliases':'{"REPO_FOLDER_NAME": ["alias", ...]}: other names a prompt may use for a repo',
       'suggest_bind':'false stops the one-line hint to bind an unbound git repo at session start',
       'auto_resolve':'false stops SessionStart resolving finished work notes',
+      'auto_rebaseline':'false stops the hourly re-baselining of notes a file change did not touch',
       'cross_project':'false stops the sibling-domain lookup when no local note matches strongly'}
 
 def _key(key):
@@ -27,7 +28,7 @@ def _names(value,label):
 def validate(key,value):
     """The value as it is stored; ValueError (invalid_value) when it has the wrong shape. None removes the key (the default applies)."""
     if value is None:return None
-    if key in ('suggest_bind','auto_resolve','cross_project'):
+    if key in ('suggest_bind','auto_resolve','auto_rebaseline','cross_project'):
         if not isinstance(value,bool):raise ValueError(f'invalid_value: {key} is true or false')
         return value
     if key=='search_scope':

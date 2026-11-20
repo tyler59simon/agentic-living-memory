@@ -30,6 +30,8 @@ NUM=r'(\d{1,6})(?:\s*[-\u2013]\s*(\d{1,6}))?'
 FILE_CITE=re.compile(r'(?<![\w/.\\-])((?:[\w.-]+[/\\])*[\w.-]+\.[A-Za-z]\w{0,9}):'+NUM+r'(?![\d])')   # `core/maps.py:165`, `store.ts:66-89`
 BARE_CITE=re.compile(r'(?<=[\s(,;])(?<![\w.]):'+NUM+r'(?![\d])')   # `:44-52` after a file citation
 LINE_CITE=re.compile(r'\blines?\s+(\d{1,6})(?:\s*(?:-|\u2013|to)\s*(\d{1,6}))?(?![\d])',re.I)   # `(line 10)`, `lines 3 to 9`
+FILE_NAME=re.compile(r'(?<![\w/.\\-])((?:[\w.-]+[/\\])*[\w-][\w.-]*\.[A-Za-z]\w{0,9})(?![\w.])')   # `b.txt` named before `(line 30)`
+NAMED_BEFORE=80   # how far before a `line N` its file's name is looked for
 IDENT=re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
 TICKED=re.compile(r'`([^`\n]{1,200})`')
 PATHLIKE=re.compile(r'[\\/]|^[\w.-]+\.[A-Za-z]\w{0,9}$')
@@ -42,11 +44,15 @@ def baseline_file(root,sha):return _folder(root)/sha[:2]/sha
 def _text(data):return b'\0' not in data[:8192]
 
 def _put(root,sha,data):
+    """Keep `data` as the baseline of `sha`. A file holding a credential is never copied into the cache (it would outlive its removal from
+    the source); False then, and the comparison works from bytes in memory only."""
     target=baseline_file(root,sha)
     if target.exists():
         try:os.utime(target)   # still in use: prune goes by age
         except OSError:pass
-        return
+        return True
+    from .repository import find_secret
+    if find_secret(data.decode('utf-8','replace')):return False
     target.parent.mkdir(parents=True,exist_ok=True)
     fd,tmp=tempfile.mkstemp(prefix='.'+sha[:8]+'.',dir=target.parent)
     try:
@@ -56,6 +62,7 @@ def _put(root,sha,data):
         try:os.unlink(tmp)
         except OSError:pass
         raise
+    return True
 
 def keep(root,path,sha=None):
     """Keep the file's bytes as the baseline of its hash (`sha` when given: nothing is kept if the file no longer matches it). A text file of
@@ -67,7 +74,7 @@ def keep(root,path,sha=None):
         if not _text(data):return None
         actual=hashlib.sha256(data).hexdigest()
         if sha and actual!=sha:return None
-        _put(root,actual,data);return actual
+        return actual if _put(root,actual,data) else None
     except Exception as exc:
         from .logs import swallowed
         swallowed('rebaseline.keep',exc,root);return None
@@ -83,12 +90,15 @@ def _repo(path):
 
 def _git(repo,*args):
     flags=0x08000000 if os.name=='nt' else 0   # CREATE_NO_WINDOW
-    done=subprocess.run(['git','-c','core.quotepath=off','-C',str(repo),*args],capture_output=True,timeout=GIT_TIMEOUT,creationflags=flags)
+    # Local history only: a partial clone would otherwise fetch a missing blob from its remote (the note then stays stale).
+    env=dict(os.environ,GIT_NO_LAZY_FETCH='1',GIT_TERMINAL_PROMPT='0')
+    done=subprocess.run(['git','-c','core.quotepath=off','-C',str(repo),*args],capture_output=True,timeout=GIT_TIMEOUT,creationflags=flags,env=env)
     return done.stdout if done.returncode==0 else None
 
-def backfill(root,path,sha,deadline=None):
+def backfill(root,path,sha,deadline=None,store=True):
     """The bytes of the version of `path` whose sha256 is `sha`, found in the last GIT_WALK commits that touched it (also as the CRLF checkout of
-    an LF blob), and kept as its baseline. None when it is not there, the file is not in a git repository, or git fails."""
+    an LF blob), and kept as its baseline unless `store` is False (a dry run). None when it is not there, the file is not in a git repository,
+    or git fails."""
     try:
         repo=_repo(path)
         if repo is None:return None
@@ -100,13 +110,13 @@ def backfill(root,path,sha,deadline=None):
             if data is None:continue
             for candidate in (data,data.replace(b'\r\n',b'\n').replace(b'\n',b'\r\n')):
                 if hashlib.sha256(candidate).hexdigest()==sha:
-                    if len(candidate)<=BASELINE_MAX and _text(candidate):_put(root,sha,candidate)
+                    if store and len(candidate)<=BASELINE_MAX and _text(candidate):_put(root,sha,candidate)
                     return candidate
     except (OSError,ValueError,subprocess.SubprocessError):return None
     return None
 
-def baseline(root,path,sha,deadline=None):
-    return load(root,sha) or backfill(root,path,sha,deadline)
+def baseline(root,path,sha,deadline=None,store=True):
+    return load(root,sha) or backfill(root,path,sha,deadline,store)
 
 # ---- citations --------------------------------------------------------------------------------------------------------
 def _plain(path):
@@ -122,19 +132,24 @@ def _owners(cited,tracked):
 
 def citations(body,tracked):
     """[{files, start, end, spans}] for the line citations in a note body. `files` is the set of tracked paths a citation may refer to (empty for
-    a file the note does not track); `spans` are the (start, end) offsets of its numbers in the body. A bare `:A-B` or `line N` belongs to the
-    file cited last before it, else to the note's only tracked file, else to every tracked file (ambiguous)."""
+    a file the note does not track); `spans` are the (start, end) offsets of its numbers in the body. A `line N` belongs to the file named
+    just before it (`b.txt (line 30)`; one the note does not track: to none). Otherwise a bare `:A-B` or `line N` belongs to the file cited
+    last before it, else to the note's only tracked file, else to every tracked file (ambiguous)."""
     found=[]
     for m in FILE_CITE.finditer(body):found.append((m.start(),'file',m))
     for m in BARE_CITE.finditer(body):found.append((m.start(),'bare',m))
     for m in LINE_CITE.finditer(body):found.append((m.start(),'line',m))
-    found.sort(key=lambda f:f[0]);out=[];last=None;everything=set(tracked)
+    found.sort(key=lambda f:f[0]);out=[];last=None;last_end=0;everything=set(tracked)
     for _,kind,m in found:
+        named=None
         if kind=='file':
-            last=_owners(m[1],tracked);first=2
+            last=_owners(m[1],tracked);last_end=m.end();first=2
         else:
             first=1
-        files=last if last is not None else (set(tracked) if len(tracked)==1 else everything)
+            if kind=='line':
+                names=list(FILE_NAME.finditer(body,max(last_end,m.start()-NAMED_BEFORE),m.start()))
+                if names:named=_owners(names[-1][1],tracked)
+        files=named if named is not None else last if last is not None else (set(tracked) if len(tracked)==1 else everything)
         a=int(m[first]);b=int(m[first+1]) if m[first+1] else a
         spans=[m.span(first)]+([m.span(first+1)] if m[first+1] else [])
         if a>b or a<1:continue
@@ -147,12 +162,12 @@ def identifiers(body,symbols=()):
     names=set()
     for span in TICKED.findall(body):
         if PATHLIKE.search(span.strip()):continue
-        names.update(w for w in IDENT.findall(span) if len(w)>=3)
+        names.update(IDENT.findall(span))   # named explicitly: any length, so `ID` and `db` count
     plain=NOISE.sub(' ',TICKED.sub(' ',body))
     defined={s.rsplit('.',1)[-1] for s in symbols if s}
     for w in IDENT.findall(plain):
-        if len(w)<3:continue
-        if ('_' in w.strip('_')) or re.search(r'[a-z][A-Z]',w) or w in defined:names.add(w)
+        if w in defined:names.add(w)
+        elif len(w)>=3 and (('_' in w.strip('_')) or re.search(r'[a-z][A-Z]',w)):names.add(w)
     return names
 
 # ---- the decision -----------------------------------------------------------------------------------------------------
@@ -171,12 +186,25 @@ def _shift(line,ops):
         if tag=='equal' and i1<line<=i2:return line+(j1-i1)
     return None
 
+def _opcodes(a,b):
+    """SequenceMatcher opcodes of line lists `a` to `b`, with the common head and tail cut off first and the matcher's junk heuristic on, so
+    a file of repeated lines costs about linear time. The opcodes are always a valid diff; one less than minimal only marks more lines changed."""
+    head=0
+    while head<len(a) and head<len(b) and a[head]==b[head]:head+=1
+    tail=0
+    while tail<len(a)-head and tail<len(b)-head and a[-1-tail]==b[-1-tail]:tail+=1
+    ops=[('equal',0,head,0,head)] if head else []
+    for tag,i1,i2,j1,j2 in difflib.SequenceMatcher(None,a[head:len(a)-tail],b[head:len(b)-tail]).get_opcodes():
+        ops.append((tag,i1+head,i2+head,j1+head,j2+head))
+    if tail:ops.append(('equal',len(a)-tail,len(a),len(b)-tail,len(b)))
+    return ops
+
 def assess(body,path,tracked,old,new):
     """{relevant, reason, shifts}: whether the change from text `old` to `new` of tracked file `path` may affect the note, and, when it cannot,
     [(body span, new number)] for its line citations of this file."""
     def relevant(reason):return {'relevant':True,'reason':reason,'shifts':[]}
     a=old.split('\n');b=new.split('\n')
-    ops=difflib.SequenceMatcher(None,a,b,autojunk=False).get_opcodes()
+    ops=_opcodes(a,b)
     changed=[op for op in ops if op[0]!='equal']
     if not changed:return {'relevant':False,'reason':'only line endings or encoding changed','shifts':[]}
     churn=sum(max(i2-i1,j2-j1) for _,i1,i2,j1,j2 in changed)
@@ -198,6 +226,10 @@ def assess(body,path,tracked,old,new):
     for symbol,_,_,text in units_new:after.setdefault(symbol,[]).append(text)
     for symbol,_,_,text in cited_units:
         if text not in after.get(symbol,[]):return relevant(f'the cited definition {symbol} changed')
+    # A cited class covers its members (`RetryPolicy` covers `RetryPolicy.max_tries`): any member changed, added or removed counts.
+    def members(units,owner):return sorted((s,t) for s,_,_,t in units if s and s.startswith(owner+'.'))
+    for owner in {u[0] for u in cited_units}:
+        if members(units_old,owner)!=members(units_new,owner):return relevant(f'a member of the cited definition {owner} changed')
     shifts=[]
     for c in cites:
         moved=[_shift(c['start'],ops),_shift(c['end'],ops)]
@@ -211,14 +243,17 @@ def shifted(body,shifts):
     return body
 
 # ---- the sweep --------------------------------------------------------------------------------------------------------
-def note_plan(note,root,bindings,deadline=None):
-    """[{path, sha256 now, relevant, reason}] for each changed file of an active note, and the body with the shifts of the irrelevant ones."""
+def note_plan(note,root,bindings,deadline=None,dry_run=False):
+    """[{path, sha256 now, relevant, reason}] for each changed or missing file of an active note, and the body with the shifts of the
+    irrelevant ones. A dry run keeps no baseline it finds in git history."""
     from .digests import states,locate,NAMED
     listed=(note.get('sources') or [])+(note.get('file_hashes') or [])
     recorded={s['path']:s['sha256'] for s in listed if s.get('sha256')}
     found=states(listed,note['domain'],root,bindings);files=[];shifts=[];specs=None
     tracked=list(recorded)
     for path,state in found.items():
+        if state=='missing':   # still stale, as digests.changed counts it: only a reviewer can say what a deleted file means
+            files.append({'path':path,'relevant':True,'reason':'the file is missing','sha256':None});continue
         if state!='changed':continue
         if NAMED.match(path) and specs is None:
             from .digests import _specs
@@ -230,7 +265,7 @@ def note_plan(note,root,bindings,deadline=None):
         except OSError:data=None
         if data is None or len(data)>BASELINE_MAX or not _text(data):
             row['reason']='the file cannot be compared';files.append(row);continue
-        old=baseline(root,location,recorded[path],deadline)
+        old=baseline(root,location,recorded[path],deadline,store=not dry_run)
         if old is None:row['reason']='no baseline of the version the note was checked against';files.append(row);continue
         verdict=assess(note.get('body') or '',path,tracked,_decode(old),_decode(data))
         row.update(relevant=verdict['relevant'],reason=verdict['reason'],sha256=hashlib.sha256(data).hexdigest(),abs=str(location))
@@ -277,7 +312,7 @@ def sweep(root,domains=None,dry_run=False,seconds=None):
             if deadline is not None and time.monotonic()>deadline:complete=False;break
             if note.get('status','active')!='active' or not ((note.get('sources') or note.get('file_hashes'))):continue
             note=dict(note,domain=domain)
-            try:files,body=note_plan(note,root,bindings,deadline)
+            try:files,body=note_plan(note,root,bindings,deadline,dry_run)
             except Exception as exc:
                 from .logs import swallowed
                 swallowed('rebaseline.note_plan',exc,root);continue
@@ -365,3 +400,16 @@ def scheduled(root):
             return sweep(root,seconds=SWEEP_SECONDS)
     except (TimeoutError,OSError):
         return {'ok':True,'skipped':'already_running','notes':[],'rebaselined':0,'still_stale':0,'complete':False}
+
+def before_review(root,domains):
+    """The sweep a maintenance run does before it picks notes, so it never pays to review a note the sweep would clear. It waits for a
+    scheduled sweep that is running (started by the same SessionStart), then sweeps `domains` within SWEEP_SECONDS. Off with
+    auto_rebaseline false; never raises."""
+    try:
+        if load_bindings(root).get('auto_rebaseline',True) is False:return 'disabled'
+        with file_lock(Path(root)/'hooks'/'rebaseline.lock',timeout=SWEEP_SECONDS+10):
+            sweep(root,domains,seconds=SWEEP_SECONDS)
+        return 'swept'
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('rebaseline.before_review',exc,root);return 'error'

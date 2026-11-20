@@ -64,6 +64,31 @@ class Assess(unittest.TestCase):
         names=rebaseline.identifiers('See `core/maps.py` and [[Some_note]] in session_start.py; `build_context` calls _open_lines.')
         self.assertEqual(names,{'build_context','_open_lines'})
 
+    # -- Codex review of 7980f44
+    def test_a_change_to_a_member_of_a_cited_class_is_relevant(self):
+        old='class RetryPolicy:\n    """Retries."""\n\n    def max_tries(self):\n        return 3\n\n\ndef other():\n    return 1\n\n\ndef more():\n    return 2\n'
+        v=rebaseline.assess('RetryPolicy retries three times.','src/r.py',['src/r.py'],old,old.replace('return 3','return 5'))
+        self.assertTrue(v['relevant']);self.assertIn('RetryPolicy',v['reason'])
+        v=rebaseline.assess('RetryPolicy retries three times.','src/r.py',['src/r.py'],old,old.replace('    return 2\n','    return 2\n\n\ndef extra():\n    return 4\n'))
+        self.assertFalse(v['relevant'],v['reason'])   # a change outside the class still clears
+    def test_a_short_name_in_backticks_counts(self):
+        old=MOD.replace('LIMIT = 3\n','LIMIT = 3\nID = 1\n')
+        v=self.verdict('`beta` returns `ID` (mod.py:10-12).',old.replace('ID = 1','ID = 2'),old=old)
+        self.assertTrue(v['relevant']);self.assertIn('ID',v['reason'])
+    def test_a_line_citation_belongs_to_the_file_named_before_it(self):
+        found=rebaseline.citations('See a.txt:10 and b.txt (line 30).',['a.txt','b.txt'])
+        self.assertEqual([(sorted(c['files']),c['start']) for c in found],[(['a.txt'],10),(['b.txt'],30)])
+        found=rebaseline.citations('See mod.py:10 and notes.md (line 30).',['src/mod.py'])
+        self.assertEqual([(sorted(c['files']),c['start']) for c in found],[(['src/mod.py'],10),([],30)])
+        found=rebaseline.citations('The limit is set e.g. at line 3.',['src/mod.py'])
+        self.assertEqual([(sorted(c['files']),c['start']) for c in found],[(['src/mod.py'],3)])
+    def test_a_file_of_repeated_lines_is_compared_quickly(self):
+        import time
+        a=['a']+['x']*40000+['b'];b=['c']+['x']*40000+['d'];start=time.perf_counter()
+        ops=rebaseline._opcodes(a,b)
+        self.assertLess(time.perf_counter()-start,2.0)
+        self.assertEqual(sum(i2-i1 for t,i1,i2,_,_ in ops),len(a));self.assertEqual(sum(j2-j1 for t,_,_,j1,j2 in ops),len(b))
+
 class Base(StoreFixture):
     def setUp(self):
         super().setUp()
@@ -119,6 +144,28 @@ class Sweep(Base):
         rebaseline.keep(self.root,self.mod);self.mod.write_bytes(b'x = 1\n')
         self.assertEqual(rebaseline.prune(self.root,now=4_000_000_000),1)
 
+    def test_a_file_holding_a_credential_is_not_kept_as_a_baseline(self):
+        key='sk-ant-'+'Ab1'*12
+        self.mod.write_bytes((MOD+f'TOKEN = "{key}"\n').encode())
+        made=self.cap('gamma subtracts one (mod.py:14-15).')
+        self.assertIsNone(rebaseline.load(self.root,self.get(made)['file_hashes'][0]['sha256']))
+        self.assertIsNone(rebaseline.keep(self.root,self.mod))
+    def test_a_missing_file_counts_as_still_stale(self):
+        made=self.cap('gamma subtracts one (mod.py:14-15).');self.mod.unlink()
+        res=rebaseline.sweep(self.root)
+        self.assertEqual((res['rebaselined'],res['still_stale']),(0,1));self.assertEqual(res['notes'][0]['files'][0]['reason'],'the file is missing')
+    def test_git_never_fetches_from_a_remote(self):
+        with patch('core.rebaseline.subprocess.run') as run:
+            run.return_value=subprocess.CompletedProcess([],0,b'',b'')
+            rebaseline._git(self.project,'log')
+        self.assertEqual(run.call_args.kwargs['env']['GIT_NO_LAZY_FETCH'],'1')
+    def test_the_setting_turns_off_the_run_sweep(self):
+        from core import settings
+        self.assertIs(settings.validate('auto_rebaseline',False),False)
+        bindings=json.loads((self.root/'bindings.json').read_text(encoding='utf-8'));bindings['auto_rebaseline']=False
+        (self.root/'bindings.json').write_text(json.dumps(bindings),encoding='utf-8')
+        self.assertEqual(rebaseline.before_review(self.root,['demo']),'disabled')
+
 @unittest.skipUnless(GIT,'git is not installed')
 class Backfill(Base):
     def git(self,*args):
@@ -136,6 +183,13 @@ class Backfill(Base):
         self.mod.write_bytes(MOD.replace('    return x + 1\n','    y = x + 1\n    return y\n').replace('\n','\r\n').encode())
         res=rebaseline.sweep(self.root)
         self.assertEqual(res['rebaselined'],1,res);self.assertIn('(mod.py:15-16)',self.get(made)['body'])
+
+    def test_a_dry_run_keeps_nothing_it_finds_in_git(self):
+        self.git('init','-q');self.git('add','-A');self.git('commit','-q','-m','one')
+        made=self.cap('gamma subtracts one (mod.py:14-15).');recorded=self.get(made)['file_hashes'][0]['sha256']
+        shutil.rmtree(self.root/'.cache'/'baselines');self.edit_alpha()
+        res=rebaseline.sweep(self.root,dry_run=True)
+        self.assertEqual(res['rebaselined'],1,res);self.assertIsNone(rebaseline.load(self.root,recorded))
 
 class Schedule(Base):
     def go(self,bindings=None,**kw):
@@ -190,3 +244,19 @@ class Command(Base):
         self.assertTrue(rows);self.assertEqual({r.get('actor') for r in rows},{'rebaseline'})
 
 if __name__=='__main__':unittest.main()
+
+from test_maintenance import Base as MaintenanceBase
+from core import maintenance
+class BeforeReview(MaintenanceBase):
+    def test_a_maintenance_run_rebaselines_before_it_picks_notes(self):
+        text=lambda v:'retry = 3\n'+''.join(f'x{i} = {i}\n' for i in range(12))+f'tail = {v}\n'
+        self.src('r.py',text(1));n=self.mk('Retry limit','The retry limit is 3 (r.py:1).',files=['src/r.py']);self.src('r.py',text(2))
+        self.assertEqual([c['ref'] for c in self.cands()],[self.ref(n)])
+        seen=[]
+        def adapter(req):seen.append(req);return {'ok':True,'report':{'version':1,'run_id':req['run']['id'],'decisions':[]},'usage_micro':1,'stderr':''}
+        self.tick();res=maintenance.run(self.root,adapter=adapter,now=self.now)
+        self.assertEqual((seen,res.get('skip_reason')),([],'no_candidates'));self.assertEqual(self.cands(),[])
+    def test_a_dry_run_does_not_sweep(self):
+        self.src('r.py','retry = 3\n'+'x = 1\n'*12+'tail = 1\n');n=self.mk('Retry limit','The retry limit is 3 (r.py:1).',files=['src/r.py'])
+        self.src('r.py','retry = 3\n'+'x = 1\n'*12+'tail = 2\n');rev=self.get(n)['revision']
+        self.go(dry=True);self.assertEqual(self.get(n)['revision'],rev)
