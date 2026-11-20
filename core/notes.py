@@ -239,11 +239,27 @@ HYPOTHESIS=re.compile(r'(?im)\*\*hypothesis|^[ \t]*(?:[-*+][ \t]+)?hypothesis:|^
 # A labelled cause, fix or outcome, or a section with that heading: when its text is not itself hedged, the note stopped being interim.
 RESOLUTION=re.compile(r'(?im)^(?:\s*[-*+]?\s*\*\*(?:root cause|fix|resolution|outcome|confirmed):?\*\*:?[ \t]*|##[ \t]+(?:root cause|fix|resolution|outcome)[ \t]*\n+[ \t]*)(\S[^\n]*)')
 
+_FENCE_OPEN=re.compile(r' {0,3}(`{3,}|~{3,})[ \t]*(\S*)')
+
+def without_mermaid(text):
+    """Text with each ```mermaid block blanked: a diagram's node and state names (Pending --> Done, todo) are labels,
+    not the note's state. Fences are tracked line by line, so a mermaid opener shown inside another block is not one."""
+    out=[];fence=None;skip=False
+    for line in str(text or '').split('\n'):
+        if fence is None:
+            m=_FENCE_OPEN.match(line)
+            if m:fence=m.group(1);skip=m.group(2).lower()=='mermaid'
+            out.append('' if skip else line);continue
+        closing=re.match(r' {0,3}('+re.escape(fence[0])+'{'+str(len(fence))+r',})[ \t]*$',line)
+        out.append('' if skip else line)
+        if closing:fence=None;skip=False
+    return '\n'.join(out)
+
 def is_interim(note):
     """True for an active note that still states an unconfirmed belief: labelled **Hypothesis:**, or (bug, knowledge,
     decision) worded as one (STRONG anywhere, WEAK in the title or summary) with no labelled root cause, fix or outcome that settles it."""
     if note.get('status','active')!='active':return False
-    body=str(note.get('body') or '')
+    body=without_mermaid(note.get('body'))
     if HYPOTHESIS.search(body):return True
     if note.get('type') not in INTERIM_TYPES:return False
     title=str(note.get('title') or '');summary=summary_text(body)
@@ -267,12 +283,9 @@ QUALITY_CHECKS=(
     (INTERIM,'this reads as an interim hypothesis: say so in the note (e.g. **Hypothesis:** ...) and update REF once it is confirmed'),
 )
 
-# A diagram's node and state names (Pending --> Done, todo) are labels, not the note's state.
-MERMAID_FENCE=re.compile(r'(?ms)^ {0,3}(`{3,}|~{3,})[ \t]*mermaid\b.*?^ {0,3}\1[^\n]*$')
-
 def quality_checks(note):
     """The content checks of QUALITY_CHECKS that a note trips (no style checks); the review worklist recomputes these."""
-    title=note.get('title','');body=MERMAID_FENCE.sub(' ',note.get('body',''))
+    title=note.get('title','');body=without_mermaid(note.get('body',''))
     found=[]
     for pattern,message in QUALITY_CHECKS:
         unfinished=message.startswith('describes an unfinished')

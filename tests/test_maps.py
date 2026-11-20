@@ -478,5 +478,9 @@ class MapCut(unittest.TestCase):
                 text=map_block(hit,'C:/repo',budget=budget)
                 self.assertEqual(text.count('```')%2,0,budget);self.assertIn('(truncated; read the rest',text)
             self.assertIn('n19 --> n20\n```',map_block(hit,'C:/repo',budget=len(body)+10))
+    def test_a_closed_fence_with_a_trailing_tab_is_kept(self):
+        from core.session_start import _cap
+        text='Intro.\n```mermaid\nflowchart LR\n  a --> b\n```\t\nAfter the diagram.\n'+'x'*200
+        self.assertIn('After the diagram.',_cap(text,len(text)-50))
 
 if __name__=='__main__':unittest.main()

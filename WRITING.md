@@ -57,7 +57,8 @@ Leave diagrams out of preferences, policies, briefs, one-line facts and anything
 - Use `flowchart`, `sequenceDiagram` or `stateDiagram-v2`, with about 12 nodes at most and one diagram per section.
 - Label nodes with the real module, command or state names, and quote a label that holds punctuation: `A["alm read"]`.
 - Update the diagram with the note. A diagram that disagrees with the text is worse than none.
-- Pass it with `--section 'Data flow' '...'` (real newlines inside the quotes) or with `--content-file FILE`. In PowerShell use `--content-file`. Not with `--detail`, which makes a bullet of the first line.
+- Pass it with `--section 'Data flow' '...'` (real newlines inside the quotes) on `capture` or `update`, or write the whole body to a file for `capture --content-file FILE`. Not with `--detail`, which makes a bullet of the first line.
+- PowerShell 5.1 mangles double quotes inside arguments to native commands, so a label such as `A["alm read"]` breaks. From PowerShell, capture with `--content-file`, and run `update --section` from Bash. `update --body-file FILE` also works, but it replaces the whole body.
 
 ````markdown
 ## Data flow

@@ -49,7 +49,7 @@ TOPICS={
  'writing':('How to write a note',
   "Write notes as plain text for a reader with no context: lead with the fact or decision, say who decided and when, one name per thing, commands and paths exact in backticks; no em dashes, emoji, decorative bold, filler or significance claims (capture warns)."
   "\nWhere a flow, sequence, state change or module layout is clearer drawn (maps, runbooks, knowledge, decisions, bug causes), add a small ```mermaid diagram in a section after a sentence saying what it shows (--section or --content-file, not --detail)."
-  " Use flowchart, sequenceDiagram or stateDiagram-v2, about 12 nodes at most, labelled with the real module, command or state names; quote labels that hold punctuation (A[\"alm read\"]). One diagram per section; update it when the facts change. In PowerShell pass multi-line bodies with --content-file. No diagrams in preferences, policies, briefs or one-line facts. A map can add a 'Data flow' section, for example:"
+  " Use flowchart, sequenceDiagram or stateDiagram-v2, about 12 nodes at most, labelled with the real module, command or state names; quote labels that hold punctuation (A[\"alm read\"]). One diagram per section; update it when the facts change. PowerShell 5.1 mangles double quotes in native arguments: from PowerShell capture with --content-file and run update --section from Bash (update --body-file replaces the whole body). No diagrams in preferences, policies, briefs or one-line facts. A map can add a 'Data flow' section, for example:"
   "\n  Reads go from the hook through runtime to search.\n  ```mermaid\n  flowchart LR\n    hook --> runtime --> search --> context\n  ```"),
 }
 

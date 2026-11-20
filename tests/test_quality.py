@@ -32,6 +32,17 @@ class Quality(StoreFixture):
         self.assertEqual(quality_warnings({'type': 'knowledge', 'title': 'Job states', 'body': diagram}), [])
         self.assertTrue(any('unfinished' in w for w in quality_warnings({'type': 'knowledge', 'title': 'Job states', 'body': 'Pending --> Running'})))
 
+    def test_a_diagram_state_does_not_make_a_note_interim(self):
+        from core.notes import is_interim
+        body = 'Approval moves a change to merged.\n\n```mermaid\nstateDiagram-v2\n  draft --> ready: probably ready\n```'
+        self.assertFalse(is_interim({'type': 'knowledge', 'title': 'Change states', 'body': body}))
+        self.assertTrue(is_interim({'type': 'knowledge', 'title': 'Change states', 'body': 'It is probably the lock.'}))
+
+    def test_only_real_mermaid_blocks_are_skipped(self):
+        # A mermaid opener shown inside a tilde example is text; the prose after that example is still checked.
+        body = 'Example:\n\n~~~markdown\n```mermaid\n~~~\n\nThe migration is still pending.\n\n```python\nx = 1\n```'
+        self.assertTrue(any('unfinished' in w for w in quality_warnings({'type': 'knowledge', 'title': 'Example', 'body': body})))
+
     def test_lasting_knowledge_has_no_warnings(self):
         result = capture('Use the venv interpreter', 'System Python lacks pytest; run tests with .venv/Scripts/python.exe.', TAGS, 'demo', self.root)
         self.assertNotIn('quality_warnings', result)
