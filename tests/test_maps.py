@@ -482,5 +482,9 @@ class MapCut(unittest.TestCase):
         from core.session_start import _cap
         text='Intro.\n```mermaid\nflowchart LR\n  a --> b\n```\t\nAfter the diagram.\n'+'x'*200
         self.assertIn('After the diagram.',_cap(text,len(text)-50))
+    def test_backticks_split_by_a_tab_do_not_close_a_fence(self):
+        from core.session_start import _cap
+        text='Intro.\n```text\n```\t```\nstill inside\n'+'x'*200+'\n```\nAfter.'
+        self.assertEqual(_cap(text,60),'Intro.')
 
 if __name__=='__main__':unittest.main()

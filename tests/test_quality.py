@@ -38,6 +38,11 @@ class Quality(StoreFixture):
         self.assertFalse(is_interim({'type': 'knowledge', 'title': 'Change states', 'body': body}))
         self.assertTrue(is_interim({'type': 'knowledge', 'title': 'Change states', 'body': 'It is probably the lock.'}))
 
+    def test_an_inline_span_is_not_a_mermaid_fence(self):
+        from core.notes import is_interim
+        body = '```mermaid init``` is the directive we tried.\n\nThe cause is probably the lock.'
+        self.assertTrue(is_interim({'type': 'bug', 'title': 'Render fails', 'body': body}))
+
     def test_only_real_mermaid_blocks_are_skipped(self):
         # A mermaid opener shown inside a tilde example is text; the prose after that example is still checked.
         body = 'Example:\n\n~~~markdown\n```mermaid\n~~~\n\nThe migration is still pending.\n\n```python\nx = 1\n```'

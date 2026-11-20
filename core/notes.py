@@ -239,7 +239,8 @@ HYPOTHESIS=re.compile(r'(?im)\*\*hypothesis|^[ \t]*(?:[-*+][ \t]+)?hypothesis:|^
 # A labelled cause, fix or outcome, or a section with that heading: when its text is not itself hedged, the note stopped being interim.
 RESOLUTION=re.compile(r'(?im)^(?:\s*[-*+]?\s*\*\*(?:root cause|fix|resolution|outcome|confirmed):?\*\*:?[ \t]*|##[ \t]+(?:root cause|fix|resolution|outcome)[ \t]*\n+[ \t]*)(\S[^\n]*)')
 
-_FENCE_OPEN=re.compile(r' {0,3}(`{3,}|~{3,})[ \t]*(\S*)')
+# A backtick fence's info string has no backtick (CommonMark), so ```mermaid x``` opening a line is an inline span.
+_FENCE_OPEN=re.compile(r' {0,3}(`{3,}(?=[^`]*$)|~{3,})[ \t]*(\S*)')
 
 def without_mermaid(text):
     """Text with each ```mermaid block blanked: a diagram's node and state names (Pending --> Done, todo) are labels,

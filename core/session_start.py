@@ -381,9 +381,14 @@ def _cap(text,budget):
     # A cut inside a code fence (a map's Mermaid diagram) would leave it open: drop that fence whole.
     opened=None;pos=0
     for line in out.split('\n'):
-        m=re.match(r' {0,3}(`{3,}|~{3,})',line)
-        if m and opened is None:opened=(pos,m.group(1))
-        elif m and m.group(1)[0]==opened[1][0] and len(m.group(1))>=len(opened[1]) and not line.strip(' \t'+m.group(1)[0]):opened=None
+        if opened is None:
+            # A backtick fence's info string has no backtick (CommonMark); otherwise the line opens an inline span.
+            m=re.match(r' {0,3}(`{3,}(?=[^`]*$)|~{3,})',line)
+            if m:opened=(pos,m.group(1))
+        else:
+            # A closer is one run of the opener's character, at least as long, then only spaces or tabs.
+            m=re.fullmatch(r' {0,3}('+re.escape(opened[1][0])+r'+)[ \t]*',line)
+            if m and len(m.group(1))>=len(opened[1]):opened=None
         pos+=len(line)+1
     return out[:opened[0]].rstrip('\n') if opened else out
 
