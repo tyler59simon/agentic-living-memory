@@ -638,6 +638,23 @@ class Page(Base):
 
     def test_quotes_nested_too_deep_are_refused(self):
         with self.assertRaisesRegex(wa.WikiError,'nests quotes'):self.check('>'*(wa.QUOTE_DEPTH_MAX+2)+' Deep.[N1]')
+        # A style warning never stops a wiki from opening (Codex review of 868c987).
+        deep='>'*(wa.QUOTE_DEPTH_MAX+2)
+        self.assertEqual(wa.case_warnings('Title',deep+' x\n## '+deep+' plain heading'),[]);self.assertFalse(wa.title_case(deep))
+
+    def test_review_fixes_for_tables_links_and_long_spaces(self):   # Codex review of 868c987
+        # The separator row is never drawn, so a marker in it is not a citation.
+        with self.assertRaisesRegex(wa.WikiError,'cites no source'):self.check('| a |\n|---|`[N1]`|',lead='Lead.')
+        # A [N1] link label that becomes [^1] would let a URL backtick pair with a later one and show a raw [^1].
+        with self.assertRaisesRegex(wa.WikiError,'numbering the citations'):self.check('[N1](https://x`y) and `z [^1]` w')
+        import time
+        for body in ('a'+' '*19500+'b [N1]','| x |\n'+' '*19500+'y [N1]'):
+            began=time.perf_counter();self.check(body);self.assertLess(time.perf_counter()-began,2,body[:8])
+
+    @unittest.skipUnless(__import__('shutil').which('node'),'needs node')
+    def test_tabs_left_after_dedent_keep_their_columns(self):   # Codex review of 868c987
+        pre=self.render(' \t```\n    \tx\n        y\n```')[2][0]
+        self.assertEqual(pre[2][0][1],'    x\n    y')
 
     @unittest.skipUnless(__import__('shutil').which('node'),'needs node')
     def test_the_check_and_the_page_agree_on_what_is_code(self):
@@ -648,7 +665,7 @@ class Page(Base):
             return [c for k in kids for c in drawn(k,tag=='pre')]
         for body in ('| a `x | y` |\n|---|---|\n| `p | q` z |','- item\n  | `a | b` |\n  |---|','> | `a | b` |\n> |---|\n> | c `d` |',
                      '**a `x** y`','[a`b](https://x) c `d`','- [ ] `t` x','## `h` x','1. a\n\n   `b` c\n\n- d `e`','Text `a\nb` c'):
-            spans=wa._code_spans(body);inline=[body[s+1:e-1] for s,e in spans if '\n' not in body[s:e] and not wa._OPEN.match(body[s:e])]
+            spans=wa._code_spans(body);inline=[body[s+1:e-1] for s,e in spans if body[s]=='`' and '\n' not in body[s:e] and not wa._OPEN.match(body[s:e])]
             self.assertEqual(inline,drawn(self.render(body)),body)
 
     def test_a_theme_picker_serves_both_editions(self):

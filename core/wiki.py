@@ -540,8 +540,8 @@ function markdown(text,heads){
   // Columns s fills from the start of a line: a tab moves to the next multiple of 4. Indentation is spaces and tabs only.
   function cols(s){var c=0;for(var k=0;k<s.length;k++)c=s[k]==='\t'?c+4-c%4:c+1;return c}
   function indent(l){return cols(/^[ \t]*/.exec(l)[0])}
-  // Up to n columns of indentation off a line; a tab that reaches past n leaves the rest of its width as spaces.
-  function dedent(l,n){var k=0,c=0;while(k<l.length&&c<n&&(l[k]===' '||l[k]==='\t')){var w=l[k]==='\t'?4-c%4:1;if(c+w>n)return ' '.repeat(c+w-n)+l.slice(k+1);c+=w;k++}return l.slice(k)}
+  // Up to n columns of indentation off a line. What is left of the indentation becomes spaces, so tabs keep their columns.
+  function dedent(l,n){var w=/^[ \t]*/.exec(l)[0];return ' '.repeat(Math.max(cols(w)-n,0))+l.slice(w.length)}
   function code(l,n){var buf=[],fi=indent(l);i++;while(i<lines.length&&!shut(lines[i],n))buf.push(dedent(lines[i++],fi));i++;var pre=el('pre');pre.appendChild(el('code',null,buf.join('\n')));return pre}
   while(i<lines.length){
     var line=lines[i],fo=fence(line);

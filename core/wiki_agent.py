@@ -353,7 +353,7 @@ FOOTNOTE = re.compile(r'\[\^[0-9]+\]')
 _WS = r'[\t\v\f\r    -     　﻿]'
 _WSC = _WS[1:-1]                    # the same set, for use inside another bracket
 _NWS = '[^\n' + _WSC + ']'          # JavaScript's \S
-_TRIM = re.compile(_WS + '*(.*?)' + _WS + r'*\Z', re.S)
+_SPACE = re.compile(_WS)
 _QUOTE = re.compile(_WS + r'*>' + _WS + '?')
 _QUOTED = re.compile(_WS + r'*>')
 _INNER_QUOTE = re.compile(_WS + r'+>')
@@ -367,7 +367,7 @@ _TASK = re.compile(r'\[[ xX]\]' + _WS + r'+([^  ]*)\Z')
 _AFTER_BLANK = re.compile(_WS + '{2,}' + _NWS)
 _GOES_ON = re.compile(_WS + '+' + _NWS)
 _ROW = re.compile(_WS + r'*\|')
-_RULE = re.compile(_WS + r'*\|?' + _WS + r'*:?-{2,}')
+_RULE = re.compile(_WS + r'*(?:\|' + _WS + r'*)?:?-{2,}')   # one whitespace run unless there is a pipe: no backtracking
 _ENDS_PARAGRAPH = re.compile(_WS + r'*(```|#{1,6}' + _WS + r'|>|\|)')
 # INLINE in the page's script: the leftmost match wins, and at one place the first alternative that matches.
 _INLINE = re.compile(r'`[^`]+`|\*\*[^*]+\*\*|\*[^*\n' + _WSC + r'][^*]*\*|\[\[[^\]]+\]\]|\[\^[0-9]+\]|\[[^\]]+\]\([^)\n' + _WSC + r']*\)')
@@ -376,8 +376,12 @@ QUOTE_DEPTH_MAX = 50
 
 def _trim(text, at):
     """JavaScript's trim() of `text`, which starts at offset `at`: the trimmed text and where it starts."""
-    m = _TRIM.match(text)
-    return m.group(1), at + m.start(1)
+    start, end = 0, len(text)   # a scan from each end: a regex would backtrack through a long run of inner spaces
+    while start < end and _SPACE.match(text, start):
+        start += 1
+    while end > start and _SPACE.match(text, end - 1):
+        end -= 1
+    return text[start:end], at + start
 
 
 def _cols(s):
@@ -462,7 +466,9 @@ def _page_code(lines, depth=0):
         elif _ROW.match(text) and i + 1 < n and _RULE.match(lines[i + 1][0]):
             first = i
             while i < n and _ROW.match(lines[i][0]):
-                if i != first + 1:   # the separator row is never drawn
+                if i == first + 1:   # the separator row is never drawn: it stays as written and nothing in it counts
+                    spans.append((lines[i][1], lines[i][1] + len(lines[i][0])))
+                else:
                     spans += _cell_spans(*lines[i])
                 i += 1
         elif _IS_LIST.match(text):
@@ -542,12 +548,21 @@ def _blank_code(text, lead=False):
     return ''.join(out + [text[last:]])
 
 
+def _warning_text(text):
+    """_blank_code() for a style warning, which never stops a wiki from opening: text the check refuses (quotes nested too
+    deep, saved by an older build) is read as written."""
+    try:
+        return _blank_code(text)
+    except WikiError:
+        return text
+
+
 def title_case(text):
     """Whether a title or heading looks like Title Case: at least three words after the first that are longer than three
     letters, all capitalised. All-caps words, words with digits and code spans are left out, and two such words are allowed,
     since a product name ("Visual Studio Code", "GitHub Actions") often has them. A warning heuristic: it cannot tell a
     proper name from a habit."""
-    words = re.findall(r"[\w'-]+", _blank_code(text))
+    words = re.findall(r"[\w'-]+", _warning_text(text))
     long = [w for w in words[1:] if len(w) > 3 and w[0].isalpha() and not w.isupper() and not any(c.isdigit() for c in w)]
     return len(long) >= 3 and all(w[0].isupper() for w in long)
 
@@ -572,7 +587,7 @@ def section_warnings(section, pid):
 
 def case_warnings(title, body):
     """Style warnings for a page's title and its ## headings written in Title Case."""
-    heads = [title] + re.findall(r'(?m)^#{2,6}[ \t]+(.+?)[ \t#]*$', _blank_code(body))
+    heads = [title] + re.findall(r'(?m)^#{2,6}[ \t]+(.+?)[ \t#]*$', _warning_text(body))
     return [case_warning(h) for h in heads if h and title_case(h)]
 
 
@@ -586,10 +601,11 @@ def validate_page(report, manifest, titles):
     _keys(report['cited'], notes, 'cited', SOURCES_MAX, NOTE_KEY)
     if FOOTNOTE.search(_blank_code(lead, True)) or FOOTNOTE.search(_blank_code(body)):
         raise WikiError('the text has [^k] footnotes of its own; it must cite with [N1] markers')
-    order = []
+    order, made = [], [0]
 
     def cite(match):
         marks = ''
+        made[0] += len(re.split(r'\s*,\s*', match.group(1)))
         for key in re.split(r'\s*,\s*', match.group(1)):
             if key not in notes:
                 raise WikiError(f'{key} is not a source key of this packet')
@@ -602,7 +618,16 @@ def validate_page(report, manifest, titles):
         if match.group(1) not in titles:
             raise WikiError(f'{match.group(1)} is not a page key of this packet')
         return f'[[{titles[match.group(1)]}]]'
-    lead, body = (_outside_code(text, lambda part: PAGE_LINK.sub(link, CITATION.sub(cite, part)), is_lead) for text, is_lead in ((lead, True), (body, False)))
+    numbered = []
+    for text, is_lead in ((lead, True), (body, False)):
+        made[0] = 0
+        text = _outside_code(text, lambda part: PAGE_LINK.sub(link, CITATION.sub(cite, part)), is_lead)
+        # A rewritten marker can change what the page reads as code (a [N1] link label becomes a citation, and a backtick
+        # after it pairs with another), so the page must show exactly the citations made.
+        if len(FOOTNOTE.findall(_blank_code(text, is_lead))) != made[0]:
+            raise WikiError('numbering the citations changes what the page shows as code; keep [N1] markers out of link labels')
+        numbered.append(text)
+    lead, body = numbered
     if not order:
         raise WikiError('the page cites no source')
     if len(lead) > LEAD_MAX or len(body) > BODY_MAX:
