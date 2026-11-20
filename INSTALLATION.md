@@ -61,7 +61,7 @@ Use `setup --inspect-plan PLAN_ID` to compare an approved relocation snapshot wi
 
 Living Memory itself reaches the network in two places, both optional: the `semantic install` download and `source-sync` for registered Confluence or Notion sources. Both use Python's standard `urllib`. The optional features that call `claude -p` (note maintenance and the agent wiki build) go through Claude Code and its own network settings instead.
 
-- An `HTTPS_PROXY` (or `https_proxy`) environment variable works. On Windows, the proxy set in Internet Options (read from the registry) is used only when no proxy variable is set at all; setting just `NO_PROXY` turns that lookup off, so set `HTTPS_PROXY` as well in that case. Certificates are checked against the Windows certificate store, so a proxy that inspects TLS with a company root certificate works when that certificate is installed there.
+- An `HTTPS_PROXY` (or `https_proxy`) environment variable works. On Windows, the proxy set in Internet Options (read from the registry) is used only when no proxy variable has a value; a non-empty `NO_PROXY` alone turns that lookup off, so set `HTTPS_PROXY` as well in that case. Certificates are checked against the Windows certificate store, so a proxy that inspects TLS with a company root certificate works when that certificate is installed there.
 - PAC files (automatic proxy configuration scripts) are not read, and proxies that need NTLM or Kerberos sign-in are not supported.
 - `semantic install` downloads three pinned files from huggingface.co, which redirects each download to a storage or CDN host; an allow list needs huggingface.co and the hosts Hugging Face lists for downloads behind a firewall.
 
