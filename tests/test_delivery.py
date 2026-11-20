@@ -142,6 +142,9 @@ class LauncherInstall(StoreFixture):
         self.assertEqual(self.plan()['summary']['launcher']['action'],'keep')
         self.assertTrue(self.launcher.active(self.home/'app'/'living_memory.py'))
         shown=subprocess.run([str(self.exe),'--json','version'],capture_output=True,text=True);self.assertEqual(json.loads(shown.stdout)['ok'],True)
+    def test_ownership_record_names_the_installing_python(self):   # REG-4: Hivemind reads it to start ALM
+        self.apply(self.plan());record=json.loads((self.home/'app'/'.core-ownership-v1.json').read_text(encoding='utf-8'))
+        self.assertEqual(record['interpreter'],sys.executable)
     def test_retrying_an_applied_plan_succeeds(self):   # Codex review: the launcher step already done must not read as stale
         proposed=self.plan();self.apply(proposed);again=self.apply(proposed);self.assertEqual(again['launcher']['action'],'create');self.assertTrue(self.launcher.ours(self.exe))
         removal=self.plan(True);self.apply(removal);self.apply(removal);self.assertFalse(self.exe.exists())
