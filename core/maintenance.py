@@ -453,13 +453,23 @@ def _diff(root, path, base, sha, text, until=None):
     except OSError:
         whole = False
     old = rebaseline.baseline(root, path, base, until, store=False) if whole else None   # a preview writes nothing
-    if old is not None:
-        change = _unified(redact(old.decode('utf-8', 'replace'))[0], redact(text)[0])
+    before = old.decode('utf-8', 'replace') if old is not None else None
+    # The credential scan is slow on very long lines (generated code), so such a file gets no diff.
+    if before is not None and all(len(line) <= rebaseline.SCAN_LINE_MAX for t in (before, text) for line in t.splitlines()):
+        change = _unified(_mask(before), _mask(text))
         change = change if len(change) <= DIFF_CHARS else None
     if len(_DIFFS) > 256:
         _DIFFS.clear()
     _DIFFS[key] = change
     return change
+
+
+def _mask(text):
+    """The text with each credential replaced by a redaction marker, keeping the line breaks it spanned, so diff line numbers stay right."""
+    from .repository import find_secrets
+    for kind, start, end in reversed(find_secrets(text)):
+        text = text[:start] + f"<redacted type='{kind}'/>" + '\n' * text.count('\n', start, end) + text[end:]
+    return text
 
 
 def _unified(old, new, context=3):
@@ -472,7 +482,10 @@ def _unified(old, new, context=3):
         lines = text.replace('\r\n', '\n').split('\n')
         return (lines[:-1], True) if lines[-1] == '' else (lines, False)
     (a, a_ends), (b, b_ends) = split(old), split(new)
-    ops = rebaseline._opcodes(a, b)
+    # Matched with the final line break as part of the last line, so adding or removing it alone is a change too.
+    def keyed(lines, ends):
+        return lines if ends or not lines else lines[:-1] + [lines[-1] + '\0']
+    ops = rebaseline._opcodes(keyed(a, a_ends), keyed(b, b_ends))
     if all(op[0] == 'equal' for op in ops):
         return ''
     matcher = difflib.SequenceMatcher(None, a, b)
@@ -875,6 +888,7 @@ def run(root, dry_run=False, adapter=None, now=None, allow_disabled=False, domai
     A manual dry run may pass `allow_disabled` (with `domains` when none are configured): it runs as if enabled, every limit still applies,
     and the config file is not touched."""
     root = Path(root).resolve()
+    _DIFFS.clear()   # each preview and each run starts its own diff cache
     clock = _clock(now)
     start = clock()
     try:
@@ -1026,6 +1040,7 @@ def status(root, now=None):
 def preview(root, limit=10, now=None, domains=None):
     """The next batch as it would be chosen, with the policy's action limits and a trial packet. No reservation, usage event or model call.
     Uses the configured domains, or `domains` when none are configured (so a store can be inspected before it is enabled)."""
+    _DIFFS.clear()   # each preview and each run starts its own diff cache
     now = ms._aware(now)
     cfg = ms.config(root)
     cfg = dict(cfg, domains=cfg['domains'] or list(domains or []))

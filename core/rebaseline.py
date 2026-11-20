@@ -99,11 +99,13 @@ def _repo(path):
         if (parent/'.git').exists():return parent
     return None
 
-def _git(repo,*args):
+def _git(repo,*args,deadline=None):
     flags=0x08000000 if os.name=='nt' else 0   # CREATE_NO_WINDOW
     # Local history only: a partial clone would otherwise fetch a missing blob from its remote (the note then stays stale).
     env=dict(os.environ,GIT_NO_LAZY_FETCH='1',GIT_TERMINAL_PROMPT='0')
-    done=subprocess.run(['git','-c','core.quotepath=off','-C',str(repo),*args],capture_output=True,timeout=GIT_TIMEOUT,creationflags=flags,env=env)
+    timeout=GIT_TIMEOUT if deadline is None else min(GIT_TIMEOUT,deadline-time.monotonic())
+    if timeout<=0:return None   # out of time: no new git process
+    done=subprocess.run(['git','-c','core.quotepath=off','-C',str(repo),*args],capture_output=True,timeout=timeout,creationflags=flags,env=env)
     return done.stdout if done.returncode==0 else None
 
 _PARTIAL={}
@@ -120,12 +122,12 @@ def backfill(root,path,sha,deadline=None,store=True):
     or git fails."""
     try:
         repo=_repo(path)
-        if repo is None or _partial(repo):return None
+        if repo is None or (deadline is not None and time.monotonic()>deadline) or _partial(repo):return None
         rel=Path(path).resolve().relative_to(repo.resolve()).as_posix()
-        log=_git(repo,'log','--format=%H','-n',str(GIT_WALK),'--',rel)
+        log=_git(repo,'log','--format=%H','-n',str(GIT_WALK),'--',rel,deadline=deadline)
         for commit in (log or b'').decode('ascii','replace').split():
             if deadline is not None and time.monotonic()>deadline:return None
-            data=_git(repo,'show',f'{commit}:{rel}')
+            data=_git(repo,'show',f'{commit}:{rel}',deadline=deadline)
             if data is None:continue
             for candidate in (data,data.replace(b'\r\n',b'\n').replace(b'\n',b'\r\n')):
                 if hashlib.sha256(candidate).hexdigest()==sha:

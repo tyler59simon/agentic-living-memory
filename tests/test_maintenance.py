@@ -505,6 +505,32 @@ class ByFileReview(Base):
             one=maintenance._diff(self.root,path,old,sha('a = 2\n'),'a = 2\n');two=maintenance._diff(self.root,path,old,sha('a = 2\n'),'a = 2\n')
         self.assertEqual(seen.call_count,1);self.assertEqual(one,two);self.assertIn('+a = 2',one)
 
+    # -- Codex re-review of 36c090e
+    def test_a_file_with_a_very_long_line_gets_no_diff(self):
+        from unittest import mock
+        from core import rebaseline
+        old='GEN = "'+'a.'*2000+'"\nx = 1\n';new=old.replace('x = 1','x = 2');self.src('g.py',new);maintenance._DIFFS.clear()
+        with mock.patch.object(rebaseline,'baseline',return_value=old.encode()):
+            self.assertIsNone(maintenance._diff(self.root,str(self.project/'src'/'g.py'),sha(old),sha(new),new))
+    def test_no_git_process_starts_after_the_deadline(self):
+        import time as clock
+        from unittest import mock
+        from core import rebaseline
+        with mock.patch.object(rebaseline.subprocess,'run') as run:
+            self.assertIsNone(rebaseline._git(self.project,'log',deadline=clock.monotonic()-1))
+        run.assert_not_called()
+    def test_each_preview_starts_its_own_diff_cache(self):
+        maintenance._DIFFS['left over']=None;maintenance.preview(self.root,now=self.now)
+        self.assertNotIn('left over',maintenance._DIFFS)
+    def test_a_masked_credential_keeps_the_line_numbers(self):
+        tok='Zq'+'9xK4'*8;old=f'a\nHEADER = "Bearer\n{tok}"\nb\nc\nd\ne = 1\n';new=old.replace('e = 1','e = 2')
+        change=maintenance._unified(maintenance._mask(old),maintenance._mask(new))
+        self.assertIn('@@ -4,4 +4,4 @@',change);self.assertNotIn(tok,change)
+    def test_a_final_line_break_change_shows_in_the_diff(self):
+        self.assertIn('\\ No newline at end of file',maintenance._unified('x\n','x'))
+        change=maintenance._unified('a\nx','b\nx\n')   # the old last line had no break, the new one has: x is a change, not context
+        self.assertIn('-x\n\\ No newline at end of file\n',change);self.assertIn('+x\n',change);self.assertNotIn(' x',change)
+
 class Service(Base):
     def test_dry_run_spends_the_allowance_and_writes_no_notes(self):
         n=self.mk('Sprint status','Done.',type='status',review_by=OLD)
