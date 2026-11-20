@@ -117,6 +117,8 @@ def describe(root,domain,value,cwd=None,bindings=None):
     if stored is None:raise ValueError(f'--source {text}: outside the bound folders and registered sources of domain {domain}')
     sha=file_sha256(found)
     if sha is None:raise ValueError(f'--source {text}: cannot be read')
+    from .rebaseline import keep
+    keep(root,found,sha)
     return {'path':stored,'sha256':sha}
 
 def rehash(sources,domain,root,bindings=None):
@@ -125,6 +127,9 @@ def rehash(sources,domain,root,bindings=None):
     for s in sources:
         if NAMED.match(s['path']) and specs is None:specs=_specs(root,domain,bindings)
         found,_=locate(root,domain,s['path'],bindings,specs);sha=file_sha256(found) if found else None
+        if sha:
+            from .rebaseline import keep
+            keep(root,found,sha)
         out.append({'path':s['path'],'sha256':sha or s['sha256']})
     return out
 

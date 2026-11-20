@@ -380,6 +380,9 @@ def _file_hashes(note,domain,root,keep=None,fresh=False):
         if path in digested or len(path)>300 or chr(10) in path or any(c in path for c in '*?['):continue
         if keep and path in keep and not fresh:out.append({'path':path,'sha256':keep[path]});continue
         found,_=locate(root,domain,path,bindings);sha=file_sha256(found) if found else None
+        if sha:
+            from .rebaseline import keep as keep_baseline_file
+            keep_baseline_file(root,found,sha)
         sha=sha or (keep or {}).get(path)
         if sha:out.append({'path':path,'sha256':sha})
     return out

@@ -130,6 +130,7 @@ def _actor(op,kind,old,new):
     if str(op).startswith('m-'):return 'maintenance'
     if kind.startswith('undo:'):return 'undo'
     if kind.startswith('overlay_'):return 'obsidian'
+    if kind=='rebaseline':return 'rebaseline'
     # A retirement records who asked for it: agent (a direct command), plan, vault (an approved Obsidian change), auto_resolve or maintenance.
     if r.get('actor') and n.get('status') in RETIRED and (old[1].get('status','active') if old else None)!=n.get('status'):
         return {'agent':'command','vault':'obsidian'}.get(str(r['actor']),str(r['actor']))

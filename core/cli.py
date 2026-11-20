@@ -280,7 +280,7 @@ def _sectioned(args,body='',note_type=None):
 
 # source-sync writes only the derived knowledge-base index (as search --rebuild does the notes' one), so subagents and viewers may run it
 # (not for a remote source, which it would pull from the network: sources.sync refuses that for them).
-READ_ONLY={'help','config','status','search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','ask','sources','source-sync','ingest-scan','changes','views','wiki','log','maintenance','recap','proposals'}
+READ_ONLY={'help','config','status','search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','ask','sources','source-sync','ingest-scan','changes','views','wiki','log','maintenance','rebaseline','recap','proposals'}
 # Viewer: a human-facing app browsing the store. Read-only, and its reads are not usage evidence for the diary.
 VIEWER=READ_ONLY|{'taxonomy','review','diff','inspect-plan'}
 # Direct journaled writes (no plan); `taxonomy add` is the same kind of write under a read command. Refused to subagents, viewers and Hivemind agents.
@@ -543,7 +543,7 @@ HELP={'setup':'Choose or move the shared memory folder','bind':'Bind a domain to
  'apply':'Apply a plan','inspect-plan':'Show a plan in full','rewrite':'Rewrite several note bodies','merge-plan':'Plan merging notes','history':'Recent operations','recap':'Summary of recent activity','log':'Note and change history',
  'undo':'Undo an operation (merge, delete and bulk retag return a plan)','recover':'Finish or abandon an interrupted operation','diff':'Show what an operation changed','doctor':'Check the install and the store','backup':'Back up the store',
  'restore-plan':'Plan restoring a backup','migration-plan':'Plan a store migration','note-type-plan':'Plan note type changes','baseline-plan':'Plan a verification baseline','rebuild':'Rebuild search indexes',
- 'maintenance':'Automatic maintenance','semantic':'Semantic search settings','validate':'Check notes against the rules','query':'Query the store','taxonomy':'Show the tag taxonomy, or add tags',
+ 'maintenance':'Automatic maintenance','rebaseline':'Re-baseline notes a file change did not touch','semantic':'Semantic search settings','validate':'Check notes against the rules','query':'Query the store','taxonomy':'Show the tag taxonomy, or add tags',
  'project':'Create or change a project','projects':'List projects','system':'Create or change a system','systems':'List systems','source':'Add or remove a knowledge-base source','sources':'List knowledge-base sources',
  'source-sync':'Re-index knowledge-base sources','ingest-scan':'Scan for files to ingest','ingest-skip':'Skip an ingest candidate','ask':'Ask a question about the project','change':'Create or change a tracked change',
  'changes':'List tracked changes','views':'Saved views','wiki':'Domain wiki','batch':'Run several commands from a JSON file','retag-plan':'Plan retagging notes','remap':'Move notes between domains','promote':'Promote notes to the global domain',
@@ -553,7 +553,7 @@ HELP={'setup':'Choose or move the shared memory folder','bind':'Bind a domain to
 # The groups `alm --help` lists the commands under (CLI-2); every command is in exactly one.
 HELP_GROUPS=(
  ('Everyday',('help','capture','propose','proposals','search','read','update','supersede','open','check','confirm','resolve','reopen','ask','list','timeline','links','log','recap','recall','capture-finalize','status','off','on')),
- ('Maintenance',('review','maintenance','stats','history','diff','undo','recover','restore','doctor','validate','rebuild','semantic','backup','logs')),
+ ('Maintenance',('review','maintenance','rebaseline','stats','history','diff','undo','recover','restore','doctor','validate','rebuild','semantic','backup','logs')),
  ('Direct writes (journaled, undo OPERATION)',('archive','rewrite','remap','promote','source','project','system','change')),
  ('Governance (plans)',('plan','apply','inspect-plan','merge-plan','retag-plan','note-type-plan','migration-plan','baseline-plan','restore-plan',
    'import-plan','ingest-plan','overlay-teardown-plan')),
@@ -638,6 +638,8 @@ def build_parser():
     p=sub('note-type-plan')
     p=sub('baseline-plan')
     p=sub('rebuild');p.add_argument('name',nargs='?')
+    p=sub('rebaseline');p.add_argument('--dry-run',action='store_true',help='list each stale note and whether its change is relevant, write nothing')
+    p.add_argument('--scheduled',action='store_true',help=argparse.SUPPRESS)
     p=sub('maintenance');p.add_argument('action',choices=['status','preview','run','enable','disable','history'])
     p.add_argument('--limit',type=int,help='preview, history: at most this many rows (default 10)');p.add_argument('--run',help='history: one run by ID, with its per-note decisions')
     p.add_argument('--dry-run',action='store_true',help='run: call the model and validate its decisions, but change no notes (still uses the daily allowance; works while disabled)')
@@ -763,6 +765,8 @@ def main(argv=None):
             raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' are read-only: wiki --format json (no --out) is allowed; run the rest as --actor main')
         if cmd=='config' and args.action=='set' and args.actor in {'subagent','viewer'}:
             raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' are read-only: config get is allowed; run config set as --actor main')
+        if cmd=='rebaseline' and not args.dry_run and args.actor in {'subagent','viewer'}:
+            raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' are read-only: rebaseline --dry-run is allowed; run the rest as --actor main')
         if cmd=='maintenance' and args.action not in {'status','preview','history'} and args.actor in {'subagent','viewer'}:
             raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' are read-only: maintenance status, preview and history are allowed; run the rest as --actor main')
         if cmd in SWITCH-{'status'} and args.actor in {'subagent','viewer'}:raise ValueError('Only the user turns Living Memory on or off; run it as --actor main')
@@ -1293,6 +1297,10 @@ def main(argv=None):
             if not d:raise ValueError(UNBOUND)
             from .validate import reconcile,validate_domain
             result=reconcile(d,root) if cmd=='rebuild' else {'issues':validate_domain(d,root)}
+        elif cmd=='rebaseline':
+            from . import rebaseline
+            if args.scheduled and args.dry_run:raise ValueError('--scheduled does not take --dry-run')
+            result=rebaseline.scheduled(root) if args.scheduled else rebaseline.sweep(root,[domain] if getattr(args,'domain',None) else None,args.dry_run)
         elif cmd=='maintenance':
             from . import maintenance
             a=args.action;flags=('limit','run','dry_run','scheduled','all_domains','model','max_notes_per_day','timeout_seconds','daily_budget_usd')

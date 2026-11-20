@@ -481,6 +481,18 @@ def chunk_file(rel,text,kind='folder'):
         title=re.sub(r'[-_+]+',' ',os.path.splitext(rel.rsplit('/',1)[-1])[0]).strip();units=[(s or title,r) for s,r in units]
     return [{'symbol':s,'line_start':a,'line_end':b,'text':t,'kind':how} for s,a,b,t in pack(units,how in {'doc','html'})]
 
+def symbol_units(rel,text):
+    """[(symbol, line_start, line_end, text)] of a file's definitions (code) or headings (documents), one per unit and not merged or split as
+    chunk_file does: rebaseline compares them one by one. [] for a kind with no units (HTML, other text)."""
+    ext=os.path.splitext(rel)[1].lower();text=text.replace('\r\n','\n').replace('\r','\n')
+    rows=[(i+1,l.rstrip()) for i,l in enumerate(text.split('\n'))]
+    if ext in {'.md','.markdown'}:units=heading_units(rows,'md')
+    elif ext=='.rst':units=heading_units(rows,'rst')
+    elif ext in {'.adoc','.asciidoc'}:units=heading_units(rows,'adoc')
+    elif ext in LANG:units=code_units(rows,LANG[ext])
+    else:return []
+    return [(s,r[0][0],r[-1][0],'\n'.join(t for _,t in r)) for s,r in units if r]
+
 # ---- the index ------------------------------------------------------------------------------------------------------
 def split_camel(text):
     """fooBar and XMLParser read as separate words, so a question in words finds an identifier."""

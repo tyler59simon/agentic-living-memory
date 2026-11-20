@@ -17,6 +17,10 @@ Maintenance does not:
 
 Installing or upgrading never turns it on. `maintenance.json` starts disabled, and a snapshot restore or a store relocation always leaves it disabled.
 
+## Before the model: re-baselining
+
+A note goes stale when any byte of a file it lists changes. Before anything reaches the reviewer, an hourly sweep with no model (`rebaseline`, see SCRIPT_REFERENCE.md) re-baselines the notes whose cited lines, definitions and identifiers the change did not touch, and shifts their line citations. Only the rest are left stale for the reviewer.
+
 ## Enable and disable
 
 ```

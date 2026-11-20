@@ -14,7 +14,7 @@ SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 # Tools that cannot change files; anything else marks the turn as mutating.
 READ_TOOLS={'read','read_file','glob','grep','search','view_image','view','ls','list','webfetch','websearch','web_fetch','web_search','todowrite','task','agent','toolsearch','askuserquestion','exitplanmode','enterplanmode'}
 SHELL_TOOLS={'bash','powershell','shell','run_shell_command','exec_command','local_shell','execute'}
-ALLOWED_SUBCOMMANDS={'ask','sources','source-sync','ingest-scan','search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','archive','rewrite','promote','projects','systems','changes','views','wiki','resolve','reopen','restore','log','maintenance','recap','status','help','propose','proposals'}
+ALLOWED_SUBCOMMANDS={'ask','sources','source-sync','ingest-scan','search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','archive','rewrite','promote','projects','systems','changes','views','wiki','resolve','reopen','restore','log','maintenance','rebaseline','recap','status','help','propose','proposals'}
 # Subagents are read-only: these are denied for them even though the main agent gets them auto-allowed. Their one write is
 # propose, a draft in .turns/ that only the main agent turns into a note (capture --from-proposal) or rejects.
 MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm','resolve','reopen','restore','off','on','undo','archive','rewrite','remap','promote','source','project','system','change'}   # `taxonomy add` is the same kind of write: taxonomy_write
@@ -284,6 +284,14 @@ def maintenance_write(text,grammar):
         if {'run','enable','disable'}&set(words[index+1:]):return True   # any word, so an option value before the action cannot hide it
     return False
 
+def rebaseline_write(text,grammar):
+    """True when a `rebaseline` command may write (anything but --dry-run)."""
+    for words in _parsed(text,grammar) or []:
+        index=0
+        while index<len(words) and words[index]!='rebaseline':index+=2 if words[index] in GLOBAL_OPTIONS else 1
+        if '--dry-run' not in words[index+1:]:return True
+    return False
+
 def proposals_write(text,grammar):
     """True when a `proposals` command settles one (reject); list and show only read."""
     for words in _parsed(text,grammar) or []:
@@ -308,7 +316,8 @@ def memory_write(subcommand,text,grammar):
     if not subcommand:return False
     return (subcommand in MUTATING_SUBCOMMANDS or (subcommand=='views' and views_write(text,grammar))
             or (subcommand=='maintenance' and maintenance_write(text,grammar)) or (subcommand=='wiki' and wiki_write(text,grammar))
-            or (subcommand=='proposals' and proposals_write(text,grammar)) or (subcommand=='taxonomy' and taxonomy_write(text,grammar)))
+            or (subcommand=='proposals' and proposals_write(text,grammar)) or (subcommand=='taxonomy' and taxonomy_write(text,grammar))
+            or (subcommand=='rebaseline' and rebaseline_write(text,grammar)))
 
 def auto_allowed(text,grammar,root,cwd,scratch=None):
     """True when an allow-listed memory command may skip the permission prompt: it uses the hook's own store
@@ -1883,6 +1892,9 @@ def _process(harness,event,payload,root=None,info=None):
         except Exception as exc:
             from .logs import swallowed
             swallowed('runtime.maintenance_schedule',exc,root)
+        # Diff-aware staleness (core/rebaseline.py): a detached sweep, at most hourly, re-baselines notes a file change did not touch.
+        from . import rebaseline
+        detail['rebaseline']=rebaseline.schedule(root,bindings,subagent=_subagent(payload),plan=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()=='plan',compact=source=='compact')
         # Prompts and tool hints read the index without checking it: bring a stale one (older schema, notes edited outside the scripts) up to date now.
         try:
             from .search import refresh_stale
