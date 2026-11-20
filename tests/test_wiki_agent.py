@@ -544,7 +544,7 @@ class Page(Base):
         """markdown() from the page's script run under node on `body`, as a [tag, text, kids] tree."""
         js=wiki.JS;start=js.index('var INLINE=');end=js.index('// ---- building blocks')
         stub=("var N={},CITE={page:{sources:[{id:'a',title:'A',current:true,missing:false}]}},AG=true;"
-              "function mk(t){var e={tag:t,kids:[],lastChild:null,appendChild:function(k){this.kids.push(k);this.lastChild=k;return k},setAttribute:function(){}};return e}"
+              "function mk(t){var e={tag:t,kids:[],lastChild:null,appendChild:function(k){this.kids.push(k);this.lastChild=k;return k},setAttribute:function(){},querySelector:function(){return null}};return e}"
               "var document={createTextNode:function(t){return {text:t}},createElement:mk,createDocumentFragment:function(){return mk('frag')}};"
               "function el(t,c,x){var e=mk(t);e.className=c;if(x!=null)e.textContent=x;return e}function link(h,c,x){return el('a',c,x)}function nh(n){return '#'}")
         run=stub+js[start:end]+("var f=markdown("+json.dumps(body)+");"
@@ -617,6 +617,39 @@ class Page(Base):
         self.assertEqual(pre[2][0][1],'if True:\n  pass')   # a tab past the item's column keeps the rest of its width
         frag=self.render('10. Item\n  ```\n  x\n  ```')   # the fence does not reach the item's text column
         self.assertEqual([k[0] for k in frag[2]],['ol','pre']);self.assertEqual(frag[2][1][2][0][1],'x')
+
+    def test_a_code_span_ends_at_its_table_cell(self):   # AW-39
+        with self.assertRaisesRegex(wa.WikiError,'footnotes of its own'):self.check('| a `x | [^1] y` |\n|---|---|\nText.[N1]')
+        out=self.check('| a `x | y [N1] z` |\n|---|---|')
+        self.assertEqual(out['body'],'| a `x | y [^1] z` |\n|---|---|')
+        cell=self.render(out['body'])[2][0][2][0][2][0][2][0][2][1]   # div > table > thead > tr > second th
+        self.assertEqual([k[0] if isinstance(k,list) else k for k in cell[2]],['y ','sup',' z`'])
+
+    def test_a_backtick_inside_a_link_or_bold_text_opens_no_code(self):   # AW-41
+        for body in ('[a`b](https://x) [^1] c`','**a `x** [^1] y`'):
+            with self.assertRaisesRegex(wa.WikiError,'footnotes of its own'):self.check(body+'\nText.[N1]')
+        self.assertIn('`[^1]`',self.check('**a `[^1]` b** [N1]')['body'])   # a code span inside bold text is still code
+
+    def test_tabs_move_to_the_next_tab_stop(self):   # AW-42
+        pre=self.render('- Item\n  ```\n \tx\n  ```')[2][0][2][0][2][1]
+        self.assertEqual(pre[2][0][1],'  x')   # the tab after one space ends at column 4; two columns come off
+        frag=self.render('-\tItem\n    ```\n    x\n    ```')   # the item's text starts at column 4, so the fence is its own
+        self.assertEqual([k[0] for k in frag[2]],['ul']);self.assertEqual([k[0] for k in frag[2][0][2][0][2] if isinstance(k,list)],['pre'])
+
+    def test_quotes_nested_too_deep_are_refused(self):
+        with self.assertRaisesRegex(wa.WikiError,'nests quotes'):self.check('>'*(wa.QUOTE_DEPTH_MAX+2)+' Deep.[N1]')
+
+    @unittest.skipUnless(__import__('shutil').which('node'),'needs node')
+    def test_the_check_and_the_page_agree_on_what_is_code(self):
+        def drawn(node,inside_pre=False):
+            if not isinstance(node,list):return []
+            tag,text,kids=node
+            if tag=='code' and not inside_pre:return [text]
+            return [c for k in kids for c in drawn(k,tag=='pre')]
+        for body in ('| a `x | y` |\n|---|---|\n| `p | q` z |','- item\n  | `a | b` |\n  |---|','> | `a | b` |\n> |---|\n> | c `d` |',
+                     '**a `x** y`','[a`b](https://x) c `d`','- [ ] `t` x','## `h` x','1. a\n\n   `b` c\n\n- d `e`','Text `a\nb` c'):
+            spans=wa._code_spans(body);inline=[body[s+1:e-1] for s,e in spans if '\n' not in body[s:e] and not wa._OPEN.match(body[s:e])]
+            self.assertEqual(inline,drawn(self.render(body)),body)
 
     def test_a_theme_picker_serves_both_editions(self):
         self.sample();self.build();agent_page=self.html();plain=wiki.render_html(wiki.wiki_model('demo',self.root))

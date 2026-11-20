@@ -347,66 +347,181 @@ def validate_place(report, manifest, page_count):
 CITATION = re.compile(r'\[(N[0-9]+(?:\s*,\s*N[0-9]+)*)\]')
 PAGE_LINK = re.compile(r'\[\[(P[0-9]+)\]\]')
 FOOTNOTE = re.compile(r'\[\^[0-9]+\]')
-INLINE_CODE = re.compile(r'`[^`\n]+`')     # the page renders the body line by line
-LEAD_CODE = re.compile(r'`[^`]+`')         # and the lead as one run of text, with no fences
-# The fence rule of markdown() in core/wiki.py, which renders the page: a line of three or more backticks opens a block at
-# any quote depth and in any list item; the block ends at a line of the same depth holding only a backtick run at least as
-# long, at the end of its quote, or at the end of the text. Whitespace is JavaScript's \s but a line break (Python's \s
-# differs: it has U+001C to U+001F and U+0085, and lacks U+FEFF).
+# What the page draws as code is decided by markdown() and inline() in the page's script (wiki.JS in core/wiki.py); the
+# check follows them step by step (_page_code). Whitespace is JavaScript's \s but a line break (Python's \s differs: it has
+# U+001C to U+001F and U+0085, and lacks U+FEFF), and JavaScript's . stops at U+2028 and U+2029 as well.
 _WS = r'[\t\v\f\r    -     　﻿]'
+_WSC = _WS[1:-1]                    # the same set, for use inside another bracket
+_NWS = '[^\n' + _WSC + ']'          # JavaScript's \S
+_TRIM = re.compile(_WS + '*(.*?)' + _WS + r'*\Z', re.S)
 _QUOTE = re.compile(_WS + r'*>' + _WS + '?')
+_QUOTED = re.compile(_WS + r'*>')
+_INNER_QUOTE = re.compile(_WS + r'+>')
+_INDENTED = re.compile(_WS)
 _OPEN = re.compile(_WS + r'*(`{3,})')
 _SHUT = re.compile(_WS + r'*(`+)' + _WS + r'*$')
+_HEAD = re.compile(r'#{1,6}' + _WS + r'+([^  ]*)\Z')
+_IS_LIST = re.compile(_WS + r'*([-*+]|[0-9]+\.)' + _WS + '+')
+_ITEM = re.compile('(' + _WS + r'*)([-*+]|[0-9]+\.)(' + _WS + r'+)(.*)\Z', re.S)
+_TASK = re.compile(r'\[[ xX]\]' + _WS + r'+([^  ]*)\Z')
+_AFTER_BLANK = re.compile(_WS + '{2,}' + _NWS)
+_GOES_ON = re.compile(_WS + '+' + _NWS)
+_ROW = re.compile(_WS + r'*\|')
+_RULE = re.compile(_WS + r'*\|?' + _WS + r'*:?-{2,}')
+_ENDS_PARAGRAPH = re.compile(_WS + r'*(```|#{1,6}' + _WS + r'|>|\|)')
+# INLINE in the page's script: the leftmost match wins, and at one place the first alternative that matches.
+_INLINE = re.compile(r'`[^`]+`|\*\*[^*]+\*\*|\*[^*\n' + _WSC + r'][^*]*\*|\[\[[^\]]+\]\]|\[\^[0-9]+\]|\[[^\]]+\]\([^)\n' + _WSC + r']*\)')
+QUOTE_DEPTH_MAX = 50
 
 
-def _unquote(line, most=None):
-    """How many quote markers the page strips from `line` (at most `most`), and the text after them."""
-    depth = 0
-    while (most is None or depth < most) and (m := _QUOTE.match(line)):
-        line, depth = line[m.end():], depth + 1
-    return depth, line
+def _trim(text, at):
+    """JavaScript's trim() of `text`, which starts at offset `at`: the trimmed text and where it starts."""
+    m = _TRIM.match(text)
+    return m.group(1), at + m.start(1)
 
 
-def _fences(text):
-    """(start, end) of every fenced block in `text`, from its opening line to the end of its closing line."""
-    lines = text.split('\n')
-    starts = [0]
-    for line in lines:
-        starts.append(starts[-1] + len(line) + 1)
-    spans, i = [], 0
-    while i < len(lines):
-        depth, rest = _unquote(lines[i])
-        opener = _OPEN.match(rest)
-        if not opener:
-            i += 1
-            continue
-        run, j, end = len(opener.group(1)), i + 1, len(text)
-        while j < len(lines):
-            inner, rest = _unquote(lines[j], depth)
-            if inner < depth:   # the quote ended, and the block with it
-                end = starts[j] - 1
-                break
-            shut = _SHUT.match(rest)
+def _cols(s):
+    """Columns `s` fills from the start of a line; a tab moves to the next multiple of 4."""
+    c = 0
+    for ch in s:
+        c = c + 4 - c % 4 if ch == '\t' else c + 1
+    return c
+
+
+def _inline_spans(text, at):
+    """The code spans inline() draws for `text` (at offset `at`): a backtick token is code, and bold and italic text is read
+    again inside; links, page links and citations are taken whole, so a backtick in them opens nothing."""
+    spans = []
+    for m in _INLINE.finditer(text):
+        token = m.group()
+        if token[0] == '`':
+            spans.append((at + m.start(), at + m.end()))
+        elif token.startswith('**'):
+            spans += _inline_spans(token[2:-2], at + m.start() + 2)
+        elif token[0] == '*':
+            spans += _inline_spans(token[1:-1], at + m.start() + 1)
+    return spans
+
+
+def _cell_spans(text, at):
+    """The code spans of one table row: cells() in the page's script trims the row, drops one leading and one trailing |, and
+    splits at every |, so a backtick never reaches past its cell."""
+    row, at = _trim(text, at)
+    if row.startswith('|'):
+        row, at = row[1:], at + 1
+    if row.endswith('|'):
+        row = row[:-1]
+    spans = []
+    for cell in row.split('|'):
+        spans += _inline_spans(*_trim(cell, at))
+        at += len(cell) + 1
+    return spans
+
+
+def _page_code(lines, depth=0):
+    """(start, end) of what markdown() in the page's script draws as code for `lines`, a list of (text, offset): each fenced
+    block whole, from its opening line to the end of its closing line, and the inline code spans of every piece of text it
+    hands to inline(). The blocks are tried in the script's order: fence, heading, quote, table, list, paragraph."""
+    if depth > QUOTE_DEPTH_MAX:
+        raise WikiError(f'the text nests quotes more than {QUOTE_DEPTH_MAX} deep')
+    spans, i, n = [], 0, len(lines)
+
+    def blank(k):
+        return not _trim(lines[k][0], 0)[0]
+
+    def code(k, run):   # a block runs to a line of only a backtick run at least as long, or to the end of these lines
+        j = k + 1
+        while j < n and not ((m := _SHUT.match(lines[j][0])) and len(m.group(1)) >= run):
             j += 1
-            if shut and len(shut.group(1)) >= run:
-                end = starts[j] - 1
+        last = lines[min(j, n - 1)]
+        spans.append((lines[k][1], last[1] + len(last[0])))
+        return j + 1
+
+    def quote(k, marker):   # one quote marker off each line, and the lines drawn again as their own text
+        inner = []
+        while k < n and marker.match(lines[k][0]):
+            text, at = lines[k]
+            m = _QUOTE.match(text)
+            inner.append((text[m.end():], at + m.end()))
+            k += 1
+        spans.extend(_page_code(inner, depth + 1))
+        return k
+
+    while i < n:
+        text, at = lines[i]
+        opener = _OPEN.match(text)
+        if blank(i):
+            i += 1
+        elif opener:
+            i = code(i, len(opener.group(1)))
+        elif h := _HEAD.match(text):
+            spans += _inline_spans(h.group(1), at + h.start(1))
+            i += 1
+        elif _QUOTED.match(text):
+            i = quote(i, _QUOTED)
+        elif _ROW.match(text) and i + 1 < n and _RULE.match(lines[i + 1][0]):
+            first = i
+            while i < n and _ROW.match(lines[i][0]):
+                if i != first + 1:   # the separator row is never drawn
+                    spans += _cell_spans(*lines[i])
+                i += 1
+        elif _IS_LIST.match(text):
+            stack = []   # per open list: the indent of its items and the column where its latest item's text starts
+            while i < n:
+                text, at = lines[i]
+                if blank(i):
+                    if i + 1 < n and (_IS_LIST.match(lines[i + 1][0]) or _AFTER_BLANK.match(lines[i + 1][0])):
+                        i += 1
+                        continue
+                    break
+                if m := _ITEM.match(text):
+                    ind = _cols(m.group(1))
+                    while stack and stack[-1][0] > ind:
+                        stack.pop()
+                    if not stack or stack[-1][0] < ind:
+                        stack.append([ind, 0])
+                    stack[-1][1] = _cols(m.group(1) + m.group(2) + m.group(3))
+                    task = _TASK.match(m.group(4))
+                    spans += _inline_spans(task.group(1), at + m.start(4) + task.start(1)) if task else _inline_spans(m.group(4), at + m.start(4))
+                    i += 1
+                    continue
+                opener = _OPEN.match(text)
+                if opener and _INDENTED.match(text) and stack:
+                    # The deepest item whose text column the fence reaches owns it; with none, the list ends.
+                    fi = _cols(re.match('[ \t]*', text).group())
+                    k = next((s for s in range(len(stack) - 1, -1, -1) if stack[s][1] <= fi), -1)
+                    if k < 0:
+                        break
+                    del stack[k + 1:]
+                    i = code(i, len(opener.group(1)))
+                    continue
+                if _INNER_QUOTE.match(text) and stack:
+                    i = quote(i, _INNER_QUOTE)
+                    continue
+                if _GOES_ON.match(text) and stack:
+                    spans += _inline_spans(*_trim(text, at))
+                    i += 1
+                    continue
                 break
-        spans.append((starts[i], min(end, len(text))))
-        i = j
+        else:
+            first = True
+            while i < n and not blank(i) and (first or not _ENDS_PARAGRAPH.match(lines[i][0]) and not _IS_LIST.match(lines[i][0])):
+                spans += _inline_spans(*_trim(*lines[i]))
+                first = False
+                i += 1
     return spans
 
 
 def _code_spans(text, lead=False):
-    """(start, end) of every fenced block and every inline code span outside them, in order. A lead has inline spans only."""
+    """(start, end) of every fenced block and inline code span the page draws for `text`, in order. The page draws a lead as
+    one run of text, with no blocks."""
     if lead:
-        return [m.span() for m in LEAD_CODE.finditer(text)]
-    spans, last = [], 0
-    for start, end in _fences(text) + [(len(text), len(text))]:
-        spans += [(last + m.start(), last + m.end()) for m in INLINE_CODE.finditer(text[last:start])]
-        if start < end:
-            spans.append((start, end))
-        last = end
-    return spans
+        return _inline_spans(text, 0)
+    lines, at = [], 0
+    for line in text.split('\n'):
+        lines.append((line, at))
+        at += len(line) + 1
+    return _page_code(lines)
 
 
 def _outside_code(text, fn, lead=False):

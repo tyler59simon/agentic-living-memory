@@ -533,14 +533,16 @@ function plain(t){return AG?String(t).replace(/\[\^\d+\]/g,''):t}
 function markdown(text,heads){
   var box=document.createDocumentFragment(),lines=String(text||'').replace(/\r/g,'').split('\n'),i=0;
   function isList(l){return /^(\s*)([-*+]|\d+\.)\s+/.test(l)}
-  // A fence opens with three or more backticks and closes on a line holding only a run at least as long; the citation
-  // check in core/wiki_agent.py (_fences) follows the same rule.
+  // A fence opens with three or more backticks and closes on a line holding only a run at least as long. The citation
+  // check in core/wiki_agent.py (_page_code) follows this function and inline() step by step; change them together.
   function fence(l){var f=/^\s*(`{3,})/.exec(l);return f?f[1].length:0}
   function shut(l,n){var f=/^\s*(`+)\s*$/.exec(l);return !!f&&f[1].length>=n}
-  function cols(s){return s.replace(/\t/g,'    ').length}
+  // Columns s fills from the start of a line: a tab moves to the next multiple of 4. Indentation is spaces and tabs only.
+  function cols(s){var c=0;for(var k=0;k<s.length;k++)c=s[k]==='\t'?c+4-c%4:c+1;return c}
+  function indent(l){return cols(/^[ \t]*/.exec(l)[0])}
   // Up to n columns of indentation off a line; a tab that reaches past n leaves the rest of its width as spaces.
-  function dedent(l,n){var k=0,c=0;while(k<l.length&&c<n&&(l[k]===' '||l[k]==='\t')){var w=l[k]==='\t'?4:1;if(c+w>n)return ' '.repeat(c+w-n)+l.slice(k+1);c+=w;k++}return l.slice(k)}
-  function code(l,n){var buf=[],fi=cols(/^\s*/.exec(l)[0]);i++;while(i<lines.length&&!shut(lines[i],n))buf.push(dedent(lines[i++],fi));i++;var pre=el('pre');pre.appendChild(el('code',null,buf.join('\n')));return pre}
+  function dedent(l,n){var k=0,c=0;while(k<l.length&&c<n&&(l[k]===' '||l[k]==='\t')){var w=l[k]==='\t'?4-c%4:1;if(c+w>n)return ' '.repeat(c+w-n)+l.slice(k+1);c+=w;k++}return l.slice(k)}
+  function code(l,n){var buf=[],fi=indent(l);i++;while(i<lines.length&&!shut(lines[i],n))buf.push(dedent(lines[i++],fi));i++;var pre=el('pre');pre.appendChild(el('code',null,buf.join('\n')));return pre}
   while(i<lines.length){
     var line=lines[i],fo=fence(line);
     if(!line.trim()){i++;continue}
@@ -567,7 +569,7 @@ function markdown(text,heads){
           while(stack.length&&stack[stack.length-1].ind>ind)stack.pop();
           if(!stack.length||stack[stack.length-1].ind<ind){var lst=el(ordered?'ol':'ul');if(stack.length)stack[stack.length-1].list.lastChild.appendChild(lst);else box.appendChild(lst);stack.push({ind:ind,list:lst})}
           // Where the latest item's text starts: a fence indented that far or more belongs to it.
-          stack[stack.length-1].col=ind+m[2].length+cols(m[3]);
+          stack[stack.length-1].col=cols(m[1]+m[2]+m[3]);
           var li=el('li'),t=/^\[([ xX])\]\s+(.*)$/.exec(m[4]);
           if(t){li.className='task'+(t[1]!==' '?' done':'');var cb=el('input');cb.type='checkbox';cb.disabled=true;cb.checked=t[1]!==' ';cb.setAttribute('aria-label',t[1]!==' '?'Done':'Open');li.appendChild(cb);var sp=el('span');inline(sp,t[2]);li.appendChild(sp)}
           else inline(li,m[4]);
@@ -576,7 +578,7 @@ function markdown(text,heads){
         if(lf&&/^\s/.test(l)&&stack.length){
           // The deepest item whose text column the fence reaches owns it; deeper lists end, and the code loses that indentation.
           // A fence that reaches no item ends the list.
-          var fi=cols(/^\s*/.exec(l)[0]),k=-1;
+          var fi=indent(l),k=-1;
           for(var s=stack.length-1;s>=0;s--)if(stack[s].col<=fi){k=s;break}
           if(k<0)break;
           stack.length=k+1;stack[k].list.lastChild.appendChild(code(l,lf));continue}
