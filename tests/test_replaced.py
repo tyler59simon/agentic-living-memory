@@ -98,6 +98,14 @@ class Candidates(Pairs):
         self.assertEqual(self.cands(),[])
         notes.change(new['id'],'demo','update',self.root,body=NEW_BODY+' It was reviewed again.')
         self.assertEqual([(c['ref'],c['kinds']) for c in self.cands()],[(self.ref(old),['replaced'])])
+    def test_two_pairs_of_one_older_note_keep_their_own_holds(self):
+        old,new=self.old_new()
+        other=self.mk('Taxonomy of thirteen note types, final','Thirteen note types replace the ten-type taxonomy.',type='decision')
+        ms.queue_add(self.root,[{'new':self.ref(other),'old':self.ref(old)}])
+        for _ in range(2):
+            run,manifest,_=self.prepare();self.assertEqual(manifest['candidates'][self.ref(old)]['kinds'],['replaced'])
+            self.apply(run,manifest,[self.d(manifest,old,'defer')]);ms.finish(self.root,run,0,'completed',self.now)
+        self.assertEqual(self.cands(),[])   # the second pair's hold did not replace the first's
     def test_the_budget_is_shared_with_the_other_kinds(self):
         self.same_utc_day(3)
         self.cfg=ms.validate({**self.cfg,'max_notes_per_day':2});ms.set_config(self.root,self.cfg)

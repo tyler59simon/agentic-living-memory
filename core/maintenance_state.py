@@ -660,7 +660,7 @@ def _later(a, b):
     return a if b is None or (a is not None and _parse(a) >= _parse(b)) else b
 
 
-def _merge_state(cur, snap):
+def _merge_state(cur, snap, now=None):
     """Element-wise maximum of two checkpoints: it never lowers a counter, moves the last attempt back or drops a block or hold."""
     if cur is None or snap is None:
         return cur or snap
@@ -676,15 +676,26 @@ def _merge_state(cur, snap):
         out[k] = source[k]
     out['blocked'] = cur['blocked'] or snap['blocked']
     out['domain_cursor'] = cur['domain_cursor'] or snap['domain_cursor']
-    # An entry past its 60-day memory (counted from the newer checkpoint's day) no longer counts: it would hand an old count to a live hold.
-    kept = datetime.combine(date.fromisoformat(newer['day']), datetime.min.time(), timezone.utc) - timedelta(days=RETRY_KEEP_DAYS)
+    # An entry past its 60-day memory, as of the restore (never before the newer checkpoint's day), no longer counts: it would hand an
+    # old count to a live hold. An entry without a readable date is dropped rather than stopping the restore.
+    day = datetime.combine(date.fromisoformat(newer['day']), datetime.min.time(), timezone.utc)
+    kept = max(_aware(now), day) - timedelta(days=RETRY_KEEP_DAYS)
     def live(entries):
-        return {k: v for k, v in entries.items() if _parse(v['retry_after']) > kept}
+        out = {}
+        for k, v in entries.items():
+            try:
+                if isinstance(v, dict) and _parse(v['retry_after']) > kept:
+                    out[k] = v
+            except (KeyError, TypeError, ValueError):
+                continue
+        return out
     retry = live(snap['retry'])
     for ref, entry in live(cur['retry']).items():
         theirs = retry.get(ref)
         won = entry if not theirs or _parse(entry['retry_after']) >= _parse(theirs['retry_after']) else theirs
-        if theirs and theirs.get('revision') == entry.get('revision') and theirs.get('fingerprint') == entry.get('fingerprint'):
+        # A replaced-pair hold counts per pair (its fingerprint names the successor and its revision); an ordinary one per note revision.
+        pair = '#replaced' in ref
+        if theirs and theirs.get('revision') == entry.get('revision') and (not pair or theirs.get('fingerprint') == entry.get('fingerprint')):
             # The same revision's holds: keep the higher count with the later hold, so a restore never shortens the next one.
             won = dict(won, count=max(entry.get('count') or 1, theirs.get('count') or 1))
         retry[ref] = won
@@ -692,7 +703,7 @@ def _merge_state(cur, snap):
     return out
 
 
-def merge_restore(current, snapshot):
+def merge_restore(current, snapshot, now=None):
     """Maintenance files a snapshot restore should write ({path: text}), given the current and snapshot files ({path: text}).
     The configuration is the current one (else the snapshot's) with `enabled: false`, so a restore never starts paid work. The
     checkpoint is the element-wise maximum. Run records are add-only: a current record stays unless it is not final and the
@@ -707,7 +718,7 @@ def merge_restore(current, snapshot):
             out[CONFIG] = canonical_json({**cfg, 'enabled': False})
             break
     parts = [_check_state(_json(t)) for t in (current.get(STATE), snapshot.get(STATE))]
-    merged = _merge_state(*parts)
+    merged = _merge_state(*parts, now)
     if merged is not None:
         out[STATE] = canonical_json(merged)
     for rel, text in snapshot.items():

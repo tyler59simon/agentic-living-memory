@@ -278,7 +278,7 @@ class RestoreMerge(Base):
         self.finished(T0,n=2);snap=self.files()
         run=self.reserve(T0+3*H,3,self.change(min_interval_seconds=1));ms.launch(self.root,run,T0+3*H);ms.finish(self.root,run,100000,'completed',T0+3*H)
         ms.set_retry(self.root,'demo:a','r1','f1','kept',T0+4*H);current=self.files()
-        merged=json.loads(ms.merge_restore(current,snap)['maintenance/state.json']);now=json.loads(current['maintenance/state.json'])
+        merged=json.loads(ms.merge_restore(current,snap,now=T0+H)['maintenance/state.json']);now=json.loads(current['maintenance/state.json'])
         for k in ('reviewed','charged_micro','reserved_notes','reserved_micro','last_attempt_at','last_run'):self.assertEqual(merged[k],now[k],k)
         self.assertIn('demo:a',merged['retry'])
     def test_higher_snapshot_counters_survive_and_a_block_or_hold_is_kept_from_either_side(self):
@@ -286,23 +286,39 @@ class RestoreMerge(Base):
         current=self.files();state=json.loads(current['maintenance/state.json'])
         hold={'demo:z':{'revision':'r','fingerprint':'f','retry_after':'2026-04-01T00:00:00+00:00','result':'kept'}}
         snap=dict(current,**{'maintenance/state.json':json.dumps(dict(state,reviewed=9,charged_micro=900000,blocked={'reason':'provider_budget','config_revision':'x'},retry=hold))})
-        merged=json.loads(ms.merge_restore(current,snap)['maintenance/state.json'])
+        merged=json.loads(ms.merge_restore(current,snap,now=T0+H)['maintenance/state.json'])
         self.assertEqual((merged['reviewed'],merged['charged_micro']),(9,900000));self.assertEqual(merged['blocked']['reason'],'provider_budget');self.assertIn('demo:z',merged['retry'])
     def test_a_later_retry_hold_wins_and_the_later_day_leads(self):
         self.finished(T0,n=2);ms.set_retry(self.root,'demo:a','r1','f1','kept',T0);current=self.files();state=json.loads(current['maintenance/state.json'])
         old=dict(state,day='2026-03-09',reviewed=10,last_attempt_at='2026-03-09T01:00:00+00:00',retry={'demo:a':dict(state['retry']['demo:a'],retry_after='2030-01-01T00:00:00+00:00')})
-        merged=json.loads(ms.merge_restore(current,{'maintenance/state.json':json.dumps(old)})['maintenance/state.json'])
+        merged=json.loads(ms.merge_restore(current,{'maintenance/state.json':json.dumps(old)},now=T0+H)['maintenance/state.json'])
         self.assertEqual((merged['day'],merged['reviewed']),(state['day'],state['reviewed']));self.assertEqual(merged['retry']['demo:a']['retry_after'],'2030-01-01T00:00:00+00:00')
         self.assertEqual(merged['last_attempt_at'],state['last_attempt_at'])
     def test_a_restore_ignores_a_count_past_its_60_day_memory(self):
         self.finished(T0,n=2);ms.set_retry(self.root,'demo:a','r1','f1','kept',T0);current=self.files();state=json.loads(current['maintenance/state.json'])
         old=dict(state,retry={'demo:a':dict(state['retry']['demo:a'],count=3,retry_after='2020-01-01T00:00:00+00:00')})
-        merged=json.loads(ms.merge_restore(current,{'maintenance/state.json':json.dumps(old)})['maintenance/state.json'])['retry']['demo:a']
+        merged=json.loads(ms.merge_restore(current,{'maintenance/state.json':json.dumps(old)},now=T0+H)['maintenance/state.json'])['retry']['demo:a']
         self.assertEqual(merged['count'],1)
+    def test_a_restore_keeps_an_ordinary_count_across_fingerprints_but_not_a_pairs(self):
+        self.finished(T0,n=2);ms.set_retry(self.root,'demo:a','r1','f1','kept',T0);ms.set_retry(self.root,'demo:a#replaced:demo:b','r1','p1','deferred',T0,strict=True)
+        current=self.files();state=json.loads(current['maintenance/state.json']);r=state['retry']
+        old=dict(state,retry={'demo:a':dict(r['demo:a'],fingerprint='f0',count=3,retry_after='2026-03-11T00:00:00+00:00'),
+                              'demo:a#replaced:demo:b':dict(r['demo:a#replaced:demo:b'],fingerprint='p0',count=3,retry_after='2026-03-11T00:00:00+00:00')})
+        merged=json.loads(ms.merge_restore(current,{'maintenance/state.json':json.dumps(old)},now=T0+H)['maintenance/state.json'])['retry']
+        self.assertEqual((merged['demo:a']['count'],merged['demo:a#replaced:demo:b']['count']),(3,1))
+    def test_a_malformed_hold_is_dropped_and_the_rest_restored(self):
+        self.finished(T0,n=2);ms.set_retry(self.root,'demo:a','r1','f1','kept',T0);current=self.files();state=json.loads(current['maintenance/state.json'])
+        old=dict(state,retry={'demo:z':{'revision':'r'},'demo:y':'nope'})
+        merged=json.loads(ms.merge_restore(current,{'maintenance/state.json':json.dumps(old)},now=T0+H)['maintenance/state.json'])
+        self.assertEqual(set(merged['retry']),{'demo:a'});self.assertEqual(merged['reviewed'],state['reviewed'])
+    def test_retention_is_measured_at_the_restore(self):
+        self.finished(T0,n=2);ms.set_retry(self.root,'demo:a','r1','f1','kept',T0);current=self.files()
+        merged=json.loads(ms.merge_restore(current,current,now=T0+90*DAY)['maintenance/state.json'])
+        self.assertEqual(merged['retry'],{})
     def test_a_restore_keeps_the_higher_hold_count_of_the_same_revision(self):
         self.finished(T0,n=2);ms.set_retry(self.root,'demo:a','r1','f1','kept',T0);current=self.files();state=json.loads(current['maintenance/state.json'])
         old=dict(state,retry={'demo:a':dict(state['retry']['demo:a'],count=3,retry_after='2026-03-11T00:00:00+00:00')})
-        merged=json.loads(ms.merge_restore(current,{'maintenance/state.json':json.dumps(old)})['maintenance/state.json'])['retry']['demo:a']
+        merged=json.loads(ms.merge_restore(current,{'maintenance/state.json':json.dumps(old)},now=T0+H)['maintenance/state.json'])['retry']['demo:a']
         self.assertEqual((merged['count'],merged['retry_after']),(3,state['retry']['demo:a']['retry_after']))
     def test_run_records_are_add_only_and_a_terminal_record_wins(self):
         run=self.reserve(T0,3);rel=f"maintenance/runs/{run['day']}/{run['id']}.json";reserved=self.files()

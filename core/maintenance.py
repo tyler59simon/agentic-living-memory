@@ -260,9 +260,10 @@ def queued_pairs(root, notes, domains):
     return valid, invalid
 
 
-def replaced_hold(ref):
-    """The retry key of a note's replaced review. It is separate from the note's own key, so deferring one review never lifts the other's hold."""
-    return f'{ref}#replaced'
+def replaced_hold(ref, successor):
+    """The retry key of a note's replaced review by one successor. It is separate from the note's own key and from its other pairs', so
+    deferring one review never lifts, or overwrites, another's hold."""
+    return f'{ref}#replaced:{successor}'
 
 
 def replaced_candidates(root, state, notes, now, taken, domains):
@@ -273,13 +274,13 @@ def replaced_candidates(root, state, notes, now, taken, domains):
         if p['old'] in used:
             continue
         fingerprint = digest(canonical_json(['replaced', p['new'], new['revision']]).encode())
-        if ms.retry_hold(state, replaced_hold(p['old']), old['revision'], now, fingerprint):
+        if ms.retry_hold(state, replaced_hold(p['old'], p['new']), old['revision'], now, fingerprint):
             continue
         used.add(p['old'])
         out.append({'ref': p['old'], 'domain': old['domain'], 'title': old.get('title'), 'type': _type(old), 'revision': old['revision'], 'level': 10,
                     'kinds': ['replaced'], 'reason': f"queued as possibly replaced by {p['new']} \"{new.get('title')}\"", 'pinned': old.get('pinned') is True,
                     'currency': None, 'pair': new['id'], 'pair_note': new, 'pair_same': True, 'fingerprint': fingerprint, 'files': [], 'note': old,
-                    'hold': replaced_hold(p['old']), 'permitted': permitted(old, ['replaced'], True, True)})
+                    'hold': replaced_hold(p['old'], p['new']), 'permitted': permitted(old, ['replaced'], True, True)})
     return out
 
 
