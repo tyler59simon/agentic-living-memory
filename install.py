@@ -334,7 +334,7 @@ def _write_launcher(record):
         reason = f'exit {probe.returncode}: ' + probe.stderr.decode('utf-8', 'replace').strip()[:300]
     except (OSError, subprocess.SubprocessError) as exc:
         reason = str(exc)
-    path.unlink()
+    path.unlink(missing_ok=True)   # antivirus may already have removed it
     return f'The launcher {path} did not run ({reason}) and was removed; agents keep using the full command.'
 
 

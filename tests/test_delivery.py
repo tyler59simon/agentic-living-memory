@@ -240,6 +240,11 @@ class LauncherInstall(StoreFixture):
     def test_launcher_that_does_not_run_is_removed_with_a_warning(self):
         with patch('subprocess.run',return_value=subprocess.CompletedProcess([],1,b'',b'blocked')):receipt=self.apply(self.plan())
         self.assertFalse(self.exe.exists());self.assertIn('blocked',receipt['warnings'][0]);self.assertEqual(receipt['launcher']['action'],'failed');self.assertNotIn('path_change',receipt)
+    def test_launcher_removed_by_antivirus_during_the_probe_is_still_a_warning(self):   # REG-20
+        def quarantined(*a,**k):
+            self.exe.unlink();return subprocess.CompletedProcess([],1,b'',b'quarantined')
+        with patch('subprocess.run',side_effect=quarantined):receipt=self.apply(self.plan())
+        self.assertFalse(self.exe.exists());self.assertIn('quarantined',receipt['warnings'][0]);self.assertEqual(receipt['launcher']['action'],'failed')
     @unittest.skipUnless(os.name=='nt','Windows registry')
     def test_windows_path_change_keeps_the_value_type_and_is_idempotent(self):
         import winreg
