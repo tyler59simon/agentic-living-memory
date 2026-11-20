@@ -134,9 +134,19 @@ class Relocation(StoreFixture):
         proposed=setup.setup_plan('copilot',home,adopt=True);self.assertNotIn('echo mine',proposed['summary']['adopt'][name])
         self.apply(home,proposed);self.assertEqual(read_json(path)['hooks']['postToolUse'],[mine])
         self.assertIn(name,read_json(home/'.living-memory-ownership.json')['handlers'])
+    def test_a_whole_file_copilot_record_replaces_handlers_of_a_moved_checkout(self):   # Codex review of 8e7c779
+        from core import wiring
+        home,path=self.copilot();name=setup.CONFIG['copilot'];moved=self.base/'moved-checkout'
+        with patch.object(setup,'ROOT',moved):self.apply(home,setup.setup_plan('copilot',home))
+        state=read_json(home/'.living-memory-ownership.json');state['handlers']={};state['files'][name]=digest(canonical_json(read_json(path)).encode())
+        (home/'.living-memory-ownership.json').write_text(canonical_json(state))   # as builds before 8e7c779 wrote it
+        self.apply(home,setup.setup_plan('copilot',home))
+        config=read_json(path);handlers=[h for hs in config['hooks'].values() for h in hs]
+        self.assertEqual(len(handlers),5);self.assertNotIn(str(moved),json.dumps(config))
+        self.assertFalse(wiring._current('copilot',{**config,'version':2},setup))   # doctor: Copilot would not load it
     def test_an_unowned_copilot_file_is_merged_unless_it_is_not_a_hooks_file(self):   # CODEX-R1B
         home,path=self.copilot();mine=self.COPILOT_HOOK
-        for bad in ('[1, 2]',json.dumps({'hooks':{'agentStop':'echo'}}),json.dumps({'hooks':[]})):
+        for bad in ('[1, 2]',json.dumps({'hooks':{'agentStop':'echo'}}),json.dumps({'hooks':[]}),json.dumps({'version':None,'hooks':{}})):
             path.write_text(bad)
             with self.assertRaisesRegex(ValueError,'Unknown existing Copilot file preserved'):setup.setup_plan('copilot',home)
         path.write_text(json.dumps({'version':1,'hooks':{'agentStop':[mine]}}))

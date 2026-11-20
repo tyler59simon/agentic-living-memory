@@ -84,6 +84,7 @@ def _same(a,b):
 def _current(harness,config,setup):
     """True when the managed handlers are exactly what this copy and this interpreter would write."""
     generated=setup.hooks(harness)
+    if harness=='copilot' and not setup._copilot_file(config):return False   # Copilot would not load it
     wanted={'hooks':generated} if harness in setup.NESTED else generated
     return setup.managed_handlers(config,harness)==setup.managed_handlers(wanted,harness)
 

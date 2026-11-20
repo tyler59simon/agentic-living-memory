@@ -54,9 +54,9 @@ def _ours(handler,harness):
 def _events(config,harness):return config.get('hooks',{}) if harness in NESTED else config
 
 def _copilot_file(config):
-    """A Copilot hooks file: an object whose hooks, if any, map each event to a list of handlers."""
+    """A Copilot hooks file: an object of version 1 (the one Copilot documents) whose hooks, if any, map each event to a list of handlers."""
     events=config.get('hooks',{}) if isinstance(config,dict) else None
-    return isinstance(events,dict) and all(isinstance(handlers,list) for handlers in events.values())
+    return isinstance(events,dict) and config.get('version',1)==1 and all(isinstance(handlers,list) for handlers in events.values())
 
 def managed_handlers(config,harness):
     if harness=='copilot':   # Copilot lists handlers under each event directly, with no groups
@@ -178,7 +178,10 @@ def setup_plan(harness,home=None,enable_hooks=False,uninstall=False,adopt=False)
         if harness=='copilot':
             # Our handlers are replaced and every other hook and key is kept; uninstall deletes the file only when nothing else is in it.
             if current and not _copilot_file(current):raise ValueError('Unknown existing Copilot file preserved')
-            events=dict(current.get('hooks',{})) if current else {}
+            # A file that still matches a whole-file record from an older build is all ours, even handlers this copy no longer
+            # recognises (a checkout that moved since), so it is replaced whole.
+            whole=owned_handlers is None and config_name in owned and digest(canonical_json(current).encode())==owned[config_name]
+            events=dict(current.get('hooks',{})) if current and not whole else {}
             for event in list(events)+[e for e in generated['hooks'] if e not in events]:
                 kept=[h for h in events.get(event,[]) if not _ours(h,harness)]
                 if not uninstall:kept+=generated['hooks'].get(event,[])
