@@ -593,12 +593,14 @@ def retry_hold(st, ref, revision, now=None, fingerprint=None):
     """The retry entry while it still holds (same note revision, not yet due), else None. A change to the note's files does not lift it:
     a file edited every day would otherwise put the note back in every run. An edit to the note itself does. With `fingerprint` (a
     replaced-pair review, whose fingerprint names the successor and its revision) the entry must match it too, so a hold on one pair
-    never holds back a review of another."""
+    never holds back a review of another. A damaged entry holds nothing rather than stopping the run."""
     entry = (st.get('retry') or {}).get(ref)
-    if (entry and entry.get('revision') == revision and (fingerprint is None or entry.get('fingerprint') == fingerprint)
-            and _parse(entry['retry_after']) > _aware(now)):
-        return entry
-    return None
+    if not isinstance(entry, dict) or entry.get('revision') != revision or (fingerprint is not None and entry.get('fingerprint') != fingerprint):
+        return None
+    try:
+        return entry if _parse(entry['retry_after']) > _aware(now) else None
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def _count(entry):

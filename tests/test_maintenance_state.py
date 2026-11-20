@@ -311,6 +311,9 @@ class RestoreMerge(Base):
         old=dict(state,retry={'demo:z':{'revision':'r'},'demo:y':'nope'})
         merged=json.loads(ms.merge_restore(current,{'maintenance/state.json':json.dumps(old)},now=T0+H)['maintenance/state.json'])
         self.assertEqual(set(merged['retry']),{'demo:a'});self.assertEqual(merged['reviewed'],state['reviewed'])
+    def test_a_damaged_hold_holds_nothing(self):
+        for bad in ({'revision':'r1'},{'revision':'r1','retry_after':'soon'},{'revision':'r1','retry_after':7},'nope'):
+            self.assertIsNone(ms.retry_hold({'retry':{'demo:a':bad}},'demo:a','r1',T0))
     def test_a_count_of_the_wrong_type_counts_as_one_hold(self):
         self.finished(T0,n=2);ms.set_retry(self.root,'demo:a','r1','f1','kept',T0);current=self.files();state=json.loads(current['maintenance/state.json'])
         old=dict(state,retry={'demo:a':dict(state['retry']['demo:a'],fingerprint='f0',count='2',retry_after='2026-03-11T00:00:00+00:00')})
