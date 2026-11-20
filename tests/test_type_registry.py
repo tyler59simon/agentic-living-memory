@@ -194,4 +194,39 @@ class ReviewFixes(Fixture):
         self.assertEqual(sorted(t['name'] for t in kept['types']),['incident','postmortem'])
         self.assertEqual(restore_registry(self.root,{'note_types.json':older,rel:None}),older)   # the restore also removes the note
 
+class ReReviewFixes(Fixture):
+    """Regressions for the Codex re-review of the review fixes (2026-11-20)."""
+    def test_apply_rechecks_custom_types(self):
+        from core.governance import plan,apply
+        self.create();code,r=self.capture('--action','Add a canary');self.assertEqual(code,0,r)
+        path=find_note(r['id'],'demo',self.root)[0];rel=path.relative_to(self.root.resolve()).as_posix();old=path.read_text(encoding='utf-8')
+        self.assertEqual(self.cli('--domain','demo','update',r['id'],'--drop-section','Action items')[0],0)
+        made=plan(self.root,{rel:old},'restore',['demo'])   # brings the action items back
+        self.assertEqual(self.write('update',name='incident',actions=False)[0],0)
+        with self.assertRaisesRegex(ValueError,'stale plan'):apply(self.root,made['plan_id'],made['digest'])
+
+    def test_a_damaged_live_registry_does_not_block_a_restore(self):
+        from core.type_registry import restore_registry
+        self.create();healthy=(self.root/'note_types.json').read_text(encoding='utf-8')
+        (self.root/'note_types.json').write_text('{broken',encoding='utf-8')
+        self.assertEqual(restore_registry(self.root,{'note_types.json':healthy}),healthy)
+
+    def test_a_registry_with_a_bom_restores(self):
+        from core.type_registry import restore_registry
+        self.create();text=(self.root/'note_types.json').read_text(encoding='utf-8')
+        self.assertEqual(restore_registry(self.root,{'note_types.json':'\ufeff'+text}),'\ufeff'+text)
+
+    def test_nested_note_paths_count(self):
+        from core.type_registry import NOTE_FILE
+        self.assertTrue(NOTE_FILE.fullmatch('domains/demo/notes/sub/INCIDENT - x-12345678.md'))
+        self.assertTrue(NOTE_FILE.fullmatch('domains/demo/archive/INCIDENT - x-12345678.md'))
+
+    def test_review_uses_the_store_root_for_maintenance(self):
+        from core import worklist
+        seen=[]
+        real=__import__('core.maintenance',fromlist=['permitted']).permitted
+        def spy(note,kinds=(),pair_same=False,has_successor=False,root=None):seen.append(root);return real(note,kinds,pair_same,has_successor,root)
+        with patch('core.maintenance.permitted',spy):worklist._maintenance({'type':'knowledge','body':'x'},['due'],False,False,self.root)
+        self.assertEqual(seen,[self.root])
+
 if __name__=='__main__':unittest.main()

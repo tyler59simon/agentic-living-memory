@@ -54,7 +54,13 @@ def apply(root,plan_id,expected_digest,sync_overlay=True):
         unsigned={k:v for k,v in value.items() if k!='digest'}
         actual=hashlib.sha256(canonical_json(unsigned).encode()).hexdigest()
         if value['digest']!=actual or actual!=expected_digest:raise ValueError('Plan digest mismatch')
-        if not (root/'.operations'/plan_id/'journal.json').exists():_check_guards(root,value)
+        if not (root/'.operations'/plan_id/'journal.json').exists():
+            _check_guards(root,value)
+            # Notes or the type registry may have changed since the plan was made: an undo or restore plan must not leave a
+            # note whose custom type is unregistered or takes no action items.
+            from .type_registry import check_undo
+            try:check_undo(root,value['changes'])
+            except ValueError as exc:raise ValueError('stale plan: it would break notes that use a custom type: '+str(exc)+'; make a new plan') from None
         receipt=transaction(root,value['changes'],value['kind'],value['expected'],value['id'])
         for domain in value['domains']:
             try:reconcile(domain,root,sync_overlay=sync_overlay)

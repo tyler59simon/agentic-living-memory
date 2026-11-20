@@ -111,7 +111,7 @@ def _domains(root):
     return sorted(p.name for p in base.iterdir() if p.is_dir()) if base.is_dir() else []
 
 
-NOTE_FILE = re.compile(r'domains/[^/]+/(?:notes|archive)/[^/]+\.md')
+NOTE_FILE = re.compile(r'domains/[^/]+/(?:notes|archive)/(?:[^/]+/)*[^/]+\.md')   # nested folders too, as backup.MEMBER
 
 
 def _all_notes(root):
@@ -180,7 +180,7 @@ def check_undo(root, changes):
         check_registry(root, load(root)['types'], by_type)
         return
     text = changes['note_types.json']
-    entries = [t for t in (json.loads(text).get('types', []) if text else []) if isinstance(t, dict) and isinstance(t.get('name'), str)]
+    entries = [t for t in (_json(text).get('types', []) if text else []) if isinstance(t, dict) and isinstance(t.get('name'), str)]
     after = _all_notes(root)
     for rel, text in notes.items():
         after.pop(rel, None)
@@ -188,6 +188,10 @@ def check_undo(root, changes):
         if note:
             after[rel] = note
     check_registry(root, entries, _custom(after.values()))
+
+
+def _json(text):
+    return json.loads(text[1:] if text.startswith('\ufeff') else text)
 
 
 def _after(root, changes):
@@ -209,8 +213,11 @@ def restore_registry(root, changes):
     text = changes.get('note_types.json')
     if text is None:
         return None
-    restored = {t['name']: t for t in json.loads(text).get('types', []) if isinstance(t, dict) and isinstance(t.get('name'), str)}
-    current = {t['name']: t for t in load(root)['types']}
+    restored = {t['name']: t for t in _json(text).get('types', []) if isinstance(t, dict) and isinstance(t.get('name'), str)}
+    try:
+        current = {t['name']: t for t in load(root)['types']}
+    except ValueError:
+        current = {}   # a damaged live registry: the snapshot's replaces it
     kept = []
     for name, notes in _after(root, changes).items():
         entry = restored.get(name)
