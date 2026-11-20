@@ -98,6 +98,11 @@ class Candidates(Pairs):
         self.assertEqual(self.cands(),[])
         notes.change(new['id'],'demo','update',self.root,body=NEW_BODY+' It was reviewed again.')
         self.assertEqual([(c['ref'],c['kinds']) for c in self.cands()],[(self.ref(old),['replaced'])])
+    def test_a_hold_saved_under_the_old_pair_key_still_holds(self):
+        old,new=self.old_new();c=self.cands()[0]
+        ms.set_retry(self.root,maintenance.legacy_replaced_hold(c['ref']),c['revision'],c['fingerprint'],'deferred',self.now)
+        self.assertEqual(self.cands(),[])
+        self.assertTrue(maintenance.replaced_hold(c['ref'],self.ref(new)).startswith('#'))
     def test_two_pairs_of_one_older_note_keep_their_own_holds(self):
         old,new=self.old_new()
         other=self.mk('Taxonomy of thirteen note types, final','Thirteen note types replace the ten-type taxonomy.',type='decision')

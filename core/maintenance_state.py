@@ -601,6 +601,12 @@ def retry_hold(st, ref, revision, now=None, fingerprint=None):
     return None
 
 
+def _count(entry):
+    """A hold's count; anything but a positive integer (a damaged or pre-backoff entry) counts as one hold."""
+    value = entry.get('count') if isinstance(entry, dict) else None
+    return value if type(value) is int and value >= 1 else 1
+
+
 def backoff_days(count):
     """How long the `count`th hold in a row of the same revision lasts."""
     return BACKOFF_DAYS[min(max(count, 1), len(BACKOFF_DAYS)) - 1]
@@ -617,7 +623,7 @@ def set_retry(root, ref, revision, fingerprint, result, now=None, strict=False):
         acc['retry'] = {k: v for k, v in acc['retry'].items() if _parse(v['retry_after']) + timedelta(days=RETRY_KEEP_DAYS) > now}
         prev = acc['retry'].get(ref)
         same = prev and prev.get('revision') == revision and (not strict or prev.get('fingerprint') == fingerprint)
-        count = (prev.get('count') or 1) + 1 if same else 1
+        count = _count(prev) + 1 if same else 1
         acc['retry'][ref] = {'revision': revision, 'fingerprint': fingerprint, 'retry_after': _iso(now + timedelta(days=backoff_days(count))),
                              'result': result, 'count': count}
         return transaction(root, {STATE: canonical_json(acc)}, 'maintenance_run', expected={STATE: before})
@@ -694,10 +700,10 @@ def _merge_state(cur, snap, now=None):
         theirs = retry.get(ref)
         won = entry if not theirs or _parse(entry['retry_after']) >= _parse(theirs['retry_after']) else theirs
         # A replaced-pair hold counts per pair (its fingerprint names the successor and its revision); an ordinary one per note revision.
-        pair = '#replaced' in ref
+        pair = ref.startswith('#replaced:') or ref.endswith('#replaced')
         if theirs and theirs.get('revision') == entry.get('revision') and (not pair or theirs.get('fingerprint') == entry.get('fingerprint')):
             # The same revision's holds: keep the higher count with the later hold, so a restore never shortens the next one.
-            won = dict(won, count=max(entry.get('count') or 1, theirs.get('count') or 1))
+            won = dict(won, count=max(_count(entry), _count(theirs)))
         retry[ref] = won
     out['retry'] = retry
     return out

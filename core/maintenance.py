@@ -262,8 +262,13 @@ def queued_pairs(root, notes, domains):
 
 def replaced_hold(ref, successor):
     """The retry key of a note's replaced review by one successor. It is separate from the note's own key and from its other pairs', so
-    deferring one review never lifts, or overwrites, another's hold."""
-    return f'{ref}#replaced:{successor}'
+    deferring one review never lifts, or overwrites, another's hold. It starts with `#`, which no domain name can, so it is never a note ref."""
+    return f'#replaced:{ref}>{successor}'
+
+
+def legacy_replaced_hold(ref):
+    """The key replaced reviews were held under before they were held per pair; honored while it matches, so an upgrade does not lift it."""
+    return f'{ref}#replaced'
 
 
 def replaced_candidates(root, state, notes, now, taken, domains):
@@ -274,7 +279,8 @@ def replaced_candidates(root, state, notes, now, taken, domains):
         if p['old'] in used:
             continue
         fingerprint = digest(canonical_json(['replaced', p['new'], new['revision']]).encode())
-        if ms.retry_hold(state, replaced_hold(p['old'], p['new']), old['revision'], now, fingerprint):
+        if (ms.retry_hold(state, replaced_hold(p['old'], p['new']), old['revision'], now, fingerprint)
+                or ms.retry_hold(state, legacy_replaced_hold(p['old']), old['revision'], now, fingerprint)):
             continue
         used.add(p['old'])
         out.append({'ref': p['old'], 'domain': old['domain'], 'title': old.get('title'), 'type': _type(old), 'revision': old['revision'], 'level': 10,
