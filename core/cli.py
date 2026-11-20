@@ -4,7 +4,7 @@ import argparse,json,os,sys,hashlib,time
 from pathlib import Path
 from .common import memory_root,load_bindings,resolve_domain,canonical_domain
 from .repository import read_json,inventory,parse,store_lock,canonical_json,now
-from .note_types import NOTE_TYPES
+from .note_types import NOTE_TYPES,TYPE_NAME
 from .links import note_links
 
 def _payload(args):
@@ -99,9 +99,22 @@ def _facet_tags(args,facets=FACET_FLAGS):
     """--subject x and --subject subject/x both mean subject/x."""
     return [v if v.startswith(f+'/') else f+'/'+v for f in facets for v in (getattr(args,f) or [])]
 
-# Defaults when a capture names no subject/ or concern/ tag; used only if the tag is in the taxonomy.
-SUBJECT_BY_TYPE={'preference':'subject/user'}
-CONCERN_BY_TYPE={'decision':'concern/decision','preference':'concern/preference','bug':'concern/bug','knowledge':'concern/knowledge','policy':'concern/workflow','map':'concern/architecture','runbook':'concern/workflow','brief':'concern/knowledge','plan':'concern/workflow','context':'concern/knowledge','status':'concern/knowledge','risk':'concern/constraint','research':'concern/knowledge'}
+def _type_name(value):
+    """A --type value: a well-formed type name (built-in or custom); main checks it against the store's types once the root is known."""
+    if value in NOTE_TYPES or TYPE_NAME.fullmatch(value):return value
+    raise argparse.ArgumentTypeError(f'invalid note type {value!r}; built-in types: '+', '.join(NOTE_TYPES))
+
+# Commands whose --type is a note type (log has a --type of its own).
+NOTE_TYPE_ARGS={'capture','propose','update','timeline','export','list'}
+
+def _check_type_args(args,root):
+    """Unknown --type values name the store's types, built-in and custom (argparse cannot: custom types live in the store)."""
+    from .note_types import definition,type_names
+    if args.command not in NOTE_TYPE_ARGS:return
+    values=getattr(args,'type',None)
+    for value in values if isinstance(values,list) else [values] if isinstance(values,str) else []:
+        if definition(value,root) is None:
+            raise ValueError(f'bad_arguments: unknown note type {value!r}; use one of '+', '.join(type_names(root)))
 def _global_names(root):
     from .common import global_domains
     return global_domains(root)
@@ -109,8 +122,9 @@ def _global_names(root):
 def _infer_tags(item,root,user=False):
     """Adds the default subject and concern tags the taxonomy knows; user marks the user brief (a global brief with no files), which is about the user."""
     from .notes import taxonomy
-    known=taxonomy(root);tags=list(item.get('tags') or []);kind=item.get('type') or 'knowledge';added=[]
-    for facet,tag in (('subject','subject/user' if user else SUBJECT_BY_TYPE.get(kind,'subject/project')),('concern',CONCERN_BY_TYPE.get(kind))):
+    from .note_types import definition
+    known=taxonomy(root);tags=list(item.get('tags') or []);kind=item.get('type') or 'knowledge';added=[];found=definition(kind,root) or {}
+    for facet,tag in (('subject','subject/user' if user else found.get('subject') or 'subject/project'),('concern',found.get('concern'))):
         if tag and tag in known and not any(t.startswith(facet+'/') for t in tags):tags.append(tag);added.append(tag)
     item['tags']=tags
     return added
@@ -196,6 +210,9 @@ def doctor(root,cwd,explicit=None,domain=None):
     from .sources import listing as sources_listing
     try:warnings+=['sources: '+w for w in sources_listing(root)['warnings']]
     except ValueError as exc:warnings.append(f'sources.json: {exc}')
+    from .type_registry import listing as types_listing
+    try:warnings+=['note types: '+w for w in types_listing(root)['warnings']]
+    except ValueError as exc:warnings.append(f'note_types.json: {exc}')
     from .changes import listing as changes_listing
     try:warnings+=['changes: '+w for w in changes_listing(root)['warnings']]
     except ValueError as exc:warnings.append(f'changes.json: {exc}')
@@ -244,7 +261,7 @@ def sections_args(p,update=False):
         p.add_argument('--add-action',action='append',help='Append an open action item; the others are kept (repeatable)')
         p.add_argument('--replace-actions',action='store_true',help='Let --action/--done drop action items the note already has')
 
-def _update_body(args,base,note_type=None):
+def _update_body(args,base,note_type=None,root=None):
     """The body an update's section flags leave: replace flags overwrite their section, add flags extend it."""
     from . import note_format
     for replace,add in AMEND_CLASHES:
@@ -257,7 +274,7 @@ def _update_body(args,base,note_type=None):
             raise ValueError(f'replace_actions: --action/--done rewrite the whole action items list and would drop {len(dropped)} existing item(s): '
                              +'; '.join(repr(text) for text in dropped[:10])+". Add a step with --add-action, tick one with `check REF 'item'`, "
                              'or pass --replace-actions to rewrite the list')
-    body=_sectioned(args,base,note_type) or base
+    body=_sectioned(args,base,note_type,root) or base
     if any(getattr(args,k) for k in AMEND_ARGS):
         body=note_format.amend(body,args.add_detail or (),args.add_link or (),args.add_action or (),args.set_detail or ())
     for heading in args.drop_section or ():body=note_format.drop_section(body,heading)
@@ -271,20 +288,20 @@ def _replaced(args,stored,body):
     flags={'details':args.detail,'links':args.link,'actions':args.action or args.done}
     return {key:{'before':before[key],'after':after[key]} for key in before if before[key] and (flags[key] or after[key]<before[key])}
 
-def _sectioned(args,body='',note_type=None):
+def _sectioned(args,body='',note_type=None,root=None):
     """The body with any structured sections from the command line applied, or None if none were given."""
     if not any(getattr(args,k) for k in SECTION_ARGS):return None
     from .note_format import render
     return render(args.summary or '',args.detail or (),args.link or (),args.action or (),args.done or (),args.important or '',body,
-                  named=[tuple(pair) for pair in args.section or ()],note_type=note_type)
+                  named=[tuple(pair) for pair in args.section or ()],note_type=note_type,root=root)
 
 # source-sync writes only the derived knowledge-base index (as search --rebuild does the notes' one), so subagents and viewers may run it
 # (not for a remote source, which it would pull from the network: sources.sync refuses that for them).
-READ_ONLY={'help','config','status','search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','ask','sources','source-sync','ingest-scan','changes','views','wiki','log','maintenance','rebaseline','recap','proposals'}
+READ_ONLY={'help','config','status','search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','types','ask','sources','source-sync','ingest-scan','changes','views','wiki','log','maintenance','rebaseline','recap','proposals'}
 # Viewer: a human-facing app browsing the store. Read-only, and its reads are not usage evidence for the diary.
 VIEWER=READ_ONLY|{'taxonomy','review','diff','inspect-plan'}
 # Direct journaled writes (no plan); `taxonomy add` is the same kind of write under a read command. Refused to subagents, viewers and Hivemind agents.
-DIRECT_WRITES={'archive','rewrite','remap','promote','source','project','system','change'}
+DIRECT_WRITES={'archive','rewrite','remap','promote','source','project','system','change','type'}
 SERVE_API=2
 SERVE_LIMIT=2*1024*1024
 
@@ -309,10 +326,10 @@ def list_notes(root,domains,status,types,tags,offset,limit,summary=False):
 
 def _summary_fields(note):
     """list --with-summary: the summary as plain text (300 characters at most), the files, and action item counts for plan, bug and risk notes."""
-    from .note_format import sections,plain,action_items,ACTION_TYPES
+    from .note_format import sections,plain,action_items,note_takes_actions
     body=note.get('body') or '';text=sections(body).get('summary') or ''
     out={'summary':plain(text)[:300],'files':list(note.get('files') or []),'pinned':note.get('pinned') is True,'rule':note.get('rule') is True}
-    if note.get('type') in ACTION_TYPES:items=action_items(body);out['actions']={'open':sum(1 for d,_ in items if not d),'done':sum(1 for d,_ in items if d)}
+    if note_takes_actions(note):items=action_items(body);out['actions']={'open':sum(1 for d,_ in items if not d),'done':sum(1 for d,_ in items if d)}
     return out
 
 def list_domains(root):
@@ -497,7 +514,8 @@ def _propose(root,data,domain,session,to_global,redact=False):
     from .repository import find_secret
     if isinstance(data,list):raise ValueError('propose takes one note; run it once per note')
     data=dict(data)
-    if (data.get('type') or 'knowledge') not in NOTE_TYPES:raise ValueError('Unknown note type: '+str(data.get('type'))+'; use one of '+', '.join(NOTE_TYPES))
+    from .note_types import check_type
+    check_type(data.get('type') or 'knowledge',root)
     from .repository import RULE_TYPES,rule_type_error
     for flag in ('rule','pinned'):
         if flag in data and not isinstance(data[flag],bool):raise ValueError(f'{flag} must be true or false')   # as capture checks it; the draft keeps it
@@ -544,7 +562,7 @@ HELP={'setup':'Choose or move the shared memory folder','bind':'Bind a domain to
  'undo':'Undo an operation (merge, delete and bulk retag return a plan)','recover':'Finish or abandon an interrupted operation','diff':'Show what an operation changed','doctor':'Check the install and the store','backup':'Back up the store',
  'restore-plan':'Plan restoring a backup','migration-plan':'Plan a store migration','note-type-plan':'Plan note type changes','baseline-plan':'Plan a verification baseline','rebuild':'Rebuild search indexes',
  'maintenance':'Automatic maintenance','rebaseline':'Re-baseline notes a file change did not touch','semantic':'Semantic search settings','validate':'Check notes against the rules','query':'Query the store','taxonomy':'Show the tag taxonomy, or add tags',
- 'project':'Create or change a project','projects':'List projects','system':'Create or change a system','systems':'List systems','source':'Add or remove a knowledge-base source','sources':'List knowledge-base sources',
+ 'project':'Create or change a project','projects':'List projects','system':'Create or change a system','systems':'List systems','type':'Create, change or retire a custom note type','types':'List note types, built-in and custom','source':'Add or remove a knowledge-base source','sources':'List knowledge-base sources',
  'source-sync':'Re-index knowledge-base sources','ingest-scan':'Scan for files to ingest','ingest-skip':'Skip an ingest candidate','ask':'Ask a question about the project','change':'Create or change a tracked change',
  'changes':'List tracked changes','views':'Saved views','wiki':'Domain wiki','batch':'Run several commands from a JSON file','retag-plan':'Plan retagging notes','remap':'Move notes between domains','promote':'Promote notes to the global domain',
  'recall':'Search this session transcript','off':'Turn Living Memory off for this session','on':'Turn Living Memory back on for this session','status':'Whether Living Memory is on for this session','capture-finalize':'Record which notes a turn saved','list':'List notes','domains':'List domains','config':'Show or change store settings','links':'Links between notes',
@@ -554,10 +572,10 @@ HELP={'setup':'Choose or move the shared memory folder','bind':'Bind a domain to
 HELP_GROUPS=(
  ('Everyday',('help','capture','propose','proposals','search','read','update','supersede','open','check','confirm','resolve','reopen','ask','list','timeline','links','log','recap','recall','capture-finalize','status','off','on')),
  ('Maintenance',('review','maintenance','rebaseline','stats','history','diff','undo','recover','restore','doctor','validate','rebuild','semantic','backup','logs')),
- ('Direct writes (journaled, undo OPERATION)',('archive','rewrite','remap','promote','source','project','system','change')),
+ ('Direct writes (journaled, undo OPERATION)',('archive','rewrite','remap','promote','source','project','system','change','type')),
  ('Governance (plans)',('plan','apply','inspect-plan','merge-plan','retag-plan','note-type-plan','migration-plan','baseline-plan','restore-plan',
    'import-plan','ingest-plan','overlay-teardown-plan')),
- ('Admin',('setup','bind','unbind','config','domains','projects','systems','sources','source-sync','ingest-scan','ingest-skip','taxonomy','changes','views','wiki','export','query','batch','sync','overlay-build','overlay-sync-all','serve','version')))
+ ('Admin',('setup','bind','unbind','config','domains','projects','systems','types','sources','source-sync','ingest-scan','ingest-skip','taxonomy','changes','views','wiki','export','query','batch','sync','overlay-build','overlay-sync-all','serve','version')))
 
 def _grouped_commands():
     width=max(len(name) for _,names in HELP_GROUPS for name in names)+2
@@ -584,7 +602,7 @@ def build_parser():
     p.add_argument('--prefix',help='Remove only this folder from the binding and keep the domain and its notes (after a bound folder moved)')
     # Legacy forms keep working but are left out of help: --tags, --prefix and a third positional (tags).
     def capture_flags(p):
-     p.add_argument('items',nargs='*',metavar='TITLE BODY',help='Title and body; or use --title and --summary');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='',help=argparse.SUPPRESS);p.add_argument('--prefix',help=argparse.SUPPRESS);p.add_argument('--type',choices=NOTE_TYPES,help='Note type (default: knowledge)');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help="REF of a note this one replaces; it is retired in the same transaction, and its links and files are carried over (see --drop-links)");p.add_argument('--drop-links',action='store_true',help='With --supersedes: do not carry the links and files of the replaced note over');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk/map/runbook/brief notes get a default');p.add_argument('--pin',action='store_true',help=PIN_HELP);p.add_argument('--rule',action='store_true',help=RULE_HELP)
+     p.add_argument('items',nargs='*',metavar='TITLE BODY',help='Title and body; or use --title and --summary');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='',help=argparse.SUPPRESS);p.add_argument('--prefix',help=argparse.SUPPRESS);p.add_argument('--type',type=_type_name,help='Note type (default: knowledge)');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help="REF of a note this one replaces; it is retired in the same transaction, and its links and files are carried over (see --drop-links)");p.add_argument('--drop-links',action='store_true',help='With --supersedes: do not carry the links and files of the replaced note over');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk/map/runbook/brief notes get a default');p.add_argument('--pin',action='store_true',help=PIN_HELP);p.add_argument('--rule',action='store_true',help=RULE_HELP)
      for facet in CAPTURE_FACETS:p.add_argument('--'+facet,action='append',default=[])
      p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
      sections_args(p);_file_flags(p)
@@ -596,7 +614,7 @@ def build_parser():
     p.add_argument('--reason',help='reject: why, one line')
     p=sub('search');p.add_argument('query',nargs='?',default='');p.add_argument('--file',help='Notes about this file or folder: listed in their files property, or named in the body');p.add_argument('--scope',choices=['active','fallback','all'],default='fallback');p.add_argument('--limit',type=int,default=5);p.add_argument('--filter',action='append',default=[]);p.add_argument('--rebuild',action='store_true');p.add_argument('--sources',action='store_true',help='Source excerpts from the project knowledge base only');p.add_argument('--explain',action='store_true',help='Add why each note was found: backend, scores, gate and the section the prompt hook would deliver')
     p=sub('read');p.add_argument('reference');p.add_argument('--max-chars',type=int,default=16000);p.add_argument('--metadata-only',action='store_true');p.add_argument('--section',help='Only this section, by heading (as search evidence and prompt lines name it)')
-    p=sub('update');p.add_argument('reference');p.add_argument('--title');p.add_argument('--body');p.add_argument('--body-file',type=Path);p.add_argument('--tag',action='append');p.add_argument('--type',choices=NOTE_TYPES);p.add_argument('--context');p.add_argument('--review-by');p.add_argument('--expected-revision');p.add_argument('--payload-file',type=Path);p.add_argument('--session');p.add_argument('--turn')
+    p=sub('update');p.add_argument('reference');p.add_argument('--title');p.add_argument('--body');p.add_argument('--body-file',type=Path);p.add_argument('--tag',action='append');p.add_argument('--type',type=_type_name);p.add_argument('--context');p.add_argument('--review-by');p.add_argument('--expected-revision');p.add_argument('--payload-file',type=Path);p.add_argument('--session');p.add_argument('--turn')
     pins=p.add_mutually_exclusive_group();pins.add_argument('--pin',dest='pin',action='store_const',const=True,help=PIN_HELP);pins.add_argument('--unpin',dest='pin',action='store_const',const=False,help='Remove retirement protection (a pin change never counts as checking the note)')
     rules=p.add_mutually_exclusive_group();rules.add_argument('--rule',dest='rule',action='store_const',const=True,help=RULE_HELP);rules.add_argument('--no-rule',dest='rule',action='store_const',const=False,help='Stop showing the note in full at every session start (a rule change never counts as checking the note)')
     p.add_argument('--distinct',metavar='REF',help='Record that this note and REF (same domain) are different subjects, so neither replaces the other; needs --why')
@@ -609,9 +627,9 @@ def build_parser():
     p=sub('review');p.add_argument('--kind',action='append',choices=['stale','due','interim','duplicate','warned','noisy'],help='Only this kind of row (repeatable): stale, due, interim, duplicate, warned, noisy');p.add_argument('--limit',type=int,default=20);p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)')
     p=sub('open');p.add_argument('--limit',type=int,default=50);p.add_argument('--all-domains',action='store_true',help='Every domain folder, not parents and global only');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)')
     p=sub('check');p.add_argument('reference');p.add_argument('item',nargs='?',help='Text of the action item: exact, or a unique part of it');p.add_argument('--index',type=int,help="1-based position among the note's action items, as open lists it");p.add_argument('--undo',action='store_true',help='Untick instead');p.add_argument('--session');p.add_argument('--turn')
-    p=sub('timeline');p.add_argument('reference',nargs='?',help='Anchor note; default: the newest note');p.add_argument('--date',help='YYYY-MM-DD: anchor at the first note on or after this date');p.add_argument('--before',type=int,default=5);p.add_argument('--after',type=int,default=5);p.add_argument('--type',choices=NOTE_TYPES,action='append');p.add_argument('--by',choices=['updated','created'],default='updated');p.add_argument('--all',action='store_true',help='Include superseded, archived and resolved notes')
+    p=sub('timeline');p.add_argument('reference',nargs='?',help='Anchor note; default: the newest note');p.add_argument('--date',help='YYYY-MM-DD: anchor at the first note on or after this date');p.add_argument('--before',type=int,default=5);p.add_argument('--after',type=int,default=5);p.add_argument('--type',type=_type_name,action='append');p.add_argument('--by',choices=['updated','created'],default='updated');p.add_argument('--all',action='store_true',help='Include superseded, archived and resolved notes')
     p=sub('ingest-plan');p.add_argument('--source',type=Path,help="Auto-memory folder; default: Claude Code's folder for --cwd");p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of skipping the file");p.add_argument('--allow-similar',action='store_true')
-    p=sub('export');p.add_argument('--out',type=Path,required=True,help='New .zip file, outside the store');p.add_argument('--type',choices=NOTE_TYPES,action='append');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)');p.add_argument('--all',action='store_true',help='Include superseded, archived and resolved notes')
+    p=sub('export');p.add_argument('--out',type=Path,required=True,help='New .zip file, outside the store');p.add_argument('--type',type=_type_name,action='append');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)');p.add_argument('--all',action='store_true',help='Include superseded, archived and resolved notes')
     p=sub('import-plan');p.add_argument('file',type=Path)
     p=sub('confirm');p.add_argument('reference');p.add_argument('--session');p.add_argument('--turn')
     for name in ('resolve','reopen'):p=sub(name);p.add_argument('reference',help='A plan, bug or risk note');p.add_argument('--session');p.add_argument('--turn')
@@ -654,6 +672,8 @@ def build_parser():
     p=sub('projects');p.add_argument('--status',choices=['active','paused','archived','any'],default='any')
     p=sub('system');p.add_argument('action',choices=['create','update','retire']);p.add_argument('--payload-file',type=Path)
     p=sub('systems');p.add_argument('--status',choices=['active','deprecated','retired','any'],default='any')
+    p=sub('type');p.add_argument('action',choices=['create','update','retire']);p.add_argument('--payload-file',type=Path)
+    p=sub('types');p.add_argument('--all',action='store_true',help='Include retired custom types')
     p=sub('source');p.add_argument('action',choices=['add','remove','implicit']);p.add_argument('--payload-file',type=Path)
     p=sub('sources')
     p=sub('source-sync');p.add_argument('name',nargs='?',help='One source; default: all of the domain');p.add_argument('--rebuild',action='store_true',help='Drop and re-read what was indexed (all sources, or just NAME; a remote NAME is also fetched afresh)')
@@ -681,7 +701,7 @@ def build_parser():
     p=sub('recall');p.add_argument('query');p.add_argument('--session',required=True);p.add_argument('--limit',type=int,default=5);p.add_argument('--all',action='store_true',help='Search the whole transcript, not only what precedes the latest compaction')
     for name in sorted(SWITCH):p=sub(name);p.add_argument('--session',help='Session ID; default: $CLAUDE_CODE_SESSION_ID, which Claude Code sets for shell commands')
     p=sub('capture-finalize');p.add_argument('--session',required=True);p.add_argument('--turn',help='Defaults to the latest prompt of the session');p.add_argument('--note',action='append',default=[])
-    p=sub('list');p.add_argument('--status',choices=['active','resolved','archived','superseded','any'],default='active');p.add_argument('--type',choices=NOTE_TYPES,action='append');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)');p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--with-summary',action='store_true',help='Add summary, files and actions {open, done} to each row');p.add_argument('--offset',type=int,default=0);p.add_argument('--limit',type=int,default=200)
+    p=sub('list');p.add_argument('--status',choices=['active','resolved','archived','superseded','any'],default='active');p.add_argument('--type',type=_type_name,action='append');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)');p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--with-summary',action='store_true',help='Add summary, files and actions {open, done} to each row');p.add_argument('--offset',type=int,default=0);p.add_argument('--limit',type=int,default=200)
     p=sub('domains')
     p=sub('links');p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--status',choices=['active','any'],default='active',help='any: include archived, resolved and superseded notes')
     p=sub('version')
@@ -711,7 +731,7 @@ def main(argv=None):
         # Agents started inside a Hivemind terminal inherit HIVEMIND_SESSION; Hivemind's own backend does not. Every path (batch and serve
         # re-enter main) reaches this point before a governed command runs.
         if os.environ.get('HIVEMIND_SESSION') and (args.command in {'apply','undo','recover'}|DIRECT_WRITES or (args.command=='setup' and args.apply_plan) or (args.command=='taxonomy' and args.action=='add')):
-            raise ValueError('hivemind: Applying or undoing a plan, and the direct writes (archive, rewrite, remap, promote, taxonomy add, source, project, system, change), are for the user to do in Hivemind, not for an agent. Write a plan for a delete or merge; for the rest, tell the user what to change.')
+            raise ValueError('hivemind: Applying or undoing a plan, and the direct writes (archive, rewrite, remap, promote, taxonomy add, source, project, system, change, type), are for the user to do in Hivemind, not for an agent. Write a plan for a delete or merge; for the rest, tell the user what to change.')
         if args.command=='help':
             from .instructions import help_topic
             _emit(help_topic(args.topic),args);return 0
@@ -737,6 +757,7 @@ def main(argv=None):
         from . import logs
         logs.use(root);invocation['root']=root
         cmd=args.command
+        _check_type_args(args,root)
         try:
             domain=args.domain or _session_domain(root,getattr(args,'session',None)) or resolve_domain(cwd,load_bindings(root))
             if domain:domain=canonical_domain(domain,root)
@@ -825,7 +846,7 @@ def main(argv=None):
                 elif args.content_file and args.title:title=args.title;body=args.content_file.read_text(encoding='utf-8')
                 elif structured and (args.title or len(args.items)==1):title=args.title or args.items[0];body=''
                 else:raise ValueError('Use title body, domain title body, --title with --summary/--detail, or a JSON payload')
-                body=_sectioned(args,body,args.type or 'knowledge') or body
+                body=_sectioned(args,body,args.type or 'knowledge',root) or body
                 tags=args.tag+[t.strip() for t in args.tags.split(',') if t.strip()]
                 tags += _facet_tags(args,CAPTURE_FACETS)
                 data={'title':title,'body':body,'tags':tags,'prefix':args.prefix,'type':args.type or 'knowledge','context':args.context,'idempotency_key':args.idempotency_key,'domain':domain}
@@ -1023,7 +1044,7 @@ def main(argv=None):
             result=note_links(root,domains,args.status)
         elif cmd=='version':
             from .installer_lifecycle import CORE_RELEASE,installed_stamp
-            result={'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'restore':1,'pin':1,'rule':1,'direct_writes':1,'history':3,'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']},'wiki_agent':{'version':1}}}
+            result={'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'restore':1,'pin':1,'rule':1,'direct_writes':1,'note_types':1,'history':3,'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']},'wiki_agent':{'version':1}}}
         elif cmd=='update':
             from .notes import change
             d,n=_reference(args.reference,domain,root)
@@ -1037,7 +1058,7 @@ def main(argv=None):
                 current=find_note(n,d,root)[1];stored=current['body'];replaced={}
                 if any(getattr(args,k) for k in SECTION_ARGS+AMEND_ARGS):
                     # Sections given on the command line change only themselves; the rest of the body is kept.
-                    values['body']=_update_body(args,values['body'] if 'body' in values else stored,args.type or current.get('type'))
+                    values['body']=_update_body(args,values['body'] if 'body' in values else stored,args.type or current.get('type'),root)
                 if isinstance(values.get('body'),str):replaced=_replaced(args,stored,values['body'])
                 tags=(args.tag or [])+_facet_tags(args)
                 if tags:values['tags']=tags
@@ -1346,6 +1367,12 @@ def main(argv=None):
         elif cmd=='projects':
             from .projects import listing
             result=listing(root,args.status)
+        elif cmd=='type':
+            from .type_registry import type_write
+            result=type_write(root,args.action,_payload(args))
+        elif cmd=='types':
+            from .type_registry import listing
+            result=listing(root,args.all)
         elif cmd=='system':
             from .systems import system_write
             result=system_write(root,args.action,_payload(args))

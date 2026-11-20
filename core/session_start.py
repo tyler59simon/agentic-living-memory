@@ -451,10 +451,10 @@ def _resolved_line(resolved):
 def _finished_line(notes,shown=2):
     """Active plan, bug and risk notes whose action items are all ticked: finished work that keeps taking
     index space until it is resolved. notes carry their domain."""
-    from .note_format import action_items,ACTION_TYPES
+    from .note_format import action_items,note_takes_actions
     found=[]
     for note in notes:
-        if note.get('type') not in ACTION_TYPES or not note.get('id') or not note.get('title'):continue
+        if not note_takes_actions(note) or not note.get('id') or not note.get('title'):continue
         items=action_items(note.get('body',''))
         if items and all(done for done,_ in items):found.append(note)
     if not found:return []

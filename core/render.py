@@ -72,6 +72,19 @@ def _rows(r):
             for n,row in enumerate(rows,1):lines+=_row(row,n if key=='results' or 'rank' in row else 0)
     return lines or ['No matches.']
 
+def _types(r):
+    """`types`: one line per type (name, built-in or custom, retired), then its description and what it writes."""
+    lines=[]
+    for t in r['types']:
+        kind='built-in' if t.get('builtin') else 'custom'+(', retired' if t.get('status')=='retired' else '')
+        lines.append(f"{t.get('name')} ({kind})")
+        lines+=_wrap(t.get('description',''))
+        shape=[('sections: '+', '.join(t['sections'])) if t.get('sections') else '',
+               'action items' if t.get('actions') else '',f"review every {t['review_days']} days" if t.get('review_days') else '',
+               t.get('concern') or '']
+        if any(shape):lines+=_wrap('; '.join(x for x in shape if x))
+    return lines
+
 def render(result):
     """One result as text: by shape (plan, note, receipt, rows), else indented key: value."""
     if isinstance(result,list):
@@ -91,6 +104,7 @@ def render(result):
     elif result.get('status')=='proposed' and result.get('id'):   # propose: the bare ID is what capture --from-proposal takes
         lines=[f"proposed: {result['id']}  {result.get('title','')}".rstrip()]+_wrap(result.get('next',''),indent='  ')
     elif result.get('status') and result.get('id'):lines=_receipt(result)
+    elif isinstance(result.get('types'),list) and all(isinstance(t,dict) and 'name' in t for t in result['types']):lines=_types(result)
     elif any(isinstance(result.get(k),list) for k in LISTS):lines=_rows(result)
     else:lines=_kv({k:v for k,v in result.items() if k not in TRAILER})
     if result.get('operation_id') and result.get('undo') and not lines[0].startswith('Done ('):lines+=['',f"Operation {result['operation_id']}. Undo it with: alm {result['undo']}"]

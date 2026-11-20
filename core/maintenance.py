@@ -52,8 +52,8 @@ def _excluded(note):
 
 
 def _completed(note):
-    from .note_format import action_items, ACTION_TYPES
-    if _type(note) not in ACTION_TYPES:
+    from .note_format import action_items, note_takes_actions
+    if not note_takes_actions(note):
         return False
     items = action_items(note.get('body', ''))
     return bool(items) and all(done for done, _ in items)
@@ -79,7 +79,7 @@ def _replaced_permitted(note, has_successor):
 
 
 def _permitted(note, kinds, pair_same, has_successor):
-    from .note_format import ACTION_TYPES
+    from .note_format import note_takes_actions
     t = _type(note)
     out = ['keep', 'defer']
     if t in EXCLUDED:
@@ -87,7 +87,7 @@ def _permitted(note, kinds, pair_same, has_successor):
     out += ['confirm', 'update']
     if note.get('pinned') is True or t in LIMITED:
         return out
-    if t in ACTION_TYPES:
+    if note_takes_actions(note):
         if _completed(note):
             out.append('resolve')
         out.append('archive')
@@ -112,8 +112,8 @@ def refusal(note, action):
         if t in LIMITED:
             return 'protected_type'
     if action == 'resolve':
-        from .note_format import ACTION_TYPES
-        return 'open_actions' if t in ACTION_TYPES else 'not_permitted'
+        from .note_format import note_takes_actions
+        return 'open_actions' if note_takes_actions(note) else 'not_permitted'
     if action in ('archive', 'supersede'):
         return 'evidence_incomplete'
     return 'not_permitted'
@@ -746,8 +746,8 @@ def _decide(root, run, ref, dec, manifest, now, deadline, clock):
             rule = rule or 'completed_work'
             ok = rule == 'completed_work'
         elif action == 'archive':
-            from .note_format import ACTION_TYPES
-            ok = rule in ARCHIVE_RULES['status' if t == 'status' else 'action' if t in ACTION_TYPES else 'other']
+            from .note_types import takes_actions
+            ok = rule in ARCHIVE_RULES['status' if t == 'status' else 'action' if takes_actions(t, root) else 'other']
         elif action == 'supersede':
             rule = rule or 'replaced_by_successor'
             successor = dec['successor']

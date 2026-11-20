@@ -102,7 +102,7 @@ def _stale(pool,root,bindings,working_tree=False,infos=None):
 def _due(pool,root,domain,today=None):
     from .note_types import review_due,review_order,effective_date
     from .usage import used_refs
-    due=review_order([n for n in pool if review_due(n,today)],used_refs(root,today=today),domain,today)
+    due=review_order([n for n in pool if review_due(n,today,root)],used_refs(root,today=today),domain,today)
     found={}
     for n in due:
         review=str(n.get('review_by') or '')[:10]
@@ -176,8 +176,8 @@ def _duplicates(pool):
     return found
 
 def _acts(note):
-    from .note_format import action_items,ACTION_TYPES
-    if note.get('type') in ACTION_TYPES:
+    from .note_format import action_items,note_takes_actions
+    if note_takes_actions(note):
         items=action_items(note.get('body',''))
         return bool(items) and all(done for done,_ in items)
     return False

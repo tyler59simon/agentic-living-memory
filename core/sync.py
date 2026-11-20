@@ -17,7 +17,7 @@ from . import clock
 from .common import memory_root,atomic_write,load_bindings
 from .repository import inventory,parse,parse_text,validate,serialize,store_lock,read_json,canonical_json,transaction,digest,confined,now,reconcile,clean_files,clean_commands
 from .governance import plan
-from .note_types import normalize,NOTE_TYPES,STALE_DAYS,keep_baseline
+from .note_types import normalize,STALE_DAYS,keep_baseline
 from .notes import slug
 
 NOTES='Domains';ARCHIVE='Archive';DASH='Dashboards';CANVAS='Canvas';TEMPLATES='Templates';META='.living-memory'
@@ -28,22 +28,8 @@ SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 QUIET_SECONDS=30
 # Losing this many managed copies at once is a vault reset or move, not a request to delete notes.
 MASS_MISSING=(5,0.2)
-from .note_format import sections,HEADINGS,TITLE_MARK,CALLOUT,ACTION_TYPES,TYPE_SECTIONS
-# The summary line of each template: what the opening sentences of that type say.
-TEMPLATE_PROMPTS={
-    'knowledge':'The fact, in one or two plain sentences. Add sections named after what they explain.',
-    'decision':'The choice, who made it and when.',
-    'preference':'Whose preference it is, the default they want, and where it applies.',
-    'context':'The situation this note explains, in one or two sentences.',
-    'status':'Where things stand, as of a stated date.',
-    'bug':'What goes wrong, where, and since when.',
-    'plan':'The goal, and whether the plan is proposed or approved.',
-    'risk':'What could go wrong, what would set it off, and who owns it.',
-    'research':'The question, and the answer so far.',
-    'policy':'The rule, who requires it, and where it applies.',
-    'map':'What the repo is for, in one or two sentences.',
-    'runbook':'What the procedure does.',
-    'brief':'What the project is and where it stands.'}
+from .note_format import sections,HEADINGS,TITLE_MARK,CALLOUT
+from .note_types import TEMPLATE_PROMPTS,definition,type_names   # the summary line of each built-in type's template
 
 def _hash(path):
     try:return digest(path.read_bytes())
@@ -385,7 +371,7 @@ def sync(domain,vault,root=None,trigger=None):
             try:
                 if not note:raise ValueError('No frontmatter with a title; start the note from a template')
                 note_type=str(note.get('type') or 'knowledge')
-                if sections(note.get('body','')).get('summary','').strip()==TEMPLATE_PROMPTS.get(note_type,'').strip():
+                if sections(note.get('body','')).get('summary','').strip()==_prompt(definition(note_type,root)).strip():
                     raise ValueError('Still the template text; replace it with the note, and it is saved at the next sync')
                 # Notes written from an Obsidian template carry no stable identity yet. The ID derives from the
                 # file's content, so if a sync stops after the canonical write, the retry finds that note
@@ -490,14 +476,22 @@ def _status_page(domain,root,notes,view_conflicts=(),failure=None):
             +section('Conflicts',conflicts,'No conflicts.')+'\n'
             +section('Recently applied',recent,'Nothing yet.'))
 
-def _template(note_type):
+GENERIC_PROMPT='The note, in one or two plain sentences.'
+
+def _prompt(found):
+    """A template's summary line: the type's summary prompt, or a generic one for a custom type that has none."""
+    return '' if found is None else found['summary'] or GENERIC_PROMPT
+
+def _template(note_type,root=None):
     """Frontmatter and section skeleton in the note layout; sections left unfilled are dropped at capture."""
-    meta={'title':'{{title}}','type':note_type,'status':'active','tags':['subject/project','concern/knowledge'],'context':''}
-    parts=[TITLE_MARK+'{{title}}',TEMPLATE_PROMPTS[note_type],CALLOUT+' ']
-    parts+=['## '+heading for heading in TYPE_SECTIONS.get(note_type,())]
-    if note_type not in TYPE_SECTIONS and note_type!='knowledge':parts.append('## '+HEADINGS['details']+'\n- ')
+    found=definition(note_type,root)
+    concern='concern/knowledge' if found['builtin'] else found['concern'] or 'concern/knowledge'
+    meta={'title':'{{title}}','type':note_type,'status':'active','tags':['subject/project',concern],'context':''}
+    parts=[TITLE_MARK+'{{title}}',_prompt(found),CALLOUT+' ']
+    parts+=['## '+heading for heading in found['sections']]
+    if not found['sections'] and note_type!='knowledge':parts.append('## '+HEADINGS['details']+'\n- ')
     parts.append('## '+HEADINGS['links']+'\n- ')
-    if note_type in ACTION_TYPES:parts.append('## '+HEADINGS['actions']+'\n- [ ] ')
+    if found['actions']:parts.append('## '+HEADINGS['actions']+'\n- [ ] ')
     return '---\n'+'\n'.join(f'{k}: {json.dumps(v)}' for k,v in meta.items())+'\n---\n\n'+'\n\n'.join(parts)+'\n'
 
 WIKILINK=re.compile(r'\[\[([^\]|#]+)')
@@ -561,7 +555,8 @@ def build_overlay(domain,vault,root=None,trigger=None):
            'Recap':_recap_page(domain,root),
            'Archive':'# Archive\n\n'+'\n'.join('- '+link(n) for n in notes if n.get('status')!='active')}
     for name,text in pages.items():changes[f'{DASH}/{name}.md']=text+'\n'
-    for t in NOTE_TYPES:changes[f'{TEMPLATES}/{t.capitalize()}.md']=_template(t)
+    templates=type_names(root)
+    for t in templates:changes[f'{TEMPLATES}/{t.capitalize()}.md']=_template(t,root)
     nodes=[{'id':n['id'],'type':'file','file':note_rel(domain,Path(n['path']).name),'x':(i%4)*420,'y':(i//4)*280,'width':380,'height':240} for i,n in enumerate(active)]
     edges=_canvas_edges(active)
     changes[f'{CANVAS}/{domain}.canvas']=canonical_json({'nodes':nodes,'edges':edges})
@@ -599,7 +594,7 @@ def build_overlay(domain,vault,root=None,trigger=None):
         changes[GENERATED]=canonical_json(manifest)
         transaction(vault,changes,'overlay_views',skip_unchanged=True)
     _prune_legacy_dirs(vault)
-    return {**sync_result,'dashboards':7,'templates':len(NOTE_TYPES),'canvas_nodes':len(nodes),'canvas_edges':len(edges),'legacy_conflicts':legacy_conflicts,'view_conflicts':view_conflicts}
+    return {**sync_result,'dashboards':7,'templates':len(templates),'canvas_nodes':len(nodes),'canvas_edges':len(edges),'legacy_conflicts':legacy_conflicts,'view_conflicts':view_conflicts}
 
 def _report_failure(domain,vault,root,exc):
     """Best effort: a failed sync must still be visible where the user looks."""

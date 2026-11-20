@@ -216,13 +216,36 @@ def named_sections(body):
     return [(heading, text) for key, heading, text in parts(body) if key is None and heading and not _is_empty(text)]
 
 
-def check(body, note_type):
+def type_sections(note_type, root=None):
+    """The sections a type is written with: a built-in's from TYPE_SECTIONS, a custom type's from its definition."""
+    if note_type in TYPE_SECTIONS or not note_type:
+        return TYPE_SECTIONS.get(note_type, ())
+    from .note_types import definition
+    found = definition(note_type, root)
+    return tuple(found['sections']) if found else ()
+
+
+def note_takes_actions(note):
+    """True for a note whose type takes action items, judged from the note where no store root is at hand: plan, bug and risk, and a
+    custom-type note that has action items or is resolved (writes refuse both for a custom type that takes none)."""
+    note_type = note.get('type')
+    if note_type in ACTION_TYPES:
+        return True
+    from .note_types import NOTE_TYPES
+    if note_type in NOTE_TYPES:
+        return False
+    return note.get('status') == 'resolved' or bool(action_items(note.get('body') or ''))
+
+
+def check(body, note_type, root=None):
     """Raise ValueError when a body breaks the layout rules for its type."""
     found = sections(body)
     if not found.get('summary', '').strip():
         raise ValueError('Note needs a summary: start the body with one or two sentences, or pass --summary')
     if 'actions' in found and note_type not in ACTION_TYPES:
-        raise ValueError('Action items are only for plan, bug and risk notes; record lasting facts in the body instead')
+        from .note_types import takes_actions
+        if not takes_actions(note_type, root):
+            raise ValueError('Action items are only for plan, bug and risk notes and custom types that take them; record lasting facts in the body instead')
 
 
 def _bullets(items, mark='- '):
@@ -235,7 +258,7 @@ def _bullets(items, mark='- '):
     return '\n'.join(lines)
 
 
-def render(summary='', details=(), links=(), actions=(), done=(), important='', body='', named=(), note_type=None):
+def render(summary='', details=(), links=(), actions=(), done=(), important='', body='', named=(), note_type=None, root=None):
     """A body from structured parts. Lists become bullets; text that is already a bullet is kept.
     `named` is [(heading, text)] for the type's sections or others. `body`, when given, supplies sections
     that the structured parts do not replace."""
@@ -253,7 +276,7 @@ def render(summary='', details=(), links=(), actions=(), done=(), important='', 
         replace['important'] = str(important).strip()
     out = _with_sections(replace, body)
     for heading, text in named:
-        out = set_section(out, heading, text, note_type)
+        out = set_section(out, heading, text, note_type, root)
     return out
 
 
@@ -279,7 +302,7 @@ def _with_sections(replace, body=''):
     return _join(found)
 
 
-def set_section(body, heading, text, note_type=None):
+def set_section(body, heading, text, note_type=None, root=None):
     """`body` with the section named `heading` holding `text`. A heading that names a layout section
     (Summary, Details, Links, Action items, Important) replaces that section. Another heading replaces the
     section with that heading, or is added: a section of the note type's own goes in the type's order,
@@ -295,7 +318,7 @@ def set_section(body, heading, text, note_type=None):
         if part[0] is None and part[1] and _same_heading(part[1], heading):
             part[2] = text
             return _join(found)
-    order = [h for h in TYPE_SECTIONS.get(note_type, ())]
+    order = list(type_sections(note_type, root))
     position = next((i for i, h in enumerate(order) if _same_heading(h, heading)), None)
     at = _insert_at(found, 2)
     if position is not None:

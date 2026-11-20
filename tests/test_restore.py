@@ -169,7 +169,7 @@ class Restore(StoreFixture):
     def test_version_lists_the_new_capabilities_and_command(self):
         version = self.ok('version')
         self.assertIn('restore', version['commands'])
-        self.assertEqual(version['capabilities'], {'restore': 1, 'pin': 1, 'rule': 1, 'direct_writes': 1, 'history': 3,
+        self.assertEqual(version['capabilities'], {'restore': 1, 'pin': 1, 'rule': 1, 'direct_writes': 1, 'note_types': 1, 'history': 3,
                                                    'maintenance': {'version': 1, 'actions': ['status', 'preview', 'run', 'enable', 'disable', 'history']}, 'wiki_agent': {'version': 1}})
 
     def test_the_log_shows_restored_and_the_archive_row(self):

@@ -241,7 +241,7 @@ def parse_text(raw, path=""):
         if 'prefix' in meta:
             return None
         from .note_types import prefix_for
-        try:meta['prefix'] = prefix_for(meta.get('type'), legacy=True)
+        try:meta['prefix'] = prefix_for(meta.get('type'), legacy=True, root='any')
         except ValueError:return None
     from .note_format import strip_title
     # The "# Title" heading (earlier "# 🎯 Title") is derived from the title property; it is never part of the body.
@@ -378,7 +378,7 @@ def serialize(note):
     meta["schema_version"] = note.get('schema_version', 2)
     if meta['schema_version'] == 3:
         from .note_types import prefix_for
-        prefix_for(meta.get('type'), legacy=True)
+        prefix_for(meta.get('type'), legacy=True, root='any')
         meta.pop('prefix', None)
     body = format_body(note["body"])
     meta.pop("sha256", None)
@@ -494,19 +494,19 @@ def validate(note, domain, root=None, new=False, extra_tags=()):
     if note.get("domain") != domain or not isinstance(note.get("status"), str) or note["status"] not in STATUSES:
         raise ValueError("Invalid domain or lifecycle status")
     if new or note.get('schema_version') == 3:
-        from .note_types import prefix_for
-        prefix = prefix_for(note.get('type'), legacy=not new)
+        from .note_types import prefix_for, takes_actions
+        prefix = prefix_for(note.get('type'), legacy=not new, root=Path(root or memory_root()))
         if note.get('schema_version') != 3 or note.get('prefix') != prefix:
             raise ValueError('Prefix must be derived from type; use capture or the note-type-plan migration')
-        if note.get('status') == 'resolved' and note['type'] not in ('plan', 'bug', 'risk'):
-            raise ValueError('Only plan, bug and risk notes may have resolved status')
+        if note.get('status') == 'resolved' and not takes_actions(note['type'], Path(root or memory_root())):
+            raise ValueError('Only plan, bug and risk notes, and custom types that take action items, may have resolved status')
         if note.get('path'):
             from .notes import slug
             expected = f"{prefix} - {slug(note['title'])}-{note['id'][:8]}.md"
             if Path(note['path']).name != expected:
                 raise ValueError('Filename must match type and title; use a reviewed update/rename plan')
     from .note_format import check
-    check(note["body"], note.get("type", "knowledge"))
+    check(note["body"], note.get("type", "knowledge"), root)
     tags = note.get("tags", [])
     if not isinstance(tags, list) or any(not isinstance(t, str) for t in tags):
         raise ValueError("Tags must be a string list")

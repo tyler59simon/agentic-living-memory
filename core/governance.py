@@ -158,7 +158,7 @@ def merge_plan(root,payload):
 # registry writes). Every other kind (merge, delete, bulk retag, migrations, import, ingest, maintenance, bindings, Obsidian, and install or
 # setup operations outside the store) comes back as a plan to approve, so a kind added later fails safe.
 DIRECT_UNDO_KINDS=frozenset({'capture','capture_supersede','capture_promote','update','supersede','resolve','reopen','confirm','archive','rewrite','reference_remap','promote','taxonomy_expansion','config_set','rebaseline'})
-DIRECT_UNDO_PREFIXES=('source_','project_','system_','change_','views_')
+DIRECT_UNDO_PREFIXES=('source_','project_','system_','change_','views_','type_')
 
 def _plan_kind(kind,effects=()):
     """True when undoing an operation of this kind needs an approved plan (an undo of X is judged by X's kind, found through the chain).
@@ -194,6 +194,12 @@ def undo(root,operation_id):
             guards={'unused_tags':dropped}
             try:_check_guards(root,{'guards':{'unused_tags':sorted(dropped)},'domains':sorted(domains),'changes':changes})
             except ValueError as exc:raise ValueError('Undo would remove tags that notes still use; retag those notes first ('+str(exc).split(': ',1)[-1]+')') from None
+        # Restoring an older type registry can drop a custom type, or its action items, that notes written since depend on.
+        if 'note_types.json' in changes:
+            from .type_registry import check_registry
+            restored=json.loads(changes['note_types.json']) if changes['note_types.json'] else {'types':[]}
+            try:check_registry(root,[t for t in restored.get('types',[]) if isinstance(t,dict) and isinstance(t.get('name'),str)])
+            except ValueError as exc:raise ValueError('Undo would break notes that use a custom type: '+str(exc)+'; retype those notes first') from None
         kind,judged_effects=str(value['kind']),raw_effects
         while kind.startswith('undo:'):   # an undo of X: judged by X's kind
             try:judged=read_json(root/'.operations'/kind[5:]/'journal.json');kind=str(judged['kind']);judged_effects=judged.get('effects') or []

@@ -14,10 +14,10 @@ SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 # Tools that cannot change files; anything else marks the turn as mutating.
 READ_TOOLS={'read','read_file','glob','grep','search','view_image','view','ls','list','webfetch','websearch','web_fetch','web_search','todowrite','task','agent','toolsearch','askuserquestion','exitplanmode','enterplanmode'}
 SHELL_TOOLS={'bash','powershell','shell','run_shell_command','exec_command','local_shell','execute'}
-ALLOWED_SUBCOMMANDS={'ask','sources','source-sync','ingest-scan','search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','archive','rewrite','promote','projects','systems','changes','views','wiki','resolve','reopen','restore','log','maintenance','rebaseline','recap','status','help','propose','proposals'}
+ALLOWED_SUBCOMMANDS={'ask','types','sources','source-sync','ingest-scan','search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','archive','rewrite','promote','projects','systems','changes','views','wiki','resolve','reopen','restore','log','maintenance','rebaseline','recap','status','help','propose','proposals'}
 # Subagents are read-only: these are denied for them even though the main agent gets them auto-allowed. Their one write is
 # propose, a draft in .turns/ that only the main agent turns into a note (capture --from-proposal) or rejects.
-MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm','resolve','reopen','restore','off','on','undo','archive','rewrite','remap','promote','source','project','system','change'}   # `taxonomy add` is the same kind of write: taxonomy_write
+MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm','resolve','reopen','restore','off','on','undo','archive','rewrite','remap','promote','source','project','system','change','type'}   # `taxonomy add` is the same kind of write: taxonomy_write
 GLOBAL_OPTIONS={'--root','--domain','--cwd','--actor'}
 HOOK_LOCK_TIMEOUT=5
 # Codex has no SessionEnd, so its session start picks up Obsidian edits, at most this often.
@@ -50,6 +50,24 @@ def _tag_summary(root):
         if value:facets.setdefault(facet,[]).append(value)
     return '; '.join(f"{facet}/{{{','.join(values)}}}" for facet,values in facets.items())
 
+CUSTOM_TYPES_BUDGET=600
+
+def _custom_types_line(root):
+    """One line naming the store's active custom note types, with their sections and whether they take action items, or ''."""
+    try:
+        from .note_types import custom_types,definition
+        parts=[]
+        for name,entry in sorted(custom_types(root).items()):
+            if entry.get('status','active')!='active':continue
+            found=definition(name,root);extra=list(found['sections'])+(['action items'] if found['actions'] else [])
+            parts.append(name+(f" ({', '.join(extra)})" if extra else '')+': '+found['description'])
+        if not parts:return ''
+        line='Custom note types (--type NAME): '+'; '.join(parts)
+        return line if len(line)<=CUSTOM_TYPES_BUDGET else line[:CUSTOM_TYPES_BUDGET-30].rsplit(' ',1)[0]+' ... (CMD types lists them all)'
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('runtime.custom_types_line',exc,root);return ''
+
 def protocol(root,domain=None,harness='',session='SESSION'):
     """SessionStart context (re-fires after compaction). When the harness's instruction file carries the
     current static block, only per-session data is injected; otherwise the shorter fallback protocol (it fits Codex's
@@ -57,6 +75,8 @@ def protocol(root,domain=None,harness='',session='SESSION'):
     cmd=command(root,domain)
     dynamic=(f'CMD = {cmd}'+('' if cmd.startswith('alm ') else '   (Bash: CMD as is; PowerShell: & CMD ...)')+
              f"\nTags (pick the closest; --platform/--technology optional): {_tag_summary(root)}")
+    custom=_custom_types_line(root)
+    if custom:dynamic+='\n'+custom
     if installed(harness):
         return f'Living Memory is active for domain {domain}; follow the Living Memory section of your instructions.\n'+dynamic
     text=FALLBACK_PROTOCOL+'\n'+dynamic+'\n'+fallback_usage(session)
@@ -75,7 +95,7 @@ def protected_rule(path,cwd,root):
         from .storage import config_path
         if p.is_relative_to(root/'domains'):return 'domains'
         if p.is_relative_to(root/'ledger') or p.is_relative_to(root/'.views') or p.is_relative_to(root/'maintenance'):return 'config'
-        if p in {root/'bindings.json',root/'tag_taxonomy.json',root/'projects.json',root/'systems.json',root/'sources.json',root/'changes.json',root/'maintenance.json',root/'views.json',root/'.relocated.json',config_path().resolve()}:return 'config'
+        if p in {root/'bindings.json',root/'tag_taxonomy.json',root/'projects.json',root/'systems.json',root/'sources.json',root/'changes.json',root/'note_types.json',root/'maintenance.json',root/'views.json',root/'.relocated.json',config_path().resolve()}:return 'config'
         # Vault edits are auto-applied and vault checkboxes approve plans, so agents must not write there either.
         return 'vault' if any(p.is_relative_to(v/folder) for v in vault_roots(root) for folder in ('Domains','Archive','Dashboards')) else None
     except (ValueError,OSError):return None
@@ -197,7 +217,7 @@ def memory_subcommand(text,grammar=None):
     return found.pop() if len(found)==1 else None
 
 # Hivemind sets HIVEMIND_SESSION for every program it starts in a terminal. Agents there write plans (delete, merge-plan, ...); only the user applies or undoes them, and the direct writes are the user's too.
-HIVEMIND_GOVERNED={'apply','undo','recover','archive','rewrite','remap','promote','source','project','system','change'}   # `setup --apply-plan` and `taxonomy add` are governed too (below)
+HIVEMIND_GOVERNED={'apply','undo','recover','archive','rewrite','remap','promote','source','project','system','change','type'}   # `setup --apply-plan` and `taxonomy add` are governed too (below)
 
 def hivemind_governed(text,grammar):
     """True when a shell command applies or undoes a plan or makes a direct write: apply, undo, recover, setup --apply-plan, taxonomy add, archive, rewrite and the other HIVEMIND_GOVERNED verbs. Exact invocations are read by
@@ -591,13 +611,14 @@ def auto_resolve(root,domain,bindings,session=None):
         except (KeyError,TypeError,ValueError):age=None
         if age is not None and age<24*3600:return []
         atomic_write(marker,canonical_json({**marks,domain:now()}))
-        from .note_format import action_items,ACTION_TYPES
+        from .note_format import action_items
+        from .note_types import takes_actions
         from .notes import change,short_ref
         from .repository import inventory
         from .usage import record
         cutoff=clock.now()-timedelta(days=AUTO_RESOLVE_DAYS);done=[]
         for note in inventory(domain,root):
-            if note.get('type') not in ACTION_TYPES or not note.get('id') or not note.get('title') or note.get('pinned') is True:continue   # a pin blocks automatic retirement
+            if not takes_actions(note.get('type'),root) or not note.get('id') or not note.get('title') or note.get('pinned') is True:continue   # a pin blocks automatic retirement
             items=action_items(note.get('body',''))
             if not items or not all(d for d,_ in items):continue
             try:
@@ -1825,7 +1846,7 @@ def _process(harness,event,payload,root=None,info=None):
         name=str(payload.get('tool_name') or payload.get('toolName') or '').lower();text=shell_command(args) if name in SHELL_TOOLS else ''
         if text and hivemind_governed(text,shell_grammar(name)):
             detail['tool']=name;detail['decision']='deny:hivemind'
-            result['deny']='Applying or undoing a plan, and the direct writes (archive, rewrite, remap, promote, taxonomy add, source, project, system, change), are for the user to do in Hivemind, not for an agent. Write a plan for a delete or merge; for the rest, tell the user what to change.'
+            result['deny']='Applying or undoing a plan, and the direct writes (archive, rewrite, remap, promote, taxonomy add, source, project, system, change, type), are for the user to do in Hivemind, not for an agent. Write a plan for a delete or merge; for the rest, tell the user what to change.'
             return result
     if event=='pre-tool-use' and not domain and _subagent(payload):
         # Before the unbound-project return too: from an unbound folder a subagent could still capture --global or settle a proposal.

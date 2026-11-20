@@ -6,8 +6,8 @@ from . import clock
 from pathlib import Path
 from .common import memory_root,safe_domain,canonical_domain
 from .repository import inventory,parse,serialize,validate,read_json,transaction,reconcile,store_lock,now,digest,clean_files,clean_commands,clean_sources
-from .note_types import prefix_for,normalize,effective_type,default_review_by,keep_baseline,KEYED_TYPES
-from .note_format import format_body,without_actions,summary_text,ACTION_TYPES
+from .note_types import prefix_for,normalize,effective_type,default_review_by,keep_baseline,KEYED_TYPES,takes_actions,check_type
+from .note_format import format_body,without_actions,summary_text,note_takes_actions
 from .digests import stale_note
 
 # Fields an agent may change directly (journaled and undoable, no plan) with `update`.
@@ -294,7 +294,7 @@ def quality_checks(note):
         # A hypothesis already labelled as one (**Hypothesis:** ...) is what the check asks for.
         if message.startswith('this reads as an interim') and (note.get('type') not in INTERIM_TYPES or HYPOTHESIS.search(body)):continue
         # Open steps belong in a bug or risk note's action items; elsewhere they are a passing state.
-        text=title+'\n'+(without_actions(body) if unfinished and note.get('type') in ACTION_TYPES else body)
+        text=title+'\n'+(without_actions(body) if unfinished and note_takes_actions(note) else body)
         if pattern.search(text):found.append(message)
     return found
 
@@ -422,8 +422,8 @@ def build_note(title,body,tags,domain,root,note_type='knowledge',context='',key=
     """(path, note, file text) for a new active note, validated like every capture. Writes nothing; capture and
     ingest-plan both create notes through it."""
     stamp=now()
-    note={'id':note_id or str(uuid.uuid4()),'title':title.strip(),'body':format_body(body).strip(),'domain':domain,'tags':sorted(set(tags)),'status':'active','created':stamp,'updated':stamp,'type':note_type,'prefix':prefix_for(note_type),'schema_version':3,'context':context or '','capture_key':key}
-    review=_review_date(review_by) or default_review_by(note_type)
+    note={'id':note_id or str(uuid.uuid4()),'title':title.strip(),'body':format_body(body).strip(),'domain':domain,'tags':sorted(set(tags)),'status':'active','created':stamp,'updated':stamp,'type':note_type,'prefix':prefix_for(note_type,root=root),'schema_version':3,'context':context or '','capture_key':key}
+    review=_review_date(review_by) or default_review_by(note_type,root=root)
     if review:note['review_by']=review
     if supersedes:note['supersedes']=sorted(set(supersedes))
     files=clean_files(files)
@@ -666,7 +666,7 @@ def _rule_hint(note,domain,root):
 def capture(title,body,tags,domain,root=None,**metadata):
     root=Path(root or memory_root()).resolve();domain=canonical_domain(domain,root)
     with store_lock(root):
-        selected_type=metadata.pop('type','knowledge');derived=prefix_for(selected_type)
+        selected_type=metadata.pop('type','knowledge');check_type(selected_type,root);derived=prefix_for(selected_type,root=root)
         # The rule flag is checked before any duplicate answer, so a refused value never comes back as a match.
         from .repository import RULE_TYPES,rule_type_error
         rule=metadata.pop('rule',False)
@@ -838,6 +838,7 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
     expected={path.relative_to(root).as_posix():note['revision']}
     if pending.get(path.relative_to(root).as_posix()):note=parse_changed(pending[path.relative_to(root).as_posix()],note)
     note=normalize(note)
+    if action=='update' and 'type' in values and values['type']!=note['type']:check_type(values['type'],root)
     if action=='update' and 'type' in values:note=normalize(note,values['type'])
     if 'prefix' in values and values['prefix']!=note['prefix']:raise ValueError('Prefix is derived from type; update the type instead')
     if action=='rename':action,values='update',{'title':values['title']}
@@ -881,7 +882,7 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
             else:note.pop('review_by',None)
         elif 'body' in values and note.get('status')=='active':
             # Updating a time-sensitive note makes it current again.
-            review=default_review_by(note['type'])
+            review=default_review_by(note['type'],root=root)
             if review:note['review_by']=review
         if note['type'] in KEYED_TYPES:_set_identity(note,clean_files(note.get('files')),domain,root,'files' in values or 'type' in values)
         else:note.pop('repo',None)
@@ -897,7 +898,7 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
         note['confirmed']=(confirmed+[today])[-CONFIRM_KEEP:]
         if note.get('sources'):note['sources']=_rehashed(note,domain,root)   # still true of the file as it is now
         _set_file_hashes(note,domain,root,{h['path']:h['sha256'] for h in note.get('file_hashes') or []},fresh=True);note['checked']=now()   # a map or brief reads current from here until the next commit
-        review=default_review_by(note['type'])
+        review=default_review_by(note['type'],root=root)
         if review:note['review_by']=review
         elif note.get('review_by'):
             # An explicit date on a type without an interval would keep the note due; move it out like the age rule.
@@ -906,8 +907,8 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
             note['review_by']=(clock.today()+timedelta(days=STALE_DAYS)).isoformat()
     elif action in {'resolve','reopen'}:
         # Notes that track work (plan, bug, risk) are resolved when the work is finished; other types are archived.
-        if action=='resolve' and (note['type'] not in ACTION_TYPES or note.get('status')!='active'):raise ValueError('Only active plan, bug and risk notes may be resolved')
-        if action=='reopen' and (note['type'] not in ACTION_TYPES or note.get('status')!='resolved'):raise ValueError('Only resolved plan, bug and risk notes may be reopened')
+        if action=='resolve' and (not takes_actions(note['type'],root) or note.get('status')!='active'):raise ValueError('Only active plan, bug and risk notes, and custom types that take action items, may be resolved')
+        if action=='reopen' and (not takes_actions(note['type'],root) or note.get('status')!='resolved'):raise ValueError('Only resolved plan, bug and risk notes, and custom types that take action items, may be reopened')
         note['status']='resolved' if action=='resolve' else 'active'
         if action=='resolve':note['last_retirement']=retirement_record('resolve',actor,**(retirement or {}))
         folder=root/'domains'/domain/('archive' if action=='resolve' else 'notes')
@@ -1083,7 +1084,7 @@ def open_work(domains,root=None,tags=()):
         try:notes=inventory(domain,root)
         except (OSError,ValueError):continue
         for note in notes:
-            if note.get('type') not in ACTION_TYPES or any(t not in (note.get('tags') or []) for t in tags):continue
+            if not takes_actions(note.get('type'),root) or any(t not in (note.get('tags') or []) for t in tags):continue
             items=[(i+1,text) for i,(done,text) in enumerate(action_items(note.get('body',''))) if not done and text]
             if items:found.append((domain,note,items))
     return sorted(found,key=lambda f:str(f[1].get('updated') or ''),reverse=True)
@@ -1121,7 +1122,7 @@ def check_action(note_id,domain,root=None,item=None,index=None,done=True):
     root=Path(root or memory_root()).resolve()
     with store_lock(root):
         _,note=find_note(note_id,domain,root)
-        if note.get('type') not in ACTION_TYPES:raise ValueError('Only plan, bug and risk notes have action items')
+        if not takes_actions(note.get('type'),root):raise ValueError('Only plan, bug and risk notes, and custom types that take them, have action items')
         items=action_items(note['body'])
         if not items:raise ValueError('This note has no action items')
         if index is not None:

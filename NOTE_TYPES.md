@@ -24,6 +24,36 @@ Living Memory has thirteen note types. Each note has one primary type, selected 
 
 The suggested contents above guide authoring; they are not additional required metadata fields or automatic workflow engines.
 
+## Custom types
+
+A store can add its own types next to the thirteen built-in ones, for example `incident`. Custom types live in one store-wide registry, `<store>/note_types.json`, and every domain can use them. The built-in types are fixed and cannot be edited.
+
+`alm type create|update|retire --payload-file FILE` (payload on stdin otherwise) writes the registry directly; each write is journaled and `undo OPERATION` reverses it. `alm types` lists every type with its definition, built-in first; `--all` adds retired custom types. A custom type states:
+
+| Field | Meaning |
+| --- | --- |
+| `name` | Lowercase letters and digits, 3 to 24 characters, starting with a letter. Not a built-in type, `correction`, `progress` or `resolved`. Fixed after create. The filename prefix is the name in upper case: `INCIDENT - ...`. |
+| `description` | What a note of this type records (1 to 300 characters, required). SessionStart shows it to agents. |
+| `summary` | The summary prompt of its Obsidian template (up to 200 characters). |
+| `sections` | Up to 8 headings the note is written with, in order, between the summary and Details (not Summary, Important, Details, Links or Action items). |
+| `actions` | `true` lets its notes have action items, be resolved and reopened, as plan, bug and risk notes are. |
+| `review_days` | Days until a new or updated note is due for review (7 to 730), or `null` for the 180-day age rule. |
+| `concern`, `subject` | Default `concern/` and `subject/` tags for a capture that names none; each must be in the taxonomy. |
+
+Example payload:
+
+```json
+{"name": "incident", "description": "A production incident: what broke, its impact and the follow-up.",
+ "summary": "What broke, for whom, and when it was resolved.", "sections": ["Timeline", "Impact", "Follow-up"],
+ "actions": true, "review_days": 60, "concern": "concern/bug"}
+```
+
+`type update` takes `name` and any of the other fields, plus `status` (`active` or `retired`). `type retire NAME` stops new notes of the type; its existing notes keep working and can still be updated, and `type update` with `"status": "active"` brings it back. Types are never deleted. `actions` cannot be turned off while a note of the type has action items or is resolved, and `undo` refuses to drop a type, or its action items, that notes use.
+
+A custom type gets only what its definition states. Built-in rules tied to a type name stay with that name: one map per repo and one brief per project folder, rule notes (policy and preference), the maintenance exclusions for preferences, policies, maps, briefs and runbooks, and session-start priorities. In those, a custom type behaves like knowledge. A resolved note of a custom type leaves search the way a resolved plan does (resolved bugs and risks stay searchable). Hivemind lists custom types with a neutral colour.
+
+A note whose type is not registered (its registry entry was removed by hand, or the store was copied without `note_types.json`) still loads and is searchable; `doctor` and `types` warn about it, and writes to it are refused until the type is registered again with `type create`.
+
 ## Choosing between related types
 
 - **KNOWLEDGE vs RESEARCH:** use research for the investigation and its uncertainties; use knowledge for an established finding. Link a finding to the research that supports it.
