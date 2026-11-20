@@ -448,6 +448,63 @@ class ByFile(Base):
         res=self.go((n,'confirm',{'evidence':['own','file']}))
         self.assertEqual(res['confirmed'],1,res);self.assertEqual(digests.changed(self.get(n)['file_hashes'],'demo',self.root),[])
 
+class ByFileReview(Base):
+    """Codex review of the QUEUE-3 commit f9945df."""
+    def test_a_credential_split_across_lines_is_redacted_before_the_diff(self):
+        from unittest import mock
+        from core import rebaseline
+        tok='Zq'+'9xK4'*8;old=f'HEADER = """Bearer\n{tok}"""\nx = 1\n';new=old.replace('x = 1','x = 2')
+        self.src('h.py',new);maintenance._DIFFS.clear()   # the cache never keeps such a file; git history could still hold it
+        with mock.patch.object(rebaseline,'baseline',return_value=old.encode()):
+            change=maintenance._diff(self.root,str(self.project/'src'/'h.py'),sha(old),sha(new),new)
+        self.assertIn('+x = 2',change);self.assertNotIn(tok,change)
+    def test_an_uncited_unchanged_file_edited_during_the_review_blocks_a_confirm(self):
+        self.src('a.py','a = 1\n');self.src('b.py','b = 1\n')
+        n=self.mk('Two files','a and b are both one.',files=['src/a.py','src/b.py']);self.src('a.py','a = 1  # one\n')
+        run,manifest,_=self.prepare();self.src('b.py','b = 2\n');rev=self.get(n)['revision']
+        self.apply(run,manifest,self.decisions(manifest,(n,'confirm',{'evidence':['own','file']})))
+        self.assertEqual(self.get(n)['revision'],rev)
+    def test_a_file_past_the_read_cap_gets_no_diff(self):
+        from core import rebaseline
+        old='x = 1\n'*(maintenance.FILE_READ_MAX//6-5)   # just under the cap: a baseline exists
+        self.src('big.py',old);n=self.mk('Big','big.py sets x.',files=['src/big.py'])
+        target=rebaseline.baseline_file(self.root,sha(old));target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(old.encode())
+        self.src('big.py',old+'tail = 2\n'*40)   # now past the cap: the read is a prefix and the tail is unseen
+        maintenance._DIFFS.clear()
+        _,_,text=self.prepare();e=[x for x in json.loads(text)['candidates'][0]['evidence'] if x['kind']=='file'][0]
+        self.assertNotIn('diff',e)
+    def test_a_note_too_large_with_its_diffs_is_sent_without_them(self):
+        lines=lambda v:''.join(f'line_{i} = {v}{i}\n' for i in range(600))
+        for i in range(5):self.src(f'f{i}.py',lines('a'))
+        n=self.mk('Five big files','Every line is set. '+'Words that fill the body. '*900,files=[f'src/f{i}.py' for i in range(5)])
+        for i in range(5):self.src(f'f{i}.py',lines('b'))
+        sel=self.cands();text,manifest=maintenance.packet(self.root,sel,'r1')
+        self.assertEqual(manifest['dropped'],[]);files=[e for e in json.loads(text)['candidates'][0]['evidence'] if e['kind']=='file']
+        self.assertTrue(files);self.assertFalse(any('diff' in e for e in files))
+    def test_a_file_shown_as_a_window_is_not_shared(self):
+        big=lambda v:'import os\n'+''.join(f'value_{i} = {i}\n' for i in range(4000))+f'retry = {v}\n'
+        self.src('w.py',big(3))
+        b=self.mk('Retry in w','The retry limit is 3 in w.py.',files=['src/w.py']);c=self.mk('Values in w','value_10 is 10 in w.py.',files=['src/w.py'])
+        self.src('w.py',big(4))
+        text,manifest=maintenance.packet(self.root,self.cands(2),'r1')
+        first,second=[[e for e in blk['evidence'] if e['kind']=='file'][0] for blk in json.loads(text)['candidates']]
+        self.assertFalse(first['whole']);self.assertNotIn('shown_in',second);self.assertNotEqual(first['id'],second['id'])
+    def test_a_grouped_note_is_not_a_rotation_turn(self):
+        cfg={'domains':['a','b','c']}
+        self.assertEqual(maintenance.next_cursor(cfg,[{'domain':'a'},{'domain':'c','grouped':True}]),'b')
+    def test_the_diff_cuts_common_ends_and_marks_a_missing_final_newline(self):
+        old='x = 1\n'*500+'setting = 1\n'+'x = 1\n'*500
+        self.assertLess(len(maintenance._unified(old,old.replace('setting = 1','setting = 2'))),400)
+        self.assertIn('-retries=3\n\\ No newline at end of file\n+retries=9\n\\ No newline at end of file\n',maintenance._unified('retries=3','retries=9'))
+    def test_diffs_are_looked_up_once_per_file_version(self):
+        from unittest import mock
+        from core import rebaseline
+        self.src('a.py','a = 1\n');path=str(self.project/'src'/'a.py');rebaseline.keep(self.root,path);old=sha('a = 1\n');self.src('a.py','a = 2\n')
+        maintenance._DIFFS.clear()
+        with mock.patch.object(rebaseline,'baseline',wraps=rebaseline.baseline) as seen:
+            one=maintenance._diff(self.root,path,old,sha('a = 2\n'),'a = 2\n');two=maintenance._diff(self.root,path,old,sha('a = 2\n'),'a = 2\n')
+        self.assertEqual(seen.call_count,1);self.assertEqual(one,two);self.assertIn('+a = 2',one)
+
 class Service(Base):
     def test_dry_run_spends_the_allowance_and_writes_no_notes(self):
         n=self.mk('Sprint status','Done.',type='status',review_by=OLD)

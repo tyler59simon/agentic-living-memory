@@ -26,6 +26,7 @@ EXCERPT_CHARS = 1200
 FILE_EXCERPT_CHARS = 16000     # a file up to this size is sent whole
 FILE_WITH_DIFF_CHARS = 48000   # ...and up to this size when its diff since the note was verified is sent too
 DIFF_CHARS = 24000             # a larger diff is not sent
+DIFF_LOOKUP_SECONDS = 10       # git history lookups of the versions to diff against, per packet
 OUTLINE_CHARS = 3000           # the outline of a larger file
 FILE_READ_MAX = 1 << 20
 EXCLUDED = ('preference', 'policy')            # normative: never reviewed by the model
@@ -249,7 +250,7 @@ def candidates(root, cfg, state, now=None, limit=10):
                         keep = []
                         for item in queues.get(other) or []:
                             if len(chosen) < limit and _changed_files(item[4]) & shared:
-                                chosen.append(item[4])
+                                chosen.append(dict(item[4], grouped=True))   # not a rotation turn: next_cursor skips it
                             else:
                                 keep.append(item)
                         if other in queues:
@@ -367,11 +368,13 @@ def backfill_related(root, cfg, now=None, seconds=BACKFILL_SECONDS):
 
 
 def next_cursor(cfg, selected):
-    """The domain after the last one a batch drew from, where the next run starts."""
+    """The domain after the last one a batch drew from in its rotation (a note grouped in by a shared file is not a turn), where the next
+    run starts."""
     domains = cfg['domains']
-    if not selected or selected[-1]['domain'] not in domains:
+    turns = [c for c in selected or [] if not c.get('grouped')]
+    if not turns or turns[-1]['domain'] not in domains:
         return None
-    return domains[(domains.index(selected[-1]['domain']) + 1) % len(domains)]
+    return domains[(domains.index(turns[-1]['domain']) + 1) % len(domains)]
 
 
 # ---- packet
@@ -432,18 +435,67 @@ def _read_text(path):
     return None if b'\0' in raw else raw.decode('utf-8', 'replace')
 
 
-def _diff(root, path, base, text):
+_DIFFS = {}   # (path, verified hash, hash now) -> diff or None, so the trial and the real packet of a run see the same diffs
+
+
+def _diff(root, path, base, sha, text, until=None):
     """The unified diff from the version of `path` whose hash is `base` (the one the note was verified against, from the re-baselining cache
-    or git history) to `text`, the file now; None without that version or when the diff is over DIFF_CHARS."""
+    or git history, looked up until `until`) to `text`, the file now, whose hash is `sha`. Both versions are redacted first, so a credential
+    split across diff lines is still caught. None without that version, for a file longer than the read cap (`text` is then a prefix) or
+    when the diff is over DIFF_CHARS."""
+    key = (path, base, sha)
+    if key in _DIFFS:
+        return _DIFFS[key]
+    from . import rebaseline
+    change = None
+    try:
+        whole = os.path.getsize(path) <= FILE_READ_MAX
+    except OSError:
+        whole = False
+    old = rebaseline.baseline(root, path, base, until, store=False) if whole else None   # a preview writes nothing
+    if old is not None:
+        change = _unified(redact(old.decode('utf-8', 'replace'))[0], redact(text)[0])
+        change = change if len(change) <= DIFF_CHARS else None
+    if len(_DIFFS) > 256:
+        _DIFFS.clear()
+    _DIFFS[key] = change
+    return change
+
+
+def _unified(old, new, context=3):
+    """A unified diff of two texts, line by line, from rebaseline's matcher (common ends cut first, so repeated blocks do not inflate it).
+    A last line without a line break is followed by the standard `\\ No newline at end of file` row."""
     import difflib
     from . import rebaseline
-    old = rebaseline.baseline(root, path, base, store=False)   # a preview writes nothing
-    if old is None:
-        return None
-    before = old.decode('utf-8', 'replace').replace('\r\n', '\n').splitlines(True)
-    after = text.replace('\r\n', '\n').splitlines(True)
-    change = ''.join(difflib.unified_diff(before, after, 'verified', 'now', n=3))
-    return change if len(change) <= DIFF_CHARS else None
+
+    def split(text):
+        lines = text.replace('\r\n', '\n').split('\n')
+        return (lines[:-1], True) if lines[-1] == '' else (lines, False)
+    (a, a_ends), (b, b_ends) = split(old), split(new)
+    ops = rebaseline._opcodes(a, b)
+    if all(op[0] == 'equal' for op in ops):
+        return ''
+    matcher = difflib.SequenceMatcher(None, a, b)
+    matcher.opcodes = ops   # get_grouped_opcodes reads these instead of matching again
+
+    def span(lo, hi):
+        return f'{lo + 1}' if hi - lo == 1 else f'{lo},0' if hi == lo else f'{lo + 1},{hi - lo}'
+
+    def row(mark, lines, k, ends):
+        return [mark + lines[k]] + ([] if ends or k != len(lines) - 1 else ['\\ No newline at end of file'])
+    out = ['--- verified', '+++ now']
+    for group in matcher.get_grouped_opcodes(context):
+        out.append(f'@@ -{span(group[0][1], group[-1][2])} +{span(group[0][3], group[-1][4])} @@')
+        for tag, i1, i2, j1, j2 in group:
+            if tag == 'equal':
+                for k in range(i1, i2):
+                    out += row(' ', a, k, a_ends)
+                continue
+            for k in range(i1, i2):
+                out += row('-', a, k, a_ends)
+            for k in range(j1, j2):
+                out += row('+', b, k, b_ends)
+    return '\n'.join(out) + '\n'
 
 
 def packet(root, cands, run_id):
@@ -453,7 +505,8 @@ def packet(root, cands, run_id):
     manifest = {'version': 1, 'run_id': run_id, 'evidence': {}, 'candidates': {}, 'deferred': {}, 'dropped': [], 'keys': {}}
     empty = 2 + RUN_ID_ROOM + 40   # fixed room for the id, so a trial packet drops the same notes as the real one
     blocks, size, counter = [], empty, 0
-    shown = {}   # (domain, path, hash now, verified hash) -> (evidence id, key of the candidate that shows it): a file is sent once per packet
+    shown = {}   # (domain, path, hash now, verified hash) -> (evidence id, key of the candidate that shows it): a whole file is sent once per packet
+    lookup_until = time.monotonic() + DIFF_LOOKUP_SECONDS   # baselines from git history: shared by every file of the packet
 
     def new_id():
         nonlocal counter
@@ -495,12 +548,11 @@ def packet(root, cands, run_id):
                 record = {'candidate': ref, 'kind': 'file', 'path': f['path'], 'state': f['state'], 'sha256': f['sha256'], 'abs': f['abs'], 'lines': None}
                 entry = {'id': fid, 'kind': 'file', 'path': f['path'], 'state': f['state']}
                 text = _read_text(f['abs']) if f['abs'] and f['state'] in ('current', 'changed') else None
-                if text is not None and base:
-                    change = _diff(root, f['abs'], base, text)
+                if text is not None and base and whole_ok:   # the compact retry leaves diffs out, so a note too large with them still fits
+                    change = _diff(root, f['abs'], base, f['sha256'], text, lookup_until)
                     if change is not None:
                         entry['diff'] = change
                         record['diff_base'] = base
-                showing[share] = (fid, key)
                 if text is not None:
                     if whole_ok and len(text) <= (FILE_WITH_DIFF_CHARS if 'diff' in entry else FILE_EXCERPT_CHARS):
                         entry['excerpt'], first, last = text, 1, max(1, len(text.splitlines()))
@@ -510,6 +562,8 @@ def packet(root, cands, run_id):
                         entry['whole'] = False
                         entry['outline'] = _outline(text)
                     record['lines'] = entry['lines'] = [first, last]
+                if entry.get('whole') or text is None:
+                    showing[share] = (fid, key)   # a window is chosen for this note's body, so only a whole file is shared
                 evidence[fid] = record
                 entries.append(entry)
             permits = permitted(note, cand['kinds'], cand['pair_same'], bool(successors))
@@ -665,6 +719,14 @@ def _decide(root, run, ref, dec, manifest, now, deadline, clock):
         covered = {ev['path'] for ev in evidence if ev['kind'] == 'file'}
         # A current file is unchanged since the note was verified, so only the others need evidence.
         full = {p for p, f in tracked.items() if f['state'] != 'current'} <= covered and all(f['state'] in ('current', 'changed') for f in tracked.values())
+        if full and action in ('confirm', 'update'):
+            # Full coverage refreshes every tracked hash, so a current file nobody cited must still be the version the packet saw.
+            from . import digests
+            for path, f in tracked.items():
+                if path not in covered and f['state'] == 'current':
+                    absolute, _ = digests.locate(root, domain, path, bindings)
+                    if absolute is None or digests.file_sha256(absolute) != f['sha256']:
+                        return end('deferred', 'source_changed', True)
         t = cand['type']
         rule, values, retire = dec['rule'], {}, action in ('resolve', 'archive', 'supersede')
         if action == 'resolve':
