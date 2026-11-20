@@ -655,6 +655,15 @@ class Page(Base):
     def test_tabs_left_after_dedent_keep_their_columns(self):   # Codex review of 868c987
         pre=self.render(' \t```\n    \tx\n        y\n```')[2][0]
         self.assertEqual(pre[2][0][1],'    x\n    y')
+        self.assertEqual(self.render('```make\nall:\n\tmake x\n```')[2][0][2][0][1],'all:\n\tmake x')   # Codex re-review: a recipe keeps its tab
+
+    def test_numbering_must_leave_the_citations_made_where_they_were_made(self):   # Codex re-review of b020798
+        # Joining "[N1,\nN2]" pulls a table into the list, so two hidden [^9] show while both new citations land in code.
+        body='- `x [N1,\nN2] y`\n | H |\n |---|[^9][^9]|\n\nText.[N1]'
+        with self.assertRaisesRegex(wa.WikiError,'numbering the citations'):
+            wa.validate_page({'lead':'Lead.[N1]','body':body,'cited':['N1','N2']},{'notes':{'N1':'a','N2':'b'},'pages':{}},{})
+        out=wa.validate_page({'lead':'Lead.[N1]','body':'A [N1, N2] and [[P1]] `[N2]`.','cited':['N1','N2']},{'notes':{'N1':'a','N2':'b'},'pages':{}},{'P1':'Other'})
+        self.assertEqual(out['body'],'A [^1][^2] and [[Other]] `[N2]`.')
 
     @unittest.skipUnless(__import__('shutil').which('node'),'needs node')
     def test_the_check_and_the_page_agree_on_what_is_code(self):

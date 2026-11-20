@@ -347,6 +347,7 @@ def validate_place(report, manifest, page_count):
 CITATION = re.compile(r'\[(N[0-9]+(?:\s*,\s*N[0-9]+)*)\]')
 PAGE_LINK = re.compile(r'\[\[(P[0-9]+)\]\]')
 FOOTNOTE = re.compile(r'\[\^[0-9]+\]')
+MARKER = re.compile(CITATION.pattern + '|' + PAGE_LINK.pattern)   # one pass: neither rewrite makes the other's marker
 # What the page draws as code is decided by markdown() and inline() in the page's script (wiki.JS in core/wiki.py); the
 # check follows them step by step (_page_code). Whitespace is JavaScript's \s but a line break (Python's \s differs: it has
 # U+001C to U+001F and U+0085, and lacks U+FEFF), and JavaScript's . stops at U+2028 and U+2029 as well.
@@ -530,13 +531,32 @@ def _code_spans(text, lead=False):
     return _page_code(lines)
 
 
-def _outside_code(text, fn, lead=False):
-    """`text` with fn applied to everything but code spans and fenced blocks, which stay as written."""
-    out, last = [], 0
-    for start, end in _code_spans(text, lead):
-        out += [fn(text[last:start]), text[start:end]]
+def _number(text, lead, rewrite):
+    """`text` with rewrite(match) applied to every MARKER outside code spans and fenced blocks, which stay as written, and
+    where each citation it made starts. rewrite returns the new text and the offsets of its citations in that text."""
+    out, made, size, last = [], [], 0, 0
+    for start, end in _code_spans(text, lead) + [(len(text), len(text))]:
+        at = last
+        for m in MARKER.finditer(text, last, start):
+            new, marks = rewrite(m)
+            size += m.start() - at
+            made += [size + k for k in marks]
+            out += [text[at:m.start()], new]
+            size += len(new)
+            at = m.end()
+        out.append(text[at:end])
+        size += end - at
         last = end
-    return ''.join(out + [fn(text[last:])])
+    return ''.join(out), made
+
+
+def _shown(text, lead):
+    """Where the page shows a [^k] citation: every one outside code spans and fenced blocks."""
+    found, last = [], 0
+    for start, end in _code_spans(text, lead) + [(len(text), len(text))]:
+        found += [m.start() for m in FOOTNOTE.finditer(text, last, start)]
+        last = end
+    return found
 
 
 def _blank_code(text, lead=False):
@@ -601,31 +621,29 @@ def validate_page(report, manifest, titles):
     _keys(report['cited'], notes, 'cited', SOURCES_MAX, NOTE_KEY)
     if FOOTNOTE.search(_blank_code(lead, True)) or FOOTNOTE.search(_blank_code(body)):
         raise WikiError('the text has [^k] footnotes of its own; it must cite with [N1] markers')
-    order, made = [], [0]
+    order = []
 
-    def cite(match):
-        marks = ''
-        made[0] += len(re.split(r'\s*,\s*', match.group(1)))
+    def rewrite(match):
+        if match.group(2):   # [[P4]]
+            if match.group(2) not in titles:
+                raise WikiError(f'{match.group(2)} is not a page key of this packet')
+            return f'[[{titles[match.group(2)]}]]', []
+        marks, starts = '', []
         for key in re.split(r'\s*,\s*', match.group(1)):
             if key not in notes:
                 raise WikiError(f'{key} is not a source key of this packet')
             if key not in order:
                 order.append(key)
+            starts.append(len(marks))
             marks += f'[^{order.index(key) + 1}]'
-        return marks
-
-    def link(match):
-        if match.group(1) not in titles:
-            raise WikiError(f'{match.group(1)} is not a page key of this packet')
-        return f'[[{titles[match.group(1)]}]]'
+        return marks, starts
     numbered = []
     for text, is_lead in ((lead, True), (body, False)):
-        made[0] = 0
-        text = _outside_code(text, lambda part: PAGE_LINK.sub(link, CITATION.sub(cite, part)), is_lead)
-        # A rewritten marker can change what the page reads as code (a [N1] link label becomes a citation, and a backtick
-        # after it pairs with another), so the page must show exactly the citations made.
-        if len(FOOTNOTE.findall(_blank_code(text, is_lead))) != made[0]:
-            raise WikiError('numbering the citations changes what the page shows as code; keep [N1] markers out of link labels')
+        text, made = _number(text, is_lead, rewrite)
+        # Numbering can change what the page reads as code: a [N1] link label becomes a citation whose URL backtick pairs with
+        # a later one, or a marker split over two lines joins them. The page must show exactly the citations made, where made.
+        if _shown(text, is_lead) != made:
+            raise WikiError('numbering the citations changes what the page shows as code; keep each [N1] marker on one line and out of link labels')
         numbered.append(text)
     lead, body = numbered
     if not order:
