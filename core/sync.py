@@ -547,10 +547,14 @@ def mirror_notebooks(domain,vault,root):
         swallowed('sync.notebooks',exc,root);return {'error':str(exc)[:500]}
 
 def write_status(domain,vault,root):
-    """Rewrite the vault's Sync Status page from the state as it is now (after `sync`, which builds no overlay)."""
+    """Rewrite the vault's Sync Status page from the state as it is now (after `sync`, which builds no overlay), recording
+    its hash in the generated-file manifest as overlay-build does, so teardown still owns it."""
     try:
         root=Path(root).resolve();vault=Path(vault).resolve()
-        with store_lock(vault):atomic_write(confined(vault,status_rel(domain)),_status_page(domain,root,inventory(domain,root,retired=True)))
+        with store_lock(vault):
+            text=_status_page(domain,root,inventory(domain,root,retired=True));manifest=read_json(vault/GENERATED,{'files':{}})
+            manifest.setdefault('files',{})[status_rel(domain)]=digest(text.encode())
+            transaction(vault,{status_rel(domain):text,GENERATED:canonical_json(manifest)},'overlay_views',skip_unchanged=True)
     except (OSError,ValueError,TimeoutError) as exc:
         from .logs import swallowed
         swallowed('sync.write_status',exc,root)

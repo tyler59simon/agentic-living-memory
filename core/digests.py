@@ -142,15 +142,15 @@ def _closed(root,path,policy=None):
 
 
 def _probe(root,domain,path,bindings,specs):
-    """The file a stored source path would name, whether or not it is there now (None when no folder can say)."""
+    """Every file a stored source path could name, whether or not it is there now (none when no folder can say): one per
+    bound folder of the domain for a relative path."""
     named=NAMED.match(path)
-    if '..' in path.replace('\\','/').split('/'):return None
-    if Path(path).is_absolute():return Path(path)
+    if '..' in path.replace('\\','/').split('/'):return []
+    if Path(path).is_absolute():return [Path(path)]
     if named:
         spec=(specs if specs is not None else _specs(root,domain,bindings)).get(named[1])
-        return Path(spec['path'])/named[2] if spec else None
-    prefixes=domain_prefixes(domain,bindings)
-    return prefixes[0]/path if prefixes else None
+        return [Path(spec['path'])/named[2]] if spec else []
+    return [prefix/path for prefix in domain_prefixes(domain,bindings)]
 
 
 def states(listed,domain,root,bindings=None):
@@ -165,8 +165,9 @@ def states(listed,domain,root,bindings=None):
         from .folder_policy import Policy
         from .sources import NOTEBOOK_SOURCE
         policy=policy or Policy(root);named=NAMED.match(s['path'])
-        probe=path if path is not None else _probe(root,domain,s['path'],bindings,specs)   # a file deleted after its folder closed is judged too
-        if (probe is not None and _closed(root,probe,policy)) or (path is None and named and NOTEBOOK_SOURCE.fullmatch(named[1])):
+        probes=[path] if path is not None else _probe(root,domain,s['path'],bindings,specs)   # a file deleted after its folder closed is judged too
+        gone_source=bool(path is None and named and NOTEBOOK_SOURCE.fullmatch(named[1]) and named[1] not in (specs or {}))
+        if any(_closed(root,p,policy) for p in probes) or gone_source:
             out[s['path']]='closed';continue   # in a hidden or private notebook, or in a folder notebook whose own source is gone
         if not s.get('sha256'):out[s['path']]='unchecked';continue
         if path is None:out[s['path']]='missing' if known else 'unavailable'
@@ -294,7 +295,8 @@ def scan(root,domain,source=None,limit=50,changed_only=False,bindings=None):
         from .folder_policy import Policy
         policy=Policy(root)
         if policy.broken:raise ValueError('notebook-folders.json is damaged, so folder notebooks cannot be told apart; run doctor')
-        files=[f for f in files if f[1] in bases and policy.file(bases[f[1]]/f[2])[0] is None]   # notebook pages are not digested into notes
+        reals=library.recorded(db,'real:')
+        files=[f for f in files if f[1] in bases and not library.moved(reals,f[1],policy.real(bases[f[1]])) and policy.file(bases[f[1]]/f[2])[0] is None]   # notebook pages are not digested into notes, and rows read from a folder a link no longer reaches are not offered
         leads={n:next(((f'{x}/' if x!='.' else '') for x in (_inside(b,p) for p in prefixes) if x is not None),f'{n}:') for n,b in bases.items()}   # stored path = lead + path within the source
         for file_id,name,rel,size in files:
             if name not in specs:continue

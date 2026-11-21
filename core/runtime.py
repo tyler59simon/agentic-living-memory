@@ -1133,16 +1133,17 @@ def prompt_sources(prompt,root,domain,state,trace=None):
     def late():
         if time.monotonic()-started>SOURCE_SECONDS:trace['cut_by_time']=True;return True
         return False
-    for query,_ in queries:   # the time is checked before every index search, not once per query
-        if vocab[0]:
-            if late():break
+    # Every query asks the sources index first (as before notebooks), then folder notebook pages, then Living Memory pages;
+    # the time is checked before every index search, so pages never take the sources' time.
+    searches=[(q,'source',None) for q,_ in queries if vocab[0]]+[(q,'folder',None) for q,_ in queries if vocab[0]]+[(q,'lm',d) for q,_ in queries for d in page_domains]
+    for query,kind,d in searches:
+        if late():break
+        if kind=='source':
             for hit in sources.search(root,domain,query,3,vocab,True,SOURCE_GATE,least,width,near,dropped,policy=policy):offer(hit,f"{hit['source']}:{hit['path']}:{hit['line_start']}")
-            if late():break
+        elif kind=='folder':
             for hit in sources.search(root,domain,query,3,vocab,True,SOURCE_GATE,least,width,near,dropped,pages=True,inject=True,policy=policy):
                 offer(hit,f"{hit['source']}:{hit['path']}:{hit['line_start']}")
-        if late():break
-        for d in page_domains:
-            if late():break
+        else:
             for hit in docs_index.prompt_hits(root,d,query,3,SOURCE_GATE,least,width,near,dropped,allowed=allowed[d]):
                 offer(dict(hit,path=f"{d}/{hit['notebook']}/{hit['path']}"),f"doc:{d}/{hit['notebook']}/{hit['path']}:{hit['line_start']}")
     shown=set(state.get('sources_shown',[]))
@@ -1680,6 +1681,8 @@ def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=N
         try:overview.extend(n for n in recent_notes(domain,5,root) if f"{n['domain']}:{n['id']}" not in seen)
         except (OSError,ValueError):continue
     overview=overview[:5]
+    from . import digests
+    digests.mark(overview,root,bindings)   # a withheld digest's title is not shown here either
     if not overview:trace['path']='no_overview';return None,[],False
     trace.update(path='overview',overview=len(overview))
     from .notes import short_ref

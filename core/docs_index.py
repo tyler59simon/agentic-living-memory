@@ -237,7 +237,6 @@ def _refresh(db,root,domain,present,walk_until,index_until,only,embed,result,pro
     cursor=sources._meta(db,'cursor') or ''
     if only is None and cursor in names:names=names[names.index(cursor):]+names[:names.index(cursor)]
     todo=[];walked=0;cut=None;unread=0;listed=set()
-    if progress:sources._set_meta(db,'allowance',repr(time.time()))   # refresh_all hands the allowance to the domain that had it longest ago
     for nb in names:
         if walk_until is not None and (walked or not progress) and time.monotonic()>walk_until:cut=nb;break
         skipped=[]
@@ -270,7 +269,8 @@ def _refresh(db,root,domain,present,walk_until,index_until,only,embed,result,pro
     for (nb,) in db.execute('SELECT name FROM source').fetchall():
         files,chunks=db.execute('SELECT count(*),coalesce(sum(chunks),0) FROM file WHERE source=?',(nb,)).fetchone()
         db.execute('UPDATE source SET files=?,chunks=? WHERE name=?',(files,chunks,nb))
-    if result['indexed']:sources._set_meta(db,'vectors_pending','1')   # cleared below only when the embedding caught up
+    if result['indexed'] or sources._meta(db,'vectors_checked')!='1':   # cleared below only when the embedding caught up; an index from before this rule is checked once
+        sources._set_meta(db,'vectors_pending','1');sources._set_meta(db,'vectors_checked','1')
     db.commit()
     if embed and (result['indexed'] or sources._meta(db,'vectors_pending')=='1' or (sources._meta(db,'vectors') or None)!=_identity(root)):
         remaining=(index_until-time.monotonic()) if index_until is not None else sources.EMBED_SECONDS
@@ -314,13 +314,14 @@ def visible(root,domain,include_private=False,named=None,include_hidden=False):
     return out
 
 
-def _allowance(root,domain):
-    """When the domain last had the progress allowance (0.0: never), so the allowance goes round the domains in turn."""
-    db=_readonly(root,domain)
-    if db is None:return 0.0
-    try:return float(sources._meta(db,'allowance') or 0)
-    except (ValueError,sqlite3.Error):return 0.0
-    finally:db.close()
+ALLOWANCE='hooks/docs-allowance.json'   # {domain: when it last had the progress allowance}; runtime state, outside every index
+
+
+def _allowances(root):
+    from .repository import read_json
+    try:found=read_json(Path(root)/ALLOWANCE,{})
+    except (OSError,ValueError):return {}
+    return {k:v for k,v in found.items() if isinstance(v,(int,float))} if isinstance(found,dict) else {}
 
 
 def refresh_all(root,domains):
@@ -328,7 +329,12 @@ def refresh_all(root,domains):
     longest ago first; only that one may pass the budget to make progress. True when any of them was left unfinished."""
     start=time.monotonic();walk_until=start+WALK_SECONDS;index_until=walk_until+INDEX_SECONDS;stale=False
     wanted=[d for d in domains if (Path(root)/'domains'/d/'notebooks').is_dir() or db_path(root,d).is_file()]
-    for n,domain in enumerate(sorted(wanted,key=lambda d:_allowance(root,d))):
+    from .common import atomic_write
+    had=_allowances(root);order=sorted(wanted,key=lambda d:had.get(d,0.0))
+    if order:   # recorded before the refresh, so a domain whose refresh fails still passes the allowance on
+        try:atomic_write(Path(root)/ALLOWANCE,json.dumps(dict(had,**{order[0]:time.time()}),sort_keys=True))
+        except OSError:pass
+    for n,domain in enumerate(order):
         stale|=refresh(root,domain,walk_until,index_until,progress=n==0)['stale']
     return stale
 

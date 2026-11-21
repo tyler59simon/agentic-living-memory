@@ -241,12 +241,14 @@ def set_folder(root,path,domain,visibility,private=None):
         entries=load(root)['folders'];k=key(canonical)
         old=_strictest(entries).get(k)
         entry={'path':canonical,'domain':named,'visibility':visibility,'private':bool(old and old.get('private')) if private is None else bool(private)}   # a tombstone's private flag holds too
-        if old and not old.get('removed') and {f:old.get(f) for f in ('path','domain','visibility','private')}==entry:
-            return {'ok':True,'status':'unchanged','folder':entry}
+        rows=[e for e in entries if key(real(e['path']))==k]
+        if len(rows)==1 and not old.get('removed') and {f:old.get(f) for f in ('path','domain','visibility','private')}==entry:
+            return {'ok':True,'status':'unchanged','folder':entry}   # unchanged only with no duplicate row left to fold
         entry['updated']=now()
         receipt=commit(root,{REGISTRY:_text([e for e in entries if key(real(e['path']))!=k]+[entry])},'doc_folder',[],
                        {'folder':canonical,'domain':named,'visibility':visibility,'private':entry['private'],'files':1})
     _spawn(root,named)
+    if old and old.get('domain') and old.get('domain')!=named:_spawn(root,old['domain'])   # moved: the old domain drops its source too
     return dict(receipt,status='set',folder=entry)
 
 
@@ -263,7 +265,7 @@ def unset_folder(root,path,forget=False):
         if old is None:raise ValueError(f'not_found: no folder notebook {path}')
         level=level_of(old.get('visibility'),bool(old.get('private')))
         keep=level in ('hidden','private') and not forget
-        if keep and old.get('removed'):return {'ok':True,'status':'unchanged','folder':old}
+        if keep and old.get('removed') and len([e for e in entries if key(real(e['path']))==k])==1:return {'ok':True,'status':'unchanged','folder':old}
         rest=[e for e in entries if key(real(e['path']))!=k]+([dict(old,removed=True,updated=now())] if keep else [])
         receipt=commit(root,{REGISTRY:_text(rest)},'doc_folder',[],{'folder':old['path'],'removed':True,'tombstone':keep,'files':1})
     _spawn(root,old.get('domain'))

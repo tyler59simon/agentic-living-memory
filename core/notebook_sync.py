@@ -47,6 +47,31 @@ def _safe(base,rel):
     return cursor
 
 
+def _place(src,dst):
+    """Move src to dst unless something is at dst (a file saved meanwhile is never replaced): FileExistsError then. Windows
+    rename never replaces; elsewhere a hard link is made and src removed, or, on a filesystem without hard links, dst is
+    checked just before an ordinary rename."""
+    if os.name=='nt':os.rename(src,dst);return
+    try:os.link(src,dst)
+    except FileExistsError:raise
+    except OSError:
+        if os.path.lexists(dst):raise FileExistsError(dst)
+        os.rename(src,dst);return
+    os.unlink(src)
+
+
+def _put_back(aside,path):
+    """Return a file moved aside to its place, or, when a new save is there, beside it under a name of its own."""
+    try:_place(aside,path);return
+    except FileExistsError:pass
+    stamp=time.strftime('%Y%m%d-%H%M%S')
+    for n in range(1,1000):
+        kept=path.with_name(f'{path.stem} (kept {stamp}{"" if n==1 else f" {n}"}){path.suffix}')
+        try:_place(aside,kept);return
+        except FileExistsError:continue
+    raise FileExistsError(path)
+
+
 def _put(base,rel,data,expect):
     """Write base/rel (remove it, with data None) while it holds the bytes whose hash is `expect` (None: absent). False when it
     changed meanwhile or a link or junction is in the way. A save made at any moment is never lost: the file is first moved
@@ -64,16 +89,16 @@ def _put(base,rel,data,expect):
     if expect is not None:
         aside=path.with_name(f'.{path.name}.{os.getpid()}-{time.monotonic_ns()}.aside')
         os.rename(path,aside)   # the bytes now at the path are judged where nobody else writes
-        if _sha(_bytes(aside))!=expect:
-            try:os.rename(aside,path)   # changed just before the rename: put back
-            except OSError:os.rename(aside,path.with_name(f'{path.stem} (kept {time.strftime("%Y%m%d-%H%M%S")}){path.suffix}'))   # saved again meanwhile: both kept
-            return False
+        try:changed=_sha(_bytes(aside))!=expect
+        except OSError:changed=True   # cannot be judged: put back
+        if changed:   # changed just before the rename: put back, or beside a save made since
+            _put_back(aside,path);return False
     try:
         if data is not None:
             fd,temp=tempfile.mkstemp(prefix='.',suffix='.mirror',dir=path.parent)
             try:
                 with os.fdopen(fd,'wb') as f:f.write(data)
-                os.rename(temp,path) if os.name=='nt' else os.link(temp,path)   # never over a file saved meanwhile
+                _place(temp,path)   # never over a file saved meanwhile
             except FileExistsError:
                 if aside is not None:aside.unlink()   # the expected bytes are known; the new save stays
                 return False
@@ -82,18 +107,21 @@ def _put(base,rel,data,expect):
         if aside is not None:aside.unlink()
         return True
     except BaseException:
-        if aside is not None and aside.exists() and not path.exists():os.rename(aside,path)
+        if aside is not None and aside.exists():_put_back(aside,path)
         raise
 
 
-def _files(folder):
-    """{rel: path} of every file under a folder, links and junctions left out."""
+def _files(folder,unread=None):
+    """{rel: path} of every file under a folder, links and junctions left out. A folder that cannot be listed is added to
+    `unread` (the files under it are unknown, not gone)."""
     from .docs import _is_link
     found={};stack=['']
     while stack:
         rel=stack.pop()
         try:entries=list(os.scandir(Path(folder)/rel if rel else folder))
-        except OSError:continue
+        except OSError:
+            if unread is not None:unread.append(rel)
+            continue
         for e in entries:
             path=f'{rel}/{e.name}' if rel else e.name
             try:
@@ -150,8 +178,12 @@ def _leave_vault(state,domain):
     return kept
 
 
-def _plan_ok(value,plan_id):
-    return isinstance(value,dict) and value.get('id')==plan_id and value.get('kind')=='doc_vault_delete' and isinstance(value.get('digest'),str)
+def _plan_ok(value,plan_id,target):
+    """Whether a pending deletion plan is the one this sync made: its id, kind and only change, and a digest that matches."""
+    if not (isinstance(value,dict) and value.get('id')==plan_id and value.get('kind')=='doc_vault_delete' and isinstance(value.get('digest'),str)):return False
+    try:signed=hashlib.sha256(canonical_json({k:v for k,v in value.items() if k!='digest'}).encode()).hexdigest()==value['digest']
+    except (TypeError,ValueError):return False
+    return signed and value.get('changes')=={target:None}
 
 
 def _keep_in_store(root,domain,nb,folder,rel,held,path):
@@ -166,8 +198,10 @@ def _keep_in_store(root,domain,nb,folder,rel,held,path):
             return 'proposed'
         except (OSError,ValueError):pass
     ext=os.path.splitext(rel)[1].lower()
-    try:
-        docs.attach(root,domain,nb,str(path),'from-obsidian'+(ext if re.fullmatch(r'\.[a-z0-9]{1,10}',ext) else '.bin'),include_private=True)
+    try:   # the bytes that were judged, not the file as it is now
+        with tempfile.TemporaryDirectory(prefix='lm-keep-') as scratch:
+            copy=Path(scratch)/'kept';copy.write_bytes(held)
+            docs.attach(root,domain,nb,str(copy),'from-obsidian'+(ext if re.fullmatch(r'\.[a-z0-9]{1,10}',ext) else '.bin'),include_private=True)
         return 'attached'
     except (OSError,ValueError):return None
 
@@ -205,10 +239,10 @@ def sync_notebooks(domain,vault,root):
         def to_vault(key,data,held,value,count,kind='page'):
             writes.append((f'{top}/{key}',data,_sha(held),(kind,key,value),count))
 
-        def plan_file(plan_id):
+        def plan_file(plan_id,key):
             try:value=read_json(root/'.plans'/(plan_id+'.json'),None)
             except ValueError:return None
-            return value if _plan_ok(value,plan_id) else None
+            return value if _plan_ok(value,plan_id,f'domains/{domain}/notebooks/{key}') else None
 
         present=docs_index._notebooks(root,domain)
         if present is None:raise ValueError('The notebooks folder cannot be listed now; the vault mirror waits for the next sync')
@@ -223,7 +257,7 @@ def sync_notebooks(domain,vault,root):
 
         def deletion(key):
             """A mirrored page deleted in the vault: a plan the user ticks; the tick applies only now, with the copy still gone."""
-            p=pending.get(key);made=plan_file(p['plan_id']) if p else None
+            p=pending.get(key);made=plan_file(p['plan_id'],key) if p else None
             if p and made is None:p=None   # pruned or lost: a fresh plan, with a fresh line to tick
             if p and p['plan_id'] in ticked:
                 vpath=_safe(vault,f'{top}/{key}')
@@ -254,6 +288,7 @@ def sync_notebooks(domain,vault,root):
                 try:
                     page=_bytes(folder/rel) if rel in listing else None;held=_bytes(vpath)
                     ps,vs=_sha(page),_sha(held);st=pages.get(key)
+                    if held is not None:pending.pop(key,None)   # a copy is there again: a deletion waiting for a tick lapses, even one too fresh to read
                     if vs is not None and vs!=ps and vs!=(st or {}).get('vault') and recent(vpath):counts['deferred']+=1;continue   # still being edited
                     if page is not None and held is None:
                         if st and ps==st.get('revision') and not reset:deletion(key);continue   # deleted in the vault
@@ -305,11 +340,13 @@ def sync_notebooks(domain,vault,root):
         leaving=({k.split('/',1)[0] for k in list(pages)+list(assets)+list(pending)}|(folders&set(present)))-shown
         orphans=0
         for nb in sorted(leaving):
-            mirror=_safe(vault,f'{top}/{nb}');files=_files(mirror) if mirror is not None and mirror.is_dir() else {}
+            unread=[];mirror=_safe(vault,f'{top}/{nb}');files=_files(mirror,unread) if mirror is not None and mirror.is_dir() else {}
+            if unread:fail(nb,'Some folders of this notebook in the vault cannot be listed now; their files leave at a later sync')
             known={k.split('/',1)[1]:(v or {}).get('vault') for k,v in pages.items() if k.startswith(nb+'/')}
             known.update({k.split('/',1)[1]:v for k,v in assets.items() if k.startswith(nb+'/')})
             for rel in sorted(set(files)|set(known)):
                 key=f'{nb}/{rel}';path=files.get(rel)
+                if docs_index.under(rel,unread):continue   # still tracked until its folder can be listed
                 if path is None:pages.pop(key,None);assets.pop(key,None);continue
                 try:held=_bytes(path)
                 except OSError as exc:fail(key,str(exc));continue

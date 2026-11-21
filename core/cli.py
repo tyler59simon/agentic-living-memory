@@ -1478,7 +1478,11 @@ def main(argv=None):
             if re.fullmatch(r'[A-Za-z0-9_-]{1,100}',args.operation_id) and not args.include_private:
                 try:pending=read_json(root/'.operations'/args.operation_id/'journal.json',None)
                 except ValueError:pending=None
-                if isinstance(pending,dict) and journal_private(root,pending,authorize=True):
+                from .folder_policy import REGISTRY,loosens
+                import base64
+                images=[e.get(side) for e in (pending or {}).get('effects') or [] if isinstance(e,dict) and e.get('path')==REGISTRY for side in ('before','after')] if isinstance(pending,dict) else []
+                reopens=any(loosens(root,base64.b64decode(i).decode('utf-8','replace') if i else None) for i in images)   # either direction may be the one taken
+                if isinstance(pending,dict) and (journal_private(root,pending,authorize=True) or reopens):
                     raise ValueError(f'not_found: operation {args.operation_id} changed a private notebook; only Hivemind recovers it (--include-private)')
             if args.abandon:result=abandon(root,args.operation_id)
             else:result=recover(root,args.operation_id,args.direction)

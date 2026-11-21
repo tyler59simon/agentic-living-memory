@@ -205,7 +205,7 @@ def _notebook_sources(root,domain,specs):
         if _covered(path,specs+out) or not Path(path).is_dir():continue
         k=key(real(path))
         inner=['/'+os.path.relpath(real(s['path']),real(path)).replace(os.sep,'/') for s in specs if s.get('kind') not in REMOTE and isinstance(s.get('path'),str)
-               and key(real(s['path'])).startswith(k.rstrip(os.sep)+os.sep)]
+               and not s.get('include') and not s.get('exclude') and key(real(s['path'])).startswith(k.rstrip(os.sep)+os.sep)]   # left to a source that takes every file there; one with globs may not, so both walk it
         out.append({'name':'nb-'+hashlib.sha256(k.encode()).hexdigest()[:10],'domain':domain,'kind':'folder','path':Path(path).as_posix(),
                     'include':[],'exclude':sorted(inner),'implicit':False,'notebook':True})
     return out
@@ -616,13 +616,26 @@ def _pages(folder):
     except (OSError,ValueError,AttributeError):return {}
     return found if isinstance(found,dict) else {}
 
+def recorded(db,prefix):
+    """{source name: value} of one kind of per-source meta (real:, origin:); empty when the index cannot say."""
+    try:return {k[len(prefix):]:v for k,v in db.execute('SELECT key,value FROM meta WHERE substr(key,1,?)=?',(len(prefix),prefix))}
+    except sqlite3.Error:return {}
+
+
+def moved(reals,name,root_now):
+    """Whether a source's folder now resolves elsewhere than where its rows were read (a link or junction retargeted)."""
+    from .folder_policy import key
+    then=reals.get(name);return bool(then) and key(then)!=key(root_now)
+
+
 def _sync_source(db,spec,delta,force=False,policy=None):
     """Bring one source's rows up to date; returns its counts. Only files whose (mtime, size) differ are read, and only
     those whose sha256 differs are re-chunked."""
     name=spec['name'];base=Path(spec['path']);config=_config(spec);began=time.time()
     known=db.execute('SELECT config FROM source WHERE name=?',(name,)).fetchone()
     count=dict.fromkeys(('added','changed','removed','unchanged','skipped','redacted'),0)
-    if force or (known and known[0]!=config):
+    from .folder_policy import real
+    if force or (known and known[0]!=config) or moved(recorded(db,'real:'),name,real(base)):   # rows read from another folder are not this one's
         for (file_id,) in db.execute('SELECT id FROM file WHERE source=?',(name,)).fetchall():_drop_file(db,file_id,delta)
         db.execute('DELETE FROM file WHERE source=?',(name,))
     db.execute('INSERT INTO source(name,kind,root,implicit,config) VALUES(?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET kind=excluded.kind,root=excluded.root,implicit=excluded.implicit,config=excluded.config',
@@ -667,7 +680,6 @@ def _sync_source(db,spec,delta,force=False,policy=None):
     files,chunks=db.execute('SELECT count(*),coalesce(sum(chunks),0) FROM file WHERE source=? AND skipped IS NULL',(name,)).fetchone()
     db.execute('UPDATE source SET files=?,chunks=?,synced=? WHERE name=?',(files,chunks,now(),name));_set_meta(db,'epoch:'+name,began)   # per source: a sync of another one says nothing about this one's files
     if policy is not None:_set_meta(db,'policy:'+name,policy.revision(spec['path']))
-    from .folder_policy import real
     _set_meta(db,'real:'+name,real(base));_set_meta(db,'origin:'+name,'notebook' if spec.get('notebook') else 'source')   # what the rows were read from, and why
     return dict(count,name=name,files=files,chunks=chunks)
 
@@ -766,15 +778,17 @@ def listing(root,domain=None,bindings=None):
     try:registry=load(root)
     except ValueError as exc:registry={'sources':[]};warnings.append(str(exc))
     specs=resolve(root,domain,bindings) if domain else [_located(root,s) for s in registry['sources'] if s.get('kind') in KINDS]
-    held={}
+    held={};moved_away=set()
     from .folder_policy import Policy,SERVED
     policy=Policy(root)
     db=_readonly(root,domain) if domain else None
     if db:
-        try:   # counts leave out the files of notebooks that are hidden or private now, whatever the last sync saw
+        try:   # counts leave out the files of notebooks that are hidden or private now, and rows read from a folder a link no longer reaches
+            reals=recorded(db,'real:')
             roots={n:policy.real(r) for n,r in db.execute('SELECT name,root FROM source')};counted={}
+            moved_away={n for n,r in roots.items() if moved(reals,n,r)}
             for name,path,chunks in db.execute('SELECT source,path,chunks FROM file WHERE skipped IS NULL'):
-                if name in roots and not policy.broken and policy.file(os.path.join(roots[name],path))[0] in (None,)+SERVED:
+                if name in roots and name not in moved_away and not policy.broken and policy.file(os.path.join(roots[name],path))[0] in (None,)+SERVED:
                     f,c=counted.get(name,(0,0));counted[name]=(f+1,c+(chunks or 0))
             held={n:counted.get(n,(0,0))+(s,) for n,s in db.execute('SELECT name,synced FROM source')}
         except sqlite3.Error:pass
@@ -784,6 +798,7 @@ def listing(root,domain=None,bindings=None):
         row={'name':s['name'],'domain':s.get('domain'),'kind':s['kind'],'path':s['path'],'include':s.get('include') or [],'exclude':s.get('exclude') or [],
              'implicit':bool(s.get('implicit')),'files':f,'chunks':c,'synced':when,'state':'indexed' if when else 'not synced'}
         if when and s['kind'] not in REMOTE and policy.broken:row.update(files=None,chunks=None,state='folder registry damaged; nothing is served until it is fixed')
+        elif when and s['name'] in moved_away:row['state']='folder moved; reindexed at the next sync'   # a link or junction now leads elsewhere
         if s['kind'] in REMOTE:   # nothing is fetched here: the numbers are those of the last explicit `source-sync NAME`
             from .connectors import summary,MAX_PAGES
             remote=summary(root,s['name']);row.update(base_url=s.get('base_url'),token_env=s.get('token_env'),remote=remote,state='indexed' if when else 'not synced' if not remote['synced'] else 'fetched, not indexed')
@@ -941,28 +956,25 @@ def search(root,domain,query,limit=5,vocab=None,informative=False,gate=None,leas
     policy=policy or Policy(root);owners={}
     if policy.broken:db.close();return []
     from .folder_policy import key
-    try:
-        recorded={k:v for k,v in db.execute("SELECT key,value FROM meta WHERE key LIKE 'real:%' OR key LIKE 'origin:%'")}
-    except sqlite3.Error:recorded={}
+    reals=recorded(db,'real:');origins=recorded(db,'origin:');first={}
     def keep(top,source,path):
-        root_now=policy.real(top);root_then=recorded.get('real:'+source)
-        if root_then and key(root_then)!=key(root_now):return False   # the source's folder now resolves elsewhere: its rows were read from another folder
+        root_now=policy.real(top)
+        if moved(reals,source,root_now):return False   # the source's folder now resolves elsewhere: its rows were read from another folder
         level,folder,title=policy.file(os.path.join(root_now,path))
-        if recorded.get('origin:'+source)=='notebook' and (not pages or level is None or policy.registered(root_now) not in SERVED):
-            return False   # a registered folder notebook's own source holds pages only, and nothing once its registration is gone
-        if not pages:return level is None
-        if level not in SERVED or (inject and level!='injectable'):return False
-        owners[(source,path)]=(folder,title,level);return True
+        if origins.get(source)=='notebook':   # a registered folder notebook's own source: pages only, while this domain still lists it
+            entry=policy.entries.get(key(root_now))
+            if not pages or level is None or entry is None or entry[0] not in SERVED or entry[1].get('domain')!=domain:return False
+        if not pages:ok=level is None
+        else:ok=level in SERVED and not (inject and level!='injectable')
+        if not ok:return False
+        if first.setdefault(key(os.path.join(root_now,path)),source)!=source:return False   # a file two sources index is served once, before any limit
+        if pages:owners[(source,path)]=(folder,title,level)
+        return True
     try:hits=search_db(db,root,query,limit,vocab,informative,gate,least,width,near,dropped,keep)
     finally:db.close()
-    seen=set();out=[]
-    for h in hits:   # a page two sources index (one with include globs, and the notebook's own) is served once
-        where=(h['file'] if h.get('url') else key(policy.real(h['file'])),h['line_start'])
-        if where in seen:continue
-        seen.add(where);out.append(h)
-        if pages:
-            folder,title,level=owners[(h['source'],h['path'])];h.update(notebook=Path(folder).as_posix(),notebook_title=title,reach=level)
-    return out
+    for h in hits if pages else ():
+        folder,title,level=owners[(h['source'],h['path'])];h.update(notebook=Path(folder).as_posix(),notebook_title=title,reach=level)
+    return hits
 
 def search_db(db,root,query,limit=5,vocab=None,informative=False,gate=None,least=2,width=SNIPPET,near=None,dropped=None,keep=None):
     """search over an open index with this schema (the sources index, or the notebook page index of core/docs_index.py).

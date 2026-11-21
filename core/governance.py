@@ -103,15 +103,24 @@ def apply(root,plan_id,expected_digest,sync_overlay=True,include_private=False):
         from .docs import is_notebook_journal,record_index
         if is_notebook_journal([{'path':p} for p in value['changes']]) and not (root/'.operations'/value['id']/'doc.json').exists():
             record_index(root,value['id'],value['changes'])   # before the operation, so a stop after it still leaves the index
+        kept=[]
         if value.get('kind')=='overlay_teardown' and isinstance(value.get('mirror'),dict):
             # The notebook mirror's copies leave the vault one by one, each only while it holds the bytes the plan listed, and
-            # never through the vault's journal, which would keep a copy of every page (core/notebook_sync.py).
-            from .notebook_sync import _put,_prune_dirs,_safe,MIRROR
+            # never through the vault's journal, which would keep a copy of every page (core/notebook_sync.py). The rest of the
+            # plan is checked first, so a stale plan removes nothing.
+            from .notebook_sync import _put,_prune_dirs,_safe,_bytes as raw,_sha,MIRROR
+            if not (root/'.operations'/value['id']/'journal.json').exists():
+                for rel,want in sorted(value['expected'].items()):
+                    if digest(confined(root,rel).read_bytes() if confined(root,rel).exists() else None)!=want:raise ValueError(f'Stale revision: {rel}')
             for rel,sha in sorted(value['mirror'].items()):
-                try:_put(root,rel,None,sha)
-                except OSError:pass
+                try:
+                    if not _put(root,rel,None,sha):
+                        path=_safe(root,rel)
+                        if path is not None and path.exists():kept.append(rel)
+                except OSError:kept.append(rel)
             _prune_dirs(_safe(root,MIRROR))
         receipt=transaction(root,_plan_changes(root,value),value['kind'],value['expected'],value['id'])
+        if kept:receipt.setdefault('warnings',[]).append(f'{len(kept)} notebook copies were left in the vault (changed or in use): '+', '.join(kept[:5])+(' and more' if len(kept)>5 else ''))
         for domain in value['domains']:
             try:reconcile(domain,root,sync_overlay=sync_overlay)
             except Exception as exc:
@@ -200,6 +209,8 @@ def inspect_plan(root,identity,full=False,include_private=False):
         before=path.read_bytes().decode('utf-8',errors='replace') if path.exists() else ''   # a damaged file being repaired still shows
         delta=''.join(difflib.unified_diff(before.splitlines(True),(after or '').splitlines(True),fromfile=rel,tofile=rel))
         effects.append({'path':rel,'expected_revision':value['expected'][rel],'action':'delete' if after is None else 'write','diff':delta[:cut],'truncated':cut is not None and len(delta)>cut})
+    for rel,sha in sorted((value.get('mirror') or {}).items()):   # a teardown's notebook copies, removed at apply only while unchanged
+        effects.append({'path':rel,'expected_revision':sha,'action':'delete','binary':True,'sha256':None,'diff':'','mirror':True})
     summary=value['summary']
     if scope:
         from .docs import redact_summary
