@@ -20,7 +20,7 @@ alm doctor --cwd C:/path/to/project
 
 Setup suggests `~/LivingMemory` and records your choice in `~/.config/agentic-living-memory/config.json`. All harness adapters read this same pointer. The Git checkout and harness packages contain software; the selected folder contains your memory. Existing-store relocation produces an exact-hash approval plan and retains the source backup. See [installation](INSTALLATION.md).
 
-The installer puts the package in its own per-user folder (`%LOCALAPPDATA%\agentic-living-memory\app` on Windows, `~/.local/lib/agentic-living-memory/app` elsewhere), so no harness depends on another's folder. `integrations/setup.py HARNESS --hooks` then wires Claude Code, Codex, Copilot or Factory. It owns only its handlers and instruction block, preserves unrelated configuration, and journals its changes. Native hook trust must be reviewed in each harness. Upgrading from an install inside `~/.codex` is covered in [installation](INSTALLATION.md#upgrading-from-a-codex_home-install).
+The installer puts the package in its own per-user folder (`%LOCALAPPDATA%\agentic-living-memory\app` on Windows, `~/.local/lib/agentic-living-memory/app` elsewhere), so no harness depends on another's folder. `integrations/setup.py HARNESS --hooks` then wires Claude Code, Codex, Copilot or Factory. It owns only its handlers and instruction block, preserves unrelated configuration, and journals its changes. Native hook trust must be reviewed in each harness. Upgrading from an install inside `~/.codex` is covered in [installation](INSTALLATION.md#upgrading-from-a-codex_home-install). If you have no `CLAUDE.md` or `AGENTS.md` yet, start from the [starter instruction file](INSTALLATION.md#starter-instruction-file).
 
 Notes are created by the script, including when the main agent decides automatically that a turn produced useful durable knowledge:
 
@@ -42,5 +42,5 @@ Notes have thirteen types: knowledge, decision, preference, context, status, bug
 ## Documentation
 
 - [Protocol](PROTOCOL.md), [script reference](SCRIPT_REFERENCE.md), [installation](INSTALLATION.md), [native integration](INTEGRATION.md)
-- [Architecture](ARCHITECTURE.md), [note types and use cases](NOTE_TYPES.md), [recovery](RECOVERY.md), [maintenance](MAINTENANCE.md), [tagging](TAGGING.md)
+- [Architecture](ARCHITECTURE.md), [note types and use cases](NOTE_TYPES.md), [writing notes](WRITING.md), [recovery](RECOVERY.md), [maintenance](MAINTENANCE.md), [tagging](TAGGING.md)
 - [Obsidian](OBSIDIAN.md), [notebooks](NOTEBOOKS.md), [validation](VALIDATION.md)

@@ -24,8 +24,19 @@ AI_WORDS = re.compile(r'(?i)\b(?:delve[sd]?|delving|tapestry|testament|pivotal|c
                       r'intricate|intricacies|interplay|enduring)\b')
 STAGING = re.compile(r"(?i)\b(?:serves as|stands as|plays an? (?:key|crucial|pivotal|vital|significant) role|"
                      r"it'?s (?:important|worth) (?:to note|noting)|it is (?:important|worth) (?:to note|noting)|"
-                     r"in summary|in conclusion|at its core|let'?s dive|here'?s the thing|"
+                     r"in summary|in conclusion|at its core|let'?s dive|here'?s the thing|here'?s what you need to know|"
+                     r"the real (?:question|problem|issue|story) (?:is|here)|"
                      r"not (?:just|only|merely)\b[^.\n]{1,60}?\bbut\b)")
+# Humanizer §16, §17, §23 and §9. Hedges are flagged only when stacked; one hedge is a fair statement of doubt.
+SALES = re.compile(r'(?i)\b(?:world[- ]class|cutting[- ]edge|best[- ]in[- ]class|game[- ]chang(?:er|ers|ing)|unparalleled|'
+                   r'revolutioni[sz](?:e|es|ed|ing)|effortless(?:ly)?|groundbreaking)\b')
+BORROWED = re.compile(r'(?i)\b(?:experts? (?:say|says|agree|believe|recommend)|stud(?:y|ies) (?:show|shows|suggest|suggests)|'
+                      r'research (?:shows|suggests)|industry reports?|it is widely (?:known|believed|accepted|recognized))\b')
+DISCLAIMER = re.compile(r"(?i)\b(?:as of my (?:last|latest) (?:update|training)|my (?:training data|knowledge cutoff|training cutoff)|"
+                        r"as an ai\b|i (?:don'?t|do not|cannot|can'?t) (?:have access to|browse))")
+QUALIFIERS = re.compile(r'(?i)\b(?:could|might|may|can) (?:potentially|possibly|perhaps|conceivably)\b|'
+                        r'\b(?:potentially|possibly|perhaps) (?:could|might|may)\b')
+HEADING_ECHO_WORDS = 12
 LONG = 60
 # Map and brief notes are dense orientation notes with fixed labelled bullets.
 DENSE_TYPES = ('map', 'brief')
@@ -58,7 +69,11 @@ def style_warnings(note):
             (EMOJI, 'emoji ("{q}"); notes carry no decoration'),
             (RESIDUE, 'chat phrasing ("{q}"); a note is not a reply'),
             (AI_WORDS, 'stock AI word ("{q}"); say the plain thing'),
-            (STAGING, 'inflated or staged phrasing ("{q}"); state the fact directly (use is/has, drop significance claims)')):
+            (STAGING, 'inflated or staged phrasing ("{q}"); state the fact directly (use is/has, drop significance claims)'),
+            (SALES, 'sales language ("{q}"); describe what it does'),
+            (BORROWED, 'unnamed authority ("{q}"); name the source or cite it with --link'),
+            (DISCLAIMER, 'knowledge-limit disclaimer ("{q}"); say what is unknown, or check the source'),
+            (QUALIFIERS, 'stacked qualifiers ("{q}"); state doubt once')):
         match = pattern.search(text)
         if match:
             found.append('style: ' + message.format(q=_quote(match, text)))
@@ -67,6 +82,9 @@ def style_warnings(note):
         if re.search(r'\*\*[^*\n]+\*\*', rest):
             found.append('style: bold used for emphasis ("' + ' '.join(line.split())[:60] + '"); keep bold for a leading label')
             break
+    echo = heading_echo(body)
+    if echo:
+        found.append(f'style: the first line under "{echo}" restates the heading; start with the content')
     if note_type in DENSE_TYPES:
         return found
     found_sections = sections(body)
@@ -84,6 +102,23 @@ def style_warnings(note):
     # A file digest's layout is written by ingest, not by the agent.
     found += shape_warnings(note_type, body, found_sections, generated=bool(note.get('sources')))
     return found
+
+
+def _plain_words(text):
+    return re.findall(r'[a-z0-9]+', prose(text).casefold())
+
+
+def heading_echo(body):
+    """The heading of the first section that opens with a one-line paragraph restating it (humanizer §24), or None."""
+    for heading, text in named_sections(body):
+        words = set(_plain_words(heading))
+        paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text.strip()) if p.strip()]
+        if len(words) < 2 or len(paragraphs) < 2 or '\n' in paragraphs[0] or _BULLET.match(paragraphs[0]):
+            continue
+        first = _plain_words(paragraphs[0])
+        if len(first) <= HEADING_ECHO_WORDS and words <= set(first):
+            return ' '.join(heading.split())
+    return None
 
 
 def _has(body, found_sections, *names):

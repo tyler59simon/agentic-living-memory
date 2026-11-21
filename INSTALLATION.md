@@ -17,6 +17,15 @@ Its plans, journals and ownership record sit beside `app/` in that folder. The p
 
 Updating or uninstalling a harness preserves the shared pointer and data.
 
+## Starter instruction file
+
+[templates/CLAUDE.md](templates/CLAUDE.md) and [templates/AGENTS.md](templates/AGENTS.md) are a starting point for the harness's global instruction file. Both hold the same two sections: Behavior (coding guidelines) and Writing style (plain writing for replies, commits, docs and notes, matching [WRITING.md](WRITING.md)). Living Memory notes follow the Writing style rules too.
+
+- With no instruction file yet, copy the template before running `integrations/setup.py HARNESS --hooks`: `templates/CLAUDE.md` to `~/.claude/CLAUDE.md`, and `templates/AGENTS.md` to `~/.codex/AGENTS.md` or `~/.factory/AGENTS.md`. Setup appends the Living Memory block under the template's last heading, `## Agentic Living Memory`.
+- With an existing file, paste the sections you want into it. Keep them outside the `agentic-living-memory:begin` and `:end` markers: setup owns the text between them.
+
+Edit the sections freely; setup changes only its own block. Credits: the Behavior section is from [forrestchang/andrej-karpathy-skills](https://github.com/forrestchang/andrej-karpathy-skills) (MIT), and the Writing style section adapts [humanizer](https://github.com/blader/humanizer) v4.0.0 (MIT) and Wikipedia's [Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing).
+
 ## The `alm` command
 
 `install.py` also installs a launcher named `alm`, so you can type `alm search 'cache'` instead of the interpreter and script paths. For a new user the whole sequence is: clone the repository, run `py -3.15 install.py --plan`, review the plan, apply it with `--apply-plan ID --expected-plan-sha256 DIGEST`, open a new terminal, then run `alm doctor`.

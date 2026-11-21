@@ -52,6 +52,32 @@ class Style(StoreFixture):
         self.assertTrue(any('stop mid-sentence' in w for w in cut))
         self.assertEqual(style_warnings({'type': 'map', 'title': 'T', 'body': long + '\n\n## Details\n- **Layout:** ' + long}), [])
 
+    def test_remaining_humanizer_habits_are_flagged(self):
+        cases = {
+            'sales language': 'It is a world-class search engine.',
+            'unnamed authority': 'Studies show agents forget context.',
+            'knowledge-limit disclaimer': 'As of my last update, the API had no limit.',
+            'stacked qualifiers': 'This could potentially fail under load.',
+            'inflated or staged': 'The real question is who owns the lock.',
+        }
+        for kind, body in cases.items():
+            with self.subTest(kind):
+                self.assertIn(kind, ' '.join(style_warnings({'type': 'context', 'title': 'T', 'body': body})))
+
+    def test_a_first_line_that_restates_the_heading(self):
+        echo = 'The gate blocks releases.\n\n## Release gate\nThe release gate is described below.\n\nIt runs `pytest` before tagging.'
+        self.assertIn('restates the heading', ' '.join(style_warnings({'type': 'knowledge', 'title': 'T', 'body': echo})))
+        for body in ('The gate blocks releases.\n\n## Release gate\nThe release gate runs `pytest` before tagging, and a failure stops the tag from being pushed to origin.\n\nIt is on main.',
+                     'The gate blocks releases.\n\n## Release gate\nThe release gate is on main.',
+                     'The gate blocks releases.\n\n## Why\nWhy not.\n\nIt is cheap.'):
+            with self.subTest(body):
+                self.assertEqual(style_warnings({'type': 'knowledge', 'title': 'T', 'body': body}), [])
+
+    def test_literal_uses_are_not_flagged(self):
+        body = ('The real fix is in `core/runtime.py`. The account linked to the token may expire. '
+                'Run `experts say` from /tmp/world-class.\n\n## Details\n- See https://example.com/studies-show.')
+        self.assertEqual(style_warnings({'type': 'context', 'title': 'Literal', 'body': body}), [])
+
     def test_shape_follows_the_type(self):
         self.assertIn("shape: a decision note says why", ' '.join(style_warnings({'type': 'decision', 'title': 'T', 'body': 'We chose SQLite.'})))
         self.assertEqual(style_warnings({'type': 'decision', 'title': 'T', 'body': 'We chose SQLite.\n\n## Details\n- **Why:** no server.'}), [])
