@@ -229,17 +229,21 @@ def _canonical_folder(root,path):
     return folder.as_posix()
 
 
-def set_folder(root,path,domain,visibility,private=None):
-    """Add or change a folder notebook's entry. Unchanged: no write. private None keeps the entry's current value."""
+def set_folder(root,path,domain,visibility=None,private=None):
+    """Add or change a folder notebook's entry. Unchanged: no write. private None keeps the entry's current value, and
+    visibility None keeps the entry's (a tombstone's too) or makes a new one searchable, so registering a folder again never
+    loosens what was kept for it (NS-2C review, P1)."""
     from .governance import commit
     from .repository import now,store_lock
     from .sources import _bound
     root=Path(root).resolve()
-    if visibility not in LEVELS:raise ValueError('Visibility is hidden, searchable or injectable')
+    if visibility is not None and visibility not in LEVELS:raise ValueError('Visibility is hidden, searchable or injectable')
     with store_lock(root):
         canonical=_canonical_folder(root,path);named=_bound(root,domain)
         entries=load(root)['folders'];k=key(canonical)
         old=_strictest(entries).get(k)
+        if visibility is None:   # kept from the entry; one Living Memory cannot read counts as hidden
+            visibility=('searchable' if old is None else old.get('visibility') if old.get('visibility') in LEVELS else 'hidden')
         entry={'path':canonical,'domain':named,'visibility':visibility,'private':bool(old and old.get('private')) if private is None else bool(private)}   # a tombstone's private flag holds too
         rows=[e for e in entries if key(real(e['path']))==k]
         if len(rows)==1 and not old.get('removed') and {f:old.get(f) for f in ('path','domain','visibility','private')}==entry:

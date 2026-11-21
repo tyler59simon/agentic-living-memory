@@ -176,7 +176,7 @@ Generated from the argparse parser in `core/cli.py` by `py -3.15 scripts/gen_scr
 | `confirm` | `--session`, `--turn` |
 | `diff` | `--include-private` |
 | `doc` | none |
-| `doc accept` | `--expected-revision`, `--include-private` |
+| `doc accept` | `--body-file`, `--edited`, `--expected-revision`, `--include-private` |
 | `doc attach` | `--from-file`, `--include-private`, `--name` |
 | `doc create` | `--body-file`, `--include-private` |
 | `doc delete` | `--expected-revision`, `--include-private` |

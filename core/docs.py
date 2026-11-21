@@ -802,7 +802,7 @@ def proposals(root, domains, nb=None, include_private=False, status="pending", l
             value = _read_proposal(file)
             if not isinstance(value, dict) or (status != "all" and value.get("status") != status):
                 continue
-            rows.append({k: value.get(k) for k in ("id", "domain", "notebook", "path", "base_revision", "note", "created", "status", "reason", "settled")}
+            rows.append({k: value.get(k) for k in ("id", "domain", "notebook", "path", "base_revision", "note", "created", "status", "reason", "settled", "edited")}
                         | {"size": len(str(value.get("body") or "").encode())})
     rows.sort(key=lambda r: str(r["created"]), reverse=True)
     return {"ok": True, "proposals": rows[:limit]}
@@ -814,9 +814,14 @@ def show_proposal(root, pid, include_private=False):
     return {"ok": True, "proposal": value}
 
 
-def accept(root, pid, expected=None, include_private=False):
-    """Write a proposal's text to its page. Refused when the page changed since the proposal's base revision."""
+def accept(root, pid, expected=None, include_private=False, body=None):
+    """Write a proposal's text to its page. Refused when the page changed since the proposal's base revision.
+
+    With `body` (`--edited`), the user's merge of the proposal is written instead and the proposal is settled as accepted
+    and edited in the same operation. The page must then be at `expected`, the revision the merge was made against, or not
+    exist when `expected` is None (NS-2C review, D3)."""
     root = Path(root).resolve()
+    warnings = _check_body(body) if body is not None else []
     with store_lock(root):
         domain, nb, file, value = _find_proposal(root, pid)
         domain, nb, meta, _ = _open(root, domain, nb, include_private)
@@ -825,18 +830,26 @@ def accept(root, pid, expected=None, include_private=False):
         path = clean_path(value["path"])
         full = _resolve(root, domain, nb, path)
         current = digest(full.read_bytes()) if full.is_file() else None
-        if current != value.get("base_revision"):
+        if body is not None:
+            if current != expected:
+                raise ValueError(f"stale_revision: {path} changed since the merge was made; read it again and merge again"
+                                 if expected else f"stale_revision: {path} exists now; read it and merge again")
+        elif current != value.get("base_revision"):
             raise ValueError(f"stale_revision: {path} changed since the proposal was made; read both and write the merge")
-        if expected is not None and current != expected:
+        elif expected is not None and current != expected:
             raise ValueError(f"stale_revision: {path} is not at revision {expected[:12]}")
-        body = str(value.get("body") or "").encode("utf-8")
+        edited = body is not None
+        body = body if edited else str(value.get("body") or "").encode("utf-8")
         rel, prel = _rel(domain, nb, path), _rel(domain, nb, f".proposals/{pid}.json")
         if current is None:
             _clash(root, domain, nb, path)
-        settled = dict(value, status="accepted", settled=now())
+        settled = dict(value, status="accepted", settled=now(), **({"edited": True} if edited else {}))
         receipt = _commit(root, {rel: body, prel: _proposal_text(settled)}, "doc_accept", _journal_meta(domain, nb, meta),
-                          {"domain": domain, "notebook": nb, "path": path, "proposal": pid}, {rel: current, prel: digest(file.read_bytes())})
+                          {"domain": domain, "notebook": nb, "path": path, "proposal": pid, **({"edited": True} if edited else {})},
+                          {rel: current, prel: digest(file.read_bytes())})
         receipt["revision"] = digest(body)
+        if warnings:
+            receipt.setdefault("warnings", []).extend(warnings)
         return receipt
 
 

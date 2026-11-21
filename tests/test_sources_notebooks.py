@@ -102,6 +102,18 @@ class Notebooks(Kb):
         code,result=self.cli('--json','doc','folder','unset',str(self.nb),'--forget');self.assertEqual(result['status'],'removed')
         self.sync();self.assertIn('notes/Runbook.md',self.indexed());self.assertEqual(self.pages(),[]);self.assertEqual(self.plain(),['docs/plain.md','notes/Runbook.md'])
 
+    def test_set_without_visibility_keeps_what_the_registry_holds(self):
+        # NS-2C review, P1: Hivemind registers a folder again without naming a visibility, so a hidden tombstone stays hidden.
+        code,result=self.cli('--json','doc','folder','set',str(self.nb));self.assertEqual(code,0,result)
+        self.assertEqual(result['folder']['visibility'],'searchable')
+        self.set(self.nb,'hidden')
+        code,result=self.cli('--json','doc','folder','unset',str(self.nb));self.assertEqual(result['status'],'tombstone')
+        code,result=self.cli('--json','doc','folder','set',str(self.nb));self.assertEqual(code,0,result)
+        entry=folder_policy.load(self.root)['folders'][0];self.assertEqual((entry['visibility'],entry.get('removed')),('hidden',None))
+        self.set(self.nb,'injectable','--private')
+        code,result=self.cli('--json','doc','folder','set',str(self.nb),'--no-private');self.assertEqual(code,0,result)
+        self.assertEqual((result['folder']['visibility'],result['folder']['private']),('injectable',False))
+
     def test_refusals(self):
         code,result=self.cli('--json','doc','folder','set',str(self.root/'domains'),'--visibility','searchable');self.assertNotEqual(code,0);self.assertIn('inside the memory store',json.dumps(result))
         code,result=self.cli('--json','doc','folder','set','relative/path','--visibility','searchable');self.assertNotEqual(code,0)

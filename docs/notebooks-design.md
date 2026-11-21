@@ -55,11 +55,11 @@ All output JSON with `--json`. Who may run what is in section 6. Stdin payloads 
 | `doc history D NB PATH [--limit N]` | Journal entries touching the page, newest first, with operation id, kind, time, before and after revisions; `--version OP` returns that version's text |
 | `doc undo OPERATION` | Through the existing `undo` (the `doc_` prefix joins `DIRECT_UNDO_PREFIXES` in `core/governance.py`) |
 | `doc propose D NB PATH --base-revision R [--body-file F] [--note TEXT]` | Stages an edit (agents may run it) |
-| `doc proposals [D [NB]]`, `doc accept ID [--expected-revision R]`, `doc reject ID [--reason TEXT]` | Lists, applies or drops staged edits; accept and reject are main-actor only |
+| `doc proposals [D [NB]]`, `doc accept ID [--expected-revision R] [--edited]`, `doc reject ID [--reason TEXT]` | Lists, applies or drops staged edits; accept and reject are main-actor only. `--edited` (NS-2C review, D3) writes the body given on stdin or `--body-file` instead of the staged text, against `R` (absent: the page must not exist), and records the proposal as accepted with `edited: true` in the same operation; capability `docs.accept_edited` |
 | `doc search QUERY [--domain D \| --all-domains] [--notebook NB] [--include-private] [--rebuild]` | NS-2B; hidden notebooks are searched only when `--notebook` names one; private ones only with `--include-private` (section 6) |
 | `doc tasks [--domain D \| --all-domains] [--notebook NB] [--open]` | NS-2B; task lines (`- [ ]`, `- [x]`) with page, line, text and due date, from the index |
 | `doc query --payload-file F` | NS-2B; pages filtered and sorted by frontmatter properties (`{ "where": [...], "sort": [...], "limit": N }`), from the index |
-| `doc folder set PATH --visibility V [--private\|--no-private] [--domain D]`, `doc folder unset PATH` | NS-2B; the folder notebook policy registry (section 8.2) |
+| `doc folder set PATH [--visibility V] [--private\|--no-private] [--domain D]`, `doc folder unset PATH` | NS-2B; the folder notebook policy registry (section 8.2). Without `--visibility`, `set` keeps the entry's or tombstone's visibility and makes a new entry searchable (NS-2C review, P1), so Hivemind registering a folder again never loosens it |
 
 Every write is one `repository.transaction` with a kind starting `doc_` (`doc_create`, `doc_write`, `doc_move`, `doc_delete`, `doc_attach`, `doc_notebook`, `doc_propose`, `doc_accept`, `doc_reject`, `doc_folder`). Each `doc_` journal records the domain and notebook id, so later redaction (section 6) still knows which notebook an operation touched after the notebook is renamed or deleted.
 

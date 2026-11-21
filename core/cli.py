@@ -642,10 +642,11 @@ def _doc_parsers(p,common):
     q=dsub('proposals','Staged page edits');q.add_argument('doc_domain',nargs='?',metavar='DOMAIN');q.add_argument('notebook',nargs='?',metavar='NOTEBOOK');q.add_argument('--status',choices=['pending','accepted','rejected','all'],default='pending');private(q)
     q=dsub('proposal','Show one staged edit');q.add_argument('id');private(q)
     q=dsub('accept','Apply a staged edit (main actor)');q.add_argument('id');q.add_argument('--expected-revision')
+    q.add_argument('--edited',action='store_true',help='Write your merge of the edit (from --body-file or stdin) instead, against --expected-revision (left out: the page must not exist)');q.add_argument('--body-file',type=Path)
     q=dsub('reject','Drop a staged edit (main actor)');q.add_argument('id');q.add_argument('--reason')
     q=dsub('undo','Undo a notebook operation');q.add_argument('operation_id')
     q=dsub('folder','Folder notebooks: how far agents reach into them (Hivemind)');fs=q.add_subparsers(dest='folder_action',required=True,metavar='ACTION')
-    q=dsub('set','Add or change a folder notebook',fs);q.add_argument('path');q.add_argument('--visibility',choices=visibility,required=True)
+    q=dsub('set','Add or change a folder notebook',fs);q.add_argument('path');q.add_argument('--visibility',choices=visibility,help='Left out: the folder keeps what Living Memory holds for it (a new one is searchable)')
     pv=q.add_mutually_exclusive_group();pv.add_argument('--private',dest='private',action='store_const',const=True);pv.add_argument('--no-private',dest='private',action='store_const',const=False)
     q=dsub('unset','Remove a folder notebook (a hidden or private one stays excluded unless --forget)',fs);q.add_argument('path');q.add_argument('--forget',action='store_true')
     q=dsub('search','Search notebook pages (agents may run it)');q.add_argument('query',nargs='+');q.add_argument('--all-domains',action='store_true')
@@ -729,7 +730,9 @@ def _doc(args,root,domain):
             return {'ok':True,'domains':names,'tasks':rows,**({'pages_stale':True} if stale else {})}
         rows,stale=docs_index.query(root,names,_doc_json(args.payload_file,'--payload-file'),private)
         return {'ok':True,'domains':names,'pages':rows,**({'pages_stale':True} if stale else {})}
-    if action=='accept':return docs.accept(root,args.id,args.expected_revision,private)
+    if action=='accept':
+        if args.body_file and not args.edited:raise ValueError('--body-file goes with --edited')
+        return docs.accept(root,args.id,args.expected_revision,private,_doc_body(args) if args.edited else None)
     if action=='reject':return docs.reject(root,args.id,args.reason,private)
     from .governance import undo
     try:journal=read_json(root/'.operations'/args.operation_id/'journal.json',None) if re.fullmatch(r'[A-Za-z0-9_-]{1,100}',args.operation_id) else None
@@ -1238,7 +1241,7 @@ def main(argv=None):
         elif cmd=='version':
             from .installer_lifecycle import CORE_RELEASE,installed_stamp
             result={'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'restore':1,'pin':1,'rule':1,'direct_writes':1,'note_types':1,'history':3,'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']},'wiki_agent':{'version':1},
-                                                                                                                                         'docs':{'version':1,'max_page_bytes':4194304,'max_asset_bytes':26214400,'notebook_only_domains':True,'search':True,'folder_policy':True}}}
+                                                                                                                                         'docs':{'version':1,'max_page_bytes':4194304,'max_asset_bytes':26214400,'notebook_only_domains':True,'search':True,'folder_policy':True,'accept_edited':True}}}
         elif cmd=='update':
             from .notes import change
             d,n=_reference(args.reference,domain,root)
