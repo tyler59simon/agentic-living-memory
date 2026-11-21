@@ -4,7 +4,7 @@ import hashlib,json,uuid
 from pathlib import Path
 from .common import atomic_write,memory_root
 from .note_types import keep_baseline
-from .repository import canonical_json,confined,digest,read_json,transaction,recover,store_lock,reconcile,now,_stage_blob
+from .repository import roll_forward_pending,canonical_json,confined,digest,read_json,transaction,recover,store_lock,reconcile,now,_stage_blob
 
 
 def reconciled_domains(paths):
@@ -62,7 +62,9 @@ def commit(root,changes,kind,domains=(),summary=None,guards=None,sync_overlay=Tr
             p=confined(root,rel)
             expected[rel]=digest(p.read_bytes()) if p.exists() else None
         domains=sorted(set(domains))
-        if guards:_check_guards(root,{'guards':{k:(v if k in ('read_set','inventory') else sorted(set(v))) for k,v in guards.items() if v},'domains':domains,'changes':changes})
+        if guards:
+            roll_forward_pending(root)
+            _check_guards(root,{'guards':{k:(v if k in ('read_set','inventory') else sorted(set(v))) for k,v in guards.items() if v},'domains':domains,'changes':changes})
         operation_id=operation_id or 'd-'+uuid.uuid4().hex
         receipt=transaction(root,changes,kind,expected,operation_id,meta=meta)
         for domain in domains:
@@ -84,6 +86,7 @@ def apply(root,plan_id,expected_digest,sync_overlay=True):
         actual=hashlib.sha256(canonical_json(unsigned).encode()).hexdigest()
         if value['digest']!=actual or actual!=expected_digest:raise ValueError('Plan digest mismatch')
         if not (root/'.operations'/plan_id/'journal.json').exists():
+            roll_forward_pending(root)   # a write a crash left half-done is finished first, so the guards see it
             _check_guards(root,value)
             # Notes or the type registry may have changed since the plan was made: an undo or restore plan must not leave a
             # note whose custom type is unregistered or takes no action items.
@@ -91,6 +94,8 @@ def apply(root,plan_id,expected_digest,sync_overlay=True):
             try:check_undo(root,value['changes'])
             except ValueError as exc:raise ValueError('stale plan: it would break notes that use a custom type: '+str(exc)+'; make a new plan') from None
         receipt=transaction(root,_plan_changes(root,value),value['kind'],value['expected'],value['id'])
+        from .docs import is_notebook_journal,record_index
+        if is_notebook_journal([{'path':p} for p in value['changes']]):record_index(root,value['id'],value['changes'])
         for domain in value['domains']:
             try:reconcile(domain,root,sync_overlay=sync_overlay)
             except Exception as exc:
@@ -108,6 +113,10 @@ def _check_guards(root,value):
         path=confined(root,rel)
         if (digest(path.read_bytes()) if path.exists() else None)!=expected:
             raise ValueError('stale plan: a file this plan depends on changed: '+rel)
+    for name in guards.get('no_notes',[]):
+        from .backup import canonical_files_of
+        if canonical_files_of(root,name):
+            raise ValueError('stale plan: domain '+name+' now holds notes, and this plan would make it notebook-only; make a new plan')
     # inventory: a folder must still hold exactly these files (deleting a notebook must not strand a page added since; NS-2A).
     for rel,expected in guards.get('inventory',{}).items():
         from .docs import _files
@@ -235,7 +244,7 @@ def _plan_kind(kind,effects=()):
     if kind=='restore':return not any(Path(e['path']).name=='.derived-dirty' for e in effects)
     return not (kind in DIRECT_UNDO_KINDS or kind.startswith(DIRECT_UNDO_PREFIXES))
 
-def undo(root,operation_id):
+def undo(root,operation_id,include_private=False):
     if not __import__('re').fullmatch(r'[A-Za-z0-9_-]{1,100}',operation_id):raise ValueError('Invalid operation ID')
     root=Path(root).resolve();journal=root/'.operations'/operation_id/'journal.json'
     try:value=read_json(journal)
@@ -254,19 +263,22 @@ def undo(root,operation_id):
         kept=root/'.operations'/operation_id/'blobs'/e['before_hash']
         if not kept.exists() or digest(kept.read_bytes())!=e['before_hash']:raise ValueError(f"The attachment {e['path']} this operation removed is no longer kept, so it cannot be undone")
         return kept.read_bytes()
+    from .docs import is_notebook_journal,PRIVACY,merge_privacy,DOC_OP_PREFIX,record_index,private_journal,private_scope
+    if not include_private and private_journal(value,private_scope(root)):
+        raise ValueError(f'not_found: operation {operation_id} changed a private notebook; only Hivemind undoes it (--include-private)')
     changes={e['path']:before(e) for e in value['effects']}
     domains=reconciled_domains(changes)
-    from .docs import is_notebook_journal,PRIVACY,merge_privacy,DOC_OP_PREFIX,record_index
     notebook_op=is_notebook_journal(value['effects'])
-    if PRIVACY in changes:
-        # Every notebook that was ever private stays listed, so undoing a privacy change never exposes what was written meanwhile.
-        current=(root/PRIVACY).read_text(encoding='utf-8') if (root/PRIVACY).exists() else None
-        merged=merge_privacy(root,changes[PRIVACY] or '')
-        value['effects']=[e for e in value['effects'] if e['path']!=PRIVACY]   # the registry may have grown since: no precondition on it
-        if merged==current:changes.pop(PRIVACY)
-        else:changes[PRIVACY]=merged
     # Check and record under one lock: an edit between the check and the plan's snapshot would be overwritten.
     with store_lock(root):
+        if PRIVACY in changes:
+            # Every notebook that was ever private stays listed, so undoing a privacy change never exposes what was written
+            # meanwhile. Merged under the lock, so a notebook made private by another writer is never dropped.
+            current=(root/PRIVACY).read_text(encoding='utf-8') if (root/PRIVACY).exists() else None
+            merged=merge_privacy(root,changes[PRIVACY] or '')
+            value['effects']=[e for e in value['effects'] if e['path']!=PRIVACY]   # the registry may have grown since: no precondition on it
+            if merged==current:changes.pop(PRIVACY)
+            else:changes[PRIVACY]=merged
         for effect in value['effects']:
             p=confined(root,effect['path']);current=digest(p.read_bytes()) if p.exists() else None
             if current!=effect['after_hash']:raise ValueError('Undo conflicts with later edits')
@@ -317,6 +329,8 @@ def remap(root,mappings):
             from .common import global_domains
             if after['domain'] not in read_json(root/'bindings.json',{}).get('domains',{}) and after['domain'] not in global_domains(root):
                 raise ValueError('Target domain is unregistered')
+            from .docs import refuse_notes_in
+            refuse_notes_in(root,after['domain'])
             target=confined(root,Path('domains')/after['domain']/('notes' if note['status']=='active' else 'archive')/path.name)
             if target.exists():raise ValueError('Remap filename collision')
             keep_baseline(note);note['domain']=after['domain'];note['updated']=now()   # a move vouches for nothing

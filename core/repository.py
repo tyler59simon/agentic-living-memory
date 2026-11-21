@@ -735,6 +735,8 @@ def transaction(root, changes, kind, expected=None, operation_id=None, skip_unch
                 raise ValueError("Idempotency payload differs")
             return recover(root, operation_id, "forward")
         rolled = roll_forward_pending(root)
+        from .docs import check_notebook_metadata
+        check_notebook_metadata(root, changes)
         effects = []
         blobs = []
         for rel, content in sorted(changes.items()):
@@ -900,8 +902,13 @@ def roll_forward_pending(root):
         operation_id = marker.parent.name
         try:
             journal = read_json(marker.with_name("journal.json"))  # a damaged journal is reported below, not raised: it must not block every write
-            if not journal or journal.get("state") in {"rolled_back", "abandoned"}:
-                retry_sharing(marker.unlink)  # no journal: nothing else was written; a reversed journal has nothing to finish
+            if not journal:
+                # No journal: nothing was applied. The folder holds only the marker and any attachment bytes staged for it.
+                import shutil
+                shutil.rmtree(marker.parent, ignore_errors=True)
+                continue
+            if journal.get("state") in {"rolled_back", "abandoned"}:
+                retry_sharing(marker.unlink)  # a reversed journal has nothing to finish
                 continue
             results.append(recover(root, operation_id, "forward"))
         except ValueError as exc:

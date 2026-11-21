@@ -195,7 +195,15 @@ def prune_journals(root, keep=KEEP_VERSIONS, days=KEEP_DAYS):
     cutoff = clock.now() - timedelta(days=days)
     rows = []
     with store_lock(root):
-        for folder in (root / ".operations").glob(DOC_OP_PREFIX + "*"):
+        operations = root / ".operations"
+        # Under the store lock no write is between staging and its marker, so a folder with neither marker nor journal holds
+        # only attachment bytes a crashed write staged; nothing refers to them.
+        for folder in operations.glob("*") if operations.is_dir() else []:
+            if folder.is_dir() and not (folder / PENDING).exists() and not (folder / "journal.json").exists() and \
+                    {p.name for p in folder.iterdir()} <= {"blobs"}:
+                shutil.rmtree(folder, ignore_errors=True)
+        folders = set(operations.glob(DOC_OP_PREFIX + "*")) | {p.parent for p in operations.glob("*/doc.json")}
+        for folder in sorted(folders):
             journal = folder / "journal.json"
             if (folder / PENDING).exists() or not journal.is_file():
                 continue
@@ -238,7 +246,9 @@ def _journal_meta(domain, nb, meta):
 
 
 def _files(folder):
-    """Every file under `folder` (relative, `/`-separated), never following a link."""
+    """Every file under `folder` (relative, `/`-separated), never following a link, `folder` itself included."""
+    if _is_link(folder):
+        return []
     out = []
     for current, dirs, names in os.walk(folder):
         dirs[:] = [d for d in dirs if not _is_link(Path(current) / d)]
@@ -609,6 +619,11 @@ def move(root, domain, nb, source, target, rewrite_links=False, include_private=
                 continue
             old_path = value["path"]
             new_path = moved.get(old_path) or (target + old_path[len(source):] if not is_page and old_path.startswith(source + "/") else old_path)
+            if new_path != old_path:
+                try:
+                    clean_path(new_path)
+                except ValueError as exc:
+                    raise ValueError(f"Pending proposal {value.get('id')} for {old_path} would move to {new_path}: {exc}; reject or accept it first") from None
             updated = dict(value, path=new_path)
             new_rel = _rel(domain, nb, new_path)
             if new_rel in changes and new_path in before and value.get("base_revision") == digest(before[new_path]):
@@ -904,10 +919,12 @@ def private_scope(root, changes=None):
 
 
 def is_private_path(path, scope):
-    path = str(path)
+    path = str(path).replace("\\", "/").casefold()
+    if path == PRIVACY:
+        return bool(scope[0])
     if EVERY_NOTEBOOK in scope[0] and NOTEBOOK_PATH.match(path):
         return True
-    return any(path.startswith(prefix) for prefix in scope[0] if prefix != EVERY_NOTEBOOK)
+    return any(path.startswith(prefix.casefold()) for prefix in scope[0] if prefix != EVERY_NOTEBOOK)
 
 
 def private_read(paths, cwd, root, search):
@@ -930,18 +947,34 @@ def private_read(paths, cwd, root, search):
 
 
 def redact_summary(summary, scope):
-    """A plan or operation summary without the notebooks and paths that `scope` makes private."""
+    """A plan or operation summary without the notebooks and paths that `scope` makes private: a store path inside one, a
+    `D/NB` notebook name, or (when the summary names a private notebook) its notebook, path and link fields."""
     if not isinstance(summary, dict):
         return summary
+
+    def private_text(text):
+        if not isinstance(text, str):
+            return False
+        if is_private_path(text, scope):
+            return True
+        parts = text.split("/")
+        return len(parts) == 2 and is_private_path(f"domains/{parts[0]}/notebooks/{parts[1]}/", scope)
+
+    def clean(value):
+        if isinstance(value, list):
+            return [clean(v) for v in value if not private_text(v)]
+        if isinstance(value, dict):
+            return redact_summary(value, scope)
+        return value
+    named = summary.get("domain") and summary.get("notebook") and \
+        is_private_path(f"domains/{summary['domain']}/notebooks/{summary['notebook']}/", scope)
     out = {}
     for key, value in summary.items():
-        if key == "notebooks" and isinstance(value, list):
-            out[key] = [v for v in value if not is_private_path("domains/{}/notebooks/{}/".format(*(str(v).split("/", 1) + [""])[:2]), scope)]
-        elif key in ("notebook", "path", "from", "to", "rewritten", "proposal") and summary.get("domain") and summary.get("notebook") and \
-                is_private_path(f"domains/{summary['domain']}/notebooks/{summary['notebook']}/", scope):
+        if named and key in ("notebook", "path", "from", "to", "rewritten", "proposal", "title"):
             continue
-        else:
-            out[key] = value
+        if private_text(value):
+            continue
+        out[key] = clean(value)
     return out
 
 
@@ -961,6 +994,31 @@ def merge_privacy(root, text):
         if isinstance(e, dict) and e not in entries:
             entries.append(e)
     return json.dumps({"version": 1, "notebooks": entries}, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+
+META_PATH = re.compile(r"(domains/[^/]+/notebooks/[^/]+)/notebook\.json")
+
+
+def check_notebook_metadata(root, changes):
+    """Refuse changes that delete a notebook's notebook.json while that notebook keeps files the changes do not delete: they
+    would sit in a folder no `doc` command opens (an undo of a notebook create, a delete plan made before a later page)."""
+    gone = {str(k).replace("\\", "/").casefold() for k, v in changes.items() if v is None}
+    for rel in sorted(str(k).replace("\\", "/") for k, v in changes.items() if v is None):
+        match = META_PATH.fullmatch(rel)
+        if not match:
+            continue
+        folder = Path(root) / match[1]
+        left = [f for f in (_files(folder) if folder.is_dir() else []) if f"{match[1]}/{f}".casefold() not in gone]
+        left += [str(k) for k, v in changes.items() if v is not None and str(k).replace("\\", "/").startswith(match[1] + "/")]
+        if left:
+            raise ValueError(f"Notebook conflict: {match[1]} still holds {len(left)} files this change keeps, and deleting its "
+                             "notebook.json would strand them; delete the notebook as a whole instead")
+
+
+def refuse_notes_in(root, domain):
+    """Notes never go to a notebook-only domain, whatever command chose it."""
+    if is_notebook_only(root, domain):
+        raise ValueError(f"{domain} holds notebooks only; notes go to another domain (pass --domain)")
 
 
 def is_notebook_journal(effects):
@@ -983,7 +1041,7 @@ def private_journal(journal, scope):
     meta = journal.get("meta") if isinstance(journal, dict) else None
     if isinstance(meta, dict) and meta.get("uid") in scope[1]:
         return True
-    return any(is_private_path(e.get("path", ""), scope) for e in journal.get("effects") or [] if isinstance(e, dict))
+    return any(is_private_path(e.get("path", ""), scope) for e in journal.get("effects") or [] if isinstance(e, dict) and e.get("path") != PRIVACY)
 
 
 # ----------------------------------------------------------------------------------------------- notebook-only domains

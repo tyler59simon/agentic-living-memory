@@ -275,7 +275,12 @@ def serve_command(text,grammar):
     parsed=_parsed(text,grammar)
     if parsed:return any(_subcommand(words)=='serve' for words in parsed)
     tokens=[t for t in re.split(r'''[\s;&|()"'`{}<>=,]+''',text) if t]
-    return _names_memory(tokens) and 'serve' in tokens
+    for index,token in enumerate(tokens):
+        if _names_memory([token]):
+            index+=1
+            while index<len(tokens) and tokens[index].startswith('-'):index+=_option_width(tokens[index])
+            if index<len(tokens) and tokens[index]=='serve':return True
+    return False
 SERVE_DENY='Living Memory: serve is the request server for apps such as Hivemind, not for agents; run the command itself.'
 
 def include_private(text,grammar):

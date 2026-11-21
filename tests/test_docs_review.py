@@ -117,7 +117,7 @@ class Privacy(Fixture):
     def test_g5_undo_never_shrinks_the_privacy_registry(self):
         self.notebook('later')
         made=docs.update_notebook(self.root,'demo','later',private=True)
-        governance.undo(self.root,made['operation_id'])
+        governance.undo(self.root,made['operation_id'],include_private=True)
         self.assertFalse(read_json(self.file('notebook.json','later'))['private'])
         self.assertEqual(sorted(e['notebook'] for e in read_json(self.root/'notebook-privacy.json')['notebooks']),['later','secret'])
 
@@ -205,6 +205,118 @@ class Relocation(StorageBase):
         names=[f.rsplit('/',1)[-1] if isinstance(f,str) else f for f in files]
         self.assertIn('.vectors-plan.md',json.dumps(files));self.assertIn('abcd1234-x.relocation-copy',json.dumps(files))
         self.assertNotIn('.vectors-tmp1',json.dumps(files))
+
+
+class RoundTwo(Fixture):
+    """Codex round 2 on 9322fbd: findings 2-1 to 2-14."""
+    def test_2_1_a_page_left_by_a_crash_makes_the_delete_plan_stale(self):
+        self.notebook();self.page()
+        planned=docs.delete_notebook(self.root,'demo','nb1',with_pages=True)
+        with patch('core.repository._write',side_effect=OSError('crash')),self.assertRaises(OSError):self.page('later.md',b'half made')
+        with self.assertRaisesRegex(ValueError,'stale plan|Notebook conflict'):governance.apply(self.root,planned['plan_id'],planned['digest'])
+        self.assertTrue(self.file('notebook.json').is_file());self.assertEqual(self.file('later.md').read_bytes(),b'half made')
+
+    def test_2_1_undoing_a_notebook_create_never_strands_its_pages(self):
+        made=self.notebook();self.page()
+        with self.assertRaisesRegex(ValueError,'Notebook conflict'):governance.undo(self.root,made['operation_id'])
+        self.assertTrue(self.file('notebook.json').is_file())
+
+    def test_2_2_a_note_saved_after_the_restore_plan_makes_it_stale(self):
+        docs.init_notebook_domain('journal',self.root);snapshot=backup.backup(self.root)['backup']
+        self.ok('bind','journal',str(self.base/'journal-folder'))
+        planned=backup.restore_plan(self.root,snapshot)
+        notes.capture('Kept','A note written after the plan.',['subject/project','concern/architecture'],'journal',self.root)
+        with self.assertRaisesRegex(ValueError,'stale plan'):governance.apply(self.root,planned['plan_id'],planned['digest'])
+        self.assertNotIn('notebook_only',read_json(self.root/'bindings.json')['domains']['journal'])
+
+    def test_2_3_snapshot_paths_form_a_tree_of_valid_page_paths(self):
+        base='domains/demo/notebooks/nb1/'
+        cases=(((base+'A.md',base+'A.md/p.md'),'also the folder'),((base+'.proposals/draft.md',),'outside the canonical set'),
+               ((base+'/'.join('abcdefgh')+'/p.md',),'outside the canonical set'),((base+'Sec/a.md',base+'sec/b.md'),'two ways'))
+        for names,message in cases:
+            with self.subTest(names=names):
+                made=self.base/'tree.zip'
+                with zipfile.ZipFile(made,'w') as archive:
+                    for name in names:archive.writestr(name,'x')
+                with self.assertRaisesRegex(ValueError,message):backup.verify(made)
+
+    def test_2_4_walks_never_start_through_a_junction(self):
+        self.notebook();self.page()
+        outside=self.base/'outside';outside.mkdir();(outside/'x.bin').write_bytes(b'outside')
+        if not junction(self.file('assets'),outside):self.skipTest('no symlink or junction')
+        self.assertEqual(docs._files(self.file('assets')),[])
+        self.assertEqual(docs.notebooks(self.root,['demo'])['notebooks'][0]['assets'],0)
+        junction(self.root/'domains'/'alias',self.root/'domains'/'demo')
+        self.assertFalse([f for f in backup.canonical_files(self.root) if f.startswith('domains/alias/')])
+
+    def test_2_5_a_move_never_pushes_a_proposal_past_the_depth_limit(self):
+        self.notebook();self.page('S/one.md',b'one\n')
+        docs.propose(self.root,'demo','nb1','S/'+'/'.join('abcdef')+'/new.md',b'new\n')
+        with self.assertRaisesRegex(ValueError,'Pending proposal'):docs.move(self.root,'demo','nb1','S','X/S')
+        self.assertTrue(self.file('S/one.md').is_file())
+
+    def test_2_6_remap_refuses_a_notebook_only_domain(self):
+        n=self.note();docs.init_notebook_domain('journal',self.root)
+        with self.assertRaisesRegex(ValueError,'notebooks only'):
+            governance.remap(self.root,[{'before':{'domain':'demo','id':n['id']},'after':{'domain':'journal','id':n['id']}}])
+
+    def test_2_7_plan_applied_notebook_operations_join_retention(self):
+        self.notebook();self.page();source=self.base/'pic.bin';source.write_bytes(b'\x00pic');docs.attach(self.root,'demo','nb1',source)
+        planned=docs.delete_notebook(self.root,'demo','nb1',with_pages=True)
+        governance.apply(self.root,planned['plan_id'],planned['digest'])
+        folder=self.root/'.operations'/planned['plan_id'];self.assertTrue((folder/'doc.json').is_file())
+        docs.prune_journals(self.root,days=-1);self.assertFalse(folder.exists())
+
+    def test_2_8_staging_left_by_a_crash_is_cleared(self):
+        self.notebook()
+        orphan=self.root/'.operations'/'orphan'/'blobs';orphan.mkdir(parents=True);(orphan/('0'*64)).write_bytes(b'staged')
+        docs.prune_journals(self.root);self.assertFalse(orphan.parent.exists())
+        marked=self.root/'.operations'/'marked';(marked/'blobs').mkdir(parents=True);(marked/repository.PENDING).write_text('pending\n')
+        repository.roll_forward_pending(self.root);self.assertFalse(marked.exists())
+
+    def test_2_9_serve_counts_only_as_the_subcommand(self):
+        self.assertFalse(runtime.serve_command('python living_memory.py capture --title serve --summary "How serve starts"',None))
+        self.assertTrue(runtime.serve_command('python living_memory.py --root x serve --stdio',None))
+        self.assertTrue(runtime.serve_command('python living_memory.py --root=x serve',None))
+
+    def test_2_10_undo_merges_the_registry_under_the_lock(self):
+        import contextlib
+        self.notebook('later');made=docs.update_notebook(self.root,'demo','later',private=True)
+        real,raced=governance.store_lock,[]
+        @contextlib.contextmanager
+        def racing(root):
+            if not raced:raced.append(1);self.notebook('rival',private=True)   # another writer gets the lock first
+            with real(root):yield
+        with patch('core.governance.store_lock',racing):governance.undo(self.root,made['operation_id'],include_private=True)
+        self.assertEqual(sorted(e['notebook'] for e in read_json(self.root/'notebook-privacy.json')['notebooks']),['later','rival'])
+
+    def test_2_11_batch_items_never_ask_for_private_notebooks(self):
+        self.notebook('secret',private=True);docs.create_page(self.root,'demo','secret','p.md',b'private words\n',include_private=True)
+        result=self.ok('batch',stdin=json.dumps([{'argv':['doc','read','demo','secret','p.md','--include-private']}]))
+        self.assertNotEqual(result[0]['exit_code'],0);self.assertIn('inside batch',result[0]['error']);self.assertNotIn('private words',json.dumps(result))
+
+    def test_2_12_privacy_ignores_letter_case(self):
+        self.notebook('secret',private=True);scope=docs.private_scope(self.root)
+        self.assertTrue(docs.is_private_path('domains/DEMO/notebooks/Secret/p.md',scope))
+        made=governance.plan(self.root,{'domains/DEMO/notebooks/secret/p.md':'CASE-SECRET'},'restore')
+        shown=governance.inspect_plan(self.root,made['plan_id']);self.assertNotIn('CASE-SECRET',json.dumps(shown));self.assertEqual(shown['redacted'],1)
+
+    def test_2_13_restore_responses_and_the_registry_are_redacted(self):
+        self.notebook();self.notebook('secret',private=True);docs.create_page(self.root,'demo','secret','p.md',b'x\n',include_private=True)
+        snapshot=backup.backup(self.root)['backup']
+        self.file('p.md','secret').write_bytes(b'changed');self.page('a.md',b'a\n')
+        planned=backup.restore_plan(self.root,snapshot)
+        self.assertNotIn('demo/secret',json.dumps(planned));self.assertIn('demo/nb1',planned['summary']['notebooks'])
+        scope=docs.private_scope(self.root)
+        self.assertEqual(docs.redact_summary({'skipped_unreadable':['domains/demo/notebooks/secret/p.md','domains/demo/notes/n.md']},scope),
+                         {'skipped_unreadable':['domains/demo/notes/n.md']})
+        self.assertTrue(docs.is_private_path('notebook-privacy.json',scope))
+
+    def test_2_14_undo_and_recover_check_privacy(self):
+        self.notebook('secret',private=True);written=docs.create_page(self.root,'demo','secret','p.md',b'x\n',include_private=True)
+        code,text=self.fails('undo',written['operation_id']);self.assertIn('private notebook',text)
+        code,text=self.fails('recover',written['operation_id'],'--abandon');self.assertIn('private notebook',text)
+        self.ok('undo',written['operation_id'],'--include-private');self.assertFalse(self.file('p.md','secret').exists())
 
 
 if __name__=='__main__':

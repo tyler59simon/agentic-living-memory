@@ -19,7 +19,7 @@ domains/D/notebooks/<notebook>/
 
 ## Commands
 
-Every write is one journaled operation (`doc-...`) and `doc undo OPERATION` (or `undo OPERATION`) reverses it.
+Every write is one journaled operation (`doc-...`) and `doc undo OPERATION` (or `undo OPERATION`) reverses it. No write may delete a notebook's `notebook.json` while the notebook keeps other files, so undoing the creation of a notebook that has pages is refused: delete the notebook as a whole.
 
 | Command | What it does |
 | --- | --- |
@@ -44,7 +44,7 @@ Every write is one journaled operation (`doc-...`) and `doc undo OPERATION` (or 
 
 - Agents read pages (`doc notebooks`, `list`, `read`, `history`, `proposals`, `proposal`) and stage edits with `doc propose`. Every other `doc` action, an unknown one included, and `domain create` are the main actor's: the hook denies them to subagents, never auto-allows them, and denies them to agents in a Hivemind terminal (`HIVEMIND_SESSION`). The hook also denies `serve` to agents, since its requests carry arguments the hook never sees.
 - Visibility: `hidden` notebooks are listed only with `--include-hidden`; `searchable` (the default) and `injectable` matter once notebook search ships (NS-2B).
-- Private notebooks look missing to every command, writes included, unless it carries `--include-private`, which only Hivemind's own bridge passes. The hook denies `--include-private` to any agent, and denies Read, Glob and Grep on a private notebook's folder (or a search over a folder that holds one). `history` (note history too), `doc history`, `diff` and `inspect-plan` leave out changes inside a notebook that is or ever was private (`notebook-privacy.json` keeps them, and neither undo nor restore removes an entry). Private is not file protection: a shell command can still read the files.
+- Private notebooks look missing to every command, writes, `undo` and `recover` included, unless it carries `--include-private`, which only Hivemind's own bridge passes. Inside `batch` the flag is refused, because the hook sees only the outer command. The hook denies `--include-private` to any agent, and denies Read, Glob and Grep on a private notebook's folder (or a search over a folder that holds one). `history` (note history too), `doc history`, `diff` and `inspect-plan` leave out changes inside a notebook that is or ever was private (`notebook-privacy.json` keeps them, and neither undo nor restore removes an entry). Private is not file protection: a shell command can still read the files.
 
 ## Notebook-only domains
 

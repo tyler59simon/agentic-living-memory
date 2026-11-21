@@ -232,7 +232,7 @@ Generated from the argparse parser in `core/cli.py` by `py -3.15 scripts/gen_scr
 | `rebuild` | none |
 | `recall` | `--all`, `--limit`, `--session` |
 | `recap` | `--all-domains`, `--days`, `--project` |
-| `recover` | `--abandon`, `--direction` |
+| `recover` | `--abandon`, `--direction`, `--include-private` |
 | `remap` | `--payload-file` |
 | `reopen` | `--session`, `--turn` |
 | `resolve` | `--session`, `--turn` |
@@ -259,7 +259,7 @@ Generated from the argparse parser in `core/cli.py` by `py -3.15 scripts/gen_scr
 | `type create/update/retire` | `--payload-file` |
 | `types` | `--all` |
 | `unbind` | `--prefix` |
-| `undo` | none |
+| `undo` | `--include-private` |
 | `update` | `--action`, `--add-action`, `--add-detail`, `--add-link`, `--body`, `--body-file`, `--command`, `--concern`, `--context`, `--detail`, `--distinct`, `--done`, `--drop-section`, `--expected-revision`, `--file`, `--files`, `--important`, `--link`, `--no-rule`, `--not-distinct`, `--payload-file`, `--pin`, `--platform`, `--redact`, `--replace-actions`, `--review-by`, `--rule`, `--section`, `--session`, `--set-detail`, `--source`, `--subject`, `--summary`, `--tag`, `--technology`, `--title`, `--turn`, `--type`, `--unpin`, `--why` |
 | `validate` | none |
 | `version` | none |

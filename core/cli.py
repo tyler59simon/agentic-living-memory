@@ -639,6 +639,9 @@ def _doc_json(path,what):
     if path.stat().st_size>256*1024:raise ValueError(f'{what} is larger than 256 KiB')
     return json.loads(path.read_text(encoding='utf-8'))
 
+_IN_BATCH=[0]   # >0 while batch runs its items: they may not ask for private notebooks
+
+
 def _doc(args,root,domain):
     import re
     from . import docs
@@ -678,7 +681,7 @@ def _doc(args,root,domain):
     # Judged by what the operation changed, not by its kind: an undo of an undo stays a notebook operation after its parent is pruned (D4).
     if not isinstance(journal,dict) or not docs.is_notebook_journal(journal.get('effects')):raise ValueError(f'not_found: {args.operation_id} is not a notebook operation; use undo for others')
     if not private and docs.private_journal(journal,docs.private_scope(root)):raise ValueError(f'not_found: {args.operation_id} is not a notebook operation; use undo for others')
-    return undo(root,args.operation_id)
+    return undo(root,args.operation_id,private)
 
 def build_parser():
     parser=JsonArgumentParser(prog='alm',description='Agentic Living Memory: the notes your coding agents keep between sessions. Run alm COMMAND --help for a command.',
@@ -745,10 +748,11 @@ def build_parser():
     p=sub('history');p.add_argument('--note');p.add_argument('--limit',type=int,default=20);p.add_argument('--include-private',action='store_true',help='Hivemind only: show operations on private notebooks');p.add_argument('--markdown',action='store_true',help='Return {ok, rows, markdown} with a dated list a person can read')
     p=sub('recap');p.add_argument('--days',type=int,default=7,help='Days back, 1 to 90');p.add_argument('--project',help='Project slug');p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain')
     p=sub('log');p.add_argument('--project',help='Project slug');p.add_argument('--since',help='ISO date or time');p.add_argument('--until',help='ISO date or time, inclusive');p.add_argument('--note',help='One note (REF or ID, deleted notes too) or change (CHG-014)');p.add_argument('--type',help='Note type, change or session');p.add_argument('--event',help='created, updated, confirmed, superseded, resolved, archived, reopened, deleted, promoted, moved, undone, stage, closed or session');p.add_argument('--limit',type=int,default=50)
-    p=sub('undo');p.add_argument('operation_id')
+    p=sub('undo');p.add_argument('operation_id');p.add_argument('--include-private',action='store_true',help='Hivemind only: allow an operation on a private notebook')
     _doc_parsers(sub('doc'),common)
     p=sub('domain');p.add_argument('action',choices=['create']);p.add_argument('name');p.add_argument('--notebook-only',action='store_true',required=True,help='A domain that holds notebooks only (no folder binding, no notes)')
     p=sub('recover');p.add_argument('operation_id');p.add_argument('--direction',choices=['forward','backward'],default='forward');p.add_argument('--abandon',action='store_true',help='Stop treating the operation as pending; no note file is changed')
+    p.add_argument('--include-private',action='store_true',help='Hivemind only: allow an operation on a private notebook')
     p=sub('diff');p.add_argument('operation_id');p.add_argument('--include-private',action='store_true',help='Hivemind only: show changes inside private notebooks')
     p=sub('doctor')
     p=sub('backup');p.add_argument('--keep',type=int,default=7)
@@ -837,6 +841,8 @@ def main(argv=None):
         # Private notebooks stay out of agent sessions; only Hivemind's own bridge, which has no HIVEMIND_SESSION, asks for them (NS-2A).
         if os.environ.get('HIVEMIND_SESSION') and getattr(args,'include_private',False):
             raise ValueError('hivemind: --include-private is for Hivemind itself; private notebooks are not shown to agent sessions.')
+        if _IN_BATCH[0] and getattr(args,'include_private',False):
+            raise ValueError('--include-private is not accepted inside batch: the hook checks only the outer command; run it on its own')
         if args.command=='help':
             from .instructions import help_topic
             _emit(help_topic(args.topic),args);return 0
@@ -1395,9 +1401,16 @@ def main(argv=None):
             result=log(root,canonical_domain(args.domain,root) if args.domain else None,args.project,args.since,args.until,note,args.type,args.event,args.limit)
         elif cmd=='undo':
             from .governance import undo
-            result=undo(root,args.operation_id)
+            result=undo(root,args.operation_id,args.include_private)
         elif cmd=='recover':
             from .repository import recover,reconcile,abandon
+            import re
+            from .docs import private_journal,private_scope
+            if re.fullmatch(r'[A-Za-z0-9_-]{1,100}',args.operation_id) and not args.include_private:
+                try:pending=read_json(root/'.operations'/args.operation_id/'journal.json',None)
+                except ValueError:pending=None
+                if isinstance(pending,dict) and private_journal(pending,private_scope(root)):
+                    raise ValueError(f'not_found: operation {args.operation_id} changed a private notebook; only Hivemind recovers it (--include-private)')
             if args.abandon:result=abandon(root,args.operation_id)
             else:result=recover(root,args.operation_id,args.direction)
             row=read_json(root/'.operations'/args.operation_id/'journal.json')
@@ -1598,8 +1611,10 @@ def main(argv=None):
                 out=io.StringIO();error=io.StringIO()
                 prefix=['--root',str(root),'--cwd',str(cwd),'--actor',args.actor]+(['--domain',domain] if domain else [])
                 with contextlib.redirect_stdout(out),contextlib.redirect_stderr(error):
+                    _IN_BATCH[0]+=1
                     try:code=main(prefix+item['argv'])
                     except SystemExit as exc:code=exc.code
+                    finally:_IN_BATCH[0]-=1
                 result.append({'exit_code':code,'result':json.loads(out.getvalue()) if out.getvalue().strip() else None,'error':error.getvalue()[:1000] or None})
         elif cmd=='retag-plan':
             from .governance import retag_plan

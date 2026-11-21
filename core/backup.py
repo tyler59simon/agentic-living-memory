@@ -52,7 +52,7 @@ def notebook_files(root,domain):
     """Store-relative paths of a domain's notebook files, never following a link or junction."""
     from .docs import _files,_is_link
     base=Path(domain)/'notebooks'
-    if not base.is_dir() or _is_link(base):return []
+    if _is_link(domain) or not base.is_dir() or _is_link(base):return []
     found=[]
     for folder in sorted(p for p in base.iterdir() if p.is_dir() and not _is_link(p)):
         found+=[rel for rel in (f'{folder.relative_to(root).as_posix()}/{f}' for f in _files(folder)) if NOTEBOOK.fullmatch(rel)]
@@ -76,9 +76,11 @@ def _allowed(name):
     if not name or name.startswith('/') or '\\' in name or any(part in ('','.','..') for part in name.split('/')):return False
     if NOTEBOOK.fullmatch(name):
         # Notebook members obey the page name rules, so a Windows alias (a trailing dot or space, a device name) cannot land on another file.
-        from .docs import _check_part
+        from .docs import _check_part,clean_path
+        rest='/'.join(name.split('/')[4:])
         try:
             for part in name.split('/')[4:]:_check_part(part)
+            if rest!='notebook.json' and not re.fullmatch(r'\.proposals/[a-f0-9]{12}\.json|assets/[^/]+',rest):clean_path(rest)
         except ValueError:return False
         return True
     return name in TOP_LEVEL or name==MANIFEST or bool(MEMBER.fullmatch(name)) or bool(LEDGER.fullmatch(name)) or bool(MAINT.fullmatch(name))
@@ -155,11 +157,21 @@ def verify(path):
     from .docs import MAX_ASSET_BYTES
     found=[];seen={}
     with zipfile.ZipFile(path) as archive:
-        for info in archive.infolist():
+        infos=archive.infolist()
+        for info in infos:
             if info.is_dir() or not _allowed(info.filename):raise ValueError(f'Backup member outside the canonical set: {info.filename}')
             folded=info.filename.casefold()
             if folded in seen:raise ValueError(f'Backup members {seen[folded]} and {info.filename} name the same file')
             seen[folded]=info.filename
+        # A member may not also be the folder of another, and one folder has one spelling: either would fail half way on Windows.
+        folders={}
+        for name in seen.values():
+            parts=name.split('/')
+            for i in range(1,len(parts)):
+                spelled='/'.join(parts[:i])
+                if spelled.casefold() in seen:raise ValueError(f'Backup member {seen[spelled.casefold()]} is also the folder of {name}')
+                if folders.setdefault(spelled.casefold(),spelled)!=spelled:raise ValueError(f'Backup members spell the folder {spelled} two ways')
+        for info in infos:
             if ASSET.fullmatch(info.filename):
                 # Size only; reading it through still checks the CRC, a chunk at a time.
                 if info.file_size>MAX_ASSET_BYTES:found.append({'member':info.filename,'problem':'attachment over the size cap'});continue
@@ -308,8 +320,18 @@ def restore_plan(root,source):
     summary={'source':source.name,'write':sum(1 for v in changes.values() if v is not None),
              'delete':sum(1 for v in changes.values() if v is None),'unchanged':unchanged}
     if skipped:summary['skipped_unreadable']=sorted(skipped)
-    if not changes:return {'ok':True,'status':'unchanged','summary':summary}
+    from .docs import private_scope,redact_summary
+    scope=private_scope(root,{k:v for k,v in changes.items() if isinstance(v,str)} | ({'notebook-privacy.json':wanted['notebook-privacy.json']} if 'notebook-privacy.json' in wanted else {}))
+    if not changes:return {'ok':True,'status':'unchanged','summary':redact_summary(summary,scope)}
     if notebooks:summary['notebooks']=sorted(notebooks)
-    result=plan(root,changes,'restore',covered,summary)
+    # A domain the restore makes notebook-only must still hold no notes when the plan is applied.
+    guards={}
+    try:
+        live=(read_json(root/'bindings.json',{}) or {}).get('domains') or {}
+        final=read_json_bytes(wanted['bindings.json'].encode('utf-8')).get('domains') or {} if 'bindings.json' in wanted else {}
+        guards['no_notes']=[n for n,e in final.items() if isinstance(e,dict) and e.get('notebook_only') and not (isinstance(live.get(n),dict) and live[n].get('notebook_only'))]
+    except (ValueError,AttributeError):pass
+    result=plan(root,changes,'restore',covered,summary,guards=guards or None)
+    result['summary']=redact_summary(result.get('summary',summary),scope)
     result['hint']='Review with inspect-plan PLAN_ID, then apply PLAN_ID --expected-plan-sha256 DIGEST.'
     return result
