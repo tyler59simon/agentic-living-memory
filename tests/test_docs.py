@@ -251,18 +251,28 @@ class Proposals(Fixture):
         self.fails('doc','accept',fresh,'--body-file',self.body_file(b'x'))
 
     def test_accept_edited_needs_a_body_given_on_purpose(self):
-        # NS-2C re-review, R2-D5: a terminal or a serve request without stdin is not an empty merge.
+        # NS-2C re-review, R2-D5, through the real boundaries (review of 7f06bda, R3-T2): a serve frame without `stdin`
+        # and a terminal are refused; a frame with an empty `stdin` is an empty merge given on purpose.
         self.notebook();self.page('p.md',b'one')
         pid=docs.propose(self.root,'demo','nb1','p.md',b'two',digest(b'one'))['id']
-        from core.cli import _RequestStdin
+        accept=['doc','accept','--edited','--expected-revision',digest(b'one'),'--actor','main','--',pid]
+        def serve(*frames):
+            lines=''.join(json.dumps(f)+'\n' for f in frames);out=io.StringIO()
+            with patch('sys.stdin',io.StringIO(lines)),contextlib.redirect_stdout(out):
+                self.assertEqual(main(['--root',str(self.root),'serve','--stdio']),0)
+            return [json.loads(line) for line in out.getvalue().splitlines()]
+        [absent]=serve({'id':1,'argv':accept})
+        self.assertNotEqual(absent['exit_code'],0);self.assertIn('--body-file',absent['error']['message'])
+        self.assertEqual(self.file('p.md').read_bytes(),b'one')
+        class Terminal(io.StringIO):
+            def isatty(self):return True
         out,err=io.StringIO(),io.StringIO()
-        with contextlib.redirect_stdout(out),contextlib.redirect_stderr(err),patch('sys.stdin',_RequestStdin('',False)):
-            code=main(['--root',str(self.root),'--actor','main','--domain','demo','--json','doc','accept',pid,'--edited','--expected-revision',digest(b'one')])
+        with contextlib.redirect_stdout(out),contextlib.redirect_stderr(err),patch('sys.stdin',Terminal('')):
+            code=main(['--root',str(self.root),'--domain','demo','--json']+accept)
         self.assertNotEqual(code,0);self.assertIn('--body-file',out.getvalue()+err.getvalue())
         self.assertEqual(self.file('p.md').read_bytes(),b'one')
-        with contextlib.redirect_stdout(io.StringIO()),patch('sys.stdin',_RequestStdin('',True)):
-            code=main(['--root',str(self.root),'--actor','main','--domain','demo','--json','doc','accept',pid,'--edited','--expected-revision',digest(b'one')])
-        self.assertEqual(code,0);self.assertEqual(self.file('p.md').read_bytes(),b'')
+        [given]=serve({'id':2,'argv':accept,'stdin':''})
+        self.assertEqual(given['exit_code'],0,given);self.assertEqual(self.file('p.md').read_bytes(),b'')
 
     def test_undo_restores_a_page_that_held_bytes_that_are_not_utf8(self):
         # NS-2C re-review, R2-D6: an editor left the page as Latin-1; replacing it, then undoing, brings those bytes back.
