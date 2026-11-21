@@ -609,7 +609,14 @@ def _write(path, data):
     else:
         # Canonical/configuration files are UTF-8. Atomic write fsyncs first.
         mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
-        atomic_write(path, data.decode("utf-8"))
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            # Only a notebook page's before-image can be other bytes (an editor saved it in another encoding): it comes
+            # back exactly on undo or recovery (NS-2C re-review, R2-D6).
+            _copy_into(data, path.parent, path)
+        else:
+            atomic_write(path, text)
         os.chmod(path, mode)
 
 

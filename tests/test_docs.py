@@ -250,6 +250,31 @@ class Proposals(Fixture):
         self.ok('doc','accept',fresh,'--edited',stdin='mine');self.assertEqual(self.file('m.md').read_bytes(),b'mine')
         self.fails('doc','accept',fresh,'--body-file',self.body_file(b'x'))
 
+    def test_accept_edited_needs_a_body_given_on_purpose(self):
+        # NS-2C re-review, R2-D5: a terminal or a serve request without stdin is not an empty merge.
+        self.notebook();self.page('p.md',b'one')
+        pid=docs.propose(self.root,'demo','nb1','p.md',b'two',digest(b'one'))['id']
+        from core.cli import _RequestStdin
+        out,err=io.StringIO(),io.StringIO()
+        with contextlib.redirect_stdout(out),contextlib.redirect_stderr(err),patch('sys.stdin',_RequestStdin('',False)):
+            code=main(['--root',str(self.root),'--actor','main','--domain','demo','--json','doc','accept',pid,'--edited','--expected-revision',digest(b'one')])
+        self.assertNotEqual(code,0);self.assertIn('--body-file',out.getvalue()+err.getvalue())
+        self.assertEqual(self.file('p.md').read_bytes(),b'one')
+        with contextlib.redirect_stdout(io.StringIO()),patch('sys.stdin',_RequestStdin('',True)):
+            code=main(['--root',str(self.root),'--actor','main','--domain','demo','--json','doc','accept',pid,'--edited','--expected-revision',digest(b'one')])
+        self.assertEqual(code,0);self.assertEqual(self.file('p.md').read_bytes(),b'')
+
+    def test_undo_restores_a_page_that_held_bytes_that_are_not_utf8(self):
+        # NS-2C re-review, R2-D6: an editor left the page as Latin-1; replacing it, then undoing, brings those bytes back.
+        self.notebook();self.page('p.md',b'ok\n')
+        bad=b'caf\xe9\n';self.file('p.md').write_bytes(bad)
+        done=docs.write_page(self.root,'demo','nb1','p.md',b'fixed\n',digest(bad))
+        self.ok('undo',done['operation_id']);self.assertEqual(self.file('p.md').read_bytes(),bad)
+        pid=docs.propose(self.root,'demo','nb1','p.md',b'agent\n',digest(bad))['id']
+        done=self.ok('doc','accept',pid,'--edited','--expected-revision',digest(bad),stdin='merged\n')
+        self.ok('undo',done['operation_id']);self.assertEqual(self.file('p.md').read_bytes(),bad)
+        self.assertEqual(read_json(self.file(f'.proposals/{pid}.json'))['status'],'pending')
+
     def test_propose_a_new_page_and_reject(self):
         self.notebook()
         pid=docs.propose(self.root,'demo','nb1','new.md',b'hello')['id']

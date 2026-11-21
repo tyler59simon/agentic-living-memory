@@ -133,7 +133,7 @@ class Notebooks(Kb):
         self.assertIn('kb/docs/plain.md',paths);self.assertFalse([p for p in paths if 'Runbook' in p])
 
     def test_version_reports_folder_policy(self):
-        code,result=self.cli('--json','version');self.assertTrue(result['capabilities']['docs']['folder_policy'])
+        code,result=self.cli('--json','version');self.assertEqual(result['capabilities']['docs']['folder_policy'],2)   # 2: set keeps what it is not given
 
 
 if __name__=='__main__':

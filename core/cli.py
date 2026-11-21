@@ -497,6 +497,11 @@ class JsonArgumentParser(argparse.ArgumentParser):
     """Raises on a usage error so main can report it in the JSON error shape; subcommand parsers inherit the class."""
     def error(self,message):raise _ArgumentError('bad_arguments: '+message,self.prog)
 
+class _RequestStdin(__import__('io').StringIO):
+    """A serve request's stdin; `given` says whether the request carried one, so a command that needs a body can tell an
+    empty body from none (NS-2C re-review, R2-D5)."""
+    def __init__(self,text,given):super().__init__(text);self.given=given
+
 def serve(root,cwd,commands):
     """JSON lines on stdin: {"id", "argv", "stdin"?} -> one {"id", "exit_code", "result", "error"} line each, run in-process."""
     import contextlib,io
@@ -520,7 +525,7 @@ def serve(root,cwd,commands):
             if not isinstance(stdin,str):raise ValueError('stdin must be a string')
         except ValueError as exc:
             reply({'id':ident,'exit_code':2,'result':None,'error':{'code':'invalid','message':str(exc)}});continue
-        out=io.StringIO();error=io.StringIO();sys.stdin=io.StringIO(stdin)
+        out=io.StringIO();error=io.StringIO();sys.stdin=_RequestStdin(stdin,'stdin' in request)
         try:
             with contextlib.redirect_stdout(out),contextlib.redirect_stderr(error):
                 try:code=main(['--json','--root',str(root),'--cwd',str(cwd)]+argv)
@@ -657,14 +662,17 @@ def _doc_parsers(p,common):
     for name,q in [(n,p) for n,p in ds.choices.items() if n not in ('notebook','folder')]+list(ns.choices.items()):
         if not any('--include-private' in a.option_strings for a in q._actions):private(q)
 
-def _doc_body(args):
-    """A page body as bytes, exactly as given: --body-file, else stdin (in serve, the request's stdin text). Never decoded here."""
+def _doc_body(args,required=False):
+    """A page body as bytes, exactly as given: --body-file, else stdin (in serve, the request's stdin text). Never decoded here.
+    required: a terminal or a serve request without stdin is refused instead of read as an empty body."""
     from .docs import MAX_PAGE_BYTES
     if getattr(args,'body_file',None):
         if args.body_file.stat().st_size>MAX_PAGE_BYTES:raise ValueError(f'A page is at most {MAX_PAGE_BYTES//(1024*1024)} MiB')
         return args.body_file.read_bytes()
     stream=sys.stdin
-    if stream is None or (hasattr(stream,'isatty') and stream.isatty()):return b''
+    absent=stream is None or (hasattr(stream,'isatty') and stream.isatty()) or getattr(stream,'given',True) is False
+    if absent and required:raise ValueError('Give the text with --body-file or on stdin')
+    if absent:return b''
     return stream.buffer.read(MAX_PAGE_BYTES+1) if hasattr(stream,'buffer') else stream.read().encode('utf-8')
 
 def _doc_json(path,what):
@@ -732,7 +740,7 @@ def _doc(args,root,domain):
         return {'ok':True,'domains':names,'pages':rows,**({'pages_stale':True} if stale else {})}
     if action=='accept':
         if args.body_file and not args.edited:raise ValueError('--body-file goes with --edited')
-        return docs.accept(root,args.id,args.expected_revision,private,_doc_body(args) if args.edited else None)
+        return docs.accept(root,args.id,args.expected_revision,private,_doc_body(args,required=True) if args.edited else None)
     if action=='reject':return docs.reject(root,args.id,args.reason,private)
     from .governance import undo
     try:journal=read_json(root/'.operations'/args.operation_id/'journal.json',None) if re.fullmatch(r'[A-Za-z0-9_-]{1,100}',args.operation_id) else None
@@ -1241,7 +1249,7 @@ def main(argv=None):
         elif cmd=='version':
             from .installer_lifecycle import CORE_RELEASE,installed_stamp
             result={'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'restore':1,'pin':1,'rule':1,'direct_writes':1,'note_types':1,'history':3,'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']},'wiki_agent':{'version':1},
-                                                                                                                                         'docs':{'version':1,'max_page_bytes':4194304,'max_asset_bytes':26214400,'notebook_only_domains':True,'search':True,'folder_policy':True,'accept_edited':True}}}
+                                                                                                                                         'docs':{'version':1,'max_page_bytes':4194304,'max_asset_bytes':26214400,'notebook_only_domains':True,'search':True,'folder_policy':2,'accept_edited':True}}}
         elif cmd=='update':
             from .notes import change
             d,n=_reference(args.reference,domain,root)

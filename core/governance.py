@@ -284,7 +284,14 @@ def undo(root,operation_id,include_private=False):
     # The derived-state marker is rewritten by every reconcile; it is not part of what is being undone.
     raw_effects=value['effects'];value['effects']=[e for e in value['effects'] if Path(e['path']).name!='.derived-dirty']
     def before(e):
-        if not e.get('blob'):return base64.b64decode(e['before']).decode() if e['before'] is not None else None
+        if not e.get('blob'):
+            if e['before'] is None:return None
+            raw=base64.b64decode(e['before'])
+            # A notebook page is bytes: one an editor left as something other than UTF-8 comes back exactly (NS-2C re-review, R2-D6).
+            try:return raw.decode()
+            except UnicodeDecodeError:
+                if '/notebooks/' in e['path'].replace('\\','/'):return raw
+                raise
         # An attachment's bytes were moved aside into the operation's blobs folder when it removed them (NS-2A).
         if e['before_hash'] is None:return None
         kept=root/'.operations'/operation_id/'blobs'/e['before_hash']
