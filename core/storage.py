@@ -162,9 +162,9 @@ def _manifest(root):
         if rel.parts[0] in ('.turns', 'hooks', 'logs', '.cache', '.views', '__pycache__', 'sources-cache') or path.name in ('.store.lock', '.relocated.json') or rel.as_posix() == 'maintenance/worker.lock':
             continue
         # Derived indexes with their SQLite side files; the destination rebuilds them (docs.sqlite3 is the notebook index).
-        if DERIVED_INDEX.fullmatch(path.name) or path.name.startswith(('.sources-', '.vectors-')):
+        if len(rel.parts) <= 3 and (DERIVED_INDEX.fullmatch(path.name) or path.name.startswith(('.sources-', '.vectors-'))):
             continue
-        if path.name.endswith('.relocation-copy'):
+        if path.name.startswith('.') and path.name.endswith('.relocation-copy'):   # the copy loop's temporary files; an attachment may end so
             continue
         if len(rel.parts) == 3 and rel.parts[0] == 'domains' and path.name in ('INDEX.md', 'ARCHIVE.md', '.derived-dirty'):
             continue

@@ -176,25 +176,25 @@ Generated from the argparse parser in `core/cli.py` by `py -3.15 scripts/gen_scr
 | `confirm` | `--session`, `--turn` |
 | `diff` | `--include-private` |
 | `doc` | none |
-| `doc accept` | `--expected-revision` |
-| `doc attach` | `--from-file`, `--name` |
-| `doc create` | `--body-file` |
-| `doc delete` | `--expected-revision` |
+| `doc accept` | `--expected-revision`, `--include-private` |
+| `doc attach` | `--from-file`, `--include-private`, `--name` |
+| `doc create` | `--body-file`, `--include-private` |
+| `doc delete` | `--expected-revision`, `--include-private` |
 | `doc history` | `--include-private`, `--limit`, `--version` |
 | `doc list` | `--include-private`, `--section` |
-| `doc move` | `--rewrite-links` |
+| `doc move` | `--include-private`, `--rewrite-links` |
 | `doc notebook` | none |
-| `doc notebook create` | `--private`, `--title`, `--visibility` |
-| `doc notebook delete` | `--with-pages` |
-| `doc notebook update` | `--expected-revision`, `--icons-file`, `--no-private`, `--order-file`, `--pinned-file`, `--private`, `--settings-file`, `--title`, `--visibility` |
+| `doc notebook create` | `--include-private`, `--private`, `--title`, `--visibility` |
+| `doc notebook delete` | `--include-private`, `--with-pages` |
+| `doc notebook update` | `--expected-revision`, `--icons-file`, `--include-private`, `--no-private`, `--order-file`, `--pinned-file`, `--private`, `--settings-file`, `--title`, `--visibility` |
 | `doc notebooks` | `--all-domains`, `--include-hidden`, `--include-private` |
 | `doc proposal` | `--include-private` |
 | `doc proposals` | `--include-private`, `--status` |
 | `doc propose` | `--base-revision`, `--body-file`, `--include-private`, `--note`, `--session` |
 | `doc read` | `--include-private`, `--max-chars` |
-| `doc reject` | `--reason` |
-| `doc undo` | none |
-| `doc write` | `--body-file`, `--expected-revision` |
+| `doc reject` | `--include-private`, `--reason` |
+| `doc undo` | `--include-private` |
+| `doc write` | `--body-file`, `--expected-revision`, `--include-private` |
 | `doctor` | none |
 | `domain create` | `--notebook-only` |
 | `domains` | none |

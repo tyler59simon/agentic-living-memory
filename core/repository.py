@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import tempfile
 import threading
 import uuid
@@ -155,6 +156,16 @@ def store_lock(root, allow_retired=False, timeout=None):
             _locks.held = held
 
 
+def is_link_or_junction(path):
+    """True for a symbolic link or an NTFS junction. Other reparse points (OneDrive placeholders, dedup) are ordinary files."""
+    try:
+        info = os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    tags = {getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003), getattr(stat, "IO_REPARSE_TAG_SYMLINK", 0xA000000C)}
+    return stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0) in tags
+
+
 def confined(root, relative):
     root = Path(root).resolve()
     rel = Path(relative)
@@ -166,6 +177,14 @@ def confined(root, relative):
         if cursor.is_symlink():
             raise ValueError("Symbolic links are not allowed in the store")
         cursor = cursor.parent
+    # Notebook paths (NS-2A): a junction resolves inside the store, so the check above and resolve() miss one that points
+    # at another notebook. Every part from domains/ down is checked.
+    if len(rel.parts) > 3 and rel.parts[0] == "domains" and rel.parts[2] == "notebooks":
+        cursor = root
+        for part in rel.parts:
+            cursor = cursor / part
+            if is_link_or_junction(cursor):
+                raise ValueError("Links and junctions are not allowed inside a notebook")
     path.resolve().relative_to(root)
     return path
 
@@ -629,43 +648,42 @@ def _stage_blob(folder, data):
         raise
 
 
-def _move_blob(root, operation_id, effect, desired, keep=False):
-    """Make the asset path hold the side `desired` of a blob effect. Bytes already there move aside into the operation's blobs
-    folder first, so the other side can always be restored; the wanted bytes move in from that folder, or are copied when
-    `keep` (a later effect of the same operation wants the same bytes)."""
+def _copy_into(data, folder, target):
+    """Write `data` to a temporary file in `folder`, fsync it, and replace `target` with it in one step."""
+    folder.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".place.", dir=folder)
+    try:
+        with os.fdopen(fd, "wb") as out:
+            out.write(data)
+            out.flush()
+            os.fsync(out.fileno())
+        retry_sharing(lambda: os.replace(tmp, target))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _move_blob(root, operation_id, effect, desired):
+    """Make the asset path hold the side `desired` of a blob effect. The bytes there are first copied into the operation's
+    blobs folder (unless already kept), then the wanted bytes are copied in and replace the file in one step, so the path
+    always holds one side and the operation keeps both for as long as its journal exists."""
     path = confined(root, effect["path"])
     folder = blob_store(root, operation_id)
     want = effect[desired + "_hash"]
-    current = digest(_bytes(path))
+    current_bytes = _bytes(path)
+    current = digest(current_bytes)
     if current == want:
         return
     if current is not None:
-        kept = folder / current
-        if kept.exists() and digest(kept.read_bytes()) == current:
-            retry_sharing(path.unlink)
-        else:
-            folder.mkdir(parents=True, exist_ok=True)
-            retry_sharing(lambda: os.replace(path, kept))
+        _stage_blob(folder, current_bytes)
     if want is None:
+        retry_sharing(path.unlink)
         return
-    source = folder / want
     path.parent.mkdir(parents=True, exist_ok=True)
-    if keep:
-        fd, tmp = tempfile.mkstemp(prefix="." + want[:8] + ".", dir=folder)
-        try:
-            with os.fdopen(fd, "wb") as out:
-                out.write(source.read_bytes())
-                out.flush()
-                os.fsync(out.fileno())
-            retry_sharing(lambda: os.replace(tmp, path))
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
-    else:
-        retry_sharing(lambda: os.replace(source, path))
+    _copy_into((folder / want).read_bytes(), folder, path)
 
 
 def _fold_case_renames(root, changes, expected):
@@ -956,11 +974,9 @@ def recover(root, operation_id, direction="forward"):
         # Write new files before removing old ones: an interrupted rename then leaves a
         # duplicate (reported, recoverable) rather than a note that has vanished.
         effects = sorted(effects, key=lambda effect: effect[desired + "_hash"] is None)   # the hash: a blob effect keeps no content
-        for index, effect in enumerate(effects):
+        for effect in effects:
             if effect.get("blob"):
-                want = effect[desired + "_hash"]
-                keep = want is not None and any(e.get("blob") and e[desired + "_hash"] == want for e in effects[index + 1:])
-                _move_blob(root, operation_id, effect, desired, keep)
+                _move_blob(root, operation_id, effect, desired)
                 continue
             path = confined(root, effect["path"])
             if digest(_bytes(path)) != effect[desired + "_hash"]:

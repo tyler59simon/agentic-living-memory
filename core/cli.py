@@ -542,6 +542,8 @@ def _propose(root,data,domain,session,to_global,redact=False):
         target=global_domain(root)
     else:target=data.get('domain') or domain
     if not target:raise ValueError('Project is unbound; pass --domain or bind it')
+    from .docs import is_notebook_only
+    if is_notebook_only(root,canonical_domain(target,root)):raise ValueError(f'{target} holds notebooks only; notes go to another domain (pass --domain)')
     title=str(data.get('title') or '').strip()
     if not title or not str(data.get('body') or '').strip():raise ValueError('A proposal needs a title and content (--summary, --section, --detail or a body)')
     known=taxonomy(root);unknown=[t for t in data.get('tags') or [] if t not in known]
@@ -618,6 +620,9 @@ def _doc_parsers(p,common):
     q=dsub('accept','Apply a staged edit (main actor)');q.add_argument('id');q.add_argument('--expected-revision')
     q=dsub('reject','Drop a staged edit (main actor)');q.add_argument('id');q.add_argument('--reason')
     q=dsub('undo','Undo a notebook operation');q.add_argument('operation_id')
+    # Writes to an existing private notebook need --include-private too (Hivemind passes it; the hook denies it to agents).
+    for name,q in [(n,p) for n,p in ds.choices.items() if n!='notebook']+list(ns.choices.items()):
+        if not any('--include-private' in a.option_strings for a in q._actions):private(q)
 
 def _doc_body(args):
     """A page body as bytes, exactly as given: --body-file, else stdin (in serve, the request's stdin text). Never decoded here."""
@@ -649,28 +654,30 @@ def _doc(args,root,domain):
         if sub=='create':return docs.create_notebook(root,args.doc_domain,args.notebook,args.title,args.visibility,args.private)
         if sub=='update':
             return docs.update_notebook(root,args.doc_domain,args.notebook,args.expected_revision,args.title,args.visibility,args.private,
-                                        _doc_json(args.order_file,'--order-file'),_doc_json(args.icons_file,'--icons-file'),_doc_json(args.pinned_file,'--pinned-file'),_doc_json(args.settings_file,'--settings-file'))
-        return docs.delete_notebook(root,args.doc_domain,args.notebook,args.with_pages)
+                                        _doc_json(args.order_file,'--order-file'),_doc_json(args.icons_file,'--icons-file'),_doc_json(args.pinned_file,'--pinned-file'),_doc_json(args.settings_file,'--settings-file'),
+                                        include_private=private)
+        return docs.delete_notebook(root,args.doc_domain,args.notebook,args.with_pages,private)
     if action=='list':return docs.list_pages(root,args.doc_domain,args.notebook,args.section,private)
     if action=='read':return docs.read_page(root,args.doc_domain,args.notebook,args.path,args.max_chars,private)
-    if action=='create':return docs.create_page(root,args.doc_domain,args.notebook,args.path,_doc_body(args))
-    if action=='write':return docs.write_page(root,args.doc_domain,args.notebook,args.path,_doc_body(args),args.expected_revision)
-    if action=='move':return docs.move(root,args.doc_domain,args.notebook,args.source,args.target,args.rewrite_links)
-    if action=='delete':return docs.delete_page(root,args.doc_domain,args.notebook,args.path,args.expected_revision)
-    if action=='attach':return docs.attach(root,args.doc_domain,args.notebook,args.from_file,args.name)
+    if action=='create':return docs.create_page(root,args.doc_domain,args.notebook,args.path,_doc_body(args),private)
+    if action=='write':return docs.write_page(root,args.doc_domain,args.notebook,args.path,_doc_body(args),args.expected_revision,private)
+    if action=='move':return docs.move(root,args.doc_domain,args.notebook,args.source,args.target,args.rewrite_links,private)
+    if action=='delete':return docs.delete_page(root,args.doc_domain,args.notebook,args.path,args.expected_revision,private)
+    if action=='attach':return docs.attach(root,args.doc_domain,args.notebook,args.from_file,args.name,private)
     if action=='history':return docs.history(root,args.doc_domain,args.notebook,args.path,max(1,min(200,args.limit)),args.version,private)
     if action=='propose':return docs.propose(root,args.doc_domain,args.notebook,args.path,_doc_body(args),args.base_revision,args.note,args.session or os.environ.get(SESSION_ENV),private)
     if action=='proposals':
         names=[canonical_domain(args.doc_domain,root)] if args.doc_domain else every()
         return docs.proposals(root,names,args.notebook,private,args.status)
     if action=='proposal':return docs.show_proposal(root,args.id,private)
-    if action=='accept':return docs.accept(root,args.id,args.expected_revision)
-    if action=='reject':return docs.reject(root,args.id,args.reason)
+    if action=='accept':return docs.accept(root,args.id,args.expected_revision,private)
+    if action=='reject':return docs.reject(root,args.id,args.reason,private)
     from .governance import undo
-    journal=read_json(root/'.operations'/args.operation_id/'journal.json',None) if re.fullmatch(r'[A-Za-z0-9_-]{1,100}',args.operation_id) else None
-    kind=str((journal or {}).get('kind') or '')
-    while kind.startswith('undo:'):kind=str((read_json(root/'.operations'/kind[5:]/'journal.json',None) or {}).get('kind') or '')
-    if not kind.startswith('doc_'):raise ValueError(f'not_found: {args.operation_id} is not a notebook operation; use undo for others')
+    try:journal=read_json(root/'.operations'/args.operation_id/'journal.json',None) if re.fullmatch(r'[A-Za-z0-9_-]{1,100}',args.operation_id) else None
+    except ValueError:journal=None
+    # Judged by what the operation changed, not by its kind: an undo of an undo stays a notebook operation after its parent is pruned (D4).
+    if not isinstance(journal,dict) or not docs.is_notebook_journal(journal.get('effects')):raise ValueError(f'not_found: {args.operation_id} is not a notebook operation; use undo for others')
+    if not private and docs.private_journal(journal,docs.private_scope(root)):raise ValueError(f'not_found: {args.operation_id} is not a notebook operation; use undo for others')
     return undo(root,args.operation_id)
 
 def build_parser():

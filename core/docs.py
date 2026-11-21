@@ -9,12 +9,11 @@ from __future__ import annotations
 import json
 import os
 import re
-import stat
 import uuid
 from pathlib import Path
 
 from .common import canonical_domain, load_bindings
-from .repository import atomic_write, blob_store, digest, find_secret, now, read_json, store_lock, transaction
+from .repository import atomic_write, blob_store, digest, find_secret, is_link_or_junction, now, read_json, store_lock, transaction
 
 MAX_PAGE_BYTES = 4 * 1024 * 1024
 MAX_ASSET_BYTES = 25 * 1024 * 1024
@@ -75,18 +74,12 @@ def _domain(root, domain):
     if not domain:
         raise ValueError("A domain is required")
     name = canonical_domain(domain, root)
-    if not (Path(root) / "domains" / name).is_dir():
+    if not (Path(root) / "domains" / name).is_dir() and not is_notebook_only(root, name):
         raise ValueError(f"not_found: no domain {name}")
     return name
 
 
-def _is_link(path):
-    try:
-        info = os.lstat(path)
-    except FileNotFoundError:
-        return False
-    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
-    return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & reparse)
+_is_link = is_link_or_junction
 
 
 def _rel(domain, nb, path=""):
@@ -183,12 +176,7 @@ KEEP_DAYS = 90
 def _commit(root, changes, kind, meta, summary, expected=None):
     operation_id = DOC_OP_PREFIX + uuid.uuid4().hex
     receipt = transaction(root, changes, kind, expected, operation_id, meta=meta)
-    # A small index beside the journal, so retention need not read every journal's page text (prune_journals).
-    try:
-        atomic_write(Path(root) / ".operations" / operation_id / "doc.json",
-                     json.dumps({"created": now(), "paths": sorted(changes)}, ensure_ascii=False) + "\n")
-    except OSError:
-        pass   # retention falls back to the journal
+    record_index(root, operation_id, changes)   # retention reads this instead of every journal's page text
     receipt.update(kind=kind, summary=summary, undo=f"undo {operation_id}")
     return receipt
 
@@ -265,6 +253,17 @@ def _pages(folder):
     return [p for p in _files(folder) if p.split("/")[0] not in RESERVED and p.casefold().endswith(".md")]
 
 
+def _proposal_files(root, domain, nb):
+    """The proposal files of a notebook, read only through a `.proposals` folder that is not a link or junction."""
+    try:
+        folder = _resolve(root, domain, nb, ".proposals")
+    except ValueError:
+        return []
+    if not folder.is_dir():
+        return []
+    return sorted(p for p in folder.glob("*.json") if PROPOSAL_ID.fullmatch(p.stem) and not _is_link(p))
+
+
 def is_notebook_only(root, domain):
     entry = (load_bindings(Path(root)).get("domains") or {}).get(domain)
     return isinstance(entry, dict) and bool(entry.get("notebook_only"))
@@ -287,7 +286,7 @@ def notebooks(root, domains, include_hidden=False, include_private=False):
             if (meta.get("private") and not include_private) or (meta.get("visibility") == "hidden" and not include_hidden):
                 continue
             assets = [p for p in _files(folder / "assets")] if (folder / "assets").is_dir() else []
-            pending = sum(1 for p in (folder / ".proposals").glob("*.json") if (read_json(p, {}) or {}).get("status") == "pending") if (folder / ".proposals").is_dir() else 0
+            pending = sum(1 for p in _proposal_files(root, domain, folder.name) if (_read_proposal(p) or {}).get("status") == "pending")
             rows.append({"domain": domain, "notebook": folder.name, "title": meta.get("title"), "visibility": meta.get("visibility", "searchable"),
                          "private": bool(meta.get("private")), "revision": revision, "pages": len(_pages(folder)), "assets": len(assets),
                          "asset_bytes": sum((folder / "assets" / a).stat().st_size for a in assets), "proposals": pending,
@@ -312,10 +311,11 @@ def create_notebook(root, domain, nb, title, visibility="searchable", private=Fa
                        {"domain": domain, "notebook": nb, "created": True}, {_rel(domain, nb, "notebook.json"): None})
 
 
-def update_notebook(root, domain, nb, expected=None, title=None, visibility=None, private=None, order=None, icons=None, pinned=None, settings=None):
+def update_notebook(root, domain, nb, expected=None, title=None, visibility=None, private=None, order=None, icons=None, pinned=None, settings=None,
+                    include_private=False):
     root = Path(root).resolve()
     with store_lock(root):
-        domain, nb, meta, revision = _open(root, domain, nb, include_private=True)
+        domain, nb, meta, revision = _open(root, domain, nb, include_private)
         if expected is not None and expected != revision:
             raise ValueError(f"stale_revision: notebook.json of {nb} changed; read it again")
         new = dict(meta)
@@ -357,20 +357,22 @@ def update_notebook(root, domain, nb, expected=None, title=None, visibility=None
                        {_rel(domain, nb, "notebook.json"): revision})
 
 
-def delete_notebook(root, domain, nb, with_pages=False):
+def delete_notebook(root, domain, nb, with_pages=False, include_private=False):
     """Delete a notebook. With pages it needs --with-pages and comes back as a plan to approve, like note deletion."""
     from .governance import plan
     root = Path(root).resolve()
     with store_lock(root):
-        domain, nb, meta, _ = _open(root, domain, nb, include_private=True)
+        domain, nb, meta, _ = _open(root, domain, nb, include_private)
         folder = _resolve(root, domain, nb)
         pages = _pages(folder)
         if pages and not with_pages:
             raise ValueError(f"Notebook {nb} holds {len(pages)} pages; pass --with-pages to plan deleting them too")
-        changes = {_rel(domain, nb, f): None for f in _files(folder)}
+        files = _files(folder)
+        changes = {_rel(domain, nb, f): None for f in files}
         summary = {"domain": domain, "notebook": nb, "pages": len(pages), "files": len(changes)}
         if pages:
-            return plan(root, changes, "doc_notebook_delete", (), summary)
+            # The plan must delete the notebook as it is when applied: a page saved meanwhile makes it stale (D3).
+            return plan(root, changes, "doc_notebook_delete", (), summary, guards={"inventory": {_rel(domain, nb): files}})
         return _commit(root, changes, "doc_notebook_delete", _journal_meta(domain, nb, meta), summary)
 
 
@@ -444,11 +446,11 @@ def _count_check(folder, adding):
         raise ValueError(f"A notebook holds at most {MAX_PAGES} pages")
 
 
-def create_page(root, domain, nb, path, body=b""):
+def create_page(root, domain, nb, path, body=b"", include_private=False):
     root = Path(root).resolve()
     warnings = _check_body(body)
     with store_lock(root):
-        domain, nb, meta, _ = _open(root, domain, nb, include_private=True)
+        domain, nb, meta, _ = _open(root, domain, nb, include_private)
         path = clean_path(path)
         full = _resolve(root, domain, nb, path)
         _clash(root, domain, nb, path)   # first: on Windows a twin differing in case also "exists"
@@ -464,13 +466,13 @@ def create_page(root, domain, nb, path, body=b""):
         return receipt
 
 
-def write_page(root, domain, nb, path, body, expected):
+def write_page(root, domain, nb, path, body, expected, include_private=False):
     root = Path(root).resolve()
     warnings = _check_body(body)
     if not expected:
         raise ValueError("--expected-revision is required: read the page first")
     with store_lock(root):
-        domain, nb, meta, _ = _open(root, domain, nb, include_private=True)
+        domain, nb, meta, _ = _open(root, domain, nb, include_private)
         path = clean_path(path)
         full = _resolve(root, domain, nb, path)
         if not full.exists():
@@ -489,12 +491,12 @@ def write_page(root, domain, nb, path, body, expected):
         return receipt
 
 
-def delete_page(root, domain, nb, path, expected):
+def delete_page(root, domain, nb, path, expected, include_private=False):
     root = Path(root).resolve()
     if not expected:
         raise ValueError("--expected-revision is required: read the page first")
     with store_lock(root):
-        domain, nb, meta, _ = _open(root, domain, nb, include_private=True)
+        domain, nb, meta, _ = _open(root, domain, nb, include_private)
         path = clean_path(path)
         full = _resolve(root, domain, nb, path)
         if not full.is_file():
@@ -514,13 +516,14 @@ def _basename(path):
     return _stem(path).rsplit("/", 1)[-1]
 
 
-def _rewrite_links(text, moved, unique_after):
+def _rewrite_links(text, moved, unique_after, unique_before=lambda name: True):
     """Rewrite [[...]] links whose target is a moved page: a full path (with or without .md) becomes the new full path;
-    a bare name that changed becomes the new name when that is unique in the notebook, else the new path."""
+    a bare name that changed becomes the new name when that is unique in the notebook, else the new path. A bare name is
+    rewritten only when it named one page before the move, so a link to an equal name elsewhere is left alone."""
     by_path = {_stem(old).casefold(): _stem(new) for old, new in moved.items()}
     by_name = {}
     for old, new in moved.items():
-        if _basename(old).casefold() != _basename(new).casefold():
+        if _basename(old).casefold() != _basename(new).casefold() and unique_before(_basename(old)):
             by_name.setdefault(_basename(old).casefold(), []).append(new)
 
     def swap(match):
@@ -536,10 +539,10 @@ def _rewrite_links(text, moved, unique_after):
     return LINK.sub(swap, text)
 
 
-def move(root, domain, nb, source, target, rewrite_links=False):
+def move(root, domain, nb, source, target, rewrite_links=False, include_private=False):
     root = Path(root).resolve()
     with store_lock(root):
-        domain, nb, meta, _ = _open(root, domain, nb, include_private=True)
+        domain, nb, meta, _ = _open(root, domain, nb, include_private)
         folder = _resolve(root, domain, nb)
         is_page = source.casefold().endswith(".md")
         source, target = clean_path(source, page=is_page), clean_path(target, page=is_page)
@@ -550,39 +553,47 @@ def move(root, domain, nb, source, target, rewrite_links=False):
             raise ValueError(f"not_found: no {'page' if is_page else 'section'} {source}")
         if is_page != src.is_file():
             raise ValueError(f"{source} is a {'section' if is_page else 'page'}")
-        case_only = source.casefold() == target.casefold()
-        if not is_page and case_only:
-            raise ValueError("Change the letter case of a section in two steps, through another name")
-        if (target + "/").casefold().startswith((source + "/").casefold()) and not case_only:
+        # On a case-insensitive disk a case-only rename is one file, which a journal cannot undo with its old spelling (R1).
+        if source.casefold() == target.casefold():
+            raise ValueError(f"Change the letter case of a {'page' if is_page else 'section'} in two steps, through another name")
+        if (target + "/").casefold().startswith((source + "/").casefold()):
             raise ValueError("A section cannot move into itself")
-        if not case_only:
-            _clash(root, domain, nb, target)
-        if dst.exists() and not case_only:
+        _clash(root, domain, nb, target)
+        if dst.exists():
             raise ValueError(f"{target} already exists")
         files = [source] if is_page else [f"{source}/{f}" for f in _files(src)]
         moved = {f: target + f[len(source):] for f in files}
-        changes, expected = {}, {}
+        for new in moved.values():
+            clean_path(new, page=new.casefold().endswith(".md"))   # every expanded path, not only the two given (R3)
+        changes, expected, before = {}, {}, {}
         for old, new in moved.items():
             data = _resolve(root, domain, nb, old).read_bytes()
             changes[_rel(domain, nb, old)] = None
             changes[_rel(domain, nb, new)] = data
             expected[_rel(domain, nb, old)] = digest(data)
-        pages = {p for p in _pages(folder) if p not in moved} | {new for new in moved.values() if new.casefold().endswith(".md")}
+            before[new] = data
+        existing = _pages(folder)
+        pages = {p for p in existing if p not in moved} | {new for new in moved.values() if new.casefold().endswith(".md")}
+        page_moves = {o: n for o, n in moved.items() if o.casefold().endswith(".md")}
         rewritten = []
         if rewrite_links:
-            names = {}
-            for p in pages:
-                names[_basename(p).casefold()] = names.get(_basename(p).casefold(), 0) + 1
-            unique_after = lambda name: names.get(name.casefold(), 0) == 1
-            page_moves = {o: n for o, n in moved.items() if o.casefold().endswith(".md")}
+            def counts(paths):
+                out = {}
+                for p in paths:
+                    out[_basename(p).casefold()] = out.get(_basename(p).casefold(), 0) + 1
+                return out
+            names_before, names_after = counts(existing), counts(pages)
+            unique_before = lambda name: names_before.get(name.casefold(), 0) == 1
+            unique_after = lambda name: names_after.get(name.casefold(), 0) == 1
             for page in sorted(pages):
                 rel = _rel(domain, nb, page)
                 data = changes[rel] if rel in changes else _resolve(root, domain, nb, page).read_bytes()
+                before.setdefault(page, data)
                 try:
                     text = data.decode("utf-8")
                 except UnicodeDecodeError:
                     continue
-                new_text = _rewrite_links(text, page_moves, unique_after)
+                new_text = _rewrite_links(text, page_moves, unique_after, unique_before)
                 if new_text != text:
                     if rel not in changes:
                         expected[rel] = digest(data)
@@ -590,18 +601,27 @@ def move(root, domain, nb, source, target, rewrite_links=False):
                     rewritten.append(page)
             if len(rewritten) > MAX_REWRITE:
                 raise ValueError(f"--rewrite-links would change {len(rewritten)} pages; at most {MAX_REWRITE} are rewritten in one move")
-        # Pending proposals follow the pages they would change.
-        proposals = folder / ".proposals"
-        for file in sorted(proposals.glob("*.json")) if proposals.is_dir() else []:
-            value = read_json(file, None)
-            if isinstance(value, dict) and value.get("status") == "pending" and value.get("path") in moved:
-                value["path"] = moved[value["path"]]
+        # Pending proposals follow what they would change, a new page inside a moved section too (R2). When the move rewrote
+        # the links of the page a proposal is based on, the proposal's text gets the same rewrite and the new base revision.
+        for file in _proposal_files(root, domain, nb):
+            value = _read_proposal(file)
+            if not isinstance(value, dict) or value.get("status") != "pending" or not isinstance(value.get("path"), str):
+                continue
+            old_path = value["path"]
+            new_path = moved.get(old_path) or (target + old_path[len(source):] if not is_page and old_path.startswith(source + "/") else old_path)
+            updated = dict(value, path=new_path)
+            new_rel = _rel(domain, nb, new_path)
+            if new_rel in changes and new_path in before and value.get("base_revision") == digest(before[new_path]):
+                updated["base_revision"] = digest(changes[new_rel])
+                if rewrite_links:
+                    updated["body"] = _rewrite_links(str(value.get("body") or ""), page_moves, unique_after, unique_before)
+            if updated != value:
                 rel = _rel(domain, nb, f".proposals/{file.name}")
                 expected[rel] = digest(file.read_bytes())
-                changes[rel] = json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+                changes[rel] = _proposal_text(updated)
         receipt = _commit(root, changes, "doc_move", _journal_meta(domain, nb, meta),
                           {"domain": domain, "notebook": nb, "from": source, "to": target, "pages": len(files), "rewritten": rewritten}, expected)
-        if not is_page and not case_only:
+        if not is_page:
             _prune_empty(src, folder)
         return receipt
 
@@ -616,7 +636,7 @@ def _prune_empty(path, stop):
                 pass
 
 
-def attach(root, domain, nb, source, name=None):
+def attach(root, domain, nb, source, name=None, include_private=False):
     """Copy a file into the notebook's assets as `<sha8>-<name>`. Living Memory reads the file itself, so Hivemind's
     bridge never carries the bytes. An identical attachment already there is reused."""
     root = Path(root).resolve()
@@ -634,7 +654,7 @@ def attach(root, domain, nb, source, name=None):
     asset = f"{sha[:8]}-{name}"
     _check_part(asset)
     with store_lock(root):
-        domain, nb, meta, _ = _open(root, domain, nb, include_private=True)
+        domain, nb, meta, _ = _open(root, domain, nb, include_private)
         full = _resolve(root, domain, nb, f"assets/{asset}")
         link = f"assets/{asset}"
         if full.exists():
@@ -663,6 +683,7 @@ def history(root, domain, nb, path, limit=20, version=None, include_private=Fals
     rel = _rel(domain, nb, path)
     needle = json.dumps(rel)[1:-1].encode()
     rows = []
+    scope = None if include_private else private_scope(root)
     for journal in (root / ".operations").glob("*/journal.json"):
         if version and journal.parent.name != version:
             continue
@@ -672,6 +693,8 @@ def history(root, domain, nb, path, limit=20, version=None, include_private=Fals
                 continue
             value = json.loads(raw)
         except (OSError, ValueError):
+            continue
+        if scope and private_journal(value, scope):
             continue
         for effect in value.get("effects") or []:
             if effect.get("path") != rel:
@@ -724,14 +747,25 @@ def propose(root, domain, nb, path, body, base_revision=None, note=None, session
         return receipt
 
 
+def _read_proposal(file):
+    try:
+        value = read_json(file, None)
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def _find_proposal(root, pid):
     if not isinstance(pid, str) or not PROPOSAL_ID.fullmatch(pid):
         raise ValueError("A proposal id is 12 hexadecimal characters")
     for file in Path(root).glob(f"domains/*/notebooks/*/.proposals/{pid}.json"):
         domain, nb = file.parts[-5], file.parts[-3]
-        _resolve(root, domain, nb, f".proposals/{pid}.json")
-        value = read_json(file, None)
-        if isinstance(value, dict):
+        try:
+            _resolve(root, domain, nb, f".proposals/{pid}.json")
+        except ValueError:
+            continue
+        value = _read_proposal(file)
+        if value is not None:
             return domain, nb, file, value
     raise ValueError(f"not_found: no proposal {pid}")
 
@@ -740,15 +774,14 @@ def proposals(root, domains, nb=None, include_private=False, status="pending", l
     rows = []
     for domain in domains:
         base = Path(root) / "domains" / domain / "notebooks"
-        for file in base.glob("*/.proposals/*.json") if base.is_dir() else []:
+        folders = sorted(p.name for p in base.iterdir() if p.is_dir() and SLUG.fullmatch(p.name)) if base.is_dir() and not _is_link(base) else []
+        for file in [f for notebook in folders if not nb or notebook == nb for f in _proposal_files(root, domain, notebook)]:
             notebook = file.parts[-3]
-            if nb and notebook != nb:
-                continue
             try:
                 _, _, meta, _ = _open(root, domain, notebook, include_private)
             except ValueError:
                 continue
-            value = read_json(file, None)
+            value = _read_proposal(file)
             if not isinstance(value, dict) or (status != "all" and value.get("status") != status):
                 continue
             rows.append({k: value.get(k) for k in ("id", "domain", "notebook", "path", "base_revision", "note", "created", "status", "reason", "settled")}
@@ -763,12 +796,12 @@ def show_proposal(root, pid, include_private=False):
     return {"ok": True, "proposal": value}
 
 
-def accept(root, pid, expected=None):
+def accept(root, pid, expected=None, include_private=False):
     """Write a proposal's text to its page. Refused when the page changed since the proposal's base revision."""
     root = Path(root).resolve()
     with store_lock(root):
         domain, nb, file, value = _find_proposal(root, pid)
-        domain, nb, meta, _ = _open(root, domain, nb, include_private=True)
+        domain, nb, meta, _ = _open(root, domain, nb, include_private)
         if value.get("status") != "pending":
             raise ValueError(f"Proposal {pid} is {value.get('status')}")
         path = clean_path(value["path"])
@@ -789,11 +822,11 @@ def accept(root, pid, expected=None):
         return receipt
 
 
-def reject(root, pid, reason=None):
+def reject(root, pid, reason=None, include_private=False):
     root = Path(root).resolve()
     with store_lock(root):
         domain, nb, file, value = _find_proposal(root, pid)
-        domain, nb, meta, _ = _open(root, domain, nb, include_private=True)
+        domain, nb, meta, _ = _open(root, domain, nb, include_private)
         if value.get("status") != "pending":
             raise ValueError(f"Proposal {pid} is {value.get('status')}")
         prel = _rel(domain, nb, f".proposals/{pid}.json")
@@ -822,11 +855,29 @@ def private_folders(root):
     return [p.parent for p in Path(root).glob("domains/*/notebooks/*/notebook.json") if _private_meta(p)]
 
 
-def private_scope(root):
+def private_scope(root, changes=None):
     """(path prefixes, uids) of every notebook that is or ever was private: their operations are redacted from history,
-    diff and inspect-plan unless the caller passes --include-private. A damaged registry redacts every notebook."""
+    diff and inspect-plan unless the caller passes --include-private. A damaged registry redacts every notebook.
+    changes: a plan's changes, whose incoming notebook.json files and registry count as well (a restore from another store)."""
     root = Path(root)
     prefixes, uids = set(), set()
+    for rel, text in (changes or {}).items():
+        if not isinstance(text, str):
+            continue
+        try:
+            value = json.loads(text)
+        except ValueError:
+            value = None
+        if rel == PRIVACY:
+            for e in value.get("notebooks") or [] if isinstance(value, dict) else []:
+                if isinstance(e, dict) and e.get("domain") and e.get("notebook"):
+                    prefixes.add(f"domains/{e['domain']}/notebooks/{e['notebook']}/")
+                    if e.get("uid"):
+                        uids.add(e["uid"])
+        elif NOTEBOOK_PATH.match(rel) and rel.endswith("/notebook.json") and (not isinstance(value, dict) or value.get("private")):
+            prefixes.add(rel[: -len("notebook.json")])
+            if isinstance(value, dict) and value.get("uid"):
+                uids.add(value["uid"])
     try:
         registry = read_json(root / PRIVACY, None) or {}
         entries = registry.get("notebooks") if isinstance(registry, dict) else None
@@ -878,6 +929,55 @@ def private_read(paths, cwd, root, search):
     return None
 
 
+def redact_summary(summary, scope):
+    """A plan or operation summary without the notebooks and paths that `scope` makes private."""
+    if not isinstance(summary, dict):
+        return summary
+    out = {}
+    for key, value in summary.items():
+        if key == "notebooks" and isinstance(value, list):
+            out[key] = [v for v in value if not is_private_path("domains/{}/notebooks/{}/".format(*(str(v).split("/", 1) + [""])[:2]), scope)]
+        elif key in ("notebook", "path", "from", "to", "rewritten", "proposal") and summary.get("domain") and summary.get("notebook") and \
+                is_private_path(f"domains/{summary['domain']}/notebooks/{summary['notebook']}/", scope):
+            continue
+        else:
+            out[key] = value
+    return out
+
+
+def merge_privacy(root, text):
+    """The privacy registry `text` plus every entry the live registry has: it only grows, so undo and restore never expose
+    what a notebook held while it was private."""
+    try:
+        given = json.loads(text) if text else {}
+    except ValueError:
+        given = {}
+    try:
+        live = read_json(Path(root) / PRIVACY, None) or {}
+    except ValueError:
+        live = {}
+    entries = [e for e in (given.get("notebooks") if isinstance(given, dict) and isinstance(given.get("notebooks"), list) else []) if isinstance(e, dict)]
+    for e in live.get("notebooks") or [] if isinstance(live, dict) else []:
+        if isinstance(e, dict) and e not in entries:
+            entries.append(e)
+    return json.dumps({"version": 1, "notebooks": entries}, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+
+def is_notebook_journal(effects):
+    """Whether an operation changed only notebook files (and the privacy registry): a notebook operation, whatever its kind."""
+    paths = [e.get("path") for e in effects or [] if isinstance(e, dict)]
+    return bool(paths) and all(isinstance(p, str) and (NOTEBOOK_PATH.match(p) or p == PRIVACY) for p in paths) and any(NOTEBOOK_PATH.match(p) for p in paths)
+
+
+def record_index(root, operation_id, paths):
+    """The small doc.json beside a notebook operation's journal that retention reads instead of the journal."""
+    try:
+        atomic_write(Path(root) / ".operations" / operation_id / "doc.json",
+                     json.dumps({"created": now(), "paths": sorted(paths)}, ensure_ascii=False) + "\n")
+    except OSError:
+        pass   # retention falls back to the journal
+
+
 def private_journal(journal, scope):
     """Whether an operation touched a private notebook: by the uid it recorded, or by any path it changed."""
     meta = journal.get("meta") if isinstance(journal, dict) else None
@@ -899,6 +999,11 @@ def init_notebook_domain(name, root):
         settings, read = _read_bindings(root, {"version": 2, "domains": {}, "search_scope": {"global_domains": ["_global"], "foreign_domains": []}})
         if not isinstance(settings, dict) or not isinstance(settings.get("domains", {}), dict):
             raise ValueError("Invalid bindings preserved")
+        entry = settings.get("domains", {}).get(name)
+        if isinstance(entry, dict) and entry.get("notebook_only"):
+            # Bound already (an interrupted create, a restore or a relocation): make sure its folder is there.
+            (root / "domains" / name / "notebooks").mkdir(parents=True, exist_ok=True)
+            return {"ok": True, "domain": name, "kind": "notebook", "existing": True}
         if name in settings.get("domains", {}) or (root / "domains" / name).exists():
             raise ValueError(f"Domain {name} already exists")
         settings.setdefault("domains", {})[name] = {"prefixes": [], "notebook_only": True}

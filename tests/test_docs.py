@@ -126,8 +126,7 @@ class Moves(Fixture):
         with self.assertRaisesRegex(ValueError,'into itself'):docs.move(self.root,'demo','nb1','A','A/sub/A')
         docs.move(self.root,'demo','nb1','A','B')
         self.assertEqual(self.file('B/sub/two.md').read_bytes(),b'2');self.assertFalse(self.file('A').exists())
-        docs.move(self.root,'demo','nb1','B/one.md','B/One.md')
-        self.assertIn('One.md',os.listdir(self.file('B')))
+        with self.assertRaisesRegex(ValueError,'two steps'):docs.move(self.root,'demo','nb1','B/one.md','B/One.md')   # R1
 
     def test_pending_proposal_follows_its_page(self):
         self.notebook();self.page('p.md',b'x')
@@ -202,7 +201,8 @@ class Attachments(Fixture):
         self.assertFalse(self.file('a.md').exists())
         self.ok('undo',applied['operation_id'])
         self.assertEqual(self.file('a.md').read_bytes(),PAGE)
-        self.assertEqual(self.file(f'assets/{digest(b"\x00pic")[:8]}-pic.bin').read_bytes(),b'\x00pic')
+        sha=digest(b'\x00pic')   # outside the f-string: Python before 3.12 refuses a backslash there
+        self.assertEqual(self.file(f'assets/{sha[:8]}-pic.bin').read_bytes(),b'\x00pic')
 
 
 class Proposals(Fixture):
@@ -248,7 +248,7 @@ class Proposals(Fixture):
 class Privacy(Fixture):
     def test_private_notebook_is_hidden_and_redacted(self):
         made=self.notebook('secret',private=True);self.notebook('open')
-        written=docs.create_page(self.root,'demo','secret','plan.md',b'private words\n')
+        written=docs.create_page(self.root,'demo','secret','plan.md',b'private words\n',include_private=True)
         names=[n['notebook'] for n in self.ok('doc','notebooks')['notebooks']];self.assertEqual(names,['open'])
         self.assertIn('secret',[n['notebook'] for n in self.ok('doc','notebooks','--include-private')['notebooks']])
         code,text=self.fails('doc','read','demo','secret','plan.md');self.assertIn('not_found',text)
@@ -262,8 +262,8 @@ class Privacy(Fixture):
     def test_made_public_stays_redacted_for_old_operations(self):
         self.notebook('was')
         docs.update_notebook(self.root,'demo','was',private=True)
-        written=docs.create_page(self.root,'demo','was','p.md',b'while private\n')
-        docs.update_notebook(self.root,'demo','was',private=False)
+        written=docs.create_page(self.root,'demo','was','p.md',b'while private\n',include_private=True)
+        docs.update_notebook(self.root,'demo','was',private=False,include_private=True)
         self.assertNotIn('while private',json.dumps(self.ok('diff',written['operation_id'])))
 
     def test_hidden_notebooks_need_include_hidden(self):

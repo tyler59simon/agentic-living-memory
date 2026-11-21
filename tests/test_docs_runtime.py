@@ -11,7 +11,7 @@ class Hook(StoreFixture):
     def setUp(self):
         super().setUp()
         docs.create_notebook(self.root,'demo','open','Open');docs.create_page(self.root,'demo','open','p.md',b'public\n')
-        docs.create_notebook(self.root,'demo','secret','Secret',private=True);docs.create_page(self.root,'demo','secret','p.md',b'private\n')
+        docs.create_notebook(self.root,'demo','secret','Secret',private=True);docs.create_page(self.root,'demo','secret','p.md',b'private\n',include_private=True)
         (self.base/'elsewhere').mkdir()
     def command(self,rest):return f'"{sys.executable}" "{runtime.SCRIPT}" --root "{self.root}" --domain demo {rest}'
     def hook(self,tool,tool_input,cwd=None,**extra):
@@ -65,7 +65,7 @@ class Hook(StoreFixture):
                 self.assertNotIn('deny',self.hook('Read',{'file_path':str(self.root/'domains'/'demo'/'notebooks'/'open'/'p.md')},cwd=cwd))
         self.assertEqual(self.hook('Grep',{'pattern':'x'},cwd=self.root).get('deny'),runtime.PRIVATE_READ_DENY)
         self.assertNotIn('deny',self.hook('Grep',{'pattern':'x','path':str(self.base/'project')}))
-        docs.update_notebook(self.root,'demo','secret',private=False)
+        docs.update_notebook(self.root,'demo','secret',private=False,include_private=True)
         self.assertNotIn('deny',self.hook('Read',{'file_path':str(secret/'p.md')}))
 
     def test_a_damaged_notebook_json_counts_as_private(self):

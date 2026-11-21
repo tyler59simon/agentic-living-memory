@@ -41,17 +41,17 @@ def quick(payload):
                 path=Path(os.path.expandvars(value.strip())).expanduser()
                 found.append(_git_root(path if path.is_absolute() else Path(cwd)/path))
         if not found:found.append(_git_root(cwd))
-        # A store that has had private notebooks (NS-2A): a read inside the store, or a search above it, goes to the full hook, which checks them.
-        if (root/'notebook-privacy.json').exists():
-            for key in PATH_KEYS+('pattern',):
-                value=args.get(key)
-                if key=='pattern':value=value.split('*')[0].split('?')[0].split('[')[0].split('{')[0] if name=='glob' and isinstance(value,str) else None
-                if not isinstance(value,str) or not value.strip():continue
-                path=Path(os.path.expandvars(value.strip())).expanduser()
-                path=(path if path.is_absolute() else Path(cwd)/path).resolve()
-                if path.is_relative_to(root) or (name!='read' and root.is_relative_to(path)):return None
-            here=Path(cwd).resolve()
-            if name!='read' and not any(args.get(k) for k in PATH_KEYS) and (here.is_relative_to(root) or root.is_relative_to(here)):return None
+        # Reads inside the store, and searches over it, go to the full hook, which checks private notebooks (NS-2A). This does not
+        # depend on notebook-privacy.json: a damaged notebook.json counts as private there too.
+        for key in PATH_KEYS+('pattern',):
+            value=args.get(key)
+            if key=='pattern':value=value.split('*')[0].split('?')[0].split('[')[0].split('{')[0] if name=='glob' and isinstance(value,str) else None
+            if not isinstance(value,str) or not value.strip():continue
+            path=Path(os.path.expandvars(value.strip())).expanduser()
+            path=(path if path.is_absolute() else Path(cwd)/path).resolve()
+            if path.is_relative_to(root) or (name!='read' and root.is_relative_to(path)):return None
+        here=Path(cwd).resolve()
+        if name!='read' and not any(args.get(k) for k in PATH_KEYS) and (here.is_relative_to(root) or root.is_relative_to(here)):return None
         agent=str(payload.get('agent_id') or payload.get('agentId') or '')
         for repo in dict.fromkeys(r for r in found if r):
             done=(repos.get(repo.as_posix()) or {}).get('done') or []

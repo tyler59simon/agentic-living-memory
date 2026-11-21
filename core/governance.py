@@ -34,7 +34,7 @@ def plan(root, changes, kind, domains=(), summary=None, guards=None):
         changes={rel:({'blob':digest(bytes(v))} if rel in staged else v) for rel,v in changes.items()}
         value={'schema':2,'id':plan_id,'kind':kind,'domains':sorted(set(domains)),
                'created':now(),'changes':changes,'expected':expected,'summary':summary or {'files':len(changes)}}
-        if guards:value['guards']={k:(v if k=='read_set' else sorted(set(v))) for k,v in guards.items() if v}
+        if guards:value['guards']={k:(v if k in ('read_set','inventory') else sorted(set(v))) for k,v in guards.items() if v}
         value['digest']=hashlib.sha256(canonical_json(value).encode()).hexdigest()
         path=root/'.plans'/(value['id']+'.json');atomic_write(path,canonical_json(value))
         return {'ok':True,'plan_id':value['id'],'digest':value['digest'],'kind':kind,'summary':value['summary']}
@@ -52,7 +52,7 @@ def _plan_changes(root,value):
         else:out[rel]=v
     return out
 
-def commit(root,changes,kind,domains=(),summary=None,guards=None,sync_overlay=True):
+def commit(root,changes,kind,domains=(),summary=None,guards=None,sync_overlay=True,operation_id=None,meta=None):
     """A direct write: what plan() then apply() do, in one call under one lock, with no plan to approve. The journal is the receipt:
     its operation ID (prefix `d-`, which tells a direct operation from a plan-applied one) is what `undo` takes."""
     root=Path(root).resolve()
@@ -62,9 +62,9 @@ def commit(root,changes,kind,domains=(),summary=None,guards=None,sync_overlay=Tr
             p=confined(root,rel)
             expected[rel]=digest(p.read_bytes()) if p.exists() else None
         domains=sorted(set(domains))
-        if guards:_check_guards(root,{'guards':{k:(v if k=='read_set' else sorted(set(v))) for k,v in guards.items() if v},'domains':domains,'changes':changes})
-        operation_id='d-'+uuid.uuid4().hex
-        receipt=transaction(root,changes,kind,expected,operation_id)
+        if guards:_check_guards(root,{'guards':{k:(v if k in ('read_set','inventory') else sorted(set(v))) for k,v in guards.items() if v},'domains':domains,'changes':changes})
+        operation_id=operation_id or 'd-'+uuid.uuid4().hex
+        receipt=transaction(root,changes,kind,expected,operation_id,meta=meta)
         for domain in domains:
             try:reconcile(domain,root,sync_overlay=sync_overlay)
             except Exception as exc:
@@ -108,6 +108,12 @@ def _check_guards(root,value):
         path=confined(root,rel)
         if (digest(path.read_bytes()) if path.exists() else None)!=expected:
             raise ValueError('stale plan: a file this plan depends on changed: '+rel)
+    # inventory: a folder must still hold exactly these files (deleting a notebook must not strand a page added since; NS-2A).
+    for rel,expected in guards.get('inventory',{}).items():
+        from .docs import _files
+        folder=confined(root,rel)
+        if (_files(folder) if folder.is_dir() else [])!=sorted(expected):
+            raise ValueError('stale plan: files were added to or removed from '+rel+' since the plan was made; make a new plan')
     absent=set(guards.get('absent_ids',[]));unused=set(guards.get('unused_tags',[]))
     if not (absent or unused):return   # file guards only (setup plans in a harness home): no notes to scan
     folders=sorted(p.name for p in (root/'domains').iterdir() if p.is_dir()) if (root/'domains').is_dir() else []
@@ -124,7 +130,14 @@ def history(root,note_id=None,limit=20,include_private=False):
     root=Path(root).resolve();rows=[]
     if note_id:
         from .activity import note_history   # only operations that changed the note itself, from the activity cache
-        return note_history(root,note_id,limit)
+        rows=note_history(root,note_id,limit)
+        if not include_private:
+            from .docs import private_scope,is_private_path
+            scope=private_scope(root)
+            for row in rows:
+                kept=[f for f in row.get('files') or [] if not is_private_path(f,scope)]
+                if len(kept)!=len(row.get('files') or []):row.update(files=kept,redacted=len(row['files'])-len(kept))
+        return rows
     from .activity import _entries,operation_label
     from .docs import private_scope,private_journal,is_private_path
     entries=_entries(root);scope=None if include_private else private_scope(root)
@@ -151,7 +164,7 @@ def inspect_plan(root,identity,full=False,include_private=False):
     if not re.fullmatch('[a-f0-9]{32}',identity):raise ValueError('Invalid plan identity')
     root=Path(root);value=read_json(root/'.plans'/(identity+'.json'))
     if not value:raise ValueError('Plan unavailable')
-    effects=[];scope=None if include_private else private_scope(root);redacted=0
+    effects=[];scope=None if include_private else private_scope(root,value['changes']);redacted=0
     for rel,after in value['changes'].items():
         if scope and is_private_path(rel,scope):redacted+=1;continue
         path=confined(root,rel)
@@ -162,7 +175,11 @@ def inspect_plan(root,identity,full=False,include_private=False):
         before=path.read_bytes().decode('utf-8',errors='replace') if path.exists() else ''   # a damaged file being repaired still shows
         delta=''.join(difflib.unified_diff(before.splitlines(True),(after or '').splitlines(True),fromfile=rel,tofile=rel))
         effects.append({'path':rel,'expected_revision':value['expected'][rel],'action':'delete' if after is None else 'write','diff':delta[:cut],'truncated':cut is not None and len(delta)>cut})
-    result={'ok':True,'plan_id':identity,'digest':value['digest'],'kind':value['kind'],'summary':value['summary'],'effects':effects}
+    summary=value['summary']
+    if redacted:
+        from .docs import redact_summary
+        summary=redact_summary(summary,scope)
+    result={'ok':True,'plan_id':identity,'digest':value['digest'],'kind':value['kind'],'summary':summary,'effects':effects}
     if redacted:result['redacted']=redacted
     return result
 
@@ -239,6 +256,15 @@ def undo(root,operation_id):
         return kept.read_bytes()
     changes={e['path']:before(e) for e in value['effects']}
     domains=reconciled_domains(changes)
+    from .docs import is_notebook_journal,PRIVACY,merge_privacy,DOC_OP_PREFIX,record_index
+    notebook_op=is_notebook_journal(value['effects'])
+    if PRIVACY in changes:
+        # Every notebook that was ever private stays listed, so undoing a privacy change never exposes what was written meanwhile.
+        current=(root/PRIVACY).read_text(encoding='utf-8') if (root/PRIVACY).exists() else None
+        merged=merge_privacy(root,changes[PRIVACY] or '')
+        value['effects']=[e for e in value['effects'] if e['path']!=PRIVACY]   # the registry may have grown since: no precondition on it
+        if merged==current:changes.pop(PRIVACY)
+        else:changes[PRIVACY]=merged
     # Check and record under one lock: an edit between the check and the plan's snapshot would be overwritten.
     with store_lock(root):
         for effect in value['effects']:
@@ -261,7 +287,15 @@ def undo(root,operation_id):
         while kind.startswith('undo:'):   # an undo of X: judged by X's kind
             try:judged=read_json(root/'.operations'/kind[5:]/'journal.json');kind=str(judged['kind']);judged_effects=judged.get('effects') or []
             except (ValueError,KeyError,TypeError):break
+        # A `doc-` undo was itself undone directly (plans apply under `d-` ids), so its chain stays direct after retention prunes the parent.
+        if kind.startswith('undo:') and notebook_op and operation_id.startswith(DOC_OP_PREFIX):kind='doc_undo'
         if _plan_kind(kind,judged_effects):return plan(root,changes,'undo:'+operation_id,domains,guards=guards)
+        if notebook_op:
+            # A `doc-` id and the journal's meta: notebook retention covers the undo, and doc undo still knows it after its parent is pruned.
+            new_id=DOC_OP_PREFIX+uuid.uuid4().hex
+            receipt=commit(root,changes,'undo:'+operation_id,domains,guards=guards,operation_id=new_id,meta=value.get('meta'))
+            record_index(root,new_id,changes)
+            return receipt
         return commit(root,changes,'undo:'+operation_id,domains,guards=guards)
 
 def remap(root,mappings):

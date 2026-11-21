@@ -73,8 +73,15 @@ def _maintenance_files(root):
     return found
 
 def _allowed(name):
-    return (name in TOP_LEVEL or name==MANIFEST or bool(MEMBER.fullmatch(name)) or bool(NOTEBOOK.fullmatch(name)) or bool(LEDGER.fullmatch(name))
-            or bool(MAINT.fullmatch(name))) and '..' not in name.split('/')
+    if not name or name.startswith('/') or '\\' in name or any(part in ('','.','..') for part in name.split('/')):return False
+    if NOTEBOOK.fullmatch(name):
+        # Notebook members obey the page name rules, so a Windows alias (a trailing dot or space, a device name) cannot land on another file.
+        from .docs import _check_part
+        try:
+            for part in name.split('/')[4:]:_check_part(part)
+        except ValueError:return False
+        return True
+    return name in TOP_LEVEL or name==MANIFEST or bool(MEMBER.fullmatch(name)) or bool(LEDGER.fullmatch(name)) or bool(MAINT.fullmatch(name))
 
 def snapshots(root):
     """Existing snapshots, newest first: by timestamp, then by same-second sequence (lm-T.zip, lm-T-1.zip, ...)."""
@@ -146,10 +153,13 @@ def verify(path):
     """[{member, problem}] for members that are not readable: a note that is not UTF-8 or has no parseable frontmatter, a page
     that is not UTF-8, invalid JSON, an attachment over the size cap. Raises ValueError for a member outside the canonical set."""
     from .docs import MAX_ASSET_BYTES
-    found=[]
+    found=[];seen={}
     with zipfile.ZipFile(path) as archive:
         for info in archive.infolist():
             if info.is_dir() or not _allowed(info.filename):raise ValueError(f'Backup member outside the canonical set: {info.filename}')
+            folded=info.filename.casefold()
+            if folded in seen:raise ValueError(f'Backup members {seen[folded]} and {info.filename} name the same file')
+            seen[folded]=info.filename
             if ASSET.fullmatch(info.filename):
                 # Size only; reading it through still checks the CRC, a chunk at a time.
                 if info.file_size>MAX_ASSET_BYTES:found.append({'member':info.filename,'problem':'attachment over the size cap'});continue
@@ -225,18 +235,21 @@ def _keep_live_domains(root,text,notebooks):
         base=Path(root)/'domains'/name/'notebooks'
         held={f'{name}/{p.parent.name}' for p in base.glob('*/notebook.json')} if base.is_dir() else set()
         if name not in restored['domains'] and held-notebooks:restored['domains'][name]=entry;added=True
+        old=restored['domains'].get(name)
+        notes=any(MEMBER.fullmatch(f) for f in canonical_files_of(root,name))
+        if isinstance(old,dict) and old.get('notebook_only') and isinstance(entry,dict) and not entry.get('notebook_only') and notes:
+            restored['domains'][name]=entry;added=True   # converted to a memory domain since the snapshot, and its notes are still here
     return canonical_json(restored) if added else text
+
+def canonical_files_of(root,domain):
+    """The note files of one domain (notes/ and archive/)."""
+    base=Path(root)/'domains'/domain
+    return [p.relative_to(root).as_posix() for folder in ('notes','archive') if (base/folder).is_dir() for p in (base/folder).rglob('*.md') if p.is_file()]
 
 def _merge_privacy(root,text):
     """The privacy registry only grows: a restore keeps every entry the live one has, so old private operations stay redacted."""
-    try:restored=read_json_bytes(text.encode('utf-8'))
-    except ValueError:restored={}
-    try:live=read_json(Path(root)/'notebook-privacy.json',{}) or {}
-    except ValueError:live={}
-    entries=[e for e in (restored.get('notebooks') if isinstance(restored,dict) and isinstance(restored.get('notebooks'),list) else []) if isinstance(e,dict)]
-    for e in live.get('notebooks') or [] if isinstance(live,dict) else []:
-        if isinstance(e,dict) and e not in entries:entries.append(e)
-    return json.dumps({'version':1,'notebooks':entries},ensure_ascii=False,sort_keys=True,indent=2)+'\n'
+    from .docs import merge_privacy
+    return merge_privacy(root,text)
 
 def restore_plan(root,source):
     """An exact-hash plan that makes the canonical set match a snapshot. Notes in domains the snapshot

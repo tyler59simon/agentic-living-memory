@@ -201,12 +201,20 @@ def _parsed(text,grammar=None):
     found=[_words(rest,g) for g in ((grammar,) if grammar in SHELL_GRAMMARS else SHELL_GRAMMARS)]
     return None if any(words is None for words in found) else found
 
+VALUE_OPTIONS=('--root','--domain','--cwd','--actor')
+
+def _option_width(word):
+    """How many words an option takes as argparse reads it: 2 for --root, --domain, --cwd and --actor and their abbreviations
+    (--dom), 1 for any other option and for --opt=value."""
+    if '=' in word:return 1
+    if word in GLOBAL_OPTIONS:return 2
+    return 2 if len(word)>=3 and word.startswith('--') and any(o.startswith(word) for o in VALUE_OPTIONS) else 1
+
 def _subcommand(words):
     index=0
     while index<len(words):
         token=words[index]
-        if token in GLOBAL_OPTIONS:index+=2;continue
-        if token=='--json':index+=1;continue
+        if token.startswith('-'):index+=_option_width(token);continue
         return token
     return None
 
@@ -224,6 +232,8 @@ HIVEMIND_DENY=('Applying or undoing a plan, the direct writes (archive, rewrite,
                'for the rest, tell the user what to change.')
 # `doc` actions that write (NS-2A). `doc propose` is missing on purpose: it only stages an edit for the user, so agents may run it.
 DOC_WRITE_ACTIONS={'notebook','create','write','move','delete','attach','accept','reject','undo'}
+# What agents may run. Anything else after `doc`, an unknown word included, counts as a write.
+DOC_AGENT_ACTIONS={'notebooks','list','read','history','propose','proposals','proposal'}
 PRIVATE_DENY='Living Memory: private notebooks are for Hivemind itself; agents do not see them, so --include-private is not available here.'
 PRIVATE_READ_DENY='Living Memory: that path holds a private notebook, which agents do not read. Ask the user if you need its content.'
 # File-reading tools checked against private notebooks; the search tools also may not walk a folder that holds one.
@@ -245,20 +255,28 @@ def _names_memory(tokens):
     return any(t.lower().endswith(('living_memory.py','living_memory')) or re.split(r'[\\/]',t)[-1].lower() in ('alm','alm.exe','alm.cmd') for t in tokens)
 
 def _doc_action(words):
-    """The action of a `doc` command (the first word after `doc` that is not an option), or None."""
+    """The action of a `doc` command (the first word after `doc` that is not an option or an option's value), or None."""
     index=0
-    while index<len(words) and words[index]!='doc':index+=2 if words[index] in GLOBAL_OPTIONS else 1
+    while index<len(words) and words[index]!='doc':index+=_option_width(words[index]) if words[index].startswith('-') else 1
     index+=1
     while index<len(words):
         word=words[index]
-        if word in GLOBAL_OPTIONS:index+=2;continue
-        if word.startswith('-'):index+=1;continue
+        if word.startswith('-'):index+=_option_width(word);continue
         return word
     return None
 
 def doc_write(text,grammar):
-    """True when a `doc` command writes: every action but the reads and `doc propose`."""
-    return any(_doc_action(words) in DOC_WRITE_ACTIONS for words in _parsed(text,grammar) or [])
+    """True when a `doc` command may write: any action but the reads and `doc propose`, and any action it cannot name."""
+    return any(_doc_action(words) not in DOC_AGENT_ACTIONS for words in _parsed(text,grammar) or [] if _subcommand(words)=='doc')
+
+def serve_command(text,grammar):
+    """True when a shell command runs `serve`, the JSON-lines server for apps: its requests carry their own arguments, which
+    the hook never sees. Text that cannot be parsed counts when it names living_memory or `alm` and a `serve` token."""
+    parsed=_parsed(text,grammar)
+    if parsed:return any(_subcommand(words)=='serve' for words in parsed)
+    tokens=[t for t in re.split(r'''[\s;&|()"'`{}<>=,]+''',text) if t]
+    return _names_memory(tokens) and 'serve' in tokens
+SERVE_DENY='Living Memory: serve is the request server for apps such as Hivemind, not for agents; run the command itself.'
 
 def include_private(text,grammar):
     """True when a memory command asks for private notebooks: --include-private or an argparse abbreviation of it. Text that cannot be
@@ -280,7 +298,7 @@ def hivemind_governed(text,grammar):
     subs=[_subcommand(words) for words in parsed or []]
     if parsed and all(sub and not sub.startswith('-') for sub in subs):   # an option in the subcommand slot (--domain=x, --dom x) is not a subcommand: read the tokens
         return any(sub in HIVEMIND_GOVERNED or (sub=='setup' and any(flag(w) for w in words)) or (sub=='taxonomy' and 'add' in words)
-                   or (sub=='doc' and _doc_action(words) in DOC_WRITE_ACTIONS) for sub,words in zip(subs,parsed))
+                   or (sub=='doc' and _doc_action(words) not in DOC_AGENT_ACTIONS) for sub,words in zip(subs,parsed))
     tokens=[t for t in re.split(r'''[\s;&|()"'`{}<>=,]+''',text) if t]
     return _names_memory(tokens) and (any(t in HIVEMIND_GOVERNED or flag(t) for t in tokens) or ('taxonomy' in tokens and 'add' in tokens)
                                       or ('doc' in tokens and any(t in DOC_WRITE_ACTIONS for t in tokens)))
@@ -1911,6 +1929,9 @@ def _process(harness,event,payload,root=None,info=None):
         name=str(payload.get('tool_name') or payload.get('toolName') or '').lower();text=shell_command(args) if name in SHELL_TOOLS else ''
         if text and include_private(text,shell_grammar(name)):
             detail.update(tool=name,decision='deny:private');result['deny']=PRIVATE_DENY
+            return result
+        if text and serve_command(text,shell_grammar(name)):   # G8: its requests could carry --include-private past this check
+            detail.update(tool=name,decision='deny:serve');result['deny']=SERVE_DENY
             return result
         if name in PRIVATE_READ_TOOLS:
             from .docs import private_read
