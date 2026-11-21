@@ -249,3 +249,22 @@ Landed on 2026-11-21: the design correction `23a812a`, the implementation `349df
 - `doc search`, `doc tasks`, `doc query` and `doc folder` are NS-2B, as planned.
 
 **Code review.** Codex (`gpt-6.2-sol`, effort high, read-only) reviewed `349df94` and then each fix commit: 22 findings, then 14, then 13. Claude found every one accurate; each is fixed with a regression test. One finding of the third round was a regression from the second round's cleanup. No fourth round followed, by the rule of about three rounds. Verdicts, fixes, tests, the limits that remain and Codex's three reports are in `docs/reviews/ns2a-codex-review.md`.
+
+### NS-2B
+
+Landed on 2026-11-21: the design correction `5b8e186`, the implementation `5723a24`, and the review fixes `762e082`, `2412053` and `6437686`.
+
+**Verified**
+- The full suite, `py -3 -m unittest discover -s tests` in four chunks: 2,364 tests, 4 skipped. `scripts/simulate.py`: 103 scenarios passed. Both run with `LIVING_MEMORY_OFF` unset.
+- Notebook search and reach tests: `tests/test_docs_search.py` (12), `tests/test_docs_inject.py` (8), `tests/test_docs_sync.py` (11) and `tests/test_sources_notebooks.py` (14), plus the review tests `tests/test_docs_review2b.py` (30), `tests/test_docs_review2b2.py` (23) and `tests/test_docs_review2b3.py` (23), each failing on the commit it fixes.
+- `scripts/eval_retrieval.py` on the three synthetic fixtures (`tests/fixtures/eval_synthetic.json`, `eval_cross.json`, `eval_units.json`) scores the same at `5b8e186` and at `6437686`: retrieval on notes is unchanged. SessionStart differed only by the length of the checkout path in the CMD line.
+- Not run: an installed build (installing needs the user's approval of the `install.py --plan` digest), Hivemind against these commands (NS-2C), the hooks in a live agent session, and the vault mirror against a running Obsidian. The POSIX branch of the mirror's no-replace move was tested by giving `notebook_sync` POSIX rename semantics on Windows, not on a POSIX system.
+
+**Deviations from section 8**
+- Folder notebook membership and reach are worked out from the registry and sidecars when a source is walked and when each hit is served; nothing about notebooks is stored in `sources.sqlite3`, and `sources.VERSION` stays 2 (section 12b).
+- A digest made from a file now in a hidden or private notebook is withheld in search, ask and the prompt hook, and stays memory (`read` shows it).
+- The registry and the mirror state are hidden from history and diffs without `--include-private`; applying, undoing or recovering a registry change needs the flag only when it would make a hidden or private folder less strict.
+- Notebook-only domains have no vault and are not mirrored; vault attachments flow from memory to the vault only.
+- The vault mirror writes without a vault journal, and `overlay-teardown-plan` lists notebook copies in the plan's own `mirror` field.
+
+**Code review.** Codex (`gpt-6.2-sol`, effort high, read-only) reviewed `5723a24` and then each fix commit: 29 findings, then 21, then 23. Claude found every one accurate. 72 are fixed, each with a regression test; F05 (a junction swapped into the vault mirror during a teardown) is a recorded limit. Most second and third round findings were fixes that held only for the input their test used. No fourth round followed, by the rule of about three rounds. Verdicts, fixes, tests, the limits that remain and Codex's three reports are in `docs/reviews/ns2b-codex-review.md`.
