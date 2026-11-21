@@ -102,6 +102,8 @@ Trust model: `--actor` is self-declared (it defaults from `LIVING_MEMORY_ACTOR`)
 
 ## 8. Search and agent reach (NS-2B)
 
+Section 12b corrects this section where the code differs; where they disagree, 12b holds.
+
 ### 8.1 One result shape for both notebook kinds
 
 - `search` and `ask` gain a `pages` array after `results` and `notes`: `{ origin: "lm" | "folder", domain, notebook, title, path, heading, snippet, line_start, line_end, revision, score, label: "notebook page" }`. For several questions, each entry in `questions` gains its own `pages`. Folder notebook chunks appear only in `pages`, never in `sources`, and `search --sources` keeps returning non-notebook sources only. Existing fields keep their meaning, so current parsers are unaffected.
@@ -149,6 +151,32 @@ Folder notebooks live outside the store; Living Memory reaches them through sour
 On 2026-11-20, before writing NS-2A, Claude checked this design against the code (`agentic-living-memory` main at `af4ed75`) and corrected the claims that did not hold: backups have no manifest yet; `repository.confined` misses junctions; `governance.commit` takes no caller revision; `governance.undo` and `plan` handle text only and reconcile every domain they touch; `doctor`, relocation and `init_domain` assume `notes/`; and the hook's auto-allow test and `hookfast` are separate from the mutating check. Sections 2 to 7 carry the corrections.
 
 Further changes made while writing NS-2A (Claude, 2026-11-20): `doc` operations have ids starting `doc-`; a damaged `notebook.json` counts as private and a damaged `notebook-privacy.json` redacts every notebook, so damage never shows a private page; `hookfast` hands a Read, Glob or Grep inside the store (or a search above it) to the full hook (whether or not `notebook-privacy.json` exists, since the first review); `doc notebooks` lists hidden notebooks only with `--include-hidden`; `notebook-privacy.json` and `notebook-folders.json` are in every snapshot, and a restore only adds entries to the privacy registry.
+
+## 12b. Code survey before NS-2B
+
+Claude surveyed the code on 2026-11-21, before writing NS-2B, against section 8. Where the code and section 8 disagree, the decisions below replace section 8. Claude made them, since the user asked for autonomous delivery.
+
+- **Freshness of Living Memory pages.** Section 8.1 said pages refresh "as sources.py does". Sources do not refresh on reads. `sources.stale` runs only at SessionStart: a 0.1 s stat walk with no cursor, which starts a background `source-sync`. `ask`, `search` and the prompt hook read the index as it is. Pages use their own rule:
+  - `doc search`, `search` and `ask` run a stat walk of the domain's notebooks for at most 0.2 s, resuming from a cursor kept in `docs.sqlite3` `meta`.
+  - They then reindex changed pages for at most 0.5 s and set `pages_stale: true` when work is left over.
+  - The prompt hook never reindexes. It reads the index as it is, like sources.
+  - Every `doc` write also reindexes the pages it changed, after its commit and outside the journal. Freshness after undo, restore and recovery still comes from the walk.
+- **Folder notebooks keep the sources rule.** Their content refreshes with the background `source-sync`. Their policy does not wait for it: every served hit is checked against the current registry and sidecar.
+- **Sidecars.** `sources.walk` skips every dot folder, so it never sees `.hivemind/notebook.json`. The walk instead checks the `scandir` listing of each folder for a `.hivemind` entry, which costs nothing extra, and reads `notebook.json` only when one is there. Registered folders read their sidecar directly.
+- **Policy revision.** Pushing the policy into a source's `exclude` would change its `_config` hash and re-chunk the whole source. Instead, each source keeps `policy:NAME` in `meta`: a hash of the registry entries and sidecar mtimes under its root. `stale` compares that hash too, and a changed policy purges only the affected notebook's rows and vectors.
+- **Where folder notebooks are indexed.** A registered folder is indexed by the implicit repo source only when an enabled implicit source of its domain covers it. Otherwise it is a source of its own: implicit sources switched off, a repo deeper than `DISCOVER_DEPTH`, or a folder inside a dot folder.
+- **Output shape.**
+  - `search` gains `pages` after `results`. `ask` gains `pages` after `sources`, and each `questions` entry gains its own `pages`.
+  - `search --sources` drops rows that carry a `notebook`.
+  - `render.py` lists `pages` in TTY output.
+  - `search` and `ask` gain `--include-private`. The hook already denies that flag to agents, and the `HIVEMIND_SESSION` refusal already covers it.
+  - Filtering uses whether a notebook is private now (`docs.private_folders`, `_private_meta`), not `private_scope`, so a notebook made public again is searchable again.
+- **Serve-time filtering.** `sources.search` has one loop that serves both lexical and semantic hits (sources.py:882). The policy check goes there. `digests.scan` reads the `file` table directly, so it gets the same filter.
+- **Injection.** The limits (2 excerpts, 800 characters, gate 0.67, last 50 keys remembered) live in `runtime.py`, not `injection.py`. "Once a session" means the session's last 50 excerpt keys. `prompt_sources` reads one domain; injectable Living Memory pages are read from the session's scope domains. A folder notebook's label is its sidecar title, or else its folder name, since registry entries have no title.
+- **Version bump.** Raising `sources.VERSION` makes `_readonly` return None until the background rebuild finishes. Until then, `ask`, `search` and injection show no source hits. This is today's behavior for any bump. NS-2B accepts it and says so in the release notes.
+- **Obsidian mirror.** `sync_all` visits only domains whose `sync-state.json` names a managed vault. A notebook-only domain has none, so NS-2B mirrors notebooks only for domains with a vault. Mirroring a notebook-only domain is deferred.
+- **Temporary files.** `docs_index` writes its temporary database with the prefix `.docs-` in `domains/D/`. That prefix joins the relocation filter in `storage.py`.
+- **Reuse.** `docs.sqlite3` uses the same `meta`, `chunk`, `chunk_fts(symbol, path, names, text)`, `vec` and `file` tables as `sources.sqlite3`. `sources._embed`, `_fuse_vectors`, `_chunk_similarity` and `_semantic_rows` then work unchanged. A page's `file.sha256` is its revision.
 
 ## 13. Shipped
 
