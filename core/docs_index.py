@@ -5,6 +5,9 @@ per notebook, plus the task lines and frontmatter properties of each page. The i
 `doc search --rebuild` recreates it. Freshness does not hang on any write path: `doc search`, `doc tasks`, `doc query`,
 `search` and `ask` first stat-walk the domain's notebooks for at most WALK_SECONDS, resuming from a cursor, then reindex
 changed pages for at most INDEX_SECONDS, and report `pages_stale` when work is left. The prompt hook never reindexes.
+Each call walks at least one notebook and indexes at least one page, even past those budgets, so it always makes progress;
+of several domains, only the one refreshed least recently gets that allowance. A page that cannot be read is retried after the
+others and keeps `pages_stale` true.
 Every notebook is indexed, hidden and private ones too; who may see a page is decided when results are served, from the
 notebook.json files as they are now."""
 from __future__ import annotations
@@ -24,6 +27,7 @@ SCHEMA=sources.SCHEMA+('CREATE TABLE task(file_id INTEGER NOT NULL,line INTEGER,
 TASK=re.compile(r'^\s*(?:[-*+]|\d+[.)])\s+\[([ xX])\]\s+(.*\S)\s*$')
 DUE=re.compile(r'(?:\U0001F4C5|\bdue::?)\s*(\d{4}-\d{2}-\d{2})')
 FRONT=re.compile(r'\A﻿?---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)',re.S)
+TABLES={'meta','source','file','chunk','chunk_fts','vocab','task','prop'}
 MAX_PROPS=50
 MAX_TASKS=500
 OPS=('=','!=','<','<=','>','>=','contains','exists','missing')
@@ -33,25 +37,29 @@ def db_path(root,domain):return Path(root)/'domains'/domain/'docs.sqlite3'
 
 
 def _notebooks(root,domain):
-    """{notebook: folder} of the domain's notebooks with a notebook.json, never through a link."""
+    """{notebook: folder} of the domain's notebooks with a notebook.json, never through a link (notebook.json included).
+    None when the notebooks folder is there but cannot be listed now: that is not the same as having none."""
     from .docs import SLUG,_is_link
     base=Path(root)/'domains'/domain/'notebooks'
     if _is_link(Path(root)/'domains') or _is_link(Path(root)/'domains'/domain) or not base.is_dir() or _is_link(base):return {}
     try:entries=sorted(os.scandir(base),key=lambda e:e.name)
-    except OSError:return {}
+    except OSError:return None
     return {e.name:Path(e.path) for e in entries if SLUG.fullmatch(e.name) and e.is_dir(follow_symlinks=False) and not _is_link(Path(e.path))
-            and os.path.isfile(os.path.join(e.path,'notebook.json'))}
+            and os.path.isfile(os.path.join(e.path,'notebook.json')) and not _is_link(Path(e.path)/'notebook.json')}
 
 
 def _walk_pages(folder,deadline=None):
-    """{page path: (size, mtime_ns)} of a notebook's pages (no attachments, proposals or links), or None past the deadline."""
+    """{page path: (size, mtime_ns)} of a notebook's pages (no attachments, proposals or links), or None past the deadline.
+    Raises OSError when the notebook folder itself cannot be listed (a subfolder that cannot be is skipped)."""
     from .docs import RESERVED,_is_link
     found={};stack=['']
     while stack:
         if deadline is not None and time.monotonic()>deadline:return None
         rel=stack.pop()
         try:entries=list(os.scandir(folder/rel if rel else folder))
-        except OSError:continue
+        except OSError:
+            if not rel:raise
+            continue
         for e in entries:
             path=f'{rel}/{e.name}' if rel else e.name
             try:
@@ -73,14 +81,19 @@ def _create(path):
     db.execute('INSERT INTO meta VALUES(?,?)',('version',str(VERSION)));db.commit();return db
 
 
+def _sound(db):
+    """Whether an open index has this VERSION and every table it needs."""
+    return sources._meta(db,'version')==str(VERSION) and TABLES<={n for (n,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
+
 def _open_writable(root,domain,rebuild=False):
-    """The index open for writing; a missing one, one of another VERSION or rebuild makes a new file first."""
+    """The index open for writing; a missing one, one of another VERSION or schema, or rebuild makes a new file first."""
     target=db_path(root,domain)
     if not rebuild and target.is_file():
         db=None
         try:
             db=sqlite3.connect(target,timeout=30)
-            if sources._meta(db,'version')==str(VERSION):return db
+            if _sound(db):return db
         except sqlite3.Error:pass
         if db is not None:db.close()   # a damaged or older file is replaced below, which Windows refuses while it is open
     fd,temp=tempfile.mkstemp(prefix=TEMP_PREFIX,suffix='.sqlite3',dir=target.parent);os.close(fd);os.unlink(temp)
@@ -92,13 +105,15 @@ def _open_writable(root,domain,rebuild=False):
 
 
 def _readonly(root,domain):
+    db=None
     try:
         path=db_path(root,domain)
         if not path.is_file():return None
         db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=1.0)
-        if sources._meta(db,'version')!=str(VERSION):db.close();return None
-        return db
-    except (ValueError,sqlite3.Error):return None
+        if _sound(db):return db
+    except (ValueError,sqlite3.Error):pass
+    if db is not None:db.close()
+    return None
 
 
 # ---- what a page holds ----------------------------------------------------------------------------------------------
@@ -188,23 +203,25 @@ def _index_page(db,nb,folder,rel,size,mtime,old,delta):
     return True
 
 
-def refresh(root,domain,walk_until=None,index_until=None,notebooks=None,rebuild=False,lock_timeout=0,embed=True):
+def refresh(root,domain,walk_until=None,index_until=None,notebooks=None,rebuild=False,lock_timeout=0,embed=True,progress=True):
     """Bring the index up to date within the deadlines (time.monotonic() values; None: no limit). notebooks limits the walk
-    to those (a write's own notebook). Returns {stale, indexed, removed}; stale is True when the walk or the reindex was cut
-    short, or another process held the index."""
+    to those (a write's own notebook). progress: walk one notebook and index one page even past the deadlines. Returns
+    {stale, indexed, removed}, with `error` when the index could not be opened or replaced (another process held it, or
+    Windows refused to replace a file a reader has open); stale is True then, and when work was left."""
     root=Path(root);result={'stale':False,'indexed':0,'removed':0}
-    present=_notebooks(root,domain)
-    if not present and not db_path(root,domain).is_file():return result
+    if not (Path(root)/'domains'/domain/'notebooks').is_dir() and not db_path(root,domain).is_file():return result
     try:
         with _lock(root,domain,lock_timeout):
+            present=_notebooks(root,domain)   # under the lock: a notebook a writer just indexed is not mistaken for a deleted one
+            if present is None:result.update(stale=True,error='The notebooks folder cannot be listed now');return result
             db=_open_writable(root,domain,rebuild)
-            try:return _refresh(db,root,domain,present,walk_until,index_until,notebooks,embed,result)
+            try:return _refresh(db,root,domain,present,walk_until,index_until,notebooks,embed,result,progress)
             finally:db.close()
-    except (TimeoutError,OSError,sqlite3.Error):
-        result['stale']=True;return result
+    except (TimeoutError,OSError,sqlite3.Error) as exc:
+        result.update(stale=True,error=str(exc) or type(exc).__name__);return result
 
 
-def _refresh(db,root,domain,present,walk_until,index_until,only,embed,result):
+def _refresh(db,root,domain,present,walk_until,index_until,only,embed,result,progress=True):
     delta=Counter()
     for (gone,) in db.execute('SELECT name FROM source').fetchall():
         if gone not in present:
@@ -213,12 +230,13 @@ def _refresh(db,root,domain,present,walk_until,index_until,only,embed,result):
     names=sorted(n for n in present if only is None or n in only)
     cursor=sources._meta(db,'cursor') or ''
     if only is None and cursor in names:names=names[names.index(cursor):]+names[:names.index(cursor)]
-    todo=[];walked=0;cut=None
+    todo=[];walked=0;cut=None;unread=0;listed=set()
     for nb in names:
-        if walk_until is not None and walked and time.monotonic()>walk_until:cut=nb;break
-        listing=_walk_pages(present[nb],walk_until if walked else None)   # the first notebook is always finished, so a call makes progress
+        if walk_until is not None and (walked or not progress) and time.monotonic()>walk_until:cut=nb;break
+        try:listing=_walk_pages(present[nb],walk_until if (walked or not progress) else None)   # the first notebook is finished, so a call makes progress
+        except OSError:unread+=1;continue   # this notebook cannot be listed now: its rows stay as they are
         if listing is None:cut=nb;break
-        walked+=1
+        walked+=1;listed.add(nb)
         db.execute('INSERT INTO source(name,kind,root,implicit,config) VALUES(?,?,?,0,?) ON CONFLICT(name) DO UPDATE SET root=excluded.root',(nb,'notebook',present[nb].as_posix(),''))
         have={p:(i,m,s,h) for i,p,m,s,h in db.execute('SELECT id,path,mtime_ns,size,sha256 FROM file WHERE source=?',(nb,))}
         for rel,(size,mtime) in sorted(listing.items()):
@@ -227,23 +245,38 @@ def _refresh(db,root,domain,present,walk_until,index_until,only,embed,result):
         for rel,(file_id,*_) in have.items():
             if rel not in listing:_drop(db,file_id,delta);result['removed']+=1
     if only is None:sources._set_meta(db,'cursor',cut or '')
-    left=0;tried=0
+    try:failed=set(json.loads(sources._meta(db,'failed') or '[]'))
+    except ValueError:failed=set()
+    todo.sort(key=lambda t:f'{t[0]}/{t[1]}' in failed)   # pages that could not be read last time go last, so they never hold up the others
+    left=0;tried=0;now_failed=[]
     for nb,rel,size,mtime,old in todo:
-        if index_until is not None and tried and time.monotonic()>index_until:left+=1;continue   # one page always, so each call makes progress
+        if index_until is not None and (tried or not progress) and time.monotonic()>index_until:left+=1;continue   # one page always, so each call makes progress
         tried+=1
         if _index_page(db,nb,present[nb],rel,size,mtime,old,delta):result['indexed']+=1
+        else:now_failed.append(f'{nb}/{rel}')
+    waiting={f'{t[0]}/{t[1]}' for t in todo[tried:]}   # past the deadline: not tried this time
+    held={f for f in failed if f.split('/',1)[0] not in listed or f in waiting}   # a failure is forgotten once its page is read or gone
+    sources._set_meta(db,'failed',json.dumps(sorted(held|set(now_failed))[:500]))
     sources._apply_vocab(db,delta)
     for (nb,) in db.execute('SELECT name FROM source').fetchall():
         files,chunks=db.execute('SELECT count(*),coalesce(sum(chunks),0) FROM file WHERE source=?',(nb,)).fetchone()
         db.execute('UPDATE source SET files=?,chunks=? WHERE name=?',(files,chunks,nb))
+    if result['indexed'] and not embed:sources._set_meta(db,'vectors_pending','1')   # a write's reindex leaves the vectors to the next read
     db.commit()
-    if embed and (result['indexed'] or sources._meta(db,'vectors_pending')=='1'):
+    if embed and (result['indexed'] or sources._meta(db,'vectors_pending')=='1' or (sources._meta(db,'vectors') or None)!=_identity(root)):
         remaining=(index_until-time.monotonic()) if index_until is not None else sources.EMBED_SECONDS
         if remaining>0.05:
             vectors=sources._embed(db,root,time.monotonic()+remaining)
             sources._set_meta(db,'vectors_pending','1' if vectors and vectors['pending'] else '0');db.commit()
-    result['stale']=bool(cut or left)
+    result['stale']=bool(cut or left or unread or now_failed)
+    if not result['stale'] and only is None:sources._set_meta(db,'complete',repr(time.time()));db.commit()
     return result
+
+
+def _identity(root):
+    """The identity of the installed semantic model's vectors (search._vector_identity), or None without a model."""
+    from .search import _vector_identity
+    return _vector_identity(root)
 
 
 def after_write(root,domain,nb):
@@ -259,11 +292,12 @@ def visible(root,domain,include_private=False,named=None,include_hidden=False):
     """{notebook: (title, visibility)} of the domain's notebooks the caller may see now: never a private one without
     include_private, never a hidden one unless include_hidden or it is the one named. A damaged notebook.json hides its
     notebook."""
+    from .docs import _read_meta
     out={}
-    for nb,folder in _notebooks(root,domain).items():
+    for nb in _notebooks(root,domain) or {}:
         if named and nb!=named:continue
-        try:meta=json.loads((folder/'notebook.json').read_bytes().decode('utf-8'))
-        except (OSError,UnicodeDecodeError,ValueError):continue
+        try:meta=_read_meta(root,domain,nb)[0]   # the doc commands' reader: a link or junction on the way, or damage, hides the notebook
+        except (OSError,ValueError):continue
         if not isinstance(meta,dict) or (meta.get('private') and not include_private):continue
         level=meta.get('visibility','searchable')
         if level not in ('hidden','searchable','injectable'):continue
@@ -272,12 +306,22 @@ def visible(root,domain,include_private=False,named=None,include_hidden=False):
     return out
 
 
+def _completed(root,domain):
+    """When the domain's index was last brought fully up to date (0.0: never)."""
+    db=_readonly(root,domain)
+    if db is None:return 0.0
+    try:return float(sources._meta(db,'complete') or 0)
+    except (ValueError,sqlite3.Error):return 0.0
+    finally:db.close()
+
+
 def refresh_all(root,domains):
-    """Refresh each domain within one shared budget (WALK_SECONDS, then INDEX_SECONDS); True when any of them was left unfinished."""
+    """Refresh each domain within one shared budget (WALK_SECONDS, then INDEX_SECONDS), the one refreshed least recently first;
+    only that one may pass the budget to make progress. True when any of them was left unfinished."""
     start=time.monotonic();walk_until=start+WALK_SECONDS;index_until=walk_until+INDEX_SECONDS;stale=False
-    for domain in domains:
-        if not (Path(root)/'domains'/domain/'notebooks').is_dir() and not db_path(root,domain).is_file():continue
-        stale|=refresh(root,domain,walk_until,index_until)['stale']
+    wanted=[d for d in domains if (Path(root)/'domains'/d/'notebooks').is_dir() or db_path(root,d).is_file()]
+    for n,domain in enumerate(sorted(wanted,key=lambda d:_completed(root,d))):
+        stale|=refresh(root,domain,walk_until,index_until,progress=n==0)['stale']
     return stale
 
 
@@ -309,10 +353,25 @@ def search(root,domains,query,limit=5,include_private=False,notebook=None,refres
     return pages[:limit],stale
 
 
-def prompt_hits(root,domain,query,limit,gate,least,width,near=None,dropped=None):
+def vocabulary(root,domains,wanted):
+    """(chunks, {stem: df}) for these words over the page indexes of these domains; (0, {}) without any."""
+    total=0;df={}
+    for domain in domains:
+        db=_readonly(root,domain)
+        if db is None:continue
+        try:
+            n,found=sources._vocab(db,wanted);total+=n
+            for k,v in found.items():df[k]=df.get(k,0)+v
+        except sqlite3.Error:pass
+        finally:db.close()
+    return total,df
+
+
+def prompt_hits(root,domain,query,limit,gate,least,width,near=None,dropped=None,allowed=None):
     """Excerpts of injectable, non-private notebooks for the prompt hook, judged by its gate (sources.search_db with gate, least
-    and near), from the index as it is: the hook never reindexes. Each hit gains domain, notebook and notebook_title."""
-    allowed={n:v for n,v in visible(root,domain).items() if v[1]=='injectable'}
+    and near), from the index as it is: the hook never reindexes. Each hit gains domain, notebook and notebook_title.
+    allowed: the injectable notebooks ({notebook: (title, visibility)}), when the caller read them already."""
+    if allowed is None:allowed={n:v for n,v in visible(root,domain).items() if v[1]=='injectable'}
     db=_readonly(root,domain) if allowed else None
     if db is None:return []
     try:hits=sources.search_db(db,root,query,limit,None,True,gate,least,width,near,dropped,keep=lambda _root,source,_path:source in allowed)
@@ -357,7 +416,7 @@ def check_query(payload):
     if not isinstance(payload,dict):raise ValueError('The query payload is a JSON object: {"where": [...], "sort": [...], "limit": N}')
     extra=set(payload)-{'where','sort','limit','notebook'}
     if extra:raise ValueError('Unknown query fields: '+', '.join(sorted(extra)))
-    where=payload.get('where') or [];sort=payload.get('sort') or []
+    where=payload.get('where',[]);sort=payload.get('sort',[])
     if not isinstance(where,list) or len(where)>20 or not isinstance(sort,list) or len(sort)>5:raise ValueError('where is a list of at most 20 conditions and sort of at most 5 keys')
     for c in where:
         if not isinstance(c,dict) or not isinstance(c.get('key'),str) or c.get('op','=') not in OPS or set(c)-{'key','op','value'}:

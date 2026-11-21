@@ -26,6 +26,13 @@ def key(path):
     return os.path.normcase(os.path.normpath(os.path.abspath(str(path))))
 
 
+def real(path):
+    """The path with every link, junction and short name resolved, so a folder reached through an alias is judged as the
+    folder itself (registry entries are stored resolved). Falls back to the absolute path when it cannot be resolved."""
+    try:return os.path.realpath(str(path))
+    except (OSError,ValueError):return os.path.abspath(str(path))
+
+
 def stricter(a,b):return a if STRICT[a]>=STRICT[b] else b
 
 
@@ -33,16 +40,43 @@ def level_of(visibility,private):
     return 'private' if private else visibility if visibility in LEVELS else 'hidden'
 
 
+def _valid(e):
+    return (isinstance(e,dict) and isinstance(e.get('path'),str) and os.path.isabs(e['path']) and e.get('visibility',LEVELS[1]) in LEVELS
+            and isinstance(e.get('private',False),bool) and isinstance(e.get('removed',False),bool))
+
+
 def load(root):
-    """The registry as {'version': 1, 'folders': [...]}; a missing file is empty, a damaged one raises ValueError."""
+    """The registry as {'version': 1, 'folders': [...]}; a missing file is empty, a damaged one raises ValueError (an entry
+    without an absolute path, with an unknown visibility or with a private flag that is not true or false is damage too)."""
     path=Path(root)/REGISTRY
     try:
         with open(path,'rb') as f:data=json.loads(f.read().decode('utf-8-sig'))
     except FileNotFoundError:return {'version':1,'folders':[]}
     except (OSError,UnicodeDecodeError,ValueError):raise ValueError(f'{REGISTRY} is damaged; run doctor') from None
-    if not isinstance(data,dict) or not isinstance(data.get('folders'),list) or not all(isinstance(e,dict) and isinstance(e.get('path'),str) for e in data['folders']):
+    if not isinstance(data,dict) or not isinstance(data.get('folders'),list) or not all(_valid(e) for e in data['folders']):
         raise ValueError(f'{REGISTRY} is damaged; run doctor')
     return data
+
+
+def merge_registry(root,text):
+    """A registry `text` being restored, keeping every live entry (tombstones too) that is stricter than the restored entry
+    for the same folder, or that the restored registry lacks while it is hidden or private: a restore never reopens a folder
+    the user closed. A damaged live registry is kept as it is; a damaged restored one keeps the live one."""
+    try:live=load(root)['folders']
+    except ValueError:
+        try:return (Path(root)/REGISTRY).read_bytes().decode('utf-8-sig')
+        except OSError:return text
+    try:
+        given=json.loads(text) if text else {'folders':[]}
+        if not isinstance(given,dict) or not isinstance(given.get('folders'),list) or not all(_valid(e) for e in given['folders']):raise ValueError
+    except ValueError:return _text(live)
+    out={key(real(e['path'])):e for e in given['folders']}
+    for e in live:
+        k=key(real(e['path']));level=level_of(e.get('visibility'),bool(e.get('private')));held=out.get(k)
+        if held is None:
+            if level in ('hidden','private'):out[k]=e
+        elif STRICT[level]>STRICT[level_of(held.get('visibility'),bool(held.get('private')))]:out[k]=e
+    return _text(list(out.values()))
 
 
 def managed_vaults(root):
@@ -69,7 +103,8 @@ def sidecar(folder):
     """(level, title) from a folder's .hivemind/notebook.json; None when it has none. One that cannot be parsed is hidden."""
     path=os.path.join(str(folder),SIDECAR_DIR,'notebook.json')
     try:info=os.stat(path)
-    except OSError:return None
+    except (FileNotFoundError,NotADirectoryError):return None
+    except OSError:return ('hidden',None)   # there but unreadable (permissions): judged as hidden, never as absent
     stamp=(info.st_mtime_ns,info.st_size);held=_SIDECARS.get(path)
     if held and held[0]==stamp:return held[1]
     try:
@@ -87,14 +122,22 @@ class Policy:
     """The policy of folders and files as the registry and the sidecars say now. One instance per search or sync: it caches
     each folder it has judged."""
     def __init__(self,root):
-        self.broken=False;self.entries={}
+        self.broken=False;self.entries={};self._real={}
         try:data=load(root)
         except ValueError:self.broken=True;data={'folders':[]}
-        for e in data['folders']:
-            self.entries[key(e['path'])]=(level_of(e.get('visibility'),bool(e.get('private'))),e)
+        for e in data['folders']:   # two entries for one folder (an alias, a hand edit): the stricter wins
+            k=key(real(e['path']));level=level_of(e.get('visibility'),bool(e.get('private')));held=self.entries.get(k)
+            if held is None or STRICT[level]>STRICT[held[0]]:self.entries[k]=(level,e)
         for vault in managed_vaults(root):   # the notebook mirror: its pages are served from the store, never as a second copy
-            self.entries.setdefault(key(os.path.join(vault,MIRROR)),('hidden',{'path':os.path.join(vault,MIRROR),'mirror':True}))
+            k=key(real(os.path.join(vault,MIRROR)));held=self.entries.get(k)
+            self.entries[k]=(stricter('hidden',held[0] if held else None),dict(held[1] if held else {'path':os.path.join(vault,MIRROR)},mirror=True))
         self._folders={}
+
+    def real(self,path):
+        """folder_policy.real, cached: a source root is resolved once per search or sync."""
+        k=str(path)
+        if k not in self._real:self._real[k]=real(path)
+        return self._real[k]
 
     def registered(self,path):
         """The registry's level for exactly this folder, or None."""
@@ -123,13 +166,21 @@ class Policy:
     def file(self,path):return self.folder(os.path.dirname(os.path.normpath(os.path.abspath(str(path)))))
 
     def revision(self,top):
-        """A hash of the registry entries at, under or above a source folder: a source's index is stale when it changes."""
-        k=key(top);rows=sorted((p,lvl) for p,(lvl,_) in self.entries.items() if p==k or p.startswith(k+os.sep) or k.startswith(p+os.sep))
-        return hashlib.sha256(json.dumps(rows).encode()).hexdigest()[:16]
+        """A hash of the registry entries at, under or above a source folder, and of the policy the folders above it give it
+        (their sidecars included): a source's index is stale when it changes."""
+        top=self.real(top);k=key(top);rows=sorted((p,lvl) for p,(lvl,_) in self.entries.items() if p==k or p.startswith(k+os.sep) or k.startswith(p+os.sep))
+        parent=os.path.dirname(os.path.normpath(top));above=self.folder(parent)[0] if key(parent)!=k else None
+        return hashlib.sha256(json.dumps([rows,above]).encode()).hexdigest()[:16]
 
     def registered_sources(self,domain):
-        """Registry entries of a domain that agents may reach: (canonical path, level), not removed."""
-        return sorted((e['path'],lvl) for _,(lvl,e) in self.entries.items() if e.get('domain')==domain and not e.get('removed') and lvl in SERVED)
+        """Registry entries of a domain that agents may reach: (canonical path, level), not removed, and not inside a hidden
+        or private folder (the strictest level over the folder decides)."""
+        out=[]
+        for _,(lvl,e) in self.entries.items():
+            if e.get('domain')!=domain or e.get('removed') or e.get('mirror') or lvl not in SERVED:continue
+            level=self.folder(real(e['path']))[0]
+            if level in SERVED:out.append((e['path'],level))
+        return sorted(out)
 
 
 # ---- the registry writes (`doc folder set|unset`) -------------------------------------------------------------------
@@ -144,6 +195,10 @@ def _canonical_folder(root,path):
     if not folder.is_dir():raise ValueError(f'not a folder: {folder}')
     store=Path(root).resolve()
     if folder==store or store in folder.parents:raise ValueError('A folder notebook cannot be inside the memory store; Living Memory notebooks live there')
+    for vault in managed_vaults(root):   # the vault's notes and its Notebooks mirror are copies of memory, not notebooks
+        vault=Path(real(vault))
+        if folder==vault or vault in folder.parents or folder in vault.parents:
+            raise ValueError(f'A folder notebook cannot be, hold or lie inside the Obsidian vault Living Memory manages ({vault.as_posix()})')
     return folder.as_posix()
 
 
@@ -158,7 +213,7 @@ def set_folder(root,path,domain,visibility,private=None):
         canonical=_canonical_folder(root,path);named=_bound(root,domain)
         entries=load(root)['folders'];k=key(canonical)
         old=next((e for e in entries if key(e['path'])==k),None)
-        entry={'path':canonical,'domain':named,'visibility':visibility,'private':bool(old and not old.get('removed') and old.get('private')) if private is None else bool(private)}
+        entry={'path':canonical,'domain':named,'visibility':visibility,'private':bool(old and old.get('private')) if private is None else bool(private)}   # a tombstone's private flag holds too
         if old and not old.get('removed') and {f:old.get(f) for f in ('path','domain','visibility','private')}==entry:
             return {'ok':True,'status':'unchanged','folder':entry}
         entry['updated']=now()

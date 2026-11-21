@@ -536,17 +536,22 @@ def _recap_page(domain,root):
     except OSError:pass   # derived: a cache that cannot be written only costs a recompute
     return text
 
+def mirror_notebooks(domain,vault,root):
+    """The notebook mirror (core/notebook_sync.py) after a note sync: its counts, or {'error': ...}. Notes are synced already, so a
+    notebook failure is reported, not raised."""
+    try:
+        from .notebook_sync import sync_notebooks
+        return sync_notebooks(domain,vault,root)
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('sync.notebooks',exc,root);return {'error':str(exc)[:500]}
+
 def build_overlay(domain,vault,root=None,trigger=None):
     root=Path(root or memory_root()).resolve();vault=Path(vault).resolve()
     try:sync_result=sync(domain,vault,root,trigger)
     except Exception as exc:
         _report_failure(domain,vault,root,exc);raise
-    try:
-        from .notebook_sync import sync_notebooks
-        sync_result['notebooks']=sync_notebooks(domain,vault,root)
-    except Exception as exc:   # notes are synced already; a notebook failure is reported, not raised
-        from .logs import swallowed
-        swallowed('sync.notebooks',exc,root);sync_result['notebooks']={'error':str(exc)[:500]}
+    sync_result['notebooks']=mirror_notebooks(domain,vault,root)
     notes=inventory(domain,root,retired=True);active=[n for n in notes if n.get('status')=='active'];changes={}
     def link(n):
         target=note_rel(domain,Path(n['path']).name,n.get('status')=='active')[:-3]
@@ -643,11 +648,22 @@ def sync_all(root=None,trigger='manual',primary=None):
     except OSError:pass
     return summary
 
-def teardown_plan(vault):
+def teardown_plan(vault,root=None):
+    """A plan that removes what Living Memory put in the vault: the files its manifests list and, with the store root, the
+    notebook copies each domain mirrored there (notebook-sync.json of the same vault id). An edited file is never removed."""
     vault=Path(vault).resolve();manifest={'files':{}};semantic={};changes={}
+    identity=vault_id(vault,create=False)
     for rel in (GENERATED,COPIES,LEGACY_GENERATED,LEGACY_COPIES,VAULT_ID):
         if (vault/rel).exists():
             data=read_json(vault/rel,{'files':{}});manifest['files'].update(data.get('files',{}));semantic.update(data.get('semantic',{}));changes[rel]=None
+    if root is not None and identity:
+        from .notebook_sync import MIRROR,STATE
+        for state_path in sorted(Path(root).glob(f'domains/*/{STATE}')):
+            state=read_json(state_path,None)
+            if not isinstance(state,dict) or state.get('vault_id')!=identity:continue
+            domain=state_path.parent.name
+            for key,value in list((state.get('pages') or {}).items())+[(k,{'vault':v}) for k,v in (state.get('assets') or {}).items()]:
+                if isinstance(value,dict) and value.get('vault'):manifest['files'][f'{MIRROR}/{domain}/{key}']=value['vault']
     for rel,expected in manifest['files'].items():
         current=_hash(vault/rel)
         if current is None:continue

@@ -921,10 +921,15 @@ def private_scope(root, changes=None):
     return prefixes, uids
 
 
+BOOKKEEPING = re.compile(r"notebook-folders\.json|domains/[^/]+/notebook-sync\.json")
+
+
 def is_private_path(path, scope):
     path = str(path).replace("\\", "/").casefold()
     if path == PRIVACY:
         return bool(scope[0])
+    if BOOKKEEPING.fullmatch(path):   # folder notebook paths and mirrored page names: Hivemind's business, shown with --include-private (NS-2B)
+        return True
     if EVERY_NOTEBOOK in scope[0] and NOTEBOOK_PATH.match(path):
         return True
     return any(path.startswith(prefix.casefold()) for prefix in scope[0] if prefix != EVERY_NOTEBOOK)

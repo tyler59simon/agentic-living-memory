@@ -90,7 +90,7 @@ class Notebooks(Kb):
         self.assertEqual(self.set(self.nb,'searchable')['status'],'unchanged')
         changed=self.set(self.nb,'hidden');entry=folder_policy.load(self.root)['folders'][0]
         self.assertEqual((entry['visibility'],entry['private'],entry['domain']),('hidden',False,'demo'))
-        code,undone=self.cli('--json','undo',changed['operation_id']);self.assertEqual(code,0,undone)
+        code,undone=self.cli('--json','undo',changed['operation_id'],'--include-private');self.assertEqual(code,0,undone)
         self.assertEqual(folder_policy.load(self.root)['folders'][0]['visibility'],'searchable')
         code,gone=self.cli('--json','doc','folder','unset',str(self.nb));self.assertEqual(gone['status'],'removed');self.assertEqual(folder_policy.load(self.root)['folders'],[])
 

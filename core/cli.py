@@ -374,7 +374,8 @@ def _note_hits(root,domain,query,scope,limit,rebuild,filters,config,globals_,pri
     from . import digests
     digests.mark(hits,root,config)
     for hit in hits:
-        if hit.get('stale'):hit['snippet']=f"{hit['stale']} — {hit.get('snippet','')}"
+        if hit.get('withheld'):hit['snippet']=hit['stale']
+        elif hit.get('stale'):hit['snippet']=f"{hit['stale']} — {hit.get('snippet','')}"
     for hit in hits:hit['sourceScope']='active' if hit['domain']==domain else 'global' if hit['domain'] in globals_ else 'parent' if hit['domain'] in parents else 'child' if hit['domain'] in children else 'foreign';hit.pop('path',None)
     decisions={}
     if explain:
@@ -718,7 +719,9 @@ def _doc(args,root,domain):
             if not text.strip():raise ValueError('doc search needs a query')
             if args.notebook:docs._slug(args.notebook)
             if args.rebuild:
-                for name in names:docs_index.refresh(root,name,rebuild=True,lock_timeout=30)
+                for name in names:
+                    done=docs_index.refresh(root,name,rebuild=True,lock_timeout=30)
+                    if done.get('error'):raise ValueError(f"The page index of {name} was not rebuilt: {done['error']}")
             pages,stale=docs_index.search(root,names,text,max(1,min(50,args.limit)),private,args.notebook)
             return {'ok':True,'query':text,'domains':names,'pages':pages,**({'pages_stale':True} if stale else {})}
         if action=='tasks':
@@ -897,6 +900,9 @@ def main(argv=None):
         # Private notebooks stay out of agent sessions; only Hivemind's own bridge, which has no HIVEMIND_SESSION, asks for them (NS-2A).
         if os.environ.get('HIVEMIND_SESSION') and getattr(args,'include_private',False):
             raise ValueError('hivemind: --include-private is for Hivemind itself; private notebooks are not shown to agent sessions.')
+        # The hook refuses the flag to every agent; the CLI refuses it to a declared subagent too, for hosts without the hook.
+        if getattr(args,'actor',None)=='subagent' and getattr(args,'include_private',False):
+            raise ValueError('--include-private is for Hivemind itself; private notebooks are not shown to subagents.')
         if _IN_BATCH[0] and getattr(args,'include_private',False):
             raise ValueError('--include-private is not accepted inside batch: the hook checks only the outer command; run it on its own')
         if args.command=='help':
@@ -1702,11 +1708,14 @@ def main(argv=None):
             result=sync_all(root,'manual',args.primary)
         elif cmd=='overlay-teardown-plan':
             from .sync import teardown_plan
-            result=teardown_plan(args.vault)
+            result=teardown_plan(args.vault,root)
         elif cmd in {'sync','overlay-build'}:
             if not domain:raise ValueError(UNBOUND)
             from .sync import sync,build_overlay
-            result=sync(domain,args.vault,root) if cmd=='sync' else build_overlay(domain,args.vault,root)
+            if cmd=='sync':
+                from .sync import mirror_notebooks
+                result=sync(domain,args.vault,root);result['notebooks']=mirror_notebooks(domain,args.vault,root)   # pages follow every vault sync
+            else:result=build_overlay(domain,args.vault,root)
         else:raise ValueError('Unsupported command')
         code=1 if cmd=='wiki' and isinstance(result,dict) and result.get('ok') is False else 0   # a build that stopped on an error
         invocation['result']=result;invocation['code']=code;_emit(result,args);return code

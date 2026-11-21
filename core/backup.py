@@ -304,6 +304,9 @@ def restore_plan_unlocked(root,source):
     covered|={name for name,entry in saved.items() if isinstance(name,str) and re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9._-]*',name) and not (isinstance(entry,dict) and entry.get('notebook_only'))}
     if 'bindings.json' in wanted:wanted['bindings.json']=_keep_live_domains(root,wanted['bindings.json'],notebooks)
     if 'notebook-privacy.json' in wanted:wanted['notebook-privacy.json']=_merge_privacy(root,wanted['notebook-privacy.json'])
+    if 'notebook-folders.json' in wanted:   # a restore never reopens a folder notebook the user made hidden or private since
+        from .folder_policy import merge_registry
+        wanted['notebook-folders.json']=merge_registry(root,wanted['notebook-folders.json'])
     # Notes of covered domains, and the files of notebooks the snapshot lists; omitted attachments are never deleted.
     current=[rel for rel in canonical_files(root) if not MAINT.fullmatch(rel) and (rel in TOP_LEVEL or (MEMBER.fullmatch(rel) and rel.split('/')[1] in covered)
                                                                                     or (_notebook(rel) in notebooks and rel not in kept_omitted))]

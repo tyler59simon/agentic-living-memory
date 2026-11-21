@@ -113,6 +113,7 @@ def describe(root,domain,value,cwd=None,bindings=None):
         options=[given] if given.is_absolute() else [p/given for p in prefixes]+([Path(cwd)/given] if cwd else [])
         found=next((o for o in options if o.is_file()),None)
     if found is None:raise ValueError(f'--source {text}: no such file under the bound folders or registered sources')
+    if _closed(root,found):raise ValueError(f'--source {text}: the file is in a hidden or private notebook, which agents do not read; it cannot be a digest source')
     stored=stored_path(found,prefixes,specs)
     if stored is None:raise ValueError(f'--source {text}: outside the bound folders and registered sources of domain {domain}')
     sha=file_sha256(found)
@@ -133,15 +134,27 @@ def rehash(sources,domain,root,bindings=None):
         out.append({'path':s['path'],'sha256':sha or s['sha256']})
     return out
 
+def _closed(root,path,policy=None):
+    """Whether a file lies in a hidden or private folder notebook (folder_policy), or the registry is too damaged to tell."""
+    from .folder_policy import Policy,real
+    policy=policy or Policy(root)
+    return policy.broken or policy.file(real(path))[0] in ('hidden','private')
+
+
 def states(listed,domain,root,bindings=None):
     """{path: state} for the sources or file_hashes of a note: `current` (the file matches the recorded hash), `changed` (read, and it
     differs), `missing` (the bound folder or source is readable and the file is not there), `unavailable` (the folder is not bound or
-    the file cannot be read, so nothing can be said) or `unchecked` (no hash recorded)."""
-    bindings=bindings if bindings is not None else load_bindings(root);specs=None;out={}
+    the file cannot be read, so nothing can be said), `unchecked` (no hash recorded) or `closed` (the file is in a folder notebook
+    made hidden or private since: the note's text came from it, so it is withheld until the user reviews the note)."""
+    bindings=bindings if bindings is not None else load_bindings(root);specs=None;out={};policy=None
     for s in listed or []:
         if NAMED.match(s['path']) and specs is None:specs=_specs(root,domain,bindings)
-        if not s.get('sha256'):out[s['path']]='unchecked';continue
         path,known=locate(root,domain,s['path'],bindings,specs)
+        if path is not None:
+            from .folder_policy import Policy
+            policy=policy or Policy(root)
+            if _closed(root,path,policy):out[s['path']]='closed';continue
+        if not s.get('sha256'):out[s['path']]='unchecked';continue
         if path is None:out[s['path']]='missing' if known else 'unavailable'
         else:
             sha=cached_sha256(path,root);out[s['path']]='unavailable' if sha is None else 'current' if sha==s['sha256'] else 'changed'
@@ -165,18 +178,27 @@ def stale_note(note,root,bindings=None):
     if not listed:return ''
     try:
         found=states(listed,note['domain'],root,bindings)
+        if any(v=='closed' for v in found.values()):return CLOSED
         return stale_text([p for p,v in found.items() if v=='changed'],'digest' if note.get('sources') else 'note',[p for p,v in found.items() if v=='missing'])
     except Exception as exc:
         from .logs import swallowed
         swallowed('digests.stale_note',exc,root);return ''
 
+CLOSED='WITHHELD: a file this note was made from is now in a hidden or private notebook; the user reviews this note before agents see it again'
+
+
 def mark(hits,root,bindings=None):
-    """Give each hit that is a digest with a changed source, or a note with a changed hashed file, a `stale` text, and drop `sources` and `file_hashes` from all of them."""
+    """Give each hit that is a digest with a changed source, or a note with a changed hashed file, a `stale` text, and drop `sources` and `file_hashes` from all of them.
+    A hit made from a file now in a hidden or private notebook keeps no text of its own: its snippet, summary and excerpt become that notice."""
     for hit in hits:
         sources=hit.pop('sources',None);hashed=hit.pop('file_hashes',None)
         if sources or hashed:
             text=stale_note(dict(hit,sources=sources,file_hashes=hashed),root,bindings)
             if text:hit['stale']=text
+            if text==CLOSED:
+                hit['withheld']=True
+                for key in ('snippet','summary','excerpt','body','text','units'):
+                    if key in hit:hit[key]=[] if isinstance(hit[key],list) else ''
 
 # ---- skip markers: files an agent judged not worth a digest ---------------------------------------------------------
 SKIPS='.ingest-skips.json'   # domains/<D>/: {path: {sha256, reason, at}}; a non-canonical sidecar (not validated, not backed up), like .signals-seen.json

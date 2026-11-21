@@ -1090,6 +1090,7 @@ def prompt_briefs(cwd,root,bindings,state,trace=None,briefed=None,session=None,l
 # Source excerpts (core/sources.py): when notes answer a prompt poorly, the project's own docs and code may.
 SOURCE_EXCERPTS=2
 SOURCE_BUDGET=800
+SOURCE_SECONDS=0.3   # the excerpt channel stops asking further queries after this long
 SOURCE_GATE=0.67
 MAX_SOURCES_SHOWN=50
 
@@ -1101,29 +1102,38 @@ def prompt_sources(prompt,root,domain,state,trace=None):
     earlier this session is not shown again. Reads the index without refreshing it.
     Injectable notebooks (NS-2B) share the channel and its rules: folder notebook pages from the same index, and Living Memory
     pages of the session's domain and its parent and child domains from their page indexes, each labelled [notebook TITLE].
-    Searchable, hidden and private notebooks never reach it."""
+    Searchable, hidden and private notebooks never reach it. A long prompt's queries are picked with the vocabulary of every
+    index the channel reads, and no further query starts after SOURCE_SECONDS."""
     from . import sources,docs_index
-    trace=trace if isinstance(trace,dict) else {}
+    from .folder_policy import Policy
+    trace=trace if isinstance(trace,dict) else {};started=time.monotonic()
     page_domains=[d for d in dict.fromkeys([domain]+scope_domains(domain,load_bindings(root))) if docs_index.db_path(root,d).is_file()]
+    allowed={d:{n:v for n,v in docs_index.visible(root,d).items() if v[1]=='injectable'} for d in page_domains}   # read once per prompt
+    page_domains=[d for d in page_domains if allowed[d]]
     have_sources=sources.db_path(root,domain).is_file()
     if not have_sources and not page_domains:trace['index']=False;return None,[]
     from .search import terms
-    text=sources.split_camel(prompt);vocab=sources.vocabulary(root,domain,terms(text)) if have_sources else (0,{})
-    if not vocab[0] and not page_domains:trace['index']=False;return None,[]
-    long=len(prompt)>LONG_PROMPT;queries=long_queries(text,vocab) if long and vocab[0] else [(text,True)]
-    if long and vocab[0]:queries+=[(q,True) for q in item_queries(text,vocab) if q not in dict(queries)]   # list items are not segments: each is asked on its own (at most LIST_QUERIES)
+    text=sources.split_camel(prompt);words=terms(text)
+    vocab=sources.vocabulary(root,domain,words) if have_sources else (0,{})
+    pages_vocab=docs_index.vocabulary(root,page_domains,words)
+    every=(vocab[0]+pages_vocab[0],{w:vocab[1].get(w,0)+pages_vocab[1].get(w,0) for w in set(vocab[1])|set(pages_vocab[1])})   # a word only pages carry still makes a query
+    if not every[0]:trace['index']=False;return None,[]
+    long=len(prompt)>LONG_PROMPT;queries=long_queries(text,every) if long else [(text,True)]
+    if long:queries+=[(q,True) for q in item_queries(text,every) if q not in dict(queries)]   # list items are not segments: each is asked on its own (at most LIST_QUERIES)
+    policy=Policy(root) if vocab[0] else None   # one registry read for every query
     width=max(120,(SOURCE_BUDGET-110-len(hint_command(root,state,domain)))//SOURCE_EXCERPTS-70)   # snippet room, so the excerpt is cut around the matches
     best={};dropped=[];from .semantic import threshold;near=threshold(root)   # the notes' meaning bar; a chunk without a vector keeps the word test alone
     least=LONG_LEAST if long else 2
     def offer(hit,key):
         if key not in best or hit['relevance']>best[key]['relevance']:best[key]=dict(hit,key=key)
     for query,_ in queries:
+        if time.monotonic()-started>SOURCE_SECONDS:trace['cut_by_time']=True;break
         if vocab[0]:
-            for hit in sources.search(root,domain,query,3,vocab,True,SOURCE_GATE,least,width,near,dropped):offer(hit,f"{hit['source']}:{hit['path']}:{hit['line_start']}")
-            for hit in sources.search(root,domain,query,3,vocab,True,SOURCE_GATE,least,width,near,dropped,pages=True,inject=True):
+            for hit in sources.search(root,domain,query,3,vocab,True,SOURCE_GATE,least,width,near,dropped,policy=policy):offer(hit,f"{hit['source']}:{hit['path']}:{hit['line_start']}")
+            for hit in sources.search(root,domain,query,3,vocab,True,SOURCE_GATE,least,width,near,dropped,pages=True,inject=True,policy=policy):
                 offer(hit,f"{hit['source']}:{hit['path']}:{hit['line_start']}")
         for d in page_domains:
-            for hit in docs_index.prompt_hits(root,d,query,3,SOURCE_GATE,least,width,near,dropped):
+            for hit in docs_index.prompt_hits(root,d,query,3,SOURCE_GATE,least,width,near,dropped,allowed=allowed[d]):
                 offer(dict(hit,path=f"{d}/{hit['notebook']}/{hit['path']}"),f"doc:{d}/{hit['notebook']}/{hit['path']}:{hit['line_start']}")
     shown=set(state.get('sources_shown',[]))
     ranked=sorted(best.values(),key=lambda h:(-h['relevance'],h['rank']));fresh=[h for h in ranked if h['key'] not in shown][:SOURCE_EXCERPTS]
@@ -1715,7 +1725,7 @@ def _deliver(prompt,root,topic_hits,found,shown,delivered,trace,session_delivere
     picked=[c for c in chosen if not c[0].get('sibling')][:min(LIST_CAP,trace.get('items') or 0) if listy else 3]+[c for c in chosen if c[0].get('sibling')]   # the sibling's pointer comes last, beyond the cap
     width=LIST_SNIPPET if listy else HIT_SNIPPET
     if picked:digests.mark([h for h,_,_,_ in picked],root,load_bindings(root))
-    lines=[injection.line(h,u,level,width) for h,u,level,_ in picked]
+    lines=[injection.line(h,None if h.get('withheld') else u,'pointer' if h.get('withheld') else level,width) for h,u,level,_ in picked]   # a withheld digest shows its notice, never its text
     # The lowest-scored notes go first when the lines would exceed the list budget or the hook's room (one note always stays).
     room=injection.PROMPT_CAP if room is None else room;keep=injection.within(lines,injection.HEADING,min(LIST_BUDGET,room) if listy else room)
     if keep<len(lines):trace['cut_by_budget']=[ref(h) for h,_,_,_ in picked[keep:]];picked,lines=picked[:keep],lines[:keep]

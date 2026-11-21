@@ -841,7 +841,7 @@ def prune_journals(root, days=14, kinds=BOOKKEEPING_KINDS):
 def prune_plans(root, applied_days=1, unapplied_days=30, require_plan=False):
     """Delete plan files: applied ones (committed journal) older than `applied_days`, never-applied ones older
     than `unapplied_days`. A plan whose journal is in any other state, or unreadable, stays, and so does one an
-    Obsidian approval still waits on (`pending_plan` in a domain's sync-state.json). Returns the count removed.
+    Obsidian approval still waits on (`pending_plan` in a domain's sync-state.json, `pending` in its notebook-sync.json). Returns the count removed.
     require_plan: for a folder this store does not own (a harness home), touch only files shaped like governance.plan() output."""
     from datetime import timedelta
     now_utc = clock.now()
@@ -854,6 +854,12 @@ def prune_plans(root, applied_days=1, unapplied_days=30, require_plan=False):
                 waiting |= {e["pending_plan"] for e in entries.values() if isinstance(e, dict) and e.get("pending_plan")}
             except (ValueError, AttributeError, TypeError):
                 return removed  # cannot tell which plans a vault approval needs; prune nothing
+        for state_path in Path(root).glob("domains/*/notebook-sync.json"):   # a page deletion waiting for its tick (NS-2B)
+            try:
+                pending = (read_json(state_path, {}) or {}).get("pending") or {}
+                waiting |= {p["plan_id"] for p in pending.values() if isinstance(p, dict) and p.get("plan_id")}
+            except (ValueError, AttributeError, TypeError):
+                return removed
         for plan_path in sorted(Path(root).glob(".plans/*.json")):
             if not re.fullmatch("[a-f0-9]{32}", plan_path.stem) or plan_path.stem in waiting:
                 continue

@@ -85,6 +85,7 @@ def source_write(root,action,payload,domain=None):
             return commit(root,{'sources.json':_registry(entries,implicit)},'source_implicit',[],{'domain':named,'enabled':payload['enabled'],'files':1})
         name=payload.get('name')
         if not isinstance(name,str) or not SLUG.fullmatch(name):raise ValueError('name must match [a-z0-9][a-z0-9-]{0,39}')
+        if action=='add' and NOTEBOOK_SOURCE.fullmatch(name):raise ValueError('names like nb- and ten hex digits are kept for folder notebooks')
         if action=='add' and len(name)<2:raise ValueError('name must be at least 2 characters: `w:Page.md` reads as a Windows drive, so a one-letter source could not be named in a digest\'s `sources`')
         if action=='remove':
             if name not in {s['name'] for s in entries}:raise ValueError(f'Unknown source {name}')
@@ -175,17 +176,20 @@ def resolve(root,domain,bindings=None,deadline=None):
     return kept
 
 def _covered(path,specs):
-    """Whether a source walks into this folder: one rooted at or above it with no hidden, vendored, ignored or excluded folder between."""
-    from .folder_policy import key
-    k=key(path)
+    """Whether a source walks into this folder and indexes its Markdown pages: one rooted at or above it (links and junctions
+    resolved) with no hidden, vendored, ignored or excluded folder between, whose include globs, if it has any, take a page there."""
+    from .folder_policy import key,real
+    path=real(path);k=key(path)
     for s in specs:
         if s.get('kind') in REMOTE or not isinstance(s.get('path'),str):continue
-        top=key(s['path'])
+        root=real(s['path']);top=key(root)
         if k!=top and not k.startswith(top.rstrip(os.sep)+os.sep):continue
-        parts=[] if k==top else [p for p in os.path.relpath(path,s['path']).replace(os.sep,'/').split('/') if p and p!='.']
+        parts=[] if k==top else [p for p in os.path.relpath(path,root).replace(os.sep,'/').split('/') if p and p!='.']
         if any(p in SKIP_DIRS or (p.startswith('.') and p!='.github') for p in parts):continue
-        rules=gitignore(s['path']);exclude=_patterns(s.get('exclude') or [])
+        rules=gitignore(root);exclude=_patterns(s.get('exclude') or [])
         if any(ignored(rules,'/'.join(parts[:i+1]),True) or _any(exclude,'/'.join(parts[:i+1])) for i in range(len(parts))):continue
+        include=_patterns(s.get('include') or [])
+        if include and not _any(include,'/'.join(parts+['page.md'])):continue
         return True
     return False
 
@@ -193,15 +197,16 @@ def _notebook_sources(root,domain,specs):
     """A folder source for each registered folder notebook of the domain (searchable or injectable) that no other source walks
     into: implicit sources switched off, a repo deeper than DISCOVER_DEPTH, a folder inside a hidden one, or outside every bound
     folder. Named nb-<hash of the path>; source roots inside it are left to their own source."""
-    from .folder_policy import Policy,key
+    from .folder_policy import Policy,key,real
     try:policy=Policy(root)
     except Exception:return []
+    if policy.broken:return []
     out=[]
-    for path,_ in policy.registered_sources(domain):
-        if _covered(path,specs) or not Path(path).is_dir():continue
-        k=key(path)
-        inner=['/'+os.path.relpath(s['path'],path).replace(os.sep,'/') for s in specs if s.get('kind') not in REMOTE and isinstance(s.get('path'),str)
-               and key(s['path']).startswith(k.rstrip(os.sep)+os.sep)]
+    for path,_ in sorted(policy.registered_sources(domain),key=lambda e:len(key(e[0]))):   # outer folders first: a notebook inside one is walked by it
+        if _covered(path,specs+out) or not Path(path).is_dir():continue
+        k=key(real(path))
+        inner=['/'+os.path.relpath(real(s['path']),real(path)).replace(os.sep,'/') for s in specs if s.get('kind') not in REMOTE and isinstance(s.get('path'),str)
+               and key(real(s['path'])).startswith(k.rstrip(os.sep)+os.sep)]
         out.append({'name':'nb-'+hashlib.sha256(k.encode()).hexdigest()[:10],'domain':domain,'kind':'folder','path':Path(path).as_posix(),
                     'include':[],'exclude':sorted(inner),'implicit':False,'notebook':True})
     return out
@@ -269,7 +274,8 @@ def walk(base,spec,deadline=None,ordered=True,policy=None):
     base=Path(base);rules=gitignore(base);include=_patterns(spec.get('include') or []);exclude=_patterns(spec.get('exclude') or [])
     extensions=DOC_EXT|(HTML_EXT if spec.get('kind','folder') in {'html-export','git-wiki','confluence','notion'} else CODE_EXT)
     from .folder_policy import SIDECAR_DIR,stricter
-    stack=[('',policy.folder(base)[0] if policy is not None else None)]
+    real=policy.real(base) if policy is not None else None   # policy is judged on the folder itself, never on an alias of it
+    stack=[('',policy.folder(real)[0] if policy is not None else None)]
     while stack:
         rel,level=stack.pop()
         if deadline and time.monotonic()>deadline:return
@@ -277,10 +283,13 @@ def walk(base,spec,deadline=None,ordered=True,policy=None):
         except OSError:continue
         if policy is not None:
             has=any(e.name==SIDECAR_DIR for e in entries)
-            if has:
-                try:yield True,(f'{rel}/' if rel else '')+SIDECAR_DIR,0,os.stat(base/rel/SIDECAR_DIR/'notebook.json').st_mtime_ns
-                except OSError:pass
-            own=policy.own(base/rel,has) if rel else None   # the base's own policy is in policy.folder(base)
+            if has:   # the folder's time changes when notebook.json is added or removed, the file's when it is edited
+                times=[]
+                for marker in (base/rel/SIDECAR_DIR,base/rel/SIDECAR_DIR/'notebook.json'):
+                    try:times.append(os.stat(marker).st_mtime_ns)
+                    except OSError:pass
+                if times:yield True,(f'{rel}/' if rel else '')+SIDECAR_DIR,0,max(times)
+            own=policy.own(os.path.join(real,rel),has) if rel else None   # the base's own policy is in policy.folder(real)
             if own:level=stricter(level,own[0])
             if level in ('hidden','private'):continue
         for entry in entries:
@@ -722,6 +731,7 @@ def _sync(root,domain,name,rebuild):
         delta=Counter();results=[]
         from .folder_policy import Policy
         policy=Policy(root)
+        if policy.broken:raise ValueError('notebook-folders.json is damaged, so folder notebooks cannot be told apart and nothing is indexed until it is repaired; run doctor')
         for spec in specs:results.append(_sync_source(db,spec,delta,force=bool(rebuild and name),policy=policy));_apply_vocab(db,delta);db.commit()
         if not name:
             for (gone,) in db.execute('SELECT name FROM source').fetchall():
@@ -755,16 +765,22 @@ def listing(root,domain=None,bindings=None):
     try:registry=load(root)
     except ValueError as exc:registry={'sources':[]};warnings.append(str(exc))
     specs=resolve(root,domain,bindings) if domain else [_located(root,s) for s in registry['sources'] if s.get('kind') in KINDS]
-    held={}
+    held={};policies={}
     db=_readonly(root,domain) if domain else None
     if db:
-        try:held={n:(f,c,s) for n,f,c,s in db.execute('SELECT name,files,chunks,synced FROM source')}
+        try:
+            held={n:(f,c,s) for n,f,c,s in db.execute('SELECT name,files,chunks,synced FROM source')}
+            policies={k[7:]:v for k,v in db.execute("SELECT key,value FROM meta WHERE key LIKE 'policy:%'")}
         except sqlite3.Error:pass
         finally:db.close()
+    from .folder_policy import Policy
+    policy=Policy(root)
     for s in specs:
         f,c,when=held.get(s['name'],(0,0,None))
         row={'name':s['name'],'domain':s.get('domain'),'kind':s['kind'],'path':s['path'],'include':s.get('include') or [],'exclude':s.get('exclude') or [],
              'implicit':bool(s.get('implicit')),'files':f,'chunks':c,'synced':when,'state':'indexed' if when else 'not synced'}
+        if when and s['kind'] not in REMOTE and (policy.broken or policies.get(s['name'])!=policy.revision(s['path'])):
+            row.update(files=None,chunks=None,state='reach changed; counts return after the next sync')   # the counts may include a notebook that is hidden or private now
         if s['kind'] in REMOTE:   # nothing is fetched here: the numbers are those of the last explicit `source-sync NAME`
             from .connectors import summary,MAX_PAGES
             remote=summary(root,s['name']);row.update(base_url=s.get('base_url'),token_env=s.get('token_env'),remote=remote,state='indexed' if when else 'not synced' if not remote['synced'] else 'fetched, not indexed')
@@ -781,6 +797,9 @@ def stale(root,domain,bindings=None,limit=STALE_SECONDS):
     """True when a sync is due: sources the index lacks or has changed, or a folder or file touched since the last sync
     started, found by a stat walk of at most `limit` seconds (it stops at the first change). Never raises."""
     try:
+        from .folder_policy import Policy
+        policy=Policy(root)
+        if policy.broken:return False   # source-sync refuses to index until the registry is repaired
         deadline=time.monotonic()+limit;specs=resolve(root,domain,bindings,deadline)
         info=state(root,domain)
         if not specs:return bool(info and info['sources'])   # nothing resolves now: rows of sources that went away are still there to prune
@@ -791,8 +810,6 @@ def stale(root,domain,bindings=None,limit=STALE_SECONDS):
             policies={k[7:]:v for k,v in db.execute("SELECT key,value FROM meta WHERE key LIKE 'policy:%'")}
         finally:db.close()
         if {s['name']:_config(s) for s in specs}!=held:return True
-        from .folder_policy import Policy
-        policy=Policy(root)
         if any(policies.get(s['name'])!=policy.revision(s['path']) for s in specs if s['kind'] not in REMOTE):return True   # a folder notebook's reach changed
         oldest=info['epoch']
         for spec in specs:
@@ -901,7 +918,7 @@ def _tests_last(rows,query):
     if WANTS_TESTS.search(query):return rows
     return [r for _,r in sorted(enumerate(rows),key=lambda i_r:i_r[0]+(TEST_PENALTY if TEST_PATH.search(i_r[1][2].replace(os.sep,'/')) else 0))]
 
-def search(root,domain,query,limit=5,vocab=None,informative=False,gate=None,least=2,width=SNIPPET,near=None,dropped=None,pages=False,inject=False):
+def search(root,domain,query,limit=5,vocab=None,informative=False,gate=None,least=2,width=SNIPPET,near=None,dropped=None,pages=False,inject=False,policy=None):
     """Source excerpts for a query, best first: chunks with every term, then chunks with some, at most two per file and
     none overlapping another. Terms no chunk carries are dropped; informative (the prompt hook) also drops words most
     chunks carry and keeps the 16 rarest. gate (a minimum share of the query's weight a chunk must carry, with `least`
@@ -910,14 +927,16 @@ def search(root,domain,query,limit=5,vocab=None,informative=False,gate=None,leas
     heading and a snippet.
     Folder notebooks (core/folder_policy.py) are judged for every hit as the registry and sidecars say now. Without pages, a hit
     inside any notebook is left out: those are pages, not sources. With pages, only hits inside a searchable or injectable
-    notebook are kept (injectable only, with inject), each with its notebook folder, title and reach. A damaged registry serves nothing."""
+    notebook are kept (injectable only, with inject), each with its notebook folder, title and reach. A damaged registry serves nothing.
+    policy: a folder_policy.Policy a caller asking several queries reuses."""
     from .folder_policy import Policy,SERVED
     db=_readonly(root,domain)
     if not db:return []
-    policy=Policy(root);owners={}
+    policy=policy or Policy(root);owners={}
     if policy.broken:db.close();return []
     def keep(top,source,path):
-        level,folder,title=policy.file(os.path.join(top,path))
+        level,folder,title=policy.file(os.path.join(policy.real(top),path))
+        if NOTEBOOK_SOURCE.fullmatch(source) and (not pages or level is None):return False   # a folder notebook's own source holds pages only; an unset one serves nothing
         if not pages:return level is None
         if level not in SERVED or (inject and level!='injectable'):return False
         owners[(source,path)]=(folder,title,level);return True
@@ -938,19 +957,25 @@ def search_db(db,root,query,limit=5,vocab=None,informative=False,gate=None,least
         if gate is not None and len(words)<max(2,least):return []   # too few words to vouch for a chunk
         weight={w:math.log((total+1)/(df_of(df,w)+1))+0.1 for w in words}
         wanted={stem(w) for w in words};rows=[];listed=set()
+        roots={n:r for n,r in db.execute('SELECT name,root FROM source')};judged={}
+        def kept(r):
+            if keep is None:return True
+            if (r[1],r[2]) not in judged:judged[(r[1],r[2])]=keep(roots.get(r[1],''),r[1],r[2])
+            return judged[(r[1],r[2])]
         for joiner in (' AND ',' OR ') if words else ():
-            match=joiner.join('"'+w+'"' for w in words)
-            batch=db.execute('SELECT c.id,c.source,c.path,c.kind,c.symbol,c.line_start,c.line_end,f.text,bm25(chunk_fts,6.0,3.0,1.5,1.0),fl.url,fl.title FROM chunk_fts f JOIN chunk c ON c.id=f.rowid JOIN file fl ON fl.id=c.file_id WHERE chunk_fts MATCH ? ORDER BY bm25(chunk_fts,6.0,3.0,1.5,1.0) LIMIT 60',(match,)).fetchall()
-            rows+=[r for r in batch if r[0] not in listed];listed|={r[0] for r in batch}
+            match=joiner.join('"'+w+'"' for w in words);found=[];offset=0
+            while True:   # without keep, one page of 60; with it, pages until 60 rows pass or CANDIDATE_SCAN rows were read
+                batch=db.execute('SELECT c.id,c.source,c.path,c.kind,c.symbol,c.line_start,c.line_end,f.text,bm25(chunk_fts,6.0,3.0,1.5,1.0),fl.url,fl.title FROM chunk_fts f JOIN chunk c ON c.id=f.rowid JOIN file fl ON fl.id=c.file_id WHERE chunk_fts MATCH ? ORDER BY bm25(chunk_fts,6.0,3.0,1.5,1.0) LIMIT 60 OFFSET ?',(match,offset)).fetchall()
+                found+=[r for r in batch if kept(r)];offset+=len(batch)
+                if keep is None or len(batch)<60 or len(found)>=60 or offset>=CANDIDATE_SCAN:break
+            rows+=[r for r in found[:60] if r[0] not in listed];listed|={r[0] for r in found[:60]}
             if len(rows)>=limit*3 or len(words)==1:break
         lexical=len(rows)
         # An explicit question (no gate) also gets the chunks nearest it in meaning, found on their own: a chunk that says
         # it in other words can answer. The prompt hook's gate needs matched words, so it keeps the lexical candidates.
-        if gate is None:rows+=[r for r in _semantic_rows(db,root,query) if r[0] not in listed]
+        if gate is None:rows+=[r for r in _semantic_rows(db,root,query,SEMANTIC_TOP if keep is None else SEMANTIC_TOP*10) if r[0] not in listed and kept(r)][:SEMANTIC_TOP]
         if not rows:return []
         rows=_tests_last(_fuse_vectors(db,root,query,rows,lexical),query)
-        roots={n:r for n,r in db.execute('SELECT name,root FROM source')}
-        if keep is not None:rows=[r for r in rows if keep(roots.get(r[1],''),r[1],r[2])]
         out=[];per_file={};taken=[];similar=_chunk_similarity(db,root,query,[r[0] for r in rows[:40]]) if near is not None else {}
         for cid,source,path,kind,symbol,start,end,text,score,url,title in rows[:40]:
             have=_stems(symbol,path,text);hit=[w for w in words if _covers(have,w)]
@@ -985,7 +1010,9 @@ def _chunk_similarity(db,root,query,ids):
         return {r:semantic.cosine(wanted,semantic.from_blob(b)) for r,b in db.execute(f"SELECT rowid,vec FROM vec WHERE rowid IN ({','.join('?'*len(ids))})",ids) if b}
     except (sqlite3.Error,ValueError,struct.error):return {}
 
+NOTEBOOK_SOURCE=re.compile(r'nb-[0-9a-f]{10}')   # the name of a registered folder notebook's own source (_notebook_sources)
 SEMANTIC_TOP=20   # chunks the meaning channel contributes to an explicit question
+CANDIDATE_SCAN=600   # rows search_db reads per query form when keep() refuses some, before it stops looking
 
 def _semantic_rows(db,root,query,limit=SEMANTIC_TOP):
     """The chunks nearest the query in meaning, independent of shared words, shaped like the FTS rows (score 0). Ranked

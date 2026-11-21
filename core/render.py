@@ -16,11 +16,14 @@ def _row(row,n):
     head=f'{n}. ' if n else '- '
     name=row.get('title') or row.get('path') or row.get('file') or row.get('source') or _ref(row)
     if row.get('label')=='notebook page':name=f"{name}  ({row.get('domain')}/{row.get('notebook')}/{row.get('path')}:{row.get('line_start')})"
+    task='line' in row and 'done' in row and isinstance(row.get('text'),str)   # doc tasks: the task itself, where it is, and when it is due
+    if task:name=('[x] ' if row['done'] else '[ ] ')+row['text']
     meta=', '.join(str(row[k])[:10] if k in ('updated','date') else str(row[k]) for k in ('type','updated','date','status') if row.get(k))
     lines=[head+str(name or json.dumps(row,ensure_ascii=False))+(f'  [{meta}]' if meta else '')+(f'  {_ref(row)}' if row.get('title') and _ref(row) else '')]
     if row.get('item'):lines+=_wrap(f"#{row['index']} {row['item']}" if 'index' in row else row['item'])   # open: the action item itself
+    if task:lines+=_wrap(f"{row.get('domain')}/{row.get('notebook')}/{row.get('path')}:{row['line']}"+(f"  due {row['due']}" if row.get('due') else ''))
     for key in ('summary','snippet','excerpt','text','reason','action'):
-        if row.get(key):lines+=_wrap(row[key])
+        if row.get(key) and not (task and key=='text'):lines+=_wrap(row[key])
     if isinstance(row.get('files'),list) and row['files']:lines+=_wrap('files: '+', '.join(map(str,row['files'])))
     if isinstance(row.get('actions'),dict):lines.append(f"   actions: {row['actions'].get('open',0)} open, {row['actions'].get('done',0)} done")
     return lines
@@ -110,6 +113,7 @@ def render(result):
     else:lines=_kv({k:v for k,v in result.items() if k not in TRAILER})
     if result.get('operation_id') and result.get('undo') and not lines[0].startswith('Done ('):lines+=['',f"Operation {result['operation_id']}. Undo it with: alm {result['undo']}"]
     elif result.get('operation_id') and result.get('undo'):lines+=['',f"Undo it with: alm {result['undo']}"]
+    if result.get('pages_stale'):lines+=['','Notebook pages: the index was not fully brought up to date in time; run the command again for complete results.']
     for key in TRAILER:
         for item in result.get(key) if isinstance(result.get(key),list) else [result[key]] if result.get(key) else []:lines+=_wrap(f'{key}: {item}',indent='')
     return '\n'.join(lines)
