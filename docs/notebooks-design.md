@@ -148,8 +148,25 @@ Folder notebooks live outside the store; Living Memory reaches them through sour
 
 On 2026-11-20, before writing NS-2A, Claude checked this design against the code (`agentic-living-memory` main at `af4ed75`) and corrected the claims that did not hold: backups have no manifest yet; `repository.confined` misses junctions; `governance.commit` takes no caller revision; `governance.undo` and `plan` handle text only and reconcile every domain they touch; `doctor`, relocation and `init_domain` assume `notes/`; and the hook's auto-allow test and `hookfast` are separate from the mutating check. Sections 2 to 7 carry the corrections.
 
-Further changes made while writing NS-2A (Claude, 2026-11-20): `doc` operations have ids starting `doc-`; a damaged `notebook.json` counts as private and a damaged `notebook-privacy.json` redacts every notebook, so damage never shows a private page; `hookfast` hands a Read, Glob or Grep inside the store (or a search above it) to the full hook whenever `notebook-privacy.json` exists; `doc notebooks` lists hidden notebooks only with `--include-hidden`; `notebook-privacy.json` and `notebook-folders.json` are in every snapshot, and a restore only adds entries to the privacy registry.
+Further changes made while writing NS-2A (Claude, 2026-11-20): `doc` operations have ids starting `doc-`; a damaged `notebook.json` counts as private and a damaged `notebook-privacy.json` redacts every notebook, so damage never shows a private page; `hookfast` hands a Read, Glob or Grep inside the store (or a search above it) to the full hook (whether or not `notebook-privacy.json` exists, since the first review); `doc notebooks` lists hidden notebooks only with `--include-hidden`; `notebook-privacy.json` and `notebook-folders.json` are in every snapshot, and a restore only adds entries to the privacy registry.
 
 ## 13. Shipped
 
-(Filled in when each phase lands.)
+### NS-2A
+
+Landed on 2026-11-21: the design correction `23a812a`, the implementation `349df94`, and the review fixes `9322fbd`, `c19eb2d` and `25c4982`.
+
+**Verified**
+- The full suite, `py -3 -m unittest discover -s tests` in four chunks: 2,243 tests, 4 skipped. `scripts/simulate.py`: 103 scenarios passed. Both run with `LIVING_MEMORY_OFF` unset, since the simulation fails with it set.
+- Notebook tests: `tests/test_docs.py` (35), `tests/test_docs_runtime.py` (10), `tests/test_docs_backup.py` (9) and `tests/test_docs_review.py` (50, one or more per review finding, each failing on the commit it fixes).
+- Not run: an installed build (installing needs the user's approval of the `install.py --plan` digest), Hivemind against these commands (NS-2C), and the hooks in a live agent session. The junction tests ran on NTFS and skip where neither a symbolic link nor a junction can be made.
+
+**Deviations from sections 3 to 7**
+- Attachment blobs are copied, never moved, and an operation keeps both sides until retention prunes it, so attachment bytes take twice their size meanwhile (section 4).
+- A change of letter case only, for a page or a section, takes two moves through another name.
+- Every write to a private notebook, and `apply`, `undo` and `recover` of an operation on one, needs `--include-private`. `batch` refuses the flag, the hook denies `serve` to agents, and `doctor` names a private notebook only with the flag.
+- No write may delete a `notebook.json` while its notebook keeps other files, and no write may add to a notebook without one.
+- Bundles stay notes-only, and `bundle import` refuses a notebook-only domain (section 7).
+- `doc search`, `doc tasks`, `doc query` and `doc folder` are NS-2B, as planned.
+
+**Code review.** Codex (`gpt-6.2-sol`, effort high, read-only) reviewed `349df94` and then each fix commit: 22 findings, then 14, then 13. Claude found every one accurate; each is fixed with a regression test. One finding of the third round was a regression from the second round's cleanup. No fourth round followed, by the rule of about three rounds. Verdicts, fixes, tests, the limits that remain and Codex's three reports are in `docs/reviews/ns2a-codex-review.md`.
