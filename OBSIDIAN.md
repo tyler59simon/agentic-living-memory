@@ -34,6 +34,10 @@ The vault is your own editing surface, so routine edits need no approval:
 - **New notes from a template** are captured once their text replaces the template prompt. A note inserted from a template needs no `id`: sync assigns one, takes the domain from the folder, captures it, and replaces the vault file with the canonically named copy. Frontmatter may use Obsidian's YAML block lists for tags.
 - **Not from the vault:** supersede, restoring an archived note, taxonomy expansion and bulk changes. Use the script or ask an agent.
 
+## Notebooks
+
+Searchable and injectable notebooks of the domain are mirrored to `Notebooks/<domain>/<notebook>/`. Edits there come back as page writes, or as proposals when the page changed in memory too; a new `.md` file becomes a page; a deleted copy becomes a "Delete page" line to tick on the Sync Status page. Hidden and private notebooks are never mirrored. See [NOTEBOOKS.md](NOTEBOOKS.md#obsidian).
+
 ## Conflicts and recovery
 
 - **Changed on both sides** (you edited a note while an agent updated it): memory's version is written to the vault, your version is saved under the store's `domains/DOMAIN/staged/`, and the Sync Status page offers `- [ ] Keep my vault version`. Ticking it applies your saved version at the next sync. Nothing is ever stuck: later edits apply normally.

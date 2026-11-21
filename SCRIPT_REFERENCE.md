@@ -26,7 +26,7 @@ Use `alm COMMAND --help` (or `python living_memory.py COMMAND --help`) for exact
 | History/recovery | history [--note REF] [--limit 20] [--markdown] (a bare list of `{operation_id, kind, state, created, files, summary, actor}`, where `summary` and `actor` are those of the operation's first note or change row (a count prefixes the summary when it changed several; an operation with no row, such as one still unfinished, shows its kind and the actor its ID and kind imply); with `--note` only the operations that changed that note itself, newest first, each also with `event`, `title`, `summary` and `actor`; `--markdown` returns `{ok, rows, markdown}` instead of the bare list; an operation on a private notebook shows no summary and only its paths outside private notebooks, with `redacted` counting the rest, unless `--include-private`); diff OPERATION [--include-private] (attachments as hashes, private notebook changes as `{redacted: true}`); undo OPERATION; recover OPERATION --direction forward|backward (backward only for unfinished operations; committed ones use undo) |
 | Maintenance | rebaseline [--dry-run]; maintenance status; maintenance preview [--limit N]; maintenance run [--dry-run]; maintenance enable [--all-domains] [--model NAME] [--max-notes-per-day N] [--timeout-seconds N] [--daily-budget-usd D]; maintenance disable; maintenance history [--limit N] [--run ID] |
 | Snapshots | backup [--keep 7] (result may carry `unreadable`, `retained`, `omitted` and `warning`, and `notebooks` and `pages` when the store has notebooks; the snapshot's `manifest.json` lists the notebooks it covers); restore-plan FILE (then inspect-plan and apply; a notebook the snapshot does not list is left alone) |
-| Notebook pages | doc notebooks, doc notebook create\|update\|delete, doc list, read, create, write, move, delete, attach, history, propose, proposals, proposal, accept, reject, undo; domain create NAME --notebook-only. Pages are not notes; agents read them and stage edits with `doc propose`. See [NOTEBOOKS.md](NOTEBOOKS.md) |
+| Notebook pages | doc notebooks, doc notebook create\|update\|delete, doc list, read, create, write, move, delete, attach, history, search, tasks, query, folder set\|unset, propose, proposals, proposal, accept, reject, undo; domain create NAME --notebook-only. Pages are not notes; agents read and search them and stage edits with `doc propose`. `search` and `ask` add a `pages` array (and `pages_stale` when the page index was not brought fully up to date) and take `--include-private` (Hivemind only). See [NOTEBOOKS.md](NOTEBOOKS.md) |
 | Bulk governance | merge-plan, retag-plan (reviewed plans); remap [--payload-file FILE] (direct: moves notes between domains, journaled kind `reference_remap`); taxonomy add TAG... (direct: registers tags, kind `taxonomy_expansion`; plain `taxonomy` lists them) |
 | Prose rewrite | rewrite [--payload-file FILE]: one direct, journaled write that replaces the bodies of up to 50 notes, from a JSON list of `{"ref", "revision", "body"}`. A stale revision, a title, or a map or brief is refused; `updated` and `review_by` are kept, and `sources` and `file_hashes` are not re-hashed (nor by `check`). Result: `operation_id`, `undo`, `summary`, `notes` (each with any `quality_warnings`) and `unchanged`. See [WRITING.md](WRITING.md#rewriting-a-note). |
 | Global domain | promote --suggest [--only DOMAIN] (writes nothing); promote REF... (direct and journaled, so `undo OPERATION` reverses it; drops project tags and files, refuses digests, maps, briefs and notes naming a project path, like the automatic move); see [PROTOCOL.md](PROTOCOL.md) for `capture --global` and duplicates across domains |
@@ -162,7 +162,7 @@ Generated from the argparse parser in `core/cli.py` by `py -3.15 scripts/gen_scr
 | --- | --- |
 | `apply` | `--expected-plan-sha256`, `--include-private` |
 | `archive` | `--expected-revision`, `--payload-file`, `--session`, `--turn` |
-| `ask` | `--limit` |
+| `ask` | `--include-private`, `--limit` |
 | `backup` | `--keep` |
 | `baseline-plan` | none |
 | `batch` | `--payload-file` |
@@ -180,6 +180,9 @@ Generated from the argparse parser in `core/cli.py` by `py -3.15 scripts/gen_scr
 | `doc attach` | `--from-file`, `--include-private`, `--name` |
 | `doc create` | `--body-file`, `--include-private` |
 | `doc delete` | `--expected-revision`, `--include-private` |
+| `doc folder` | none |
+| `doc folder set` | `--no-private`, `--private`, `--visibility` |
+| `doc folder unset` | `--forget` |
 | `doc history` | `--include-private`, `--limit`, `--version` |
 | `doc list` | `--include-private`, `--section` |
 | `doc move` | `--include-private`, `--rewrite-links` |
@@ -191,8 +194,11 @@ Generated from the argparse parser in `core/cli.py` by `py -3.15 scripts/gen_scr
 | `doc proposal` | `--include-private` |
 | `doc proposals` | `--include-private`, `--status` |
 | `doc propose` | `--base-revision`, `--body-file`, `--include-private`, `--note`, `--session` |
+| `doc query` | `--all-domains`, `--include-private`, `--payload-file` |
 | `doc read` | `--include-private`, `--max-chars` |
 | `doc reject` | `--include-private`, `--reason` |
+| `doc search` | `--all-domains`, `--include-private`, `--limit`, `--notebook`, `--rebuild` |
+| `doc tasks` | `--all-domains`, `--include-private`, `--notebook`, `--open` |
 | `doc undo` | `--include-private` |
 | `doc write` | `--body-file`, `--expected-revision`, `--include-private` |
 | `doctor` | `--include-private` |
@@ -241,7 +247,7 @@ Generated from the argparse parser in `core/cli.py` by `py -3.15 scripts/gen_scr
 | `retag-plan` | `--payload-file` |
 | `review` | `--all-domains`, `--kind`, `--limit`, `--tag` |
 | `rewrite` | `--payload-file` |
-| `search` | `--explain`, `--file`, `--filter`, `--limit`, `--rebuild`, `--scope`, `--sources` |
+| `search` | `--explain`, `--file`, `--filter`, `--include-private`, `--limit`, `--rebuild`, `--scope`, `--sources` |
 | `semantic status/install/remove/rebuild/native` | `--from`, `--model` |
 | `serve` | `--stdio` |
 | `setup` | `--apply-plan`, `--expected-plan-sha256`, `--inspect-plan`, `--location`, `--non-interactive`, `--source` |

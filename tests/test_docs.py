@@ -320,7 +320,8 @@ class NotebookOnlyDomains(Fixture):
         docs.create_notebook(self.root,'journal','days','Days');docs.create_page(self.root,'journal','days','Cache.md',b'The local cache is rebuildable. PAGE-ONLY-WORD\n')
         docs.create_notebook(self.root,'demo','nb1','Notebook');docs.create_page(self.root,'demo','nb1','Cache.md',b'PAGE-ONLY-WORD\n')
         for argv in (('list','--all-domains'),('links','--all-domains'),('review','--all-domains'),('open','--all-domains'),('recap','--all-domains'),('search','PAGE-ONLY-WORD')):
-            with self.subTest(argv=argv):self.assertNotIn('PAGE-ONLY-WORD',json.dumps(self.ok(*argv)))
+            # NS-2B: search lists pages in their own `pages` array, never among notes
+            with self.subTest(argv=argv):self.assertNotIn('PAGE-ONLY-WORD',json.dumps({k:v for k,v in self.ok(*argv).items() if k!='pages'}))
 
     def test_version_reports_docs(self):
         self.assertEqual(self.ok('version')['capabilities']['docs']['version'],1)

@@ -255,6 +255,10 @@ def scan(root,domain,source=None,limit=50,changed_only=False,bindings=None):
     try:
         files=db.execute('SELECT id,source,path,size FROM file WHERE skipped IS NULL AND chunks>0'+(' AND source=?' if source else ''),(source,) if source else ()).fetchall()
         bases={n:Path(s['path']).resolve() for n,s in specs.items()}
+        from .folder_policy import Policy
+        policy=Policy(root)
+        if policy.broken:raise ValueError('notebook-folders.json is damaged, so folder notebooks cannot be told apart; run doctor')
+        files=[f for f in files if f[1] in bases and policy.file(bases[f[1]]/f[2])[0] is None]   # notebook pages are not digested into notes
         leads={n:next(((f'{x}/' if x!='.' else '') for x in (_inside(b,p) for p in prefixes) if x is not None),f'{n}:') for n,b in bases.items()}   # stored path = lead + path within the source
         for file_id,name,rel,size in files:
             if name not in specs:continue

@@ -308,7 +308,7 @@ VIEWER=READ_ONLY|{'taxonomy','review','diff','inspect-plan'}
 # Direct journaled writes (no plan); `taxonomy add` is the same kind of write under a read command. Refused to subagents, viewers and Hivemind agents.
 DIRECT_WRITES={'archive','rewrite','remap','promote','source','project','system','change','type','domain'}
 # Notebook page writes (NS-2A): main actor only, and never from an agent inside a Hivemind terminal. `doc propose` stays open to agents.
-DOC_WRITES={'notebook','create','write','move','delete','attach','accept','reject','undo'}   # runtime.DOC_WRITE_ACTIONS; runtime loads lazily here
+DOC_WRITES={'notebook','create','write','move','delete','attach','accept','reject','undo','folder'}   # runtime.DOC_WRITE_ACTIONS; runtime loads lazily here
 SERVE_API=2
 SERVE_LIMIT=2*1024*1024
 
@@ -411,7 +411,28 @@ def _each_question(query,limit,run):
     found=questions(query)
     return [dict(question=q,**run(q,min(limit,3))) for q in found[:MAX_QUESTIONS]] if found else None
 
-def _ask(root,domain,query,limit):
+def _page_hits(root,domains,query,limit,include_private,refresh=True):
+    """(pages, stale) of notebook pages for search and ask: Living Memory notebooks of these domains, refreshed within the walk and
+    index budgets. Hidden notebooks never; private ones only with include_private (Hivemind's bridge)."""
+    import itertools
+    from . import docs_index,sources
+    try:lm,stale=docs_index.search(root,domains,query,limit,include_private,refresh_first=refresh)
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('cli.pages',exc,root);lm,stale=[],True
+    folder=[]
+    for domain in domains:
+        for h in sources.search(root,domain,query,limit,pages=True):
+            rel=Path(h['file']).relative_to(h['notebook']).as_posix() if Path(h['file']).is_relative_to(h['notebook']) else h['path']
+            try:revision=hashlib.sha256(Path(h['file']).read_bytes()).hexdigest()
+            except OSError:revision=None
+            folder.append({'origin':'folder','domain':domain,'notebook':h['notebook'],'notebook_title':h['notebook_title'],'title':Path(rel).stem,'path':rel,
+                           'file':h['file'],'heading':h['symbol'],'snippet':h['snippet'],'line_start':h['line_start'],'line_end':h['line_end'],'revision':revision,
+                           'score':h['score'],'relevance':h['relevance'],'label':'notebook page'})
+    merged=[p for pair in itertools.zip_longest(lm,folder) for p in pair if p is not None]   # the two indexes' scores do not compare: alternate by rank
+    return merged[:limit],stale
+
+def _ask(root,domain,query,limit,include_private=False):
     """Notes first (the search command's ranking), then source excerpts from the project knowledge base, each labelled.
     A query of several questions is also answered one by one: `questions` holds each question's own notes and sources."""
     from . import sources
@@ -421,12 +442,14 @@ def _ask(root,domain,query,limit):
     notes=[dict(h,label='note') for h in found['results']];excerpts=sources.search(root,domain,query,limit);info=sources.state(root,domain)
     result={'ok':True,'query':query,'domain':domain,'notes':notes,'sources':excerpts,'relevant':found['relevant'],
             'knowledge_base':dict(info,syncing=sources.syncing(root,domain)) if info else {'files':0,'syncing':sources.syncing(root,domain)}}
+    pages,stale=_page_hits(root,primary,query,limit,include_private);result['pages']=pages
+    if stale:result['pages_stale']=True
     if notes and not found['relevant']:result['hint']='No note passed the relevance check; the notes are the closest matches, least likely to apply.'
     if not info:result['knowledge_base']['hint']='No knowledge-base index yet: run source-sync (it also starts at session start). Sources: `sources`.'
     elif not excerpts:result['knowledge_base']['hint']='No source excerpt matched; try other words, or read the files.'
     def one(q,n):
         found=_note_hits(root,domain,q,'fallback',n,False,{},config,globals_,primary,foreign)
-        return {'notes':[dict(h,label='note') for h in found['results']],'sources':sources.search(root,domain,q,n),'relevant':found['relevant']}
+        return {'notes':[dict(h,label='note') for h in found['results']],'sources':sources.search(root,domain,q,n),'pages':_page_hits(root,primary,q,n,include_private,False)[0],'relevant':found['relevant']}
     each=_each_question(query,limit,one)
     if each:result['questions']=each
     return result
@@ -620,8 +643,16 @@ def _doc_parsers(p,common):
     q=dsub('accept','Apply a staged edit (main actor)');q.add_argument('id');q.add_argument('--expected-revision')
     q=dsub('reject','Drop a staged edit (main actor)');q.add_argument('id');q.add_argument('--reason')
     q=dsub('undo','Undo a notebook operation');q.add_argument('operation_id')
+    q=dsub('folder','Folder notebooks: how far agents reach into them (Hivemind)');fs=q.add_subparsers(dest='folder_action',required=True,metavar='ACTION')
+    q=dsub('set','Add or change a folder notebook',fs);q.add_argument('path');q.add_argument('--visibility',choices=visibility,required=True)
+    pv=q.add_mutually_exclusive_group();pv.add_argument('--private',dest='private',action='store_const',const=True);pv.add_argument('--no-private',dest='private',action='store_const',const=False)
+    q=dsub('unset','Remove a folder notebook (a hidden or private one stays excluded unless --forget)',fs);q.add_argument('path');q.add_argument('--forget',action='store_true')
+    q=dsub('search','Search notebook pages (agents may run it)');q.add_argument('query',nargs='+');q.add_argument('--all-domains',action='store_true')
+    q.add_argument('--notebook',help='Only this notebook (a hidden one is searched only when named)');q.add_argument('--limit',type=int,default=10);q.add_argument('--rebuild',action='store_true',help='Rebuild the page index first')
+    q=dsub('tasks','Task lines of notebook pages');q.add_argument('--all-domains',action='store_true');q.add_argument('--notebook');q.add_argument('--open',action='store_true',help='Only tasks not done')
+    q=dsub('query','Pages by frontmatter properties');q.add_argument('--payload-file',type=Path,required=True,help='{"where": [{"key", "op", "value"}], "sort": [{"key", "order"}], "limit": N, "notebook": NB}');q.add_argument('--all-domains',action='store_true')
     # Writes to an existing private notebook need --include-private too (Hivemind passes it; the hook denies it to agents).
-    for name,q in [(n,p) for n,p in ds.choices.items() if n!='notebook']+list(ns.choices.items()):
+    for name,q in [(n,p) for n,p in ds.choices.items() if n not in ('notebook','folder')]+list(ns.choices.items()):
         if not any('--include-private' in a.option_strings for a in q._actions):private(q)
 
 def _doc_body(args):
@@ -673,6 +704,28 @@ def _doc(args,root,domain):
         names=[canonical_domain(args.doc_domain,root)] if args.doc_domain else every()
         return docs.proposals(root,names,args.notebook,private,args.status)
     if action=='proposal':return docs.show_proposal(root,args.id,private)
+    if action=='folder':
+        from . import folder_policy
+        if args.folder_action=='unset':return folder_policy.unset_folder(root,args.path,args.forget)
+        if not domain:raise ValueError(UNBOUND)
+        return folder_policy.set_folder(root,args.path,domain,args.visibility,args.private)
+    if action in ('search','tasks','query'):
+        from . import docs_index
+        names=every() if args.all_domains else [domain] if domain else None
+        if names is None:raise ValueError(UNBOUND)
+        if action=='search':
+            text=' '.join(args.query)
+            if not text.strip():raise ValueError('doc search needs a query')
+            if args.notebook:docs._slug(args.notebook)
+            if args.rebuild:
+                for name in names:docs_index.refresh(root,name,rebuild=True,lock_timeout=30)
+            pages,stale=docs_index.search(root,names,text,max(1,min(50,args.limit)),private,args.notebook)
+            return {'ok':True,'query':text,'domains':names,'pages':pages,**({'pages_stale':True} if stale else {})}
+        if action=='tasks':
+            rows,stale=docs_index.task_rows(root,names,args.notebook,args.open,private)
+            return {'ok':True,'domains':names,'tasks':rows,**({'pages_stale':True} if stale else {})}
+        rows,stale=docs_index.query(root,names,_doc_json(args.payload_file,'--payload-file'),private)
+        return {'ok':True,'domains':names,'pages':rows,**({'pages_stale':True} if stale else {})}
     if action=='accept':return docs.accept(root,args.id,args.expected_revision,private)
     if action=='reject':return docs.reject(root,args.id,args.reason,private)
     from .governance import undo
@@ -715,6 +768,7 @@ def build_parser():
     p.add_argument('--status',choices=['pending','accepted','rejected','any'],default='pending',help='list: which proposals (default pending)');p.add_argument('--session',help='list: only this session')
     p.add_argument('--reason',help='reject: why, one line')
     p=sub('search');p.add_argument('query',nargs='?',default='');p.add_argument('--file',help='Notes about this file or folder: listed in their files property, or named in the body');p.add_argument('--scope',choices=['active','fallback','all'],default='fallback');p.add_argument('--limit',type=int,default=5);p.add_argument('--filter',action='append',default=[]);p.add_argument('--rebuild',action='store_true');p.add_argument('--sources',action='store_true',help='Source excerpts from the project knowledge base only');p.add_argument('--explain',action='store_true',help='Add why each note was found: backend, scores, gate and the section the prompt hook would deliver')
+    p.add_argument('--include-private',action='store_true',help='Hivemind only: include pages of private notebooks')
     p=sub('read');p.add_argument('reference');p.add_argument('--max-chars',type=int,default=16000);p.add_argument('--metadata-only',action='store_true');p.add_argument('--section',help='Only this section, by heading (as search evidence and prompt lines name it)')
     p=sub('update');p.add_argument('reference');p.add_argument('--title');p.add_argument('--body');p.add_argument('--body-file',type=Path);p.add_argument('--tag',action='append');p.add_argument('--type',type=_type_name);p.add_argument('--context');p.add_argument('--review-by');p.add_argument('--expected-revision');p.add_argument('--payload-file',type=Path);p.add_argument('--session');p.add_argument('--turn')
     pins=p.add_mutually_exclusive_group();pins.add_argument('--pin',dest='pin',action='store_const',const=True,help=PIN_HELP);pins.add_argument('--unpin',dest='pin',action='store_const',const=False,help='Remove retirement protection (a pin change never counts as checking the note)')
@@ -787,6 +841,7 @@ def build_parser():
     p=sub('ingest-scan');p.add_argument('--source',help='One source (a `sources` name); default: all of the domain');p.add_argument('--limit',type=int,default=50);p.add_argument('--changed',action='store_true',help='Only files with no digest yet or a stale one')
     p=sub('ingest-skip');p.add_argument('--payload-file',type=Path)
     p=sub('ask');p.add_argument('query',nargs='+',help='A question about the project');p.add_argument('--limit',type=int,default=5,help='Notes and source excerpts shown, at most, of each')
+    p.add_argument('--include-private',action='store_true',help='Hivemind only: include pages of private notebooks')
     p=sub('change');p.add_argument('action',choices=['create','update','close']);p.add_argument('--payload-file',type=Path)
     p=sub('changes');p.add_argument('--status',choices=['active','done','cancelled','any'],default='any');p.add_argument('--project',help='Only the changes of this project slug')
     p=sub('views');p.add_argument('action',nargs='?',choices=['list','add','remove','render','published'],help='Default: list');p.add_argument('reference',nargs='?',help='The note (REF, ID prefix or exact title)')
@@ -1120,7 +1175,10 @@ def main(argv=None):
                 filters['file']={'*':wanted,**{k:child_path(wanted,domain,k,config) for k in kids_of}} if kids_of else wanted
             if not args.query.strip():raise ValueError('search needs a query, or --file PATH')
             result=_note_hits(root,domain,args.query,args.scope,args.limit,args.rebuild,filters,config,globals_,primary,foreign,args.explain)
-            each=None if filters else _each_question(args.query,max(1,min(20,args.limit)),lambda q,n:{k:v for k,v in _note_hits(root,domain,q,args.scope,n,args.rebuild,filters,config,globals_,primary,foreign).items() if k in {'results','relevant'}})
+            if not filters:   # the whole query first: it refreshes the page index the questions then read
+                pages,stale=_page_hits(root,primary,args.query,max(1,min(20,args.limit)),args.include_private);result['pages']=pages
+                if stale:result['pages_stale']=True
+            each=None if filters else _each_question(args.query,max(1,min(20,args.limit)),lambda q,n:dict({k:v for k,v in _note_hits(root,domain,q,args.scope,n,args.rebuild,filters,config,globals_,primary,foreign).items() if k in {'results','relevant'}},pages=_page_hits(root,primary,q,n,args.include_private,False)[0]))
             if each:result['questions']=each
         elif cmd=='read':
             from .notes import find_note
@@ -1170,7 +1228,7 @@ def main(argv=None):
         elif cmd=='version':
             from .installer_lifecycle import CORE_RELEASE,installed_stamp
             result={'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'restore':1,'pin':1,'rule':1,'direct_writes':1,'note_types':1,'history':3,'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']},'wiki_agent':{'version':1},
-                                                                                                                                         'docs':{'version':1,'max_page_bytes':4194304,'max_asset_bytes':26214400,'notebook_only_domains':True}}}
+                                                                                                                                         'docs':{'version':1,'max_page_bytes':4194304,'max_asset_bytes':26214400,'notebook_only_domains':True,'search':True,'folder_policy':True}}}
         elif cmd=='update':
             from .notes import change
             d,n=_reference(args.reference,domain,root)
@@ -1542,7 +1600,7 @@ def main(argv=None):
             result=sync(root,domain,args.name,args.rebuild,all_remote=args.all_remote,network=args.actor not in {'subagent','viewer'})
         elif cmd=='ask':
             if not domain:raise ValueError(UNBOUND)
-            result=_ask(root,domain,' '.join(args.query),args.limit)
+            result=_ask(root,domain,' '.join(args.query),args.limit,args.include_private)
         elif cmd=='change':
             from .changes import change_write
             result=change_write(root,args.action,_payload(args))

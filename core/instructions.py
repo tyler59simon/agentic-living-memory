@@ -48,7 +48,7 @@ TOPICS={
  'history':('Operation history',"History: CMD log [--project P] [--since DATE]."),
  'pages':('Notebook pages (doc commands)',
   "Notebook pages are not notes: read them with CMD doc read, and change them only with CMD doc propose, which the user reviews."
-  "\nRead: CMD doc notebooks; CMD doc list DOMAIN NOTEBOOK; CMD doc read DOMAIN NOTEBOOK PATH (the reply carries the page's revision)."
+  "\nFind: CMD doc search 'words' (search and ask list pages too, under pages). Read: CMD doc notebooks; CMD doc list DOMAIN NOTEBOOK; CMD doc read DOMAIN NOTEBOOK PATH (the reply carries the page's revision)."
   "\nPropose: CMD doc propose DOMAIN NOTEBOOK PATH --base-revision REV --note 'Why' with the whole new text on stdin or in --body-file FILE;"
   " leave out --base-revision for a new page. CMD doc proposals lists the pending ones. Private notebooks are never shown to agents."),
  'writing':('How to write a note',

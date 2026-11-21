@@ -177,6 +177,9 @@ def _commit(root, changes, kind, meta, summary, expected=None):
     operation_id = DOC_OP_PREFIX + uuid.uuid4().hex
     receipt = transaction(root, changes, kind, expected, operation_id, meta=meta)
     record_index(root, operation_id, changes)   # retention reads this instead of every journal's page text
+    if meta and meta.get("domain") and meta.get("notebook"):
+        from .docs_index import after_write
+        after_write(root, meta["domain"], meta["notebook"])   # search sees the change at once; a missed reindex is caught by the next walk
     receipt.update(kind=kind, summary=summary, undo=f"undo {operation_id}")
     return receipt
 
@@ -1118,6 +1121,11 @@ def health(root, include_private=False):
     root = Path(root)
     warnings = []
     scope = None if include_private else private_scope(root)
+    try:
+        from .folder_policy import load
+        load(root)
+    except ValueError as exc:
+        warnings.append(f"{exc}: no source excerpt or folder notebook page is served until it is repaired")
     try:
         read_json(root / PRIVACY, None)
     except ValueError:

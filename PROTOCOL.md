@@ -76,7 +76,7 @@ Private spans: text the user wraps in `<private>…</private>` may be used for t
 
 ## Notebook pages
 
-Notebook pages are not notes. Agents read them with `doc notebooks`, `doc list` and `doc read`, and change them only with `doc propose`, which stages the whole new text against the revision they read; the user accepts or rejects it in Hivemind. Every other `doc` write and `domain create` is the main actor's: the hook denies them to subagents and to agents in a Hivemind terminal, and never auto-allows them. Private notebooks are never shown to agents. See [NOTEBOOKS.md](NOTEBOOKS.md).
+Notebook pages are not notes. Agents find them with `doc search` (and in the `pages` array of `search` and `ask`), read them with `doc notebooks`, `doc list` and `doc read`, and change them only with `doc propose`, which stages the whole new text against the revision they read; the user accepts or rejects it in Hivemind. Every other `doc` write and `domain create` is the main actor's: the hook denies them to subagents and to agents in a Hivemind terminal, and never auto-allows them. Private notebooks are never shown to agents, hidden ones are never found by `search` or `ask`, and only injectable ones reach prompts, as labelled source excerpts. See [NOTEBOOKS.md](NOTEBOOKS.md).
 
 ## Compaction
 

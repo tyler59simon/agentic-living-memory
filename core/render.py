@@ -2,7 +2,7 @@
 from __future__ import annotations
 import json,textwrap
 WIDTH=88
-LISTS=('results','notes','items','sources')
+LISTS=('results','notes','items','sources','pages','tasks')
 TRAILER=('hint','warnings','quality_warnings','rule_warning','pin_warning')
 
 def _s(v):return v if isinstance(v,str) else json.dumps(v,ensure_ascii=False)
@@ -15,6 +15,7 @@ def _ref(row):
 def _row(row,n):
     head=f'{n}. ' if n else '- '
     name=row.get('title') or row.get('path') or row.get('file') or row.get('source') or _ref(row)
+    if row.get('label')=='notebook page':name=f"{name}  ({row.get('domain')}/{row.get('notebook')}/{row.get('path')}:{row.get('line_start')})"
     meta=', '.join(str(row[k])[:10] if k in ('updated','date') else str(row[k]) for k in ('type','updated','date','status') if row.get(k))
     lines=[head+str(name or json.dumps(row,ensure_ascii=False))+(f'  [{meta}]' if meta else '')+(f'  {_ref(row)}' if row.get('title') and _ref(row) else '')]
     if row.get('item'):lines+=_wrap(f"#{row['index']} {row['item']}" if 'index' in row else row['item'])   # open: the action item itself
@@ -68,7 +69,7 @@ def _rows(r):
     for key in LISTS:
         rows=[x for x in r[key] if isinstance(x,dict)] if isinstance(r.get(key),list) else []   # open's `notes` is a count
         if rows:
-            lines+=([''] if lines else [])+(['Sources:'] if key=='sources' else [])
+            lines+=([''] if lines else [])+({'sources':['Sources:'],'pages':['Notebook pages:']}.get(key,[]))
             for n,row in enumerate(rows,1):lines+=_row(row,n if key=='results' or 'rank' in row else 0)
     return lines or ['No matches.']
 

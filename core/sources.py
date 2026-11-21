@@ -163,6 +163,7 @@ def resolve(root,domain,bindings=None,deadline=None):
     found=[_located(root,s) for s in registry['sources'] if s.get('domain')==domain and s.get('kind') in KINDS and (s['kind'] in REMOTE or isinstance(s.get('path'),str))]
     taken={s['name'] for s in found}
     if registry.get('implicit',{}).get(domain,True) is not False:found+=[s for s in implicit_sources(domain,bindings,deadline) if s['name'] not in taken]
+    found+=_notebook_sources(root,domain,found)
     store=Path(root).resolve();kept=[]
     for spec in found:   # the memory store is not project source, whatever folder it sits in
         try:
@@ -172,6 +173,38 @@ def resolve(root,domain,bindings=None,deadline=None):
         except (ValueError,OSError):pass
         kept.append(spec)
     return kept
+
+def _covered(path,specs):
+    """Whether a source walks into this folder: one rooted at or above it with no hidden, vendored, ignored or excluded folder between."""
+    from .folder_policy import key
+    k=key(path)
+    for s in specs:
+        if s.get('kind') in REMOTE or not isinstance(s.get('path'),str):continue
+        top=key(s['path'])
+        if k!=top and not k.startswith(top.rstrip(os.sep)+os.sep):continue
+        parts=[] if k==top else [p for p in os.path.relpath(path,s['path']).replace(os.sep,'/').split('/') if p and p!='.']
+        if any(p in SKIP_DIRS or (p.startswith('.') and p!='.github') for p in parts):continue
+        rules=gitignore(s['path']);exclude=_patterns(s.get('exclude') or [])
+        if any(ignored(rules,'/'.join(parts[:i+1]),True) or _any(exclude,'/'.join(parts[:i+1])) for i in range(len(parts))):continue
+        return True
+    return False
+
+def _notebook_sources(root,domain,specs):
+    """A folder source for each registered folder notebook of the domain (searchable or injectable) that no other source walks
+    into: implicit sources switched off, a repo deeper than DISCOVER_DEPTH, a folder inside a hidden one, or outside every bound
+    folder. Named nb-<hash of the path>; source roots inside it are left to their own source."""
+    from .folder_policy import Policy,key
+    try:policy=Policy(root)
+    except Exception:return []
+    out=[]
+    for path,_ in policy.registered_sources(domain):
+        if _covered(path,specs) or not Path(path).is_dir():continue
+        k=key(path)
+        inner=['/'+os.path.relpath(s['path'],path).replace(os.sep,'/') for s in specs if s.get('kind') not in REMOTE and isinstance(s.get('path'),str)
+               and key(s['path']).startswith(k.rstrip(os.sep)+os.sep)]
+        out.append({'name':'nb-'+hashlib.sha256(k.encode()).hexdigest()[:10],'domain':domain,'kind':'folder','path':Path(path).as_posix(),
+                    'include':[],'exclude':sorted(inner),'implicit':False,'notebook':True})
+    return out
 
 # ---- gitignore, globs and the walk ----------------------------------------------------------------------------------
 def _glob_re(pattern):
@@ -228,23 +261,34 @@ def _eligible(extensions,name,rel,include):
     if dot<=0:return name in BARE_DOCS
     return name[dot:] in extensions and not name.endswith(('.min.js','.min.css','.map'))
 
-def walk(base,spec,deadline=None,ordered=True):
+def walk(base,spec,deadline=None,ordered=True,policy=None):
     """(is_dir, rel path, size, mtime_ns) for every folder and candidate file of a source, in name order unless ordered is False: no
-    links, hidden or vendored folders, nothing the top-level .gitignore or the source's exclude globs name. Stops at the deadline."""
+    links, hidden or vendored folders, nothing the top-level .gitignore or the source's exclude globs name. Stops at the deadline.
+    With a folder_policy.Policy, a folder notebook that is hidden or private (or inside one) is not entered, and each notebook
+    sidecar is yielded as a folder entry ending in /.hivemind with the sidecar's time, so a change of policy makes the index stale."""
     base=Path(base);rules=gitignore(base);include=_patterns(spec.get('include') or []);exclude=_patterns(spec.get('exclude') or [])
     extensions=DOC_EXT|(HTML_EXT if spec.get('kind','folder') in {'html-export','git-wiki','confluence','notion'} else CODE_EXT)
-    stack=['']
+    from .folder_policy import SIDECAR_DIR,stricter
+    stack=[('',policy.folder(base)[0] if policy is not None else None)]
     while stack:
-        rel=stack.pop()
+        rel,level=stack.pop()
         if deadline and time.monotonic()>deadline:return
         try:entries=os.scandir(base/rel if rel else base);entries=sorted(entries,key=lambda e:e.name,reverse=True) if ordered else list(entries)
         except OSError:continue
+        if policy is not None:
+            has=any(e.name==SIDECAR_DIR for e in entries)
+            if has:
+                try:yield True,(f'{rel}/' if rel else '')+SIDECAR_DIR,0,os.stat(base/rel/SIDECAR_DIR/'notebook.json').st_mtime_ns
+                except OSError:pass
+            own=policy.own(base/rel,has) if rel else None   # the base's own policy is in policy.folder(base)
+            if own:level=stricter(level,own[0])
+            if level in ('hidden','private'):continue
         for entry in entries:
             path=f'{rel}/{entry.name}' if rel else entry.name
             try:
                 if entry.is_dir(follow_symlinks=False):
                     if entry.name in SKIP_DIRS or (entry.name.startswith('.') and entry.name!='.github') or ignored(rules,path,True) or _any(exclude,path) or getattr(entry,'is_junction',bool)():continue
-                    stack.append(path);yield True,path,0,os.stat(entry.path).st_mtime_ns   # not the scan's cached time: a folder's is updated lazily
+                    stack.append((path,level));yield True,path,0,os.stat(entry.path).st_mtime_ns   # not the scan's cached time: a folder's is updated lazily
                 elif entry.is_file(follow_symlinks=False) and _eligible(extensions,entry.name,path,include) and not ignored(rules,path,False) and not _any(exclude,path):
                     info=entry.stat();yield False,path,info.st_size,info.st_mtime_ns
             except OSError:continue
@@ -564,7 +608,7 @@ def _pages(folder):
     except (OSError,ValueError,AttributeError):return {}
     return found if isinstance(found,dict) else {}
 
-def _sync_source(db,spec,delta,force=False):
+def _sync_source(db,spec,delta,force=False,policy=None):
     """Bring one source's rows up to date; returns its counts. Only files whose (mtime, size) differ are read, and only
     those whose sha256 differs are re-chunked."""
     name=spec['name'];base=Path(spec['path']);config=_config(spec);began=time.time()
@@ -578,7 +622,7 @@ def _sync_source(db,spec,delta,force=False):
     have={path:(i,m,s,h) for i,path,m,s,h in db.execute('SELECT id,path,mtime_ns,size,sha256 FROM file WHERE source=?',(name,))}
     seen=set();todo=[]
     pages={p.get('path'):(p.get('url') or None,p.get('title')) for p in (_pages(base) if spec['kind'] in REMOTE else {}).values() if isinstance(p,dict)}   # a page's URL and title, for its citation
-    for is_dir,rel,size,mtime in walk(base,spec):
+    for is_dir,rel,size,mtime in walk(base,spec,policy=policy):
         if is_dir:continue
         if len(seen)>=MAX_FILES:count['truncated']=1;break
         seen.add(rel);old=have.get(rel)
@@ -614,6 +658,7 @@ def _sync_source(db,spec,delta,force=False):
         if path not in seen:_drop_file(db,file_id,delta);db.execute('DELETE FROM file WHERE id=?',(file_id,));count['removed']+=1
     files,chunks=db.execute('SELECT count(*),coalesce(sum(chunks),0) FROM file WHERE source=? AND skipped IS NULL',(name,)).fetchone()
     db.execute('UPDATE source SET files=?,chunks=?,synced=? WHERE name=?',(files,chunks,now(),name));_set_meta(db,'epoch:'+name,began)   # per source: a sync of another one says nothing about this one's files
+    if policy is not None:_set_meta(db,'policy:'+name,policy.revision(spec['path']))
     return dict(count,name=name,files=files,chunks=chunks)
 
 def _embed(db,root,deadline):
@@ -675,12 +720,14 @@ def _sync(root,domain,name,rebuild):
         if fresh:
             fd,temp=tempfile.mkstemp(prefix='.sources-',suffix='.sqlite3',dir=target.parent);os.close(fd);os.unlink(temp);db=_create(temp)
         delta=Counter();results=[]
-        for spec in specs:results.append(_sync_source(db,spec,delta,force=bool(rebuild and name)));_apply_vocab(db,delta);db.commit()
+        from .folder_policy import Policy
+        policy=Policy(root)
+        for spec in specs:results.append(_sync_source(db,spec,delta,force=bool(rebuild and name),policy=policy));_apply_vocab(db,delta);db.commit()
         if not name:
             for (gone,) in db.execute('SELECT name FROM source').fetchall():
                 if gone not in {s['name'] for s in specs}:
                     for (file_id,) in db.execute('SELECT id FROM file WHERE source=?',(gone,)).fetchall():_drop_file(db,file_id,delta)
-                    db.execute('DELETE FROM file WHERE source=?',(gone,));db.execute('DELETE FROM source WHERE name=?',(gone,));db.execute('DELETE FROM meta WHERE key=?',('epoch:'+gone,))
+                    db.execute('DELETE FROM file WHERE source=?',(gone,));db.execute('DELETE FROM source WHERE name=?',(gone,));db.execute('DELETE FROM meta WHERE key IN (?,?)',('epoch:'+gone,'policy:'+gone))
             _apply_vocab(db,delta)
         vectors=_embed(db,root,time.monotonic()+EMBED_SECONDS)
         _set_meta(db,'synced',now());_set_meta(db,'synced_epoch',started);db.commit()
@@ -739,9 +786,14 @@ def stale(root,domain,bindings=None,limit=STALE_SECONDS):
         if not specs:return bool(info and info['sources'])   # nothing resolves now: rows of sources that went away are still there to prune
         if not info:return True
         db=_readonly(root,domain)
-        try:held=dict(db.execute('SELECT name,config FROM source').fetchall());epochs={k[6:]:v for k,v in db.execute("SELECT key,value FROM meta WHERE key LIKE 'epoch:%'")}
+        try:
+            held=dict(db.execute('SELECT name,config FROM source').fetchall());epochs={k[6:]:v for k,v in db.execute("SELECT key,value FROM meta WHERE key LIKE 'epoch:%'")}
+            policies={k[7:]:v for k,v in db.execute("SELECT key,value FROM meta WHERE key LIKE 'policy:%'")}
         finally:db.close()
         if {s['name']:_config(s) for s in specs}!=held:return True
+        from .folder_policy import Policy
+        policy=Policy(root)
+        if any(policies.get(s['name'])!=policy.revision(s['path']) for s in specs if s['kind'] not in REMOTE):return True   # a folder notebook's reach changed
         oldest=info['epoch']
         for spec in specs:
             try:began=float(epochs.get(spec['name']) or 0)   # when this source's own last sync began (none: an index from before that was kept)
@@ -749,7 +801,7 @@ def stale(root,domain,bindings=None,limit=STALE_SECONDS):
             cutoff=int(began*1e9);oldest=min(oldest,began);top=Path(spec['path'])
             if spec['kind'] in REMOTE and not top.is_dir():continue   # not pulled yet: nothing to read
             if top.stat().st_mtime_ns>cutoff or any(g.is_file() and g.stat().st_mtime_ns>cutoff for g in (top/'.git'/'HEAD',top/'.git'/'index',top/'.gitignore')):return True   # a commit, checkout or add; an edited .gitignore moves no folder's time
-            for _,_,_,mtime in walk(top,spec,deadline,False):
+            for _,_,_,mtime in walk(top,spec,deadline,False,policy):
                 if mtime>cutoff:return True
         # A tree too big to walk in the time cap goes unchecked past its start, so an index older than a day is refreshed anyway.
         return time.monotonic()>deadline and time.time()-oldest>86400
@@ -849,16 +901,36 @@ def _tests_last(rows,query):
     if WANTS_TESTS.search(query):return rows
     return [r for _,r in sorted(enumerate(rows),key=lambda i_r:i_r[0]+(TEST_PENALTY if TEST_PATH.search(i_r[1][2].replace(os.sep,'/')) else 0))]
 
-def search(root,domain,query,limit=5,vocab=None,informative=False,gate=None,least=2,width=SNIPPET,near=None,dropped=None):
+def search(root,domain,query,limit=5,vocab=None,informative=False,gate=None,least=2,width=SNIPPET,near=None,dropped=None,pages=False,inject=False):
     """Source excerpts for a query, best first: chunks with every term, then chunks with some, at most two per file and
     none overlapping another. Terms no chunk carries are dropped; informative (the prompt hook) also drops words most
     chunks carry and keeps the 16 rarest. gate (a minimum share of the query's weight a chunk must carry, with `least`
     terms) judges each chunk; without it every match counts. near (a minimum cosine) also drops a chunk whose stored vector
     is further from the query than that, listing it in `dropped`; a chunk without a vector is kept. Each hit has its citation (path and line range), symbol or
-    heading and a snippet."""
-    from .search import terms,stem,df_of,idf_terms
+    heading and a snippet.
+    Folder notebooks (core/folder_policy.py) are judged for every hit as the registry and sidecars say now. Without pages, a hit
+    inside any notebook is left out: those are pages, not sources. With pages, only hits inside a searchable or injectable
+    notebook are kept (injectable only, with inject), each with its notebook folder, title and reach. A damaged registry serves nothing."""
+    from .folder_policy import Policy,SERVED
     db=_readonly(root,domain)
     if not db:return []
+    policy=Policy(root);owners={}
+    if policy.broken:db.close();return []
+    def keep(top,source,path):
+        level,folder,title=policy.file(os.path.join(top,path))
+        if not pages:return level is None
+        if level not in SERVED or (inject and level!='injectable'):return False
+        owners[(source,path)]=(folder,title,level);return True
+    try:hits=search_db(db,root,query,limit,vocab,informative,gate,least,width,near,dropped,keep)
+    finally:db.close()
+    for h in hits if pages else ():
+        folder,title,level=owners[(h['source'],h['path'])];h.update(notebook=Path(folder).as_posix(),notebook_title=title,reach=level)
+    return hits
+
+def search_db(db,root,query,limit=5,vocab=None,informative=False,gate=None,least=2,width=SNIPPET,near=None,dropped=None,keep=None):
+    """search over an open index with this schema (the sources index, or the notebook page index of core/docs_index.py).
+    keep(source root, source, path), when given, decides per chunk whether it may be served, before ranking cuts the list."""
+    from .search import terms,stem,df_of,idf_terms
     try:
         words=list(dict.fromkeys(terms(split_camel(query))))[:32]
         total,df=vocab if vocab and vocab[0] else _vocab(db,words)
@@ -878,6 +950,7 @@ def search(root,domain,query,limit=5,vocab=None,informative=False,gate=None,leas
         if not rows:return []
         rows=_tests_last(_fuse_vectors(db,root,query,rows,lexical),query)
         roots={n:r for n,r in db.execute('SELECT name,root FROM source')}
+        if keep is not None:rows=[r for r in rows if keep(roots.get(r[1],''),r[1],r[2])]
         out=[];per_file={};taken=[];similar=_chunk_similarity(db,root,query,[r[0] for r in rows[:40]]) if near is not None else {}
         for cid,source,path,kind,symbol,start,end,text,score,url,title in rows[:40]:
             have=_stems(symbol,path,text);hit=[w for w in words if _covers(have,w)]
@@ -897,7 +970,6 @@ def search(root,domain,query,limit=5,vocab=None,informative=False,gate=None,leas
             if len(out)>=limit:break
         return out
     except sqlite3.Error:return []
-    finally:db.close()
 
 def _chunk_similarity(db,root,query,ids):
     """chunk id -> cosine of the query with the chunk's stored vector; empty without a model, vectors made by the installed model, or ids.

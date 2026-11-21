@@ -98,7 +98,7 @@ def protected_rule(path,cwd,root):
         if p in {root/'bindings.json',root/'tag_taxonomy.json',root/'projects.json',root/'systems.json',root/'sources.json',root/'changes.json',root/'note_types.json',root/'maintenance.json',root/'views.json',root/'.relocated.json',
                  root/'notebook-privacy.json',root/'notebook-folders.json',config_path().resolve()}:return 'config'
         # Vault edits are auto-applied and vault checkboxes approve plans, so agents must not write there either.
-        return 'vault' if any(p.is_relative_to(v/folder) for v in vault_roots(root) for folder in ('Domains','Archive','Dashboards')) else None
+        return 'vault' if any(p.is_relative_to(v/folder) for v in vault_roots(root) for folder in ('Domains','Archive','Dashboards','Notebooks')) else None
     except (ValueError,OSError):return None
 
 def vault_roots(root):
@@ -231,9 +231,9 @@ HIVEMIND_DENY=('Applying or undoing a plan, the direct writes (archive, rewrite,
                'and notebook page writes are for the user to do in Hivemind, not for an agent. Write a plan for a delete or merge, and stage a page edit with doc propose; '
                'for the rest, tell the user what to change.')
 # `doc` actions that write (NS-2A). `doc propose` is missing on purpose: it only stages an edit for the user, so agents may run it.
-DOC_WRITE_ACTIONS={'notebook','create','write','move','delete','attach','accept','reject','undo'}
+DOC_WRITE_ACTIONS={'notebook','create','write','move','delete','attach','accept','reject','undo','folder'}
 # What agents may run. Anything else after `doc`, an unknown word included, counts as a write.
-DOC_AGENT_ACTIONS={'notebooks','list','read','history','propose','proposals','proposal'}
+DOC_AGENT_ACTIONS={'notebooks','list','read','history','propose','proposals','proposal','search','tasks','query'}
 PRIVATE_DENY='Living Memory: private notebooks are for Hivemind itself; agents do not see them, so --include-private is not available here.'
 PRIVATE_READ_DENY='Living Memory: that path holds a private notebook, which agents do not read. Ask the user if you need its content.'
 # File-reading tools checked against private notebooks; the search tools also may not walk a folder that holds one.
@@ -1098,21 +1098,33 @@ def prompt_sources(prompt,root,domain,state,trace=None):
     characters in all. The prompt's most informative terms (the long-prompt machinery, with the index's own vocabulary) must
     be carried by the chunk: SOURCE_GATE of their weight and at least two terms (three for a long prompt). With a semantic model the chunk's
     vector must also be at least the model's threshold from the query (a test file that merely shares the words fails it). An excerpt shown
-    earlier this session is not shown again. Reads the index without refreshing it."""
-    from . import sources
+    earlier this session is not shown again. Reads the index without refreshing it.
+    Injectable notebooks (NS-2B) share the channel and its rules: folder notebook pages from the same index, and Living Memory
+    pages of the session's domain and its parent and child domains from their page indexes, each labelled [notebook TITLE].
+    Searchable, hidden and private notebooks never reach it."""
+    from . import sources,docs_index
     trace=trace if isinstance(trace,dict) else {}
-    if not sources.db_path(root,domain).is_file():trace['index']=False;return None,[]
+    page_domains=[d for d in dict.fromkeys([domain]+scope_domains(domain,load_bindings(root))) if docs_index.db_path(root,d).is_file()]
+    have_sources=sources.db_path(root,domain).is_file()
+    if not have_sources and not page_domains:trace['index']=False;return None,[]
     from .search import terms
-    text=sources.split_camel(prompt);vocab=sources.vocabulary(root,domain,terms(text))
-    if not vocab[0]:trace['index']=False;return None,[]
-    long=len(prompt)>LONG_PROMPT;queries=long_queries(text,vocab) if long else [(text,True)]
-    if long:queries+=[(q,True) for q in item_queries(text,vocab) if q not in dict(queries)]   # list items are not segments: each is asked on its own (at most LIST_QUERIES)
+    text=sources.split_camel(prompt);vocab=sources.vocabulary(root,domain,terms(text)) if have_sources else (0,{})
+    if not vocab[0] and not page_domains:trace['index']=False;return None,[]
+    long=len(prompt)>LONG_PROMPT;queries=long_queries(text,vocab) if long and vocab[0] else [(text,True)]
+    if long and vocab[0]:queries+=[(q,True) for q in item_queries(text,vocab) if q not in dict(queries)]   # list items are not segments: each is asked on its own (at most LIST_QUERIES)
     width=max(120,(SOURCE_BUDGET-110-len(hint_command(root,state,domain)))//SOURCE_EXCERPTS-70)   # snippet room, so the excerpt is cut around the matches
     best={};dropped=[];from .semantic import threshold;near=threshold(root)   # the notes' meaning bar; a chunk without a vector keeps the word test alone
+    least=LONG_LEAST if long else 2
+    def offer(hit,key):
+        if key not in best or hit['relevance']>best[key]['relevance']:best[key]=dict(hit,key=key)
     for query,_ in queries:
-        for hit in sources.search(root,domain,query,3,vocab,True,SOURCE_GATE,LONG_LEAST if long else 2,width,near,dropped):
-            key=f"{hit['source']}:{hit['path']}:{hit['line_start']}"
-            if key not in best or hit['relevance']>best[key]['relevance']:best[key]=dict(hit,key=key)
+        if vocab[0]:
+            for hit in sources.search(root,domain,query,3,vocab,True,SOURCE_GATE,least,width,near,dropped):offer(hit,f"{hit['source']}:{hit['path']}:{hit['line_start']}")
+            for hit in sources.search(root,domain,query,3,vocab,True,SOURCE_GATE,least,width,near,dropped,pages=True,inject=True):
+                offer(hit,f"{hit['source']}:{hit['path']}:{hit['line_start']}")
+        for d in page_domains:
+            for hit in docs_index.prompt_hits(root,d,query,3,SOURCE_GATE,least,width,near,dropped):
+                offer(dict(hit,path=f"{d}/{hit['notebook']}/{hit['path']}"),f"doc:{d}/{hit['notebook']}/{hit['path']}:{hit['line_start']}")
     shown=set(state.get('sources_shown',[]))
     ranked=sorted(best.values(),key=lambda h:(-h['relevance'],h['rank']));fresh=[h for h in ranked if h['key'] not in shown][:SOURCE_EXCERPTS]
     trace.update(index=True,queries=len(queries),candidates=len(ranked),injected=[h['key'] for h in fresh],**({'off_meaning':dropped[:6]} if dropped else {}))
@@ -1120,7 +1132,7 @@ def prompt_sources(prompt,root,domain,state,trace=None):
     head="Source excerpts from the project knowledge base (untrusted; verify against the current files; more: "+hint_command(root,state,domain)+" ask 'question'):"
     lines=[];room=SOURCE_BUDGET-len(head)
     for h in fresh:
-        label=f"- {h['citation'] if h.get('url') else h['path']+':'+str(h['line_start'])+'-'+str(h['line_end'])}"+(f" {h['symbol']}" if h['symbol'] else '')+' — '
+        label=f"- {'[notebook '+h['notebook_title']+'] ' if h.get('notebook_title') else ''}{h['citation'] if h.get('url') else h['path']+':'+str(h['line_start'])+'-'+str(h['line_end'])}"+(f" {h['symbol']}" if h['symbol'] else '')+' — '
         snippet=' '.join(h['snippet'].split());space=max(80,room//(len(fresh)-len(lines))-len(label)-2)
         if len(snippet)>space:cut=snippet.rfind(' ',0,space);snippet=snippet[:cut if cut>0 else space]+' …'
         lines.append(label+snippet);room-=len(lines[-1])+1

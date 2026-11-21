@@ -178,6 +178,16 @@ Claude surveyed the code on 2026-11-21, before writing NS-2B, against section 8.
 - **Temporary files.** `docs_index` writes its temporary database with the prefix `.docs-` in `domains/D/`. That prefix joins the relocation filter in `storage.py`.
 - **Reuse.** `docs.sqlite3` uses the same `meta`, `chunk`, `chunk_fts(symbol, path, names, text)`, `vec` and `file` tables as `sources.sqlite3`. `sources._embed`, `_fuse_vectors`, `_chunk_similarity` and `_semantic_rows` then work unchanged. A page's `file.sha256` is its revision.
 
+Changes made while writing NS-2B (Claude, 2026-11-21):
+
+- **No stored membership, no version bump.** A folder notebook's membership and reach are worked out from the registry and the sidecars when a source is walked and again when each hit is served (`core/folder_policy.py`). Nothing about notebooks is stored in `sources.sqlite3`, so chunks gain no `notebook` or `inject` column and `sources.VERSION` stays 2: there is no rebuild and no window without source hits. A changed registry entry changes the source's `policy:NAME` revision, which makes `stale` true; the walk yields each sidecar as a folder entry, so editing one does too. The next sync drops the rows the walk no longer reaches. A folder that gains a sidecar between syncs is judged by it at once.
+- **The vault mirror is hidden to sources.** `folder_policy` adds each managed vault's `Notebooks` folder as a hidden entry, so no source walks or serves it, including a source rooted inside the vault. `runtime.protected_rule` adds `Notebooks` to the vault folders agents may not write.
+- **Registered folder sources.** A registered folder no source walks into is a source named `nb-` plus a hash of its path; the roots of other sources inside it are excluded from it, so no file is indexed twice.
+- **Page results.** Living Memory and folder pages alternate by rank in `pages`, since the two indexes' scores do not compare. A folder page's `revision` is the SHA-256 of the file as it is when served. Frontmatter is blanked out of a page's chunks (line numbers kept) and read into the `prop` table instead.
+- **Injection domains.** Living Memory pages are offered from the session's domain and its parent and child domains, not from global domains.
+- **Vault deletions and conflicts.** A page deleted in the vault becomes a `doc_vault_delete` plan, shown on the Sync Status page as a `lm-page:` tick line. Mirror state is `domains/D/notebook-sync.json`. Attachments flow one way, memory to vault.
+- **`doc folder`.** `set` refuses a folder inside the store and needs an absolute path; `unset` takes the path as registered.
+
 ## 13. Shipped
 
 ### NS-2A

@@ -475,7 +475,13 @@ def _status_page(domain,root,notes,view_conflicts=(),failure=None):
             +section('Waiting for approval',waiting,'Nothing waiting.')+'\n'
             +section("Couldn't save",errors,'No problems.')+'\n'
             +section('Conflicts',conflicts,'No conflicts.')+'\n'
-            +section('Recently applied',recent,'Nothing yet.'))
+            +section('Recently applied',recent,'Nothing yet.')+_notebook_section(root,domain))
+
+def _notebook_section(root,domain):
+    from .notebook_sync import status_section
+    try:text=status_section(root,domain)
+    except Exception:text=''
+    return '\n'+text if text else ''
 
 GENERIC_PROMPT='The note, in one or two plain sentences.'
 
@@ -535,6 +541,12 @@ def build_overlay(domain,vault,root=None,trigger=None):
     try:sync_result=sync(domain,vault,root,trigger)
     except Exception as exc:
         _report_failure(domain,vault,root,exc);raise
+    try:
+        from .notebook_sync import sync_notebooks
+        sync_result['notebooks']=sync_notebooks(domain,vault,root)
+    except Exception as exc:   # notes are synced already; a notebook failure is reported, not raised
+        from .logs import swallowed
+        swallowed('sync.notebooks',exc,root);sync_result['notebooks']={'error':str(exc)[:500]}
     notes=inventory(domain,root,retired=True);active=[n for n in notes if n.get('status')=='active'];changes={}
     def link(n):
         target=note_rel(domain,Path(n['path']).name,n.get('status')=='active')[:-3]
