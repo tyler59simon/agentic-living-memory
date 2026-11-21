@@ -4,24 +4,53 @@ import hashlib,json,uuid
 from pathlib import Path
 from .common import atomic_write,memory_root
 from .note_types import keep_baseline
-from .repository import canonical_json,confined,digest,read_json,transaction,recover,store_lock,reconcile,now
+from .repository import canonical_json,confined,digest,read_json,transaction,recover,store_lock,reconcile,now,_stage_blob
+
+
+def reconciled_domains(paths):
+    """The domains whose notes a change to `paths` can affect: every `domains/D/...` path except a notebook's (NS-2A). A notebook-only
+    domain has no notes, and reconcile rejects a domain without notes/."""
+    out=set()
+    for p in paths:
+        parts=Path(p).parts
+        if len(parts)>2 and parts[0]=='domains' and parts[2]!='notebooks':out.add(parts[1])
+    return out
 
 
 def plan(root, changes, kind, domains=(), summary=None, guards=None):
     """guards: store-wide conditions that per-file hashes cannot express, re-checked at apply:
-    absent_ids (no note in the plan's domains has these IDs) and unused_tags (no note outside the plan carries them)."""
+    absent_ids (no note in the plan's domains has these IDs) and unused_tags (no note outside the plan carries them).
+    A change given as bytes (a notebook attachment) is staged under .plans/<id>/blobs/<sha256> and recorded as {"blob": sha256},
+    since the plan itself is JSON text."""
     root=Path(root).resolve()
     with store_lock(root):
         expected={}
         for rel in changes:
             p=confined(root,rel)
             expected[rel]=digest(p.read_bytes()) if p.exists() else None
-        value={'schema':2,'id':uuid.uuid4().hex,'kind':kind,'domains':sorted(set(domains)),
+        plan_id=uuid.uuid4().hex
+        staged={rel:v for rel,v in changes.items() if isinstance(v,(bytes,bytearray))}
+        for data in staged.values():_stage_blob(root/'.plans'/plan_id/'blobs',bytes(data))
+        changes={rel:({'blob':digest(bytes(v))} if rel in staged else v) for rel,v in changes.items()}
+        value={'schema':2,'id':plan_id,'kind':kind,'domains':sorted(set(domains)),
                'created':now(),'changes':changes,'expected':expected,'summary':summary or {'files':len(changes)}}
         if guards:value['guards']={k:(v if k=='read_set' else sorted(set(v))) for k,v in guards.items() if v}
         value['digest']=hashlib.sha256(canonical_json(value).encode()).hexdigest()
         path=root/'.plans'/(value['id']+'.json');atomic_write(path,canonical_json(value))
         return {'ok':True,'plan_id':value['id'],'digest':value['digest'],'kind':kind,'summary':value['summary']}
+
+
+def _plan_changes(root,value):
+    """A plan's changes with staged attachments read back as bytes (checked against their hash)."""
+    out={}
+    for rel,v in value['changes'].items():
+        if isinstance(v,dict) and isinstance(v.get('blob'),str):
+            path=root/'.plans'/value['id']/'blobs'/v['blob']
+            data=path.read_bytes() if path.exists() else None
+            if data is None or digest(data)!=v['blob']:raise ValueError(f'stale plan: the attachment bytes staged for {rel} are missing; make a new plan')
+            out[rel]=data
+        else:out[rel]=v
+    return out
 
 def commit(root,changes,kind,domains=(),summary=None,guards=None,sync_overlay=True):
     """A direct write: what plan() then apply() do, in one call under one lock, with no plan to approve. The journal is the receipt:
@@ -61,7 +90,7 @@ def apply(root,plan_id,expected_digest,sync_overlay=True):
             from .type_registry import check_undo
             try:check_undo(root,value['changes'])
             except ValueError as exc:raise ValueError('stale plan: it would break notes that use a custom type: '+str(exc)+'; make a new plan') from None
-        receipt=transaction(root,value['changes'],value['kind'],value['expected'],value['id'])
+        receipt=transaction(root,_plan_changes(root,value),value['kind'],value['expected'],value['id'])
         for domain in value['domains']:
             try:reconcile(domain,root,sync_overlay=sync_overlay)
             except Exception as exc:
@@ -91,35 +120,51 @@ def _check_guards(root,value):
                 if unused and rel not in value['changes'] and unused&set(note.get('tags',[])):
                     raise ValueError(f"stale plan: {domain}:{note['id']} now uses {', '.join(sorted(unused&set(note['tags'])))}, which this plan removes; make a new plan")
 
-def history(root,note_id=None,limit=20):
+def history(root,note_id=None,limit=20,include_private=False):
     root=Path(root).resolve();rows=[]
     if note_id:
         from .activity import note_history   # only operations that changed the note itself, from the activity cache
         return note_history(root,note_id,limit)
     from .activity import _entries,operation_label
-    entries=_entries(root)
+    from .docs import private_scope,private_journal,is_private_path
+    entries=_entries(root);scope=None if include_private else private_scope(root)
     for path in (root/'.operations').glob('*/journal.json'):
         try:
             value=read_json(path)
             summary,actor=operation_label(entries.get(value['id']),value['id'],str(value['kind']))
             row={'operation_id':value['id'],'kind':value['kind'],'state':value['state'],'created':value['created'],'files':[e['path'] for e in value['effects']],'summary':summary,'actor':actor}
+            # Operations on a private notebook show no paths and no summary unless the caller passes --include-private (NS-2A).
+            if scope and private_journal(value,scope):
+                kept=[f for f in row['files'] if not is_private_path(f,scope) and not (value.get('meta') or {}).get('uid') in scope[1]]
+                row.update(files=kept,redacted=len(row['files'])-len(kept),summary=None)
         except (ValueError,KeyError,TypeError):continue  # doctor reports unreadable journals by ID
         rows.append(row)
     return sorted(rows,key=lambda r:r['created'],reverse=True)[:limit]
 
-def inspect_plan(root,identity,full=False):
-    """Each change a plan would make, as a unified diff (cut at 16000 characters unless `full`)."""
+def inspect_plan(root,identity,full=False,include_private=False):
+    """Each change a plan would make, as a unified diff (cut at 16000 characters unless `full`). An attachment shows as its hash and size,
+    and a change inside a private notebook is left out unless `include_private` (NS-2A)."""
     import re,difflib
+    from .docs import private_scope,is_private_path
+    from .repository import is_blob
     cut=None if full else 16000
     if not re.fullmatch('[a-f0-9]{32}',identity):raise ValueError('Invalid plan identity')
     root=Path(root);value=read_json(root/'.plans'/(identity+'.json'))
     if not value:raise ValueError('Plan unavailable')
-    effects=[]
+    effects=[];scope=None if include_private else private_scope(root);redacted=0
     for rel,after in value['changes'].items():
-        path=confined(root,rel);before=path.read_bytes().decode('utf-8',errors='replace') if path.exists() else ''   # a damaged file being repaired still shows
+        if scope and is_private_path(rel,scope):redacted+=1;continue
+        path=confined(root,rel)
+        if isinstance(after,dict) or is_blob(rel):
+            blob=(after or {}).get('blob') if isinstance(after,dict) else None
+            effects.append({'path':rel,'expected_revision':value['expected'][rel],'action':'delete' if after is None else 'write','binary':True,'sha256':blob,'diff':''})
+            continue
+        before=path.read_bytes().decode('utf-8',errors='replace') if path.exists() else ''   # a damaged file being repaired still shows
         delta=''.join(difflib.unified_diff(before.splitlines(True),(after or '').splitlines(True),fromfile=rel,tofile=rel))
         effects.append({'path':rel,'expected_revision':value['expected'][rel],'action':'delete' if after is None else 'write','diff':delta[:cut],'truncated':cut is not None and len(delta)>cut})
-    return {'ok':True,'plan_id':identity,'digest':value['digest'],'kind':value['kind'],'summary':value['summary'],'effects':effects}
+    result={'ok':True,'plan_id':identity,'digest':value['digest'],'kind':value['kind'],'summary':value['summary'],'effects':effects}
+    if redacted:result['redacted']=redacted
+    return result
 
 def merge_plan(root,payload):
     from .notes import find_note,retirement_record
@@ -164,7 +209,7 @@ def merge_plan(root,payload):
 # registry writes). Every other kind (merge, delete, bulk retag, migrations, import, ingest, maintenance, bindings, Obsidian, and install or
 # setup operations outside the store) comes back as a plan to approve, so a kind added later fails safe.
 DIRECT_UNDO_KINDS=frozenset({'capture','capture_supersede','capture_promote','update','supersede','resolve','reopen','confirm','archive','rewrite','reference_remap','promote','taxonomy_expansion','config_set','rebaseline'})
-DIRECT_UNDO_PREFIXES=('source_','project_','system_','change_','views_','type_')
+DIRECT_UNDO_PREFIXES=('source_','project_','system_','change_','views_','type_','doc_')
 
 def _plan_kind(kind,effects=()):
     """True when undoing an operation of this kind needs an approved plan (an undo of X is judged by X's kind, found through the chain).
@@ -185,8 +230,15 @@ def undo(root,operation_id):
     import base64
     # The derived-state marker is rewritten by every reconcile; it is not part of what is being undone.
     raw_effects=value['effects'];value['effects']=[e for e in value['effects'] if Path(e['path']).name!='.derived-dirty']
-    changes={e['path']:base64.b64decode(e['before']).decode() if e['before'] is not None else None for e in value['effects']}
-    domains={Path(p).parts[1] for p in changes if Path(p).parts[0]=='domains'}
+    def before(e):
+        if not e.get('blob'):return base64.b64decode(e['before']).decode() if e['before'] is not None else None
+        # An attachment's bytes were moved aside into the operation's blobs folder when it removed them (NS-2A).
+        if e['before_hash'] is None:return None
+        kept=root/'.operations'/operation_id/'blobs'/e['before_hash']
+        if not kept.exists() or digest(kept.read_bytes())!=e['before_hash']:raise ValueError(f"The attachment {e['path']} this operation removed is no longer kept, so it cannot be undone")
+        return kept.read_bytes()
+    changes={e['path']:before(e) for e in value['effects']}
+    domains=reconciled_domains(changes)
     # Check and record under one lock: an edit between the check and the plan's snapshot would be overwritten.
     with store_lock(root):
         for effect in value['effects']:

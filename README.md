@@ -43,4 +43,4 @@ Notes have thirteen types: knowledge, decision, preference, context, status, bug
 
 - [Protocol](PROTOCOL.md), [script reference](SCRIPT_REFERENCE.md), [installation](INSTALLATION.md), [native integration](INTEGRATION.md)
 - [Architecture](ARCHITECTURE.md), [note types and use cases](NOTE_TYPES.md), [recovery](RECOVERY.md), [maintenance](MAINTENANCE.md), [tagging](TAGGING.md)
-- [Obsidian](OBSIDIAN.md), [validation](VALIDATION.md)
+- [Obsidian](OBSIDIAN.md), [notebooks](NOTEBOOKS.md), [validation](VALIDATION.md)

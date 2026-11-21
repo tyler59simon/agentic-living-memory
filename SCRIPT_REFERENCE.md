@@ -12,7 +12,7 @@ Use `alm COMMAND --help` (or `python living_memory.py COMMAND --help`) for exact
 | Subagent proposals | propose (the capture flags plus `--session S`; subagents may run it): checks the type, title, content and tags and refuses credentials (or redacts them with `--redact`) and text the user marked `<private>`, then stages the draft as `.turns/proposal-ID.json` and returns `{ok, id, status: proposed, domain, title, next, quality_warnings?}`; proposals [list] [--status pending\|accepted\|rejected\|any] [--session S] (read-only) returns `{ok, status, proposals:[{id, status, created, domain, type, title, note_ref?, reason?}], next}`; proposals show ID (read-only) returns the stored draft; proposals reject ID --reason R (main agent only); capture --from-proposal ID [--session S]: alone, saves the draft as staged; beside a full note (title and content), saves that note instead; an edited note keeps the draft's domain unless `--domain` or `--global` is given; settling rechecks the proposal under the store lock; either way the proposal is marked accepted with `note_ref` and the result carries `proposal: {id, status}` |
 | Open work | open; check REF 'ITEM TEXT' \| --index N [--undo] [--session S]; resolve REF [--session S]; reopen REF [--session S]; restore REF [--expected-revision R] [--session S] [--turn T] |
 | Usefulness | stats [--days 30] [--limit 10] |
-| Protocol detail | help [TOPIC]: the protocol lines the shorter SessionStart fallback leaves out (the managed instruction block carries them all). Topics: capture, update, review, plans, briefs, ask, history, writing. With a topic it returns `{ok, topic, markdown}`; with none, `{ok, topic: null, topics: {name: summary}, markdown}`. An unknown topic exits 2 with a `next` hint. It reads no store, so it works with no store, while memory is off and for subagents, and it is auto-allowed |
+| Protocol detail | help [TOPIC]: the protocol lines the shorter SessionStart fallback leaves out (the managed instruction block carries them all). Topics: capture, update, review, plans, briefs, ask, history, pages, writing. With a topic it returns `{ok, topic, markdown}`; with none, `{ok, topic: null, topics: {name: summary}, markdown}`. An unknown topic exits 2 with a `next` hint. It reads no store, so it works with no store, while memory is off and for subagents, and it is auto-allowed |
 | Session switch | off [--session S]; on [--session S]; status [--session S] (see Session off switch below) |
 | Review | review [--kind stale\|due\|interim\|duplicate\|warned\|noisy]... [--limit 20] [--all-domains] [--tag TAG]... |
 | Operational log | logs [--level debug\|info\|warning\|error] [--kind hook\|command\|internal] [--event NAME] [--days 1] [--limit 50] |
@@ -22,10 +22,11 @@ Use `alm COMMAND --help` (or `python living_memory.py COMMAND --help`) for exact
 | Before compaction | recall QUERY --session SESSION [--limit 5] [--all]: excerpts from this session's own transcript, before the latest compaction (`--all`: the whole transcript) |
 | End-turn receipt | capture-finalize --session SESSION [--turn TURN] [--note DOMAIN:ID] |
 | Direct note retirement | archive REF [--expected-revision R] [--session S] [--turn T]: retires a note without a replacement (journaled, undoable; the result carries `operation_id` and `undo`). Delete is the one per-note change that is still a plan: plan delete REF |
-| Review/apply | inspect-plan ID [--full] (`--full`: every diff whole, not cut at 16000 characters); apply ID --expected-plan-sha256 HASH |
-| History/recovery | history [--note REF] [--limit 20] [--markdown] (a bare list of `{operation_id, kind, state, created, files, summary, actor}`, where `summary` and `actor` are those of the operation's first note or change row (a count prefixes the summary when it changed several; an operation with no row, such as one still unfinished, shows its kind and the actor its ID and kind imply); with `--note` only the operations that changed that note itself, newest first, each also with `event`, `title`, `summary` and `actor`; `--markdown` returns `{ok, rows, markdown}` instead of the bare list); diff OPERATION; undo OPERATION; recover OPERATION --direction forward|backward (backward only for unfinished operations; committed ones use undo) |
+| Review/apply | inspect-plan ID [--full] [--include-private] (`--full`: every diff whole, not cut at 16000 characters; an attachment shows as `binary` with its `sha256`; changes inside a private notebook are left out and counted in `redacted` unless `--include-private`); apply ID --expected-plan-sha256 HASH |
+| History/recovery | history [--note REF] [--limit 20] [--markdown] (a bare list of `{operation_id, kind, state, created, files, summary, actor}`, where `summary` and `actor` are those of the operation's first note or change row (a count prefixes the summary when it changed several; an operation with no row, such as one still unfinished, shows its kind and the actor its ID and kind imply); with `--note` only the operations that changed that note itself, newest first, each also with `event`, `title`, `summary` and `actor`; `--markdown` returns `{ok, rows, markdown}` instead of the bare list; an operation on a private notebook shows no summary and only its paths outside private notebooks, with `redacted` counting the rest, unless `--include-private`); diff OPERATION [--include-private] (attachments as hashes, private notebook changes as `{redacted: true}`); undo OPERATION; recover OPERATION --direction forward|backward (backward only for unfinished operations; committed ones use undo) |
 | Maintenance | rebaseline [--dry-run]; maintenance status; maintenance preview [--limit N]; maintenance run [--dry-run]; maintenance enable [--all-domains] [--model NAME] [--max-notes-per-day N] [--timeout-seconds N] [--daily-budget-usd D]; maintenance disable; maintenance history [--limit N] [--run ID] |
-| Snapshots | backup [--keep 7] (result may carry `unreadable`, `retained` and `warning`); restore-plan FILE (then inspect-plan and apply) |
+| Snapshots | backup [--keep 7] (result may carry `unreadable`, `retained`, `omitted` and `warning`, and `notebooks` and `pages` when the store has notebooks; the snapshot's `manifest.json` lists the notebooks it covers); restore-plan FILE (then inspect-plan and apply; a notebook the snapshot does not list is left alone) |
+| Notebook pages | doc notebooks, doc notebook create\|update\|delete, doc list, read, create, write, move, delete, attach, history, propose, proposals, proposal, accept, reject, undo; domain create NAME --notebook-only. Pages are not notes; agents read them and stage edits with `doc propose`. See [NOTEBOOKS.md](NOTEBOOKS.md) |
 | Bulk governance | merge-plan, retag-plan (reviewed plans); remap [--payload-file FILE] (direct: moves notes between domains, journaled kind `reference_remap`); taxonomy add TAG... (direct: registers tags, kind `taxonomy_expansion`; plain `taxonomy` lists them) |
 | Prose rewrite | rewrite [--payload-file FILE]: one direct, journaled write that replaces the bodies of up to 50 notes, from a JSON list of `{"ref", "revision", "body"}`. A stale revision, a title, or a map or brief is refused; `updated` and `review_by` are kept, and `sources` and `file_hashes` are not re-hashed (nor by `check`). Result: `operation_id`, `undo`, `summary`, `notes` (each with any `quality_warnings`) and `unchanged`. See [WRITING.md](WRITING.md#rewriting-a-note). |
 | Global domain | promote --suggest [--only DOMAIN] (writes nothing); promote REF... (direct and journaled, so `undo OPERATION` reverses it; drops project tags and files, refuses digests, maps, briefs and notes naming a project path, like the automatic move); see [PROTOCOL.md](PROTOCOL.md) for `capture --global` and duplicates across domains |
@@ -173,17 +174,38 @@ Generated from the argparse parser in `core/cli.py` by `py -3.15 scripts/gen_scr
 | `check` | `--index`, `--session`, `--turn`, `--undo` |
 | `config get/set` | none |
 | `confirm` | `--session`, `--turn` |
-| `diff` | none |
+| `diff` | `--include-private` |
+| `doc` | none |
+| `doc accept` | `--expected-revision` |
+| `doc attach` | `--from-file`, `--name` |
+| `doc create` | `--body-file` |
+| `doc delete` | `--expected-revision` |
+| `doc history` | `--include-private`, `--limit`, `--version` |
+| `doc list` | `--include-private`, `--section` |
+| `doc move` | `--rewrite-links` |
+| `doc notebook` | none |
+| `doc notebook create` | `--private`, `--title`, `--visibility` |
+| `doc notebook delete` | `--with-pages` |
+| `doc notebook update` | `--expected-revision`, `--icons-file`, `--no-private`, `--order-file`, `--pinned-file`, `--private`, `--settings-file`, `--title`, `--visibility` |
+| `doc notebooks` | `--all-domains`, `--include-hidden`, `--include-private` |
+| `doc proposal` | `--include-private` |
+| `doc proposals` | `--include-private`, `--status` |
+| `doc propose` | `--base-revision`, `--body-file`, `--include-private`, `--note`, `--session` |
+| `doc read` | `--include-private`, `--max-chars` |
+| `doc reject` | `--reason` |
+| `doc undo` | none |
+| `doc write` | `--body-file`, `--expected-revision` |
 | `doctor` | none |
+| `domain create` | `--notebook-only` |
 | `domains` | none |
 | `export` | `--all`, `--out`, `--tag`, `--type` |
 | `help` | none |
-| `history` | `--limit`, `--markdown`, `--note` |
+| `history` | `--include-private`, `--limit`, `--markdown`, `--note` |
 | `import-plan` | none |
 | `ingest-plan` | `--allow-similar`, `--redact`, `--source` |
 | `ingest-scan` | `--changed`, `--limit`, `--source` |
 | `ingest-skip` | `--payload-file` |
-| `inspect-plan` | `--full` |
+| `inspect-plan` | `--full`, `--include-private` |
 | `links` | `--all-domains`, `--status` |
 | `list` | `--all-domains`, `--limit`, `--offset`, `--status`, `--tag`, `--type`, `--with-summary` |
 | `log` | `--event`, `--limit`, `--note`, `--project`, `--since`, `--type`, `--until` |

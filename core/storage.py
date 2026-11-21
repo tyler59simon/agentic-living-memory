@@ -147,6 +147,9 @@ def validate_store(root):
         raise ValueError('Automatic maintenance is running or has an unfinished run; wait for it (or run maintenance status), then plan the relocation again')
 
 
+DERIVED_INDEX = re.compile(r'(?:search|sources|vectors|docs)\.sqlite3(?:-wal|-shm|-journal)?')
+
+
 def _manifest(root):
     """Preserve durable state and unknown files; omit only known transient data."""
     result = {}
@@ -158,7 +161,8 @@ def _manifest(root):
         rel = path.relative_to(root)
         if rel.parts[0] in ('.turns', 'hooks', 'logs', '.cache', '.views', '__pycache__', 'sources-cache') or path.name in ('.store.lock', '.relocated.json') or rel.as_posix() == 'maintenance/worker.lock':
             continue
-        if path.name in ('search.sqlite3', 'search.sqlite3-wal', 'search.sqlite3-shm', 'sources.sqlite3', 'vectors.sqlite3', 'vectors.sqlite3-journal') or path.name.startswith(('.sources-', '.vectors-')):
+        # Derived indexes with their SQLite side files; the destination rebuilds them (docs.sqlite3 is the notebook index).
+        if DERIVED_INDEX.fullmatch(path.name) or path.name.startswith(('.sources-', '.vectors-')):
             continue
         if path.name.endswith('.relocation-copy'):
             continue
@@ -180,7 +184,7 @@ def relocation_plan(source, destination):
         manifest = _manifest(source)
     value = {'version': 1, 'id': uuid.uuid4().hex, 'source': str(source), 'destination': str(destination),
              'config_path': str(config_path()), 'config_revision': _hash(config_path()), 'files': manifest,
-             'notes': sum(1 for p in manifest if p.startswith('domains/') and p.endswith('.md') and ('/notes/' in p or '/archive/' in p))}
+             'notes': sum(1 for p in manifest if p.endswith('.md') and len(p.split('/')) > 3 and p.split('/')[0] == 'domains' and p.split('/')[2] in ('notes', 'archive'))}
     value['digest'] = _digest(value)
     _write(config_path().parent / 'relocations' / (value['id'] + '.plan.json'), value)
     return {'ok': True, 'status': 'approval_required', 'plan_id': value['id'], 'digest': value['digest'],
@@ -303,8 +307,9 @@ def apply_relocation(identity, expected):
                     temp = dest.with_name('.' + dest.name + '.relocation-copy')
                     shutil.copyfile(source / rel, temp)
                     os.replace(temp, dest)
+                from .docs import is_notebook_only
                 for domain in (source / 'domains').iterdir() if (source / 'domains').exists() else []:
-                    if domain.is_dir():
+                    if domain.is_dir() and not is_notebook_only(source, domain.name):   # a notebook-only domain has no notes/
                         for name in ('notes', 'archive'):
                             (destination / 'domains' / domain.name / name).mkdir(parents=True, exist_ok=True)
                 _disable_maintenance(destination)
@@ -321,8 +326,9 @@ def apply_relocation(identity, expected):
                 journal['state'] = 'verified'
                 _write(journal_path, journal)
             if journal['state'] == 'verified':
+                from .docs import is_notebook_only
                 for domain in (destination / 'domains').iterdir() if (destination / 'domains').exists() else []:
-                    if domain.is_dir():
+                    if domain.is_dir() and not is_notebook_only(destination, domain.name):
                         reconcile(domain.name, destination, sync_overlay=False)
                 journal['state'] = 'ready'
                 _write(journal_path, journal)

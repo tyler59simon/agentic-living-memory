@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 import threading
 import uuid
 from contextlib import contextmanager
@@ -593,6 +594,80 @@ def _write(path, data):
         os.chmod(path, mode)
 
 
+# Notebook attachments (NS-2A): binary and up to 25 MiB, so their bytes never go into a journal as base64. A blob effect
+# moves the bytes between `.operations/<op>/blobs/<sha256>` and the asset path; the journal keeps only the hashes.
+BLOB_PATH = re.compile(r"domains/[^/]+/notebooks/[^/]+/assets/[^/]+")
+
+
+def is_blob(rel):
+    return bool(BLOB_PATH.fullmatch(str(Path(rel).as_posix())))
+
+
+def blob_store(root, operation_id):
+    return Path(root) / ".operations" / operation_id / "blobs"
+
+
+def _stage_blob(folder, data):
+    """Write `data` to folder/<sha256> and fsync it, unless it is already there."""
+    sha = digest(data)
+    target = folder / sha
+    if target.exists() and digest(target.read_bytes()) == sha:
+        return
+    folder.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix="." + sha[:8] + ".", dir=folder)
+    try:
+        with os.fdopen(fd, "wb") as out:
+            out.write(data)
+            out.flush()
+            os.fsync(out.fileno())
+        retry_sharing(lambda: os.replace(tmp, target))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _move_blob(root, operation_id, effect, desired, keep=False):
+    """Make the asset path hold the side `desired` of a blob effect. Bytes already there move aside into the operation's blobs
+    folder first, so the other side can always be restored; the wanted bytes move in from that folder, or are copied when
+    `keep` (a later effect of the same operation wants the same bytes)."""
+    path = confined(root, effect["path"])
+    folder = blob_store(root, operation_id)
+    want = effect[desired + "_hash"]
+    current = digest(_bytes(path))
+    if current == want:
+        return
+    if current is not None:
+        kept = folder / current
+        if kept.exists() and digest(kept.read_bytes()) == current:
+            retry_sharing(path.unlink)
+        else:
+            folder.mkdir(parents=True, exist_ok=True)
+            retry_sharing(lambda: os.replace(path, kept))
+    if want is None:
+        return
+    source = folder / want
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if keep:
+        fd, tmp = tempfile.mkstemp(prefix="." + want[:8] + ".", dir=folder)
+        try:
+            with os.fdopen(fd, "wb") as out:
+                out.write(source.read_bytes())
+                out.flush()
+                os.fsync(out.fileno())
+            retry_sharing(lambda: os.replace(tmp, path))
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    else:
+        retry_sharing(lambda: os.replace(source, path))
+
+
 def _fold_case_renames(root, changes, expected):
     """(changes, expected, renames) with each "delete Note.md + write note.md" pair that names ONE file reduced
     to the write. On a case-insensitive filesystem the two spellings are the same file, so writing the new text
@@ -618,11 +693,14 @@ def _fold_case_renames(root, changes, expected):
     return changes, expected, renames
 
 
-def transaction(root, changes, kind, expected=None, operation_id=None, skip_unchanged=False):
+def transaction(root, changes, kind, expected=None, operation_id=None, skip_unchanged=False, meta=None):
     """Durable intent precedes every write. Recovery accepts only known states.
 
     skip_unchanged (derived files only): leave out files that already hold these exact bytes, and
-    write no journal at all when nothing is left, so a sync that changed nothing leaves no trace."""
+    write no journal at all when nothing is left, so a sync that changed nothing leaves no trace.
+    meta: a small JSON object kept in the journal (notebook operations record their domain, notebook and uid).
+    A notebook attachment path (`is_blob`) takes bytes or None and becomes a blob effect: its bytes are staged in the
+    operation's `blobs/` folder before the journal is written, and moved into place by recovery."""
     root = Path(root).resolve()
     operation_id = operation_id or uuid.uuid4().hex
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", operation_id):
@@ -640,6 +718,7 @@ def transaction(root, changes, kind, expected=None, operation_id=None, skip_unch
             return recover(root, operation_id, "forward")
         rolled = roll_forward_pending(root)
         effects = []
+        blobs = []
         for rel, content in sorted(changes.items()):
             path = confined(root, rel)
             before = _bytes(path)
@@ -648,11 +727,22 @@ def transaction(root, changes, kind, expected=None, operation_id=None, skip_unch
             after = content.encode() if isinstance(content, str) else content
             if skip_unchanged and before == after:
                 continue
+            if is_blob(rel):
+                if after is not None:
+                    blobs.append(after)
+                effects.append({"path": str(Path(rel).as_posix()), "blob": True, "before": None, "after": None,
+                                "before_hash": digest(before), "after_hash": digest(after)})
+                continue
             effects.append({"path": str(Path(rel).as_posix()), "before": _encode(before), "after": _encode(after),
                             "before_hash": digest(before), "after_hash": digest(after)})
         if skip_unchanged and not effects:
             return {"ok": True, "operation_id": None, "state": "unchanged", "kind": kind}
         journal = {"schema": 1, "id": operation_id, "kind": kind, "created": now(), "state": "prepared", "effects": effects}
+        if meta:
+            journal["meta"] = meta
+        # Attachment bytes are durable before the intent that names them, so recovery always finds them.
+        for data in blobs:
+            _stage_blob(blob_store(root, operation_id), data)
         # Marker first: a crash between the two writes leaves a marker with no journal, which roll_forward_pending clears.
         atomic_write(journal_path.with_name(PENDING), "pending\n")
         atomic_write(journal_path, canonical_json(journal))
@@ -776,6 +866,8 @@ def prune_plans(root, applied_days=1, unapplied_days=30, require_plan=False):
                 cutoff = now_utc - timedelta(days=unapplied_days)
             if created < cutoff:
                 plan_path.unlink(missing_ok=True)
+                import shutil
+                shutil.rmtree(plan_path.with_suffix(""), ignore_errors=True)   # attachment bytes a plan staged (NS-2A)
                 removed += 1
     return removed
 
@@ -849,6 +941,12 @@ def recover(root, operation_id, direction="forward"):
             current = digest(_bytes(path))
             if current not in {effect["before_hash"], effect["after_hash"]}:
                 raise ValueError(f"Recovery conflicts with a user edit: {effect['path']}")
+            if effect.get("blob"):
+                want = effect[desired + "_hash"]
+                kept = blob_store(root, operation_id) / str(want)
+                if want is not None and current != want and not (kept.exists() and digest(kept.read_bytes()) == want):
+                    raise ValueError(f"Attachment bytes are missing for {effect['path']}; run recover {operation_id} --abandon")
+                continue
             for side in ("before", "after"):
                 if digest(_decode(effect[side])) != effect[side + "_hash"]:
                     raise ValueError("Journal content failed integrity validation")
@@ -857,8 +955,13 @@ def recover(root, operation_id, direction="forward"):
         effects = journal["effects"] if direction == "forward" else list(reversed(journal["effects"]))
         # Write new files before removing old ones: an interrupted rename then leaves a
         # duplicate (reported, recoverable) rather than a note that has vanished.
-        effects = sorted(effects, key=lambda effect: effect[desired] is None)
-        for effect in effects:
+        effects = sorted(effects, key=lambda effect: effect[desired + "_hash"] is None)   # the hash: a blob effect keeps no content
+        for index, effect in enumerate(effects):
+            if effect.get("blob"):
+                want = effect[desired + "_hash"]
+                keep = want is not None and any(e.get("blob") and e[desired + "_hash"] == want for e in effects[index + 1:])
+                _move_blob(root, operation_id, effect, desired, keep)
+                continue
             path = confined(root, effect["path"])
             if digest(_bytes(path)) != effect[desired + "_hash"]:
                 _write(path, _decode(effect[desired]))

@@ -74,6 +74,10 @@ Command hints: before a shell tool (Bash, PowerShell and Codex's shell tools) ru
 
 Private spans: text the user wraps in `<private>…</private>` may be used for the task but must not be saved. When a prompt has one, the prompt hook adds the line "Content inside <private> must not be saved to memory." It also keeps salted hashes of the span's word shingles in the session state, never the text; an unclosed tag marks nothing. For the rest of the session, a capture or update with `--session` that repeats such a span in its title, context or any body section fails with a `private_content` conflict (exit 5) naming the section. Like the rest of the governance this is cooperative: vault edits and commands without `--session` are not checked (`core/private.py`).
 
+## Notebook pages
+
+Notebook pages are not notes. Agents read them with `doc notebooks`, `doc list` and `doc read`, and change them only with `doc propose`, which stages the whole new text against the revision they read; the user accepts or rejects it in Hivemind. Every other `doc` write and `domain create` is the main actor's: the hook denies them to subagents and to agents in a Hivemind terminal, and never auto-allows them. Private notebooks are never shown to agents. See [NOTEBOOKS.md](NOTEBOOKS.md).
+
 ## Compaction
 
 A compaction replaces the conversation with the harness's summary. Claude Code's summary already quotes every user message and lists files, errors, pending tasks and the current work. It also re-attaches recently read files and the plan file, keeps the latest messages verbatim, and points to the raw transcript. Living Memory adds only what that leaves out:
