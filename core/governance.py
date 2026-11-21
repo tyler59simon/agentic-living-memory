@@ -17,11 +17,11 @@ def reconciled_domains(paths):
     return out
 
 
-def plan(root, changes, kind, domains=(), summary=None, guards=None):
+def plan(root, changes, kind, domains=(), summary=None, guards=None, extra=None):
     """guards: store-wide conditions that per-file hashes cannot express, re-checked at apply:
     absent_ids (no note in the plan's domains has these IDs) and unused_tags (no note outside the plan carries them).
     A change given as bytes (a notebook attachment) is staged under .plans/<id>/blobs/<sha256> and recorded as {"blob": sha256},
-    since the plan itself is JSON text."""
+    since the plan itself is JSON text. extra: more fields for the plan (covered by its digest), such as a teardown's `mirror`."""
     root=Path(root).resolve()
     with store_lock(root):
         expected={}
@@ -35,6 +35,7 @@ def plan(root, changes, kind, domains=(), summary=None, guards=None):
         value={'schema':2,'id':plan_id,'kind':kind,'domains':sorted(set(domains)),
                'created':now(),'changes':changes,'expected':expected,'summary':summary or {'files':len(changes)}}
         if guards:value['guards']={k:(v if k in ('read_set','inventory') else sorted(set(v))) for k,v in guards.items() if v}
+        if extra:value.update({k:v for k,v in extra.items() if k not in value})
         value['digest']=hashlib.sha256(canonical_json(value).encode()).hexdigest()
         path=root/'.plans'/(value['id']+'.json');atomic_write(path,canonical_json(value))
         return {'ok':True,'plan_id':value['id'],'digest':value['digest'],'kind':kind,'summary':value['summary']}
@@ -86,9 +87,10 @@ def apply(root,plan_id,expected_digest,sync_overlay=True,include_private=False):
         actual=hashlib.sha256(canonical_json(unsigned).encode()).hexdigest()
         if value['digest']!=actual or actual!=expected_digest:raise ValueError('Plan digest mismatch')
         if not include_private:
-            from .docs import private_scope,is_private_path,PRIVACY
+            from .docs import private_scope,guarded_path,PRIVACY
             scope=private_scope(root,value['changes'])
-            if any(rel!=PRIVACY and is_private_path(rel,scope) for rel in value['changes']):
+            from .folder_policy import REGISTRY,loosens
+            if any(rel!=PRIVACY and guarded_path(rel,scope) for rel in value['changes']) or (REGISTRY in value['changes'] and loosens(root,value['changes'][REGISTRY])):
                 raise ValueError(f'not_found: plan {plan_id} changes a private notebook; only Hivemind applies it (--include-private)')
         if not (root/'.operations'/plan_id/'journal.json').exists():
             roll_forward_pending(root)   # a write a crash left half-done is finished first, so the guards see it
@@ -101,6 +103,14 @@ def apply(root,plan_id,expected_digest,sync_overlay=True,include_private=False):
         from .docs import is_notebook_journal,record_index
         if is_notebook_journal([{'path':p} for p in value['changes']]) and not (root/'.operations'/value['id']/'doc.json').exists():
             record_index(root,value['id'],value['changes'])   # before the operation, so a stop after it still leaves the index
+        if value.get('kind')=='overlay_teardown' and isinstance(value.get('mirror'),dict):
+            # The notebook mirror's copies leave the vault one by one, each only while it holds the bytes the plan listed, and
+            # never through the vault's journal, which would keep a copy of every page (core/notebook_sync.py).
+            from .notebook_sync import _put,_prune_dirs,_safe,MIRROR
+            for rel,sha in sorted(value['mirror'].items()):
+                try:_put(root,rel,None,sha)
+                except OSError:pass
+            _prune_dirs(_safe(root,MIRROR))
         receipt=transaction(root,_plan_changes(root,value),value['kind'],value['expected'],value['id'])
         for domain in value['domains']:
             try:reconcile(domain,root,sync_overlay=sync_overlay)
@@ -275,7 +285,8 @@ def undo(root,operation_id,include_private=False):
     notebook_op=is_notebook_journal(value['effects'])
     # Check and record under one lock: an edit between the check and the plan's snapshot would be overwritten.
     with store_lock(root):
-        if not include_private and journal_private(root,value):
+        from .folder_policy import REGISTRY,loosens
+        if not include_private and (journal_private(root,value,authorize=True) or (REGISTRY in changes and loosens(root,changes[REGISTRY]))):
             raise ValueError(f'not_found: operation {operation_id} changed a private notebook; only Hivemind undoes it (--include-private)')
         if PRIVACY in changes:
             # Every notebook that was ever private stays listed, so undoing a privacy change never exposes what was written

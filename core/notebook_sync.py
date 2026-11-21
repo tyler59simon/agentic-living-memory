@@ -48,25 +48,42 @@ def _safe(base,rel):
 
 
 def _put(base,rel,data,expect):
-    """Write base/rel (remove it, with data None) while it still holds the bytes whose hash is `expect` (None: absent). False
-    when it changed meanwhile or a link or junction is in the way. A write goes through a temporary file and a replace."""
+    """Write base/rel (remove it, with data None) while it holds the bytes whose hash is `expect` (None: absent). False when it
+    changed meanwhile or a link or junction is in the way. A save made at any moment is never lost: the file is first moved
+    aside by a rename and judged there (a save after the rename makes a new file, which the final no-overwrite rename then
+    refuses), and a file found changed is moved back."""
     from .docs import _is_link
     path=_safe(base,rel)
     if path is None or _sha(_bytes(path))!=expect:return False
-    if data is None:
-        path.unlink(missing_ok=True);return True
     cursor=Path(base)
     for part in rel.split('/')[:-1]:
         cursor=cursor/part
         if not cursor.is_dir():cursor.mkdir()
         if _is_link(cursor):return False
-    fd,temp=tempfile.mkstemp(prefix='.',suffix='.mirror',dir=path.parent)
+    aside=None
+    if expect is not None:
+        aside=path.with_name(f'.{path.name}.{os.getpid()}-{time.monotonic_ns()}.aside')
+        os.rename(path,aside)   # the bytes now at the path are judged where nobody else writes
+        if _sha(_bytes(aside))!=expect:
+            try:os.rename(aside,path)   # changed just before the rename: put back
+            except OSError:os.rename(aside,path.with_name(f'{path.stem} (kept {time.strftime("%Y%m%d-%H%M%S")}){path.suffix}'))   # saved again meanwhile: both kept
+            return False
     try:
-        with os.fdopen(fd,'wb') as f:f.write(data)
-        os.replace(temp,path)
-    finally:
-        if os.path.exists(temp):os.unlink(temp)
-    return True
+        if data is not None:
+            fd,temp=tempfile.mkstemp(prefix='.',suffix='.mirror',dir=path.parent)
+            try:
+                with os.fdopen(fd,'wb') as f:f.write(data)
+                os.rename(temp,path) if os.name=='nt' else os.link(temp,path)   # never over a file saved meanwhile
+            except FileExistsError:
+                if aside is not None:aside.unlink()   # the expected bytes are known; the new save stays
+                return False
+            finally:
+                if os.path.exists(temp):os.unlink(temp)
+        if aside is not None:aside.unlink()
+        return True
+    except BaseException:
+        if aside is not None and aside.exists() and not path.exists():os.rename(aside,path)
+        raise
 
 
 def _files(folder):
@@ -133,6 +150,10 @@ def _leave_vault(state,domain):
     return kept
 
 
+def _plan_ok(value,plan_id):
+    return isinstance(value,dict) and value.get('id')==plan_id and value.get('kind')=='doc_vault_delete' and isinstance(value.get('digest'),str)
+
+
 def _keep_in_store(root,domain,nb,folder,rel,held,path):
     """Keep a vault file of a notebook that is leaving the vault: a page as a proposal, anything else (or a page that cannot be
     one) as an attachment of the notebook. 'proposed', 'attached', or None when neither worked."""
@@ -163,12 +184,13 @@ def sync_notebooks(domain,vault,root):
         if state.get('version')!=1:state={'version':1}
         errors={};conflicts=[];counts=dict.fromkeys(('mirrored','saved','created','proposed','removed','deferred','planned','approved','kept'),0)
         identity=vault_id(vault)
-        if state.get('vault_id') not in (None,identity):   # another vault: its state says nothing about this one
-            left=_leave_vault(state,domain)
+        if state.get('vault_id')!=identity:   # another vault, or none recorded (the note sync has already named the new vault): it says nothing about this one
+            left=_leave_vault(state,domain) if state.get('vault_id') else 0
             if left:errors['(previous vault)']=f'{left} notebook copies were left in the previous vault ({state.get("vault")}) because they were edited there; delete them when you no longer need them'
             state={'version':1,'log':state.get('log') or []}
         state.update(vault_id=identity,vault=str(vault))
         pages=state.setdefault('pages',{});assets=state.setdefault('assets',{});pending=state.setdefault('pending',{});log=state.setdefault('log',[])
+        kept_already=state.setdefault('kept',{})   # vault files already kept in memory, by hash: a removal that failed is retried without keeping them twice
         writes=[]   # (vault rel, bytes or None, hash the decision was made on, (kind, key, value), count)
 
         def record(action,key,operation_id=None):
@@ -184,8 +206,9 @@ def sync_notebooks(domain,vault,root):
             writes.append((f'{top}/{key}',data,_sha(held),(kind,key,value),count))
 
         def plan_file(plan_id):
-            try:return read_json(root/'.plans'/(plan_id+'.json'),None)
+            try:value=read_json(root/'.plans'/(plan_id+'.json'),None)
             except ValueError:return None
+            return value if _plan_ok(value,plan_id) else None
 
         present=docs_index._notebooks(root,domain)
         if present is None:raise ValueError('The notebooks folder cannot be listed now; the vault mirror waits for the next sync')
@@ -203,6 +226,8 @@ def sync_notebooks(domain,vault,root):
             p=pending.get(key);made=plan_file(p['plan_id']) if p else None
             if p and made is None:p=None   # pruned or lost: a fresh plan, with a fresh line to tick
             if p and p['plan_id'] in ticked:
+                vpath=_safe(vault,f'{top}/{key}')
+                if vpath is None or vpath.exists():pending.pop(key,None);return   # the copy came back since it was read: the approval lapses
                 try:
                     receipt=apply(root,p['plan_id'],made['digest'],sync_overlay=False);pending.pop(key,None);pages.pop(key,None)
                     record('Deleted',key,receipt.get('operation_id'));counts['approved']+=1
@@ -215,13 +240,16 @@ def sync_notebooks(domain,vault,root):
         for nb in sorted(shown):
             folder=present[nb];mirror=_safe(vault,f'{top}/{nb}')
             if mirror is None:fail(nb,'A link or junction is in the way of this notebook in the vault; it is not mirrored');continue
+            unread=[]   # folders that could not be listed, in memory or in the vault: their pages are left alone this time
             try:
-                listing=docs_index._walk_pages(folder) or {}
-                mirrored=(docs_index._walk_pages(mirror) or {}) if mirror.is_dir() else {}
+                listing=docs_index._walk_pages(folder,None,unread) or {}
+                mirrored=(docs_index._walk_pages(mirror,None,unread) or {}) if mirror.is_dir() else {}
             except OSError as exc:fail(nb,f'Cannot be listed now ({exc}); mirrored at the next sync');continue
+            if unread:fail(nb,'Some folders cannot be listed now; their pages are mirrored at a later sync')
             keys=sorted({f'{nb}/{r}' for r in listing}|{f'{nb}/{r}' for r in mirrored}|{k for k in list(pages)+list(pending) if k.startswith(nb+'/')})
             for key in keys:
                 rel=key.split('/',1)[1];vpath=_safe(vault,f'{top}/{key}')
+                if docs_index.under(rel,unread):continue
                 if vpath is None:fail(key,'A link or junction is in the way; this copy is skipped');continue
                 try:
                     page=_bytes(folder/rel) if rel in listing else None;held=_bytes(vpath)
@@ -257,9 +285,9 @@ def sync_notebooks(domain,vault,root):
                 key=f'{nb}/assets/{name}';target=_safe(vault,f'{top}/{key}')
                 if target is None:fail(key,'A link or junction is in the way; this attachment is not copied');continue
                 try:
-                    data=_bytes(path);sha=_sha(data);current=_sha(_bytes(target))
+                    data=_bytes(path);sha=_sha(data);seen=_bytes(target);current=_sha(seen)   # one read decides and is the expected hash
                     if current==sha:assets[key]=sha
-                    elif current is None or current==assets.get(key):to_vault(key,data,_bytes(target),sha,'mirrored','asset')
+                    elif current is None or current==assets.get(key):to_vault(key,data,seen,sha,'mirrored','asset')
                     else:fail(key,'Changed in the vault; attachments are changed in Hivemind, so this copy is no longer updated')
                 except OSError as exc:fail(key,str(exc))
             for key in [k for k in assets if k.startswith(nb+'/') and k.split('/assets/',1)[1] not in names]:   # removed in memory
@@ -288,8 +316,8 @@ def sync_notebooks(domain,vault,root):
                 if held is None:pages.pop(key,None);assets.pop(key,None);continue
                 if _sha(held)==known.get(rel):to_vault(key,None,held,None,'removed','leave');continue
                 if nb not in present:orphans+=1;continue
-                kept=_keep_in_store(root,domain,nb,present[nb],rel,held,path)
-                if kept:to_vault(key,None,held,None,'kept','leave')
+                kept=kept_already.get(key)==_sha(held) or _keep_in_store(root,domain,nb,present[nb],rel,held,path)
+                if kept:kept_already[key]=_sha(held);to_vault(key,None,held,None,'kept','leave')
                 else:fail(key,'Could not be kept in memory, so it is still in the vault')
             for key in [k for k in pending if k.startswith(nb+'/')]:pending.pop(key)
         if orphans:errors['(deleted notebooks)']=f'{orphans} edited copies of deleted notebooks are still in the vault under {top}; delete them when you no longer need them'
@@ -307,7 +335,8 @@ def sync_notebooks(domain,vault,root):
             elif kind=='asset':
                 if value is None:assets.pop(key,None)
                 else:assets[key]=value
-            else:pages.pop(key,None);assets.pop(key,None)
+            else:pages.pop(key,None);assets.pop(key,None);kept_already.pop(key,None)
+        for key in [k for k in kept_already if k.split('/',1)[0] in shown]:kept_already.pop(key)   # mirrored again: nothing left to remove
         _prune_dirs(base)
         state.update(errors=errors,conflicts=conflicts,log=log[-20:])   # a conflict is reported by the sync that met it; its proposal stays in Hivemind
         transaction(root,{state_rel:canonical_json(state)},'overlay_state',skip_unchanged=True)

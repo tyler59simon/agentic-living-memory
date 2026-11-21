@@ -1073,21 +1073,32 @@ def journal_scope(root, journal):
     return prefixes, uids
 
 
-def journal_private(root, journal, scope=None):
-    """Whether an operation touched a private notebook, by the live store or by its own images (journal_scope)."""
-    if private_journal(journal, scope if scope is not None else private_scope(root)):
+def journal_private(root, journal, scope=None, authorize=False):
+    """Whether an operation touched a private notebook, by the live store or by its own images (journal_scope). authorize:
+    see private_journal."""
+    if private_journal(journal, scope if scope is not None else private_scope(root), authorize):
         return True
     own = any(isinstance(e, dict) and isinstance(e.get("path"), str) and (e["path"] == PRIVACY or e["path"].endswith("/notebook.json"))
               for e in journal.get("effects") or [] if isinstance(journal, dict))
-    return own and private_journal(journal, journal_scope(root, journal))
+    return own and private_journal(journal, journal_scope(root, journal), authorize)
 
 
-def private_journal(journal, scope):
-    """Whether an operation touched a private notebook: by the uid it recorded, or by any path it changed."""
+def guarded_path(path, scope, kind=None):
+    """Whether changing `path` needs --include-private: a path inside a private notebook. The bookkeeping files (the folder
+    registry, the mirror's state) are only hidden from display; a registry change that would reopen a hidden or private
+    folder is refused separately (folder_policy.loosens)."""
+    return is_private_path(path, scope) and not BOOKKEEPING.fullmatch(str(path).replace("\\", "/").casefold())
+
+
+def private_journal(journal, scope, authorize=False):
+    """Whether an operation touched a private notebook: by the uid it recorded, or by any path it changed. authorize: judge
+    whether it may be undone or recovered without --include-private (guarded_path), not whether it may be shown."""
     meta = journal.get("meta") if isinstance(journal, dict) else None
     if isinstance(meta, dict) and meta.get("uid") in scope[1]:
         return True
-    return any(is_private_path(e.get("path", ""), scope) for e in journal.get("effects") or [] if isinstance(e, dict) and e.get("path") != PRIVACY)
+    kind = journal.get("kind") if isinstance(journal, dict) else None
+    test = (lambda p: guarded_path(p, scope, kind)) if authorize else (lambda p: is_private_path(p, scope))
+    return any(test(e.get("path", "")) for e in journal.get("effects") or [] if isinstance(e, dict) and e.get("path") != PRIVACY)
 
 
 # ----------------------------------------------------------------------------------------------- notebook-only domains

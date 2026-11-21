@@ -58,6 +58,34 @@ def load(root):
     return data
 
 
+def _strictest(entries):
+    """{compare key of the resolved path: the strictest entry for that folder}. Reads, writes and restore all use it, so they
+    agree on which of two rows for one folder holds (a tombstone counts at its level)."""
+    out={}
+    for e in entries:
+        k=key(real(e['path']));held=out.get(k)
+        if held is None or STRICT[level_of(e.get('visibility'),bool(e.get('private')))]>STRICT[level_of(held.get('visibility'),bool(held.get('private')))]:out[k]=e
+    return out
+
+
+def loosens(root,text):
+    """Whether writing registry `text` (None: deleting it) would make a folder that is hidden or private now less strict:
+    an undo, a plan or a restore that would reopen it needs --include-private. A damaged live or given registry counts."""
+    try:live=_strictest(load(root)['folders'])
+    except ValueError:return True
+    try:
+        given=json.loads(text) if text else {'folders':[]}
+        if not isinstance(given,dict) or not isinstance(given.get('folders'),list) or not all(_valid(e) for e in given['folders']):return True
+    except (TypeError,ValueError):return True
+    new=_strictest(given['folders'])
+    for k,e in live.items():
+        level=level_of(e.get('visibility'),bool(e.get('private')))
+        if level in ('hidden','private'):
+            held=new.get(k)
+            if STRICT[level_of(held.get('visibility'),bool(held.get('private'))) if held else None]<STRICT[level]:return True
+    return False
+
+
 def merge_registry(root,text):
     """A registry `text` being restored, keeping every live entry (tombstones too) that is stricter than the restored entry
     for the same folder, or that the restored registry lacks while it is hidden or private: a restore never reopens a folder
@@ -70,9 +98,9 @@ def merge_registry(root,text):
         given=json.loads(text) if text else {'folders':[]}
         if not isinstance(given,dict) or not isinstance(given.get('folders'),list) or not all(_valid(e) for e in given['folders']):raise ValueError
     except ValueError:return _text(live)
-    out={key(real(e['path'])):e for e in given['folders']}
-    for e in live:
-        k=key(real(e['path']));level=level_of(e.get('visibility'),bool(e.get('private')));held=out.get(k)
+    out=_strictest(given['folders'])
+    for k,e in _strictest(live).items():
+        level=level_of(e.get('visibility'),bool(e.get('private')));held=out.get(k)
         if held is None:
             if level in ('hidden','private'):out[k]=e
         elif STRICT[level]>STRICT[level_of(held.get('visibility'),bool(held.get('private')))]:out[k]=e
@@ -125,9 +153,8 @@ class Policy:
         self.broken=False;self.entries={};self._real={}
         try:data=load(root)
         except ValueError:self.broken=True;data={'folders':[]}
-        for e in data['folders']:   # two entries for one folder (an alias, a hand edit): the stricter wins
-            k=key(real(e['path']));level=level_of(e.get('visibility'),bool(e.get('private')));held=self.entries.get(k)
-            if held is None or STRICT[level]>STRICT[held[0]]:self.entries[k]=(level,e)
+        for k,e in _strictest(data['folders']).items():   # two entries for one folder (an alias, a hand edit): the stricter wins
+            self.entries[k]=(level_of(e.get('visibility'),bool(e.get('private'))),e)
         for vault in managed_vaults(root):   # the notebook mirror: its pages are served from the store, never as a second copy
             k=key(real(os.path.join(vault,MIRROR)));held=self.entries.get(k)
             self.entries[k]=(stricter('hidden',held[0] if held else None),dict(held[1] if held else {'path':os.path.join(vault,MIRROR)},mirror=True))
@@ -212,12 +239,12 @@ def set_folder(root,path,domain,visibility,private=None):
     with store_lock(root):
         canonical=_canonical_folder(root,path);named=_bound(root,domain)
         entries=load(root)['folders'];k=key(canonical)
-        old=next((e for e in entries if key(e['path'])==k),None)
+        old=_strictest(entries).get(k)
         entry={'path':canonical,'domain':named,'visibility':visibility,'private':bool(old and old.get('private')) if private is None else bool(private)}   # a tombstone's private flag holds too
         if old and not old.get('removed') and {f:old.get(f) for f in ('path','domain','visibility','private')}==entry:
             return {'ok':True,'status':'unchanged','folder':entry}
         entry['updated']=now()
-        receipt=commit(root,{REGISTRY:_text([e for e in entries if key(e['path'])!=k]+[entry])},'doc_folder',[],
+        receipt=commit(root,{REGISTRY:_text([e for e in entries if key(real(e['path']))!=k]+[entry])},'doc_folder',[],
                        {'folder':canonical,'domain':named,'visibility':visibility,'private':entry['private'],'files':1})
     _spawn(root,named)
     return dict(receipt,status='set',folder=entry)
@@ -232,12 +259,12 @@ def unset_folder(root,path,forget=False):
     with store_lock(root):
         if not Path(path).expanduser().is_absolute():raise ValueError('The folder must be an absolute path')
         entries=load(root)['folders'];k=key(Path(path).expanduser().resolve())
-        old=next((e for e in entries if key(e['path'])==k),None)
+        old=_strictest(entries).get(k)
         if old is None:raise ValueError(f'not_found: no folder notebook {path}')
         level=level_of(old.get('visibility'),bool(old.get('private')))
         keep=level in ('hidden','private') and not forget
         if keep and old.get('removed'):return {'ok':True,'status':'unchanged','folder':old}
-        rest=[e for e in entries if key(e['path'])!=k]+([dict(old,removed=True,updated=now())] if keep else [])
+        rest=[e for e in entries if key(real(e['path']))!=k]+([dict(old,removed=True,updated=now())] if keep else [])
         receipt=commit(root,{REGISTRY:_text(rest)},'doc_folder',[],{'folder':old['path'],'removed':True,'tombstone':keep,'files':1})
     _spawn(root,old.get('domain'))
     return dict(receipt,status='tombstone' if keep else 'removed',folder=old['path'])

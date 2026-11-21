@@ -176,8 +176,8 @@ def resolve(root,domain,bindings=None,deadline=None):
     return kept
 
 def _covered(path,specs):
-    """Whether a source walks into this folder and indexes its Markdown pages: one rooted at or above it (links and junctions
-    resolved) with no hidden, vendored, ignored or excluded folder between, whose include globs, if it has any, take a page there."""
+    """Whether a source walks into this folder and indexes all its Markdown pages: one rooted at or above it (links and junctions
+    resolved) with no hidden, vendored, ignored or excluded folder between, and no include globs."""
     from .folder_policy import key,real
     path=real(path);k=key(path)
     for s in specs:
@@ -188,8 +188,7 @@ def _covered(path,specs):
         if any(p in SKIP_DIRS or (p.startswith('.') and p!='.github') for p in parts):continue
         rules=gitignore(root);exclude=_patterns(s.get('exclude') or [])
         if any(ignored(rules,'/'.join(parts[:i+1]),True) or _any(exclude,'/'.join(parts[:i+1])) for i in range(len(parts))):continue
-        include=_patterns(s.get('include') or [])
-        if include and not _any(include,'/'.join(parts+['page.md'])):continue
+        if s.get('include'):continue   # include globs may take some pages and not others: the notebook gets a source of its own
         return True
     return False
 
@@ -668,6 +667,8 @@ def _sync_source(db,spec,delta,force=False,policy=None):
     files,chunks=db.execute('SELECT count(*),coalesce(sum(chunks),0) FROM file WHERE source=? AND skipped IS NULL',(name,)).fetchone()
     db.execute('UPDATE source SET files=?,chunks=?,synced=? WHERE name=?',(files,chunks,now(),name));_set_meta(db,'epoch:'+name,began)   # per source: a sync of another one says nothing about this one's files
     if policy is not None:_set_meta(db,'policy:'+name,policy.revision(spec['path']))
+    from .folder_policy import real
+    _set_meta(db,'real:'+name,real(base));_set_meta(db,'origin:'+name,'notebook' if spec.get('notebook') else 'source')   # what the rows were read from, and why
     return dict(count,name=name,files=files,chunks=chunks)
 
 def _embed(db,root,deadline):
@@ -737,7 +738,7 @@ def _sync(root,domain,name,rebuild):
             for (gone,) in db.execute('SELECT name FROM source').fetchall():
                 if gone not in {s['name'] for s in specs}:
                     for (file_id,) in db.execute('SELECT id FROM file WHERE source=?',(gone,)).fetchall():_drop_file(db,file_id,delta)
-                    db.execute('DELETE FROM file WHERE source=?',(gone,));db.execute('DELETE FROM source WHERE name=?',(gone,));db.execute('DELETE FROM meta WHERE key IN (?,?)',('epoch:'+gone,'policy:'+gone))
+                    db.execute('DELETE FROM file WHERE source=?',(gone,));db.execute('DELETE FROM source WHERE name=?',(gone,));db.execute('DELETE FROM meta WHERE key IN (?,?,?,?)',('epoch:'+gone,'policy:'+gone,'real:'+gone,'origin:'+gone))
             _apply_vocab(db,delta)
         vectors=_embed(db,root,time.monotonic()+EMBED_SECONDS)
         _set_meta(db,'synced',now());_set_meta(db,'synced_epoch',started);db.commit()
@@ -765,22 +766,24 @@ def listing(root,domain=None,bindings=None):
     try:registry=load(root)
     except ValueError as exc:registry={'sources':[]};warnings.append(str(exc))
     specs=resolve(root,domain,bindings) if domain else [_located(root,s) for s in registry['sources'] if s.get('kind') in KINDS]
-    held={};policies={}
+    held={}
+    from .folder_policy import Policy,SERVED
+    policy=Policy(root)
     db=_readonly(root,domain) if domain else None
     if db:
-        try:
-            held={n:(f,c,s) for n,f,c,s in db.execute('SELECT name,files,chunks,synced FROM source')}
-            policies={k[7:]:v for k,v in db.execute("SELECT key,value FROM meta WHERE key LIKE 'policy:%'")}
+        try:   # counts leave out the files of notebooks that are hidden or private now, whatever the last sync saw
+            roots={n:policy.real(r) for n,r in db.execute('SELECT name,root FROM source')};counted={}
+            for name,path,chunks in db.execute('SELECT source,path,chunks FROM file WHERE skipped IS NULL'):
+                if name in roots and not policy.broken and policy.file(os.path.join(roots[name],path))[0] in (None,)+SERVED:
+                    f,c=counted.get(name,(0,0));counted[name]=(f+1,c+(chunks or 0))
+            held={n:counted.get(n,(0,0))+(s,) for n,s in db.execute('SELECT name,synced FROM source')}
         except sqlite3.Error:pass
         finally:db.close()
-    from .folder_policy import Policy
-    policy=Policy(root)
     for s in specs:
         f,c,when=held.get(s['name'],(0,0,None))
         row={'name':s['name'],'domain':s.get('domain'),'kind':s['kind'],'path':s['path'],'include':s.get('include') or [],'exclude':s.get('exclude') or [],
              'implicit':bool(s.get('implicit')),'files':f,'chunks':c,'synced':when,'state':'indexed' if when else 'not synced'}
-        if when and s['kind'] not in REMOTE and (policy.broken or policies.get(s['name'])!=policy.revision(s['path'])):
-            row.update(files=None,chunks=None,state='reach changed; counts return after the next sync')   # the counts may include a notebook that is hidden or private now
+        if when and s['kind'] not in REMOTE and policy.broken:row.update(files=None,chunks=None,state='folder registry damaged; nothing is served until it is fixed')
         if s['kind'] in REMOTE:   # nothing is fetched here: the numbers are those of the last explicit `source-sync NAME`
             from .connectors import summary,MAX_PAGES
             remote=summary(root,s['name']);row.update(base_url=s.get('base_url'),token_env=s.get('token_env'),remote=remote,state='indexed' if when else 'not synced' if not remote['synced'] else 'fetched, not indexed')
@@ -808,8 +811,11 @@ def stale(root,domain,bindings=None,limit=STALE_SECONDS):
         try:
             held=dict(db.execute('SELECT name,config FROM source').fetchall());epochs={k[6:]:v for k,v in db.execute("SELECT key,value FROM meta WHERE key LIKE 'epoch:%'")}
             policies={k[7:]:v for k,v in db.execute("SELECT key,value FROM meta WHERE key LIKE 'policy:%'")}
+            reals={k[5:]:v for k,v in db.execute("SELECT key,value FROM meta WHERE key LIKE 'real:%'")}
         finally:db.close()
         if {s['name']:_config(s) for s in specs}!=held:return True
+        from .folder_policy import key as _key
+        if any(reals.get(s['name']) and _key(reals[s['name']])!=_key(policy.real(s['path'])) for s in specs if s['kind'] not in REMOTE):return True   # a link or junction retargeted
         if any(policies.get(s['name'])!=policy.revision(s['path']) for s in specs if s['kind'] not in REMOTE):return True   # a folder notebook's reach changed
         oldest=info['epoch']
         for spec in specs:
@@ -934,17 +940,29 @@ def search(root,domain,query,limit=5,vocab=None,informative=False,gate=None,leas
     if not db:return []
     policy=policy or Policy(root);owners={}
     if policy.broken:db.close();return []
+    from .folder_policy import key
+    try:
+        recorded={k:v for k,v in db.execute("SELECT key,value FROM meta WHERE key LIKE 'real:%' OR key LIKE 'origin:%'")}
+    except sqlite3.Error:recorded={}
     def keep(top,source,path):
-        level,folder,title=policy.file(os.path.join(policy.real(top),path))
-        if NOTEBOOK_SOURCE.fullmatch(source) and (not pages or level is None):return False   # a folder notebook's own source holds pages only; an unset one serves nothing
+        root_now=policy.real(top);root_then=recorded.get('real:'+source)
+        if root_then and key(root_then)!=key(root_now):return False   # the source's folder now resolves elsewhere: its rows were read from another folder
+        level,folder,title=policy.file(os.path.join(root_now,path))
+        if recorded.get('origin:'+source)=='notebook' and (not pages or level is None or policy.registered(root_now) not in SERVED):
+            return False   # a registered folder notebook's own source holds pages only, and nothing once its registration is gone
         if not pages:return level is None
         if level not in SERVED or (inject and level!='injectable'):return False
         owners[(source,path)]=(folder,title,level);return True
     try:hits=search_db(db,root,query,limit,vocab,informative,gate,least,width,near,dropped,keep)
     finally:db.close()
-    for h in hits if pages else ():
-        folder,title,level=owners[(h['source'],h['path'])];h.update(notebook=Path(folder).as_posix(),notebook_title=title,reach=level)
-    return hits
+    seen=set();out=[]
+    for h in hits:   # a page two sources index (one with include globs, and the notebook's own) is served once
+        where=(h['file'] if h.get('url') else key(policy.real(h['file'])),h['line_start'])
+        if where in seen:continue
+        seen.add(where);out.append(h)
+        if pages:
+            folder,title,level=owners[(h['source'],h['path'])];h.update(notebook=Path(folder).as_posix(),notebook_title=title,reach=level)
+    return out
 
 def search_db(db,root,query,limit=5,vocab=None,informative=False,gate=None,least=2,width=SNIPPET,near=None,dropped=None,keep=None):
     """search over an open index with this schema (the sources index, or the notebook page index of core/docs_index.py).

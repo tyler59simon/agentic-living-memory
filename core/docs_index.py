@@ -6,8 +6,8 @@ per notebook, plus the task lines and frontmatter properties of each page. The i
 `search` and `ask` first stat-walk the domain's notebooks for at most WALK_SECONDS, resuming from a cursor, then reindex
 changed pages for at most INDEX_SECONDS, and report `pages_stale` when work is left. The prompt hook never reindexes.
 Each call walks at least one notebook and indexes at least one page, even past those budgets, so it always makes progress;
-of several domains, only the one refreshed least recently gets that allowance. A page that cannot be read is retried after the
-others and keeps `pages_stale` true.
+of several domains, only the one that had that allowance longest ago gets it. A page that cannot be read is retried after the
+others and keeps `pages_stale` true; a folder that cannot be listed keeps the rows of the pages under it until it can be.
 Every notebook is indexed, hidden and private ones too; who may see a page is decided when results are served, from the
 notebook.json files as they are now."""
 from __future__ import annotations
@@ -48,9 +48,10 @@ def _notebooks(root,domain):
             and os.path.isfile(os.path.join(e.path,'notebook.json')) and not _is_link(Path(e.path)/'notebook.json')}
 
 
-def _walk_pages(folder,deadline=None):
+def _walk_pages(folder,deadline=None,unread=None):
     """{page path: (size, mtime_ns)} of a notebook's pages (no attachments, proposals or links), or None past the deadline.
-    Raises OSError when the notebook folder itself cannot be listed (a subfolder that cannot be is skipped)."""
+    Raises OSError when the notebook folder itself cannot be listed. A subfolder that cannot be listed is added to `unread`
+    (its pages are unknown, not gone); without that list it raises too."""
     from .docs import RESERVED,_is_link
     found={};stack=['']
     while stack:
@@ -58,8 +59,8 @@ def _walk_pages(folder,deadline=None):
         rel=stack.pop()
         try:entries=list(os.scandir(folder/rel if rel else folder))
         except OSError:
-            if not rel:raise
-            continue
+            if not rel or unread is None:raise
+            unread.append(rel);continue
         for e in entries:
             path=f'{rel}/{e.name}' if rel else e.name
             try:
@@ -174,6 +175,11 @@ def title_of(text,rel):
     return os.path.splitext(rel.rsplit('/',1)[-1])[0]
 
 
+def under(rel,folders):
+    """Whether a page path lies in one of these folders (paths within a notebook)."""
+    return any(rel.startswith(f+'/') for f in folders)
+
+
 # ---- refresh --------------------------------------------------------------------------------------------------------
 def _drop(db,file_id,delta):
     sources._drop_file(db,file_id,delta)
@@ -231,10 +237,13 @@ def _refresh(db,root,domain,present,walk_until,index_until,only,embed,result,pro
     cursor=sources._meta(db,'cursor') or ''
     if only is None and cursor in names:names=names[names.index(cursor):]+names[:names.index(cursor)]
     todo=[];walked=0;cut=None;unread=0;listed=set()
+    if progress:sources._set_meta(db,'allowance',repr(time.time()))   # refresh_all hands the allowance to the domain that had it longest ago
     for nb in names:
         if walk_until is not None and (walked or not progress) and time.monotonic()>walk_until:cut=nb;break
-        try:listing=_walk_pages(present[nb],walk_until if (walked or not progress) else None)   # the first notebook is finished, so a call makes progress
+        skipped=[]
+        try:listing=_walk_pages(present[nb],walk_until if (walked or not progress) else None,skipped)   # the first notebook is finished, so a call makes progress
         except OSError:unread+=1;continue   # this notebook cannot be listed now: its rows stay as they are
+        unread+=bool(skipped)
         if listing is None:cut=nb;break
         walked+=1;listed.add(nb)
         db.execute('INSERT INTO source(name,kind,root,implicit,config) VALUES(?,?,?,0,?) ON CONFLICT(name) DO UPDATE SET root=excluded.root',(nb,'notebook',present[nb].as_posix(),''))
@@ -243,7 +252,7 @@ def _refresh(db,root,domain,present,walk_until,index_until,only,embed,result,pro
             old=have.get(rel)
             if not old or (old[1],old[2])!=(mtime,size):todo.append((nb,rel,size,mtime,old))
         for rel,(file_id,*_) in have.items():
-            if rel not in listing:_drop(db,file_id,delta);result['removed']+=1
+            if rel not in listing and not under(rel,skipped):_drop(db,file_id,delta);result['removed']+=1   # a page in a folder that could not be listed stays
     if only is None:sources._set_meta(db,'cursor',cut or '')
     try:failed=set(json.loads(sources._meta(db,'failed') or '[]'))
     except ValueError:failed=set()
@@ -261,7 +270,7 @@ def _refresh(db,root,domain,present,walk_until,index_until,only,embed,result,pro
     for (nb,) in db.execute('SELECT name FROM source').fetchall():
         files,chunks=db.execute('SELECT count(*),coalesce(sum(chunks),0) FROM file WHERE source=?',(nb,)).fetchone()
         db.execute('UPDATE source SET files=?,chunks=? WHERE name=?',(files,chunks,nb))
-    if result['indexed'] and not embed:sources._set_meta(db,'vectors_pending','1')   # a write's reindex leaves the vectors to the next read
+    if result['indexed']:sources._set_meta(db,'vectors_pending','1')   # cleared below only when the embedding caught up
     db.commit()
     if embed and (result['indexed'] or sources._meta(db,'vectors_pending')=='1' or (sources._meta(db,'vectors') or None)!=_identity(root)):
         remaining=(index_until-time.monotonic()) if index_until is not None else sources.EMBED_SECONDS
@@ -269,7 +278,6 @@ def _refresh(db,root,domain,present,walk_until,index_until,only,embed,result,pro
             vectors=sources._embed(db,root,time.monotonic()+remaining)
             sources._set_meta(db,'vectors_pending','1' if vectors and vectors['pending'] else '0');db.commit()
     result['stale']=bool(cut or left or unread or now_failed)
-    if not result['stale'] and only is None:sources._set_meta(db,'complete',repr(time.time()));db.commit()
     return result
 
 
@@ -306,21 +314,21 @@ def visible(root,domain,include_private=False,named=None,include_hidden=False):
     return out
 
 
-def _completed(root,domain):
-    """When the domain's index was last brought fully up to date (0.0: never)."""
+def _allowance(root,domain):
+    """When the domain last had the progress allowance (0.0: never), so the allowance goes round the domains in turn."""
     db=_readonly(root,domain)
     if db is None:return 0.0
-    try:return float(sources._meta(db,'complete') or 0)
+    try:return float(sources._meta(db,'allowance') or 0)
     except (ValueError,sqlite3.Error):return 0.0
     finally:db.close()
 
 
 def refresh_all(root,domains):
-    """Refresh each domain within one shared budget (WALK_SECONDS, then INDEX_SECONDS), the one refreshed least recently first;
-    only that one may pass the budget to make progress. True when any of them was left unfinished."""
+    """Refresh each domain within one shared budget (WALK_SECONDS, then INDEX_SECONDS), the one that had the progress allowance
+    longest ago first; only that one may pass the budget to make progress. True when any of them was left unfinished."""
     start=time.monotonic();walk_until=start+WALK_SECONDS;index_until=walk_until+INDEX_SECONDS;stale=False
     wanted=[d for d in domains if (Path(root)/'domains'/d/'notebooks').is_dir() or db_path(root,d).is_file()]
-    for n,domain in enumerate(sorted(wanted,key=lambda d:_completed(root,d))):
+    for n,domain in enumerate(sorted(wanted,key=lambda d:_allowance(root,d))):
         stale|=refresh(root,domain,walk_until,index_until,progress=n==0)['stale']
     return stale
 

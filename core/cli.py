@@ -736,7 +736,7 @@ def _doc(args,root,domain):
     except ValueError:journal=None
     # Judged by what the operation changed, not by its kind: an undo of an undo stays a notebook operation after its parent is pruned (D4).
     if not isinstance(journal,dict) or not docs.is_notebook_journal(journal.get('effects')):raise ValueError(f'not_found: {args.operation_id} is not a notebook operation; use undo for others')
-    if not private and docs.journal_private(root,journal):raise ValueError(f'not_found: {args.operation_id} is not a notebook operation; use undo for others')
+    if not private and docs.journal_private(root,journal,authorize=True):raise ValueError(f'not_found: {args.operation_id} is not a notebook operation; use undo for others')
     return undo(root,args.operation_id,private)
 
 def build_parser():
@@ -1176,6 +1176,10 @@ def main(argv=None):
                         if c is not None:hits+=[dict(h,file=c) for h in file_notes(c,[kid],root,n)]
                     hits=sorted(sorted(hits,key=lambda h:h.get('updated',''),reverse=True),key=lambda h:h.get('match')!='files')[:n]
                     if not hits and args.scope=='fallback' and foreign:domains=foreign;hits=file_notes(wanted,domains,root,max(1,min(100,args.limit)));fallback=True
+                    from . import digests
+                    digests.mark(hits,root,config)   # as for every search: a digest of a file in a hidden or private notebook is withheld
+                    for hit in hits:
+                        if hit.get('withheld'):hit['snippet']=hit['stale']
                     result={'ok':True,'mode':'file','file':wanted,'domains':domains,'fallback':fallback,'results':hits}
                     invocation['result']=result;_emit(result,args);return 0
                 filters['file']={'*':wanted,**{k:child_path(wanted,domain,k,config) for k in kids_of}} if kids_of else wanted
@@ -1474,7 +1478,7 @@ def main(argv=None):
             if re.fullmatch(r'[A-Za-z0-9_-]{1,100}',args.operation_id) and not args.include_private:
                 try:pending=read_json(root/'.operations'/args.operation_id/'journal.json',None)
                 except ValueError:pending=None
-                if isinstance(pending,dict) and journal_private(root,pending):
+                if isinstance(pending,dict) and journal_private(root,pending,authorize=True):
                     raise ValueError(f'not_found: operation {args.operation_id} changed a private notebook; only Hivemind recovers it (--include-private)')
             if args.abandon:result=abandon(root,args.operation_id)
             else:result=recover(root,args.operation_id,args.direction)
@@ -1714,7 +1718,9 @@ def main(argv=None):
             from .sync import sync,build_overlay
             if cmd=='sync':
                 from .sync import mirror_notebooks
+                from .sync import write_status
                 result=sync(domain,args.vault,root);result['notebooks']=mirror_notebooks(domain,args.vault,root)   # pages follow every vault sync
+                write_status(domain,args.vault,root)   # new delete lines show at once, and a notebook made private leaves the page
             else:result=build_overlay(domain,args.vault,root)
         else:raise ValueError('Unsupported command')
         code=1 if cmd=='wiki' and isinstance(result,dict) and result.get('ok') is False else 0   # a build that stopped on an error

@@ -1118,21 +1118,31 @@ def prompt_sources(prompt,root,domain,state,trace=None):
     pages_vocab=docs_index.vocabulary(root,page_domains,words)
     every=(vocab[0]+pages_vocab[0],{w:vocab[1].get(w,0)+pages_vocab[1].get(w,0) for w in set(vocab[1])|set(pages_vocab[1])})   # a word only pages carry still makes a query
     if not every[0]:trace['index']=False;return None,[]
-    long=len(prompt)>LONG_PROMPT;queries=long_queries(text,every) if long else [(text,True)]
-    if long:queries+=[(q,True) for q in item_queries(text,every) if q not in dict(queries)]   # list items are not segments: each is asked on its own (at most LIST_QUERIES)
+    long=len(prompt)>LONG_PROMPT;queries=[(text,True)]
+    if long:   # the sources index's own picks first (as before notebooks), then those the merged vocabulary adds
+        queries=[]
+        for v in ([vocab] if vocab[0] else [])+[every]:
+            for q in long_queries(text,v)+[(q,True) for q in item_queries(text,v)]:   # list items are asked on their own (at most LIST_QUERIES)
+                if q[0] not in dict(queries):queries.append(q)
     policy=Policy(root) if vocab[0] else None   # one registry read for every query
     width=max(120,(SOURCE_BUDGET-110-len(hint_command(root,state,domain)))//SOURCE_EXCERPTS-70)   # snippet room, so the excerpt is cut around the matches
     best={};dropped=[];from .semantic import threshold;near=threshold(root)   # the notes' meaning bar; a chunk without a vector keeps the word test alone
     least=LONG_LEAST if long else 2
     def offer(hit,key):
         if key not in best or hit['relevance']>best[key]['relevance']:best[key]=dict(hit,key=key)
-    for query,_ in queries:
-        if time.monotonic()-started>SOURCE_SECONDS:trace['cut_by_time']=True;break
+    def late():
+        if time.monotonic()-started>SOURCE_SECONDS:trace['cut_by_time']=True;return True
+        return False
+    for query,_ in queries:   # the time is checked before every index search, not once per query
         if vocab[0]:
+            if late():break
             for hit in sources.search(root,domain,query,3,vocab,True,SOURCE_GATE,least,width,near,dropped,policy=policy):offer(hit,f"{hit['source']}:{hit['path']}:{hit['line_start']}")
+            if late():break
             for hit in sources.search(root,domain,query,3,vocab,True,SOURCE_GATE,least,width,near,dropped,pages=True,inject=True,policy=policy):
                 offer(hit,f"{hit['source']}:{hit['path']}:{hit['line_start']}")
+        if late():break
         for d in page_domains:
+            if late():break
             for hit in docs_index.prompt_hits(root,d,query,3,SOURCE_GATE,least,width,near,dropped,allowed=allowed[d]):
                 offer(dict(hit,path=f"{d}/{hit['notebook']}/{hit['path']}"),f"doc:{d}/{hit['notebook']}/{hit['path']}:{hit['line_start']}")
     shown=set(state.get('sources_shown',[]))

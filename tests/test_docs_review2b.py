@@ -70,9 +70,9 @@ class Reach(test_sources_notebooks.Notebooks):
         self.set(outside,'searchable','--private');self.set(child,'searchable')
         self.assertFalse([s for s in sources.resolve(self.root,'demo') if s.get('notebook')])
         self.set(self.nb,'searchable');self.sync()
-        self.set(self.nb,'searchable','--private')
-        row=next(r for r in sources.listing(self.root,'demo')['sources'] if r['name']=='kb')
-        self.assertEqual((row['files'],row['chunks']),(None,None));self.assertIn('reach changed',row['state'])
+        count=lambda:next((r['files'],r['chunks']) for r in sources.listing(self.root,'demo')['sources'] if r['name']=='kb')
+        before=count();self.set(self.nb,'searchable','--private');after=count()
+        self.assertLess(after[0],before[0]);self.assertLess(after[1],before[1])   # judged as the registry says now, not as the last sync saw
 
     def test_S1_refused_rows_never_push_a_visible_page_out_of_the_candidates(self):
         crowd=self.base/'crowd';crowd.mkdir();lone=self.base/'lone';lone.mkdir()
@@ -278,8 +278,8 @@ class Vault(test_docs_sync.Mirror):
         self.build();old=self.vault;self.vault=self.base/'vault2'
         result=self.build();self.assertEqual(result['planned'],0);self.assertEqual(self.copy('Plan.md').read_bytes(),PAGE)
         self.assertFalse((old/'Notebooks'/'demo'/'nb1'/'Plan.md').exists())
-        changes=read_json(self.vault/'.plans'/(teardown_plan(self.vault,self.root)['plan_id']+'.json'))['changes']
-        self.assertIn('Notebooks/demo/nb1/Plan.md',changes)
+        made=read_json(self.vault/'.plans'/(teardown_plan(self.vault,self.root)['plan_id']+'.json'))
+        self.assertIn('Notebooks/demo/nb1/Plan.md',made['mirror'])   # removed at apply, outside the vault journal (R07)
 
     def test_V7_a_waiting_deletion_plan_is_never_pruned_and_a_lost_one_is_made_again(self):
         self.build();self.copy('Plan.md').unlink();self.build()

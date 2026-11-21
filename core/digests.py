@@ -141,6 +141,18 @@ def _closed(root,path,policy=None):
     return policy.broken or policy.file(real(path))[0] in ('hidden','private')
 
 
+def _probe(root,domain,path,bindings,specs):
+    """The file a stored source path would name, whether or not it is there now (None when no folder can say)."""
+    named=NAMED.match(path)
+    if '..' in path.replace('\\','/').split('/'):return None
+    if Path(path).is_absolute():return Path(path)
+    if named:
+        spec=(specs if specs is not None else _specs(root,domain,bindings)).get(named[1])
+        return Path(spec['path'])/named[2] if spec else None
+    prefixes=domain_prefixes(domain,bindings)
+    return prefixes[0]/path if prefixes else None
+
+
 def states(listed,domain,root,bindings=None):
     """{path: state} for the sources or file_hashes of a note: `current` (the file matches the recorded hash), `changed` (read, and it
     differs), `missing` (the bound folder or source is readable and the file is not there), `unavailable` (the folder is not bound or
@@ -150,10 +162,12 @@ def states(listed,domain,root,bindings=None):
     for s in listed or []:
         if NAMED.match(s['path']) and specs is None:specs=_specs(root,domain,bindings)
         path,known=locate(root,domain,s['path'],bindings,specs)
-        if path is not None:
-            from .folder_policy import Policy
-            policy=policy or Policy(root)
-            if _closed(root,path,policy):out[s['path']]='closed';continue
+        from .folder_policy import Policy
+        from .sources import NOTEBOOK_SOURCE
+        policy=policy or Policy(root);named=NAMED.match(s['path'])
+        probe=path if path is not None else _probe(root,domain,s['path'],bindings,specs)   # a file deleted after its folder closed is judged too
+        if (probe is not None and _closed(root,probe,policy)) or (path is None and named and NOTEBOOK_SOURCE.fullmatch(named[1])):
+            out[s['path']]='closed';continue   # in a hidden or private notebook, or in a folder notebook whose own source is gone
         if not s.get('sha256'):out[s['path']]='unchecked';continue
         if path is None:out[s['path']]='missing' if known else 'unavailable'
         else:
@@ -196,7 +210,7 @@ def mark(hits,root,bindings=None):
             text=stale_note(dict(hit,sources=sources,file_hashes=hashed),root,bindings)
             if text:hit['stale']=text
             if text==CLOSED:
-                hit['withheld']=True
+                hit['withheld']=True;hit['title']='Withheld note'   # its title came from the file too
                 for key in ('snippet','summary','excerpt','body','text','units'):
                     if key in hit:hit[key]=[] if isinstance(hit[key],list) else ''
 
