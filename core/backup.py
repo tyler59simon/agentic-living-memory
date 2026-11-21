@@ -52,7 +52,7 @@ def notebook_files(root,domain):
     """Store-relative paths of a domain's notebook files, never following a link or junction."""
     from .docs import _files,_is_link
     base=Path(domain)/'notebooks'
-    if _is_link(domain) or not base.is_dir() or _is_link(base):return []
+    if _is_link(Path(root)/'domains') or _is_link(domain) or not base.is_dir() or _is_link(base):return []
     found=[]
     for folder in sorted(p for p in base.iterdir() if p.is_dir() and not _is_link(p)):
         found+=[rel for rel in (f'{folder.relative_to(root).as_posix()}/{f}' for f in _files(folder)) if NOTEBOOK.fullmatch(rel)]
@@ -138,6 +138,12 @@ def backup(root,keep=KEEP,budget=None):
     result={'ok':True,'backup':str(target),'notes':notes,'files':len(files),'pruned':removed}
     if manifest['notebooks']:result.update(notebooks=len(manifest['notebooks']),pages=sum(1 for f in files if NOTEBOOK.fullmatch(f) and f.lower().endswith('.md')))
     warnings=[]
+    from .docs import private_scope,is_private_path
+    scope=private_scope(root)
+    hidden=sum(1 for o in omitted if is_private_path(o.get('path',''),scope))+sum(1 for u in unreadable or [] if is_private_path(u.get('member',''),scope))
+    omitted=[o for o in omitted if not is_private_path(o.get('path',''),scope)] if hidden else omitted
+    unreadable=[u for u in unreadable or [] if not is_private_path(u.get('member',''),scope)] if hidden else unreadable
+    if hidden:result['private_withheld']=hidden   # entries inside private notebooks, counted but not named
     if omitted:
         result['omitted']=omitted
         warnings.append(f'{len(omitted)} attachment(s) were left out of this automatic snapshot (over its {ASSET_BUDGET//(1024*1024)} MB budget); run backup to include them')
@@ -160,12 +166,13 @@ def verify(path):
         infos=archive.infolist()
         for info in infos:
             if info.is_dir() or not _allowed(info.filename):raise ValueError(f'Backup member outside the canonical set: {info.filename}')
-            folded=info.filename.casefold()
+            folded=info.filename.casefold() if NOTEBOOK.fullmatch(info.filename) else info.filename
             if folded in seen:raise ValueError(f'Backup members {seen[folded]} and {info.filename} name the same file')
             seen[folded]=info.filename
-        # A member may not also be the folder of another, and one folder has one spelling: either would fail half way on Windows.
+        # In a notebook, a member may not also be the folder of another, and one folder has one spelling: either would fail half
+        # way on Windows. Notes keep the layout the store's own inventory accepts.
         folders={}
-        for name in seen.values():
+        for name in [n for n in seen.values() if NOTEBOOK.fullmatch(n)]:
             parts=name.split('/')
             for i in range(1,len(parts)):
                 spelled='/'.join(parts[:i])
@@ -264,6 +271,11 @@ def _merge_privacy(root,text):
     return merge_privacy(root,text)
 
 def restore_plan(root,source):
+    """restore_plan_unlocked under the store lock: the registry merge and the plan's preconditions are read together."""
+    with store_lock(Path(root).resolve()):
+        return restore_plan_unlocked(root,source)
+
+def restore_plan_unlocked(root,source):
     """An exact-hash plan that makes the canonical set match a snapshot. Notes in domains the snapshot
     does not contain are left alone; apply the plan with inspect-plan and apply, and undo it like any operation."""
     from .governance import plan
@@ -298,6 +310,10 @@ def restore_plan(root,source):
     changes={};unchanged=0
     for rel,text in wanted.items():
         path=root/rel
+        if path.is_dir():raise ValueError(f'Notebook conflict: {rel} is a folder in the store now; move or delete it, then make the restore plan again')
+        for parent in list(Path(rel).parents)[:-1]:
+            if (root/parent).is_file() and parent.as_posix() in wanted:continue
+            if (root/parent).is_file():raise ValueError(f'Notebook conflict: {parent.as_posix()} is a file in the store now and {rel} needs it as a folder; move or delete it, then make the restore plan again')
         if path.is_file() and path.read_bytes()==(text if isinstance(text,bytes) else text.encode('utf-8')):unchanged+=1
         elif LEDGER.fullmatch(rel) and path.is_file() and not text.encode('utf-8').startswith(path.read_bytes()):unchanged+=1   # the ledger only grows: keep a copy that holds rows the snapshot lacks
         else:changes[rel]=text
@@ -326,11 +342,9 @@ def restore_plan(root,source):
     if notebooks:summary['notebooks']=sorted(notebooks)
     # A domain the restore makes notebook-only must still hold no notes when the plan is applied.
     guards={}
-    try:
-        live=(read_json(root/'bindings.json',{}) or {}).get('domains') or {}
-        final=read_json_bytes(wanted['bindings.json'].encode('utf-8')).get('domains') or {} if 'bindings.json' in wanted else {}
-        guards['no_notes']=[n for n,e in final.items() if isinstance(e,dict) and e.get('notebook_only') and not (isinstance(live.get(n),dict) and live[n].get('notebook_only'))]
-    except (ValueError,AttributeError):pass
+    try:final=read_json_bytes(wanted['bindings.json'].encode('utf-8')).get('domains') or {} if 'bindings.json' in wanted else {}
+    except (ValueError,AttributeError):final={}
+    guards['no_notes']=sorted(n for n,e in final.items() if isinstance(e,dict) and e.get('notebook_only'))
     result=plan(root,changes,'restore',covered,summary,guards=guards or None)
     result['summary']=redact_summary(result.get('summary',summary),scope)
     result['hint']='Review with inspect-plan PLAN_ID, then apply PLAN_ID --expected-plan-sha256 DIGEST.'

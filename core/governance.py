@@ -76,7 +76,7 @@ def commit(root,changes,kind,domains=(),summary=None,guards=None,sync_overlay=Tr
         receipt.update(kind=kind,summary=summary or {'files':len(changes)},undo=f'undo {operation_id}')
         return receipt
 
-def apply(root,plan_id,expected_digest,sync_overlay=True):
+def apply(root,plan_id,expected_digest,sync_overlay=True,include_private=False):
     root=Path(root).resolve()
     if not isinstance(plan_id,str) or not __import__('re').fullmatch(r'[a-f0-9]{32}',plan_id):raise ValueError('Invalid plan identity')
     with store_lock(root):
@@ -85,6 +85,11 @@ def apply(root,plan_id,expected_digest,sync_overlay=True):
         unsigned={k:v for k,v in value.items() if k!='digest'}
         actual=hashlib.sha256(canonical_json(unsigned).encode()).hexdigest()
         if value['digest']!=actual or actual!=expected_digest:raise ValueError('Plan digest mismatch')
+        if not include_private:
+            from .docs import private_scope,is_private_path,PRIVACY
+            scope=private_scope(root,value['changes'])
+            if any(rel!=PRIVACY and is_private_path(rel,scope) for rel in value['changes']):
+                raise ValueError(f'not_found: plan {plan_id} changes a private notebook; only Hivemind applies it (--include-private)')
         if not (root/'.operations'/plan_id/'journal.json').exists():
             roll_forward_pending(root)   # a write a crash left half-done is finished first, so the guards see it
             _check_guards(root,value)
@@ -93,9 +98,10 @@ def apply(root,plan_id,expected_digest,sync_overlay=True):
             from .type_registry import check_undo
             try:check_undo(root,value['changes'])
             except ValueError as exc:raise ValueError('stale plan: it would break notes that use a custom type: '+str(exc)+'; make a new plan') from None
-        receipt=transaction(root,_plan_changes(root,value),value['kind'],value['expected'],value['id'])
         from .docs import is_notebook_journal,record_index
-        if is_notebook_journal([{'path':p} for p in value['changes']]):record_index(root,value['id'],value['changes'])
+        if is_notebook_journal([{'path':p} for p in value['changes']]) and not (root/'.operations'/value['id']/'doc.json').exists():
+            record_index(root,value['id'],value['changes'])   # before the operation, so a stop after it still leaves the index
+        receipt=transaction(root,_plan_changes(root,value),value['kind'],value['expected'],value['id'])
         for domain in value['domains']:
             try:reconcile(domain,root,sync_overlay=sync_overlay)
             except Exception as exc:
@@ -148,7 +154,7 @@ def history(root,note_id=None,limit=20,include_private=False):
                 if len(kept)!=len(row.get('files') or []):row.update(files=kept,redacted=len(row['files'])-len(kept))
         return rows
     from .activity import _entries,operation_label
-    from .docs import private_scope,private_journal,is_private_path
+    from .docs import private_scope,journal_private,is_private_path
     entries=_entries(root);scope=None if include_private else private_scope(root)
     for path in (root/'.operations').glob('*/journal.json'):
         try:
@@ -156,7 +162,7 @@ def history(root,note_id=None,limit=20,include_private=False):
             summary,actor=operation_label(entries.get(value['id']),value['id'],str(value['kind']))
             row={'operation_id':value['id'],'kind':value['kind'],'state':value['state'],'created':value['created'],'files':[e['path'] for e in value['effects']],'summary':summary,'actor':actor}
             # Operations on a private notebook show no paths and no summary unless the caller passes --include-private (NS-2A).
-            if scope and private_journal(value,scope):
+            if scope and journal_private(root,value,scope):
                 kept=[f for f in row['files'] if not is_private_path(f,scope) and not (value.get('meta') or {}).get('uid') in scope[1]]
                 row.update(files=kept,redacted=len(row['files'])-len(kept),summary=None)
         except (ValueError,KeyError,TypeError):continue  # doctor reports unreadable journals by ID
@@ -185,7 +191,7 @@ def inspect_plan(root,identity,full=False,include_private=False):
         delta=''.join(difflib.unified_diff(before.splitlines(True),(after or '').splitlines(True),fromfile=rel,tofile=rel))
         effects.append({'path':rel,'expected_revision':value['expected'][rel],'action':'delete' if after is None else 'write','diff':delta[:cut],'truncated':cut is not None and len(delta)>cut})
     summary=value['summary']
-    if redacted:
+    if scope:
         from .docs import redact_summary
         summary=redact_summary(summary,scope)
     result={'ok':True,'plan_id':identity,'digest':value['digest'],'kind':value['kind'],'summary':summary,'effects':effects}
@@ -263,14 +269,14 @@ def undo(root,operation_id,include_private=False):
         kept=root/'.operations'/operation_id/'blobs'/e['before_hash']
         if not kept.exists() or digest(kept.read_bytes())!=e['before_hash']:raise ValueError(f"The attachment {e['path']} this operation removed is no longer kept, so it cannot be undone")
         return kept.read_bytes()
-    from .docs import is_notebook_journal,PRIVACY,merge_privacy,DOC_OP_PREFIX,record_index,private_journal,private_scope
-    if not include_private and private_journal(value,private_scope(root)):
-        raise ValueError(f'not_found: operation {operation_id} changed a private notebook; only Hivemind undoes it (--include-private)')
+    from .docs import is_notebook_journal,PRIVACY,merge_privacy,DOC_OP_PREFIX,record_index,journal_private
     changes={e['path']:before(e) for e in value['effects']}
     domains=reconciled_domains(changes)
     notebook_op=is_notebook_journal(value['effects'])
     # Check and record under one lock: an edit between the check and the plan's snapshot would be overwritten.
     with store_lock(root):
+        if not include_private and journal_private(root,value):
+            raise ValueError(f'not_found: operation {operation_id} changed a private notebook; only Hivemind undoes it (--include-private)')
         if PRIVACY in changes:
             # Every notebook that was ever private stays listed, so undoing a privacy change never exposes what was written
             # meanwhile. Merged under the lock, so a notebook made private by another writer is never dropped.
@@ -290,6 +296,13 @@ def undo(root,operation_id,include_private=False):
             guards={'unused_tags':dropped}
             try:_check_guards(root,{'guards':{'unused_tags':sorted(dropped)},'domains':sorted(domains),'changes':changes})
             except ValueError as exc:raise ValueError('Undo would remove tags that notes still use; retag those notes first ('+str(exc).split(': ',1)[-1]+')') from None
+        if changes.get('bindings.json'):
+            try:restored=json.loads(changes['bindings.json']).get('domains') or {}
+            except (ValueError,AttributeError):restored={}
+            only=sorted(n for n,e in restored.items() if isinstance(e,dict) and e.get('notebook_only'))
+            if only:
+                guards=dict(guards or {},no_notes=only)
+                _check_guards(root,{'guards':{'no_notes':only},'domains':sorted(domains),'changes':changes})
         # Restoring an older type registry can drop a custom type, or its action items, that notes written since depend on; restoring an
         # older note can bring back action items its custom type no longer takes. Judged on the store as the undo leaves it.
         from .type_registry import check_undo

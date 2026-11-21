@@ -160,7 +160,7 @@ Generated from the argparse parser in `core/cli.py` by `py -3.15 scripts/gen_scr
 <!-- flags:begin -->
 | Command | Flags of its own |
 | --- | --- |
-| `apply` | `--expected-plan-sha256` |
+| `apply` | `--expected-plan-sha256`, `--include-private` |
 | `archive` | `--expected-revision`, `--payload-file`, `--session`, `--turn` |
 | `ask` | `--limit` |
 | `backup` | `--keep` |
@@ -195,7 +195,7 @@ Generated from the argparse parser in `core/cli.py` by `py -3.15 scripts/gen_scr
 | `doc reject` | `--include-private`, `--reason` |
 | `doc undo` | `--include-private` |
 | `doc write` | `--body-file`, `--expected-revision`, `--include-private` |
-| `doctor` | none |
+| `doctor` | `--include-private` |
 | `domain create` | `--notebook-only` |
 | `domains` | none |
 | `export` | `--all`, `--out`, `--tag`, `--type` |

@@ -153,7 +153,7 @@ def _receipt(args,domain,note_id,root,event=None):
         from .capture import finalize
         finalize(args.session,_turn(root,args.session,getattr(args,'turn',None)),[domain+':'+note_id],root)
 
-def doctor(root,cwd,explicit=None,domain=None):
+def doctor(root,cwd,explicit=None,domain=None,include_private=False):
     from .search import _fresh
     from .repository import problems
     import sqlite3
@@ -181,7 +181,7 @@ def doctor(root,cwd,explicit=None,domain=None):
     if (root/'improvement').is_dir():warnings.append('improvement/ holds data from a removed feature; nothing reads it and it is safe to delete')
     try:
         from .docs import health
-        warnings+=['notebooks: '+w for w in health(root)]
+        warnings+=['notebooks: '+w for w in health(root,include_private)]
     except OSError as exc:warnings.append(f'notebooks: cannot be checked ({type(exc).__name__})')
     warnings+=[f'{name}: {count} notes; capture and freshness checks scale linearly and may slow hooks' for name,count in counts.items() if count>1500]
     scope=config.get('search_scope',{}) if isinstance(config.get('search_scope',{}),dict) else {}
@@ -680,7 +680,7 @@ def _doc(args,root,domain):
     except ValueError:journal=None
     # Judged by what the operation changed, not by its kind: an undo of an undo stays a notebook operation after its parent is pruned (D4).
     if not isinstance(journal,dict) or not docs.is_notebook_journal(journal.get('effects')):raise ValueError(f'not_found: {args.operation_id} is not a notebook operation; use undo for others')
-    if not private and docs.private_journal(journal,docs.private_scope(root)):raise ValueError(f'not_found: {args.operation_id} is not a notebook operation; use undo for others')
+    if not private and docs.journal_private(root,journal):raise ValueError(f'not_found: {args.operation_id} is not a notebook operation; use undo for others')
     return undo(root,args.operation_id,private)
 
 def build_parser():
@@ -741,6 +741,7 @@ def build_parser():
     p=sub('plan');p.add_argument('action',choices=['delete'],help='Only delete is planned; every other change to one note has its own command');p.add_argument('reference');p.add_argument('--payload-file',type=Path)
     p=sub('archive');p.add_argument('reference',help='A note to retire without a replacement (a plan, bug or risk that is finished uses resolve)');p.add_argument('--expected-revision');p.add_argument('--payload-file',type=Path);p.add_argument('--session');p.add_argument('--turn')
     p=sub('apply');p.add_argument('plan_id');p.add_argument('--expected-plan-sha256',required=True)
+    p.add_argument('--include-private',action='store_true',help='Hivemind only: allow a plan that changes a private notebook')
     p=sub('inspect-plan');p.add_argument('plan_id');p.add_argument('--full',action='store_true',help='Show every diff in full instead of cutting each at 16000 characters');p.add_argument('--include-private',action='store_true',help='Hivemind only: show changes inside private notebooks')
     # A direct write replacing the bodies of several notes (a prose rewrite); titles never change.
     p=sub('rewrite');p.add_argument('--payload-file',type=Path,help='JSON list of {"ref", "revision", "body"}; default: stdin')
@@ -754,7 +755,7 @@ def build_parser():
     p=sub('recover');p.add_argument('operation_id');p.add_argument('--direction',choices=['forward','backward'],default='forward');p.add_argument('--abandon',action='store_true',help='Stop treating the operation as pending; no note file is changed')
     p.add_argument('--include-private',action='store_true',help='Hivemind only: allow an operation on a private notebook')
     p=sub('diff');p.add_argument('operation_id');p.add_argument('--include-private',action='store_true',help='Hivemind only: show changes inside private notebooks')
-    p=sub('doctor')
+    p=sub('doctor');p.add_argument('--include-private',action='store_true',help='Hivemind only: name private notebooks in warnings')
     p=sub('backup');p.add_argument('--keep',type=int,default=7)
     p=sub('restore-plan');p.add_argument('file',type=Path)
     p=sub('migration-plan')
@@ -1357,7 +1358,7 @@ def main(argv=None):
             _receipt(args,d,n,root)
         elif cmd=='apply':
             from .governance import apply
-            result=apply(root,args.plan_id,args.expected_plan_sha256)
+            result=apply(root,args.plan_id,args.expected_plan_sha256,include_private=args.include_private)
         elif cmd=='inspect-plan':
             from .governance import inspect_plan
             result=inspect_plan(root,args.plan_id,full=args.full,include_private=args.include_private)
@@ -1405,11 +1406,11 @@ def main(argv=None):
         elif cmd=='recover':
             from .repository import recover,reconcile,abandon
             import re
-            from .docs import private_journal,private_scope
+            from .docs import journal_private
             if re.fullmatch(r'[A-Za-z0-9_-]{1,100}',args.operation_id) and not args.include_private:
                 try:pending=read_json(root/'.operations'/args.operation_id/'journal.json',None)
                 except ValueError:pending=None
-                if isinstance(pending,dict) and private_journal(pending,private_scope(root)):
+                if isinstance(pending,dict) and journal_private(root,pending):
                     raise ValueError(f'not_found: operation {args.operation_id} changed a private notebook; only Hivemind recovers it (--include-private)')
             if args.abandon:result=abandon(root,args.operation_id)
             else:result=recover(root,args.operation_id,args.direction)
@@ -1421,8 +1422,8 @@ def main(argv=None):
             if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',args.operation_id):raise ValueError('Invalid operation ID')
             row=read_json(root/'.operations'/args.operation_id/'journal.json');result=[]
             if not isinstance(row,dict):raise ValueError(f'not_found: no operation {args.operation_id}')
-            from .docs import private_scope,is_private_path
-            scope=None if args.include_private else private_scope(root)
+            from .docs import journal_scope,is_private_path
+            scope=None if args.include_private else journal_scope(root,row)   # the live store and the operation's own images
             private_op=bool(scope) and (row.get('meta') or {}).get('uid') in scope[1]
             for e in row['effects']:
                 # Changes inside a private notebook are left out unless --include-private; attachments show as hashes (NS-2A).
@@ -1430,7 +1431,7 @@ def main(argv=None):
                 if e.get('blob'):result.append({'path':e['path'],'binary':True,'before_sha256':e['before_hash'],'after_sha256':e['after_hash'],'diff':''});continue
                 before=base64.b64decode(e['before']).decode('utf-8',errors='replace') if e['before'] else '';after=base64.b64decode(e['after']).decode('utf-8',errors='replace') if e['after'] else ''
                 result.append({'path':e['path'],'diff':''.join(difflib.unified_diff(before.splitlines(True),after.splitlines(True)))[:8000]})
-        elif cmd=='doctor':result=doctor(root,cwd,args.root,domain)
+        elif cmd=='doctor':result=doctor(root,cwd,args.root,domain,args.include_private)
         elif cmd=='logs':
             rows,matched=logs.entries(root,args.level,args.kind,args.event,max(1,min(30,args.days)),max(1,min(1000,args.limit)))
             result={'ok':True,'level_setting':logs.setting(),'matched':matched,'entries':rows}

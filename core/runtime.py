@@ -274,7 +274,15 @@ def serve_command(text,grammar):
     the hook never sees. Text that cannot be parsed counts when it names living_memory or `alm` and a `serve` token."""
     parsed=_parsed(text,grammar)
     if parsed:return any(_subcommand(words)=='serve' for words in parsed)
-    tokens=[t for t in re.split(r'''[\s;&|()"'`{}<>=,]+''',text) if t]
+    import shlex
+    try:
+        lexer=shlex.shlex(text,posix=True,punctuation_chars=True);lexer.whitespace_split=True
+        tokens=list(lexer)   # quoted paths with spaces stay one word
+    except ValueError:
+        # Unbalanced quotes: fail closed, any `serve` word after a living_memory or alm token counts.
+        tokens=[t for t in re.split(r'''[\s;&|()"'`{}<>=,]+''',text) if t]
+        first=next((i for i,t in enumerate(tokens) if _names_memory([t])),None)
+        return first is not None and 'serve' in tokens[first+1:]
     for index,token in enumerate(tokens):
         if _names_memory([token]):
             index+=1

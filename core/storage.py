@@ -206,12 +206,18 @@ def inspect_relocation(identity):
     with store_lock(source, allow_retired=True):
         current = _manifest(source)
     previous = plan['files']
-    return {'ok': True, 'plan_id': identity, 'digest': plan['digest'],
-            'source': plan['source'], 'destination': plan['destination'],
-            'config_changed': _hash(config_path()) != plan['config_revision'],
-            'added': sorted(set(current) - set(previous)),
-            'removed': sorted(set(previous) - set(current)),
-            'changed': sorted(p for p in set(previous) & set(current) if previous[p] != current[p])}
+    from .docs import private_scope, is_private_path
+    scope = private_scope(source)
+    lists = {'added': sorted(set(current) - set(previous)), 'removed': sorted(set(previous) - set(current)),
+             'changed': sorted(p for p in set(previous) & set(current) if previous[p] != current[p])}
+    withheld = sum(1 for paths in lists.values() for p in paths if is_private_path(p, scope))
+    result = {'ok': True, 'plan_id': identity, 'digest': plan['digest'],
+              'source': plan['source'], 'destination': plan['destination'],
+              'config_changed': _hash(config_path()) != plan['config_revision'],
+              **{k: [p for p in v if not is_private_path(p, scope)] for k, v in lists.items()}}
+    if withheld:
+        result['private_withheld'] = withheld   # paths inside private notebooks, counted but not named
+    return result
 
 
 MAINTENANCE_CONFIG = 'maintenance.json'

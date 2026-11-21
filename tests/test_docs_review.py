@@ -319,5 +319,120 @@ class RoundTwo(Fixture):
         self.ok('undo',written['operation_id'],'--include-private');self.assertFalse(self.file('p.md','secret').exists())
 
 
+class RoundThree(Fixture):
+    """Codex round 3 on c19eb2d: findings 3-1 to 3-13."""
+    def secret(self,body=b'private words\n'):
+        self.notebook('secret',private=True);return docs.create_page(self.root,'demo','secret','p.md',body,include_private=True)
+
+    def test_3_1_a_write_after_an_interrupted_notebook_delete_is_refused(self):
+        self.notebook();self.page()
+        planned=docs.delete_notebook(self.root,'demo','nb1',with_pages=True)
+        real=repository._write
+        def stop_at_meta(path,data):
+            if Path(path).name=='notebook.json':raise OSError('crash')
+            return real(path,data)
+        with patch('core.repository._write',stop_at_meta),self.assertRaises(OSError):governance.apply(self.root,planned['plan_id'],planned['digest'])
+        self.assertTrue(self.file('notebook.json').is_file())
+        with self.assertRaisesRegex(ValueError,'Notebook conflict'):self.page('later.md',b'would be stranded')
+        self.assertFalse(self.file('later.md').exists())
+
+    def test_3_2_undoing_a_bind_never_makes_a_domain_with_notes_notebook_only(self):
+        docs.init_notebook_domain('journal',self.root)
+        bound=self.ok('bind','journal',str(self.base/'journal-folder'))
+        notes.capture('Kept','A note written after the bind.',['subject/project','concern/architecture'],'journal',self.root)
+        op=max((p for p in (self.root/'.operations').glob('*/journal.json') if 'bindings.json' in json.dumps(read_json(p)['effects'])),
+               key=lambda p:read_json(p)['created']).parent.name   # bind returns no operation id: its journal is the newest to change bindings
+        with self.assertRaisesRegex(ValueError,'holds notes'):governance.undo(self.root,op)
+        self.assertNotIn('notebook_only',read_json(self.root/'bindings.json')['domains']['journal'])
+
+    def test_3_3_a_restore_over_a_page_turned_folder_is_reported(self):
+        self.notebook();self.page('Box.md',b'box\n');snapshot=backup.backup(self.root)['backup']
+        docs.delete_page(self.root,'demo','nb1','Box.md',digest(b'box\n'));self.page('Box.md/child.md',b'child\n')
+        with self.assertRaisesRegex(ValueError,'is a folder in the store now'):backup.restore_plan(self.root,snapshot)
+
+    def test_3_4_note_folders_differing_in_case_still_verify(self):
+        made=self.base/'notes.zip'
+        with zipfile.ZipFile(made,'w') as archive:
+            archive.writestr('domains/demo/notes/Team/a.md','x');archive.writestr('domains/demo/notes/team/b.md','x')
+        self.assertEqual({p['problem'] for p in backup.verify(made)},{'does not parse as a note'})
+
+    def test_3_5_a_junctioned_domains_folder_is_not_walked_for_notebooks(self):
+        self.notebook();self.page()
+        other=self.base/'other-store';other.mkdir()
+        if not junction(other/'domains',self.root/'domains'):self.skipTest('no symlink or junction')
+        self.assertEqual(backup.notebook_files(other,other/'domains'/'demo'),[])
+
+    def test_3_6_a_damaged_journal_keeps_its_folder_and_blobs(self):
+        folder=self.root/'.operations'/'damaged';(folder/'blobs').mkdir(parents=True)
+        (folder/'blobs'/('0'*64)).write_bytes(b'only copy');(folder/repository.PENDING).write_text('pending\n');(folder/'journal.json').write_text('{}')
+        results=repository.roll_forward_pending(self.root)
+        self.assertTrue((folder/'blobs'/('0'*64)).is_file());self.assertIn('corrupt_journal',json.dumps(results))
+
+    def test_3_7_the_index_is_written_before_a_plan_runs(self):
+        self.notebook();self.page()
+        planned=docs.delete_notebook(self.root,'demo','nb1',with_pages=True)
+        with patch('core.governance.transaction',side_effect=OSError('stop')),self.assertRaises(OSError):governance.apply(self.root,planned['plan_id'],planned['digest'])
+        index=self.root/'.operations'/planned['plan_id']/'doc.json';first=read_json(index)['created']
+        governance.apply(self.root,planned['plan_id'],planned['digest'])
+        self.assertEqual(read_json(index)['created'],first)
+
+    def test_3_8_a_pending_restore_of_a_private_notebook_is_private(self):
+        meta=json.dumps({'version':1,'uid':'u'*32,'title':'Incoming','private':True})
+        changes={'domains/demo/notebooks/incoming/notebook.json':meta,'domains/demo/notebooks/incoming/p.md':'PENDING-SECRET'}
+        with patch('core.repository._write',side_effect=OSError('crash')),self.assertRaises(OSError):transaction(self.root,changes,'restore',None,'d-pending')
+        self.assertNotIn('PENDING-SECRET',json.dumps(self.ok('diff','d-pending')))
+        code,text=self.fails('recover','d-pending','--abandon');self.assertIn('private notebook',text)
+
+    def test_3_9_restore_merges_the_registry_under_the_lock(self):
+        self.secret();snapshot=backup.backup(self.root)['backup'];held=[]
+        real=backup._merge_privacy
+        def watch(root,text):
+            held.append(str(Path(root).resolve()) in getattr(repository._locks,'held',set()));return real(root,text)
+        self.file('p.md','secret').write_bytes(b'changed')
+        with patch('core.backup._merge_privacy',watch):backup.restore_plan(self.root,snapshot)
+        self.assertEqual(held,[True])
+
+    def test_3_10_serve_behind_a_quoted_path_is_found(self):
+        self.assertTrue(runtime.serve_command('python living_memory.py --root "C:/Living Memory" serve --stdio',None))
+        self.assertTrue(runtime.serve_command('python living_memory.py --root "C:/Living Memory serve',None))   # unbalanced: fail closed
+        self.assertFalse(runtime.serve_command('python living_memory.py --root "C:/Living Memory" capture --title serve',None))
+
+    def test_3_11_apply_and_undo_of_private_changes_need_include_private(self):
+        written=self.secret()
+        made=governance.plan(self.root,{'domains/demo/notebooks/secret/p.md':'replaced'},'restore')
+        with self.assertRaisesRegex(ValueError,'private notebook'):governance.apply(self.root,made['plan_id'],made['digest'])
+        governance.apply(self.root,made['plan_id'],made['digest'],include_private=True)
+        import contextlib
+        self.notebook();page=self.page('a.md',b'a\n');changed=docs.write_page(self.root,'demo','nb1','a.md',b'b\n',digest(b'a\n'))
+        real,raced=governance.store_lock,[]
+        @contextlib.contextmanager
+        def racing(root):
+            if not raced:raced.append(1);docs.update_notebook(self.root,'demo','nb1',private=True)   # made private before undo locks
+            with real(root):yield
+        with patch('core.governance.store_lock',racing),self.assertRaisesRegex(ValueError,'private notebook'):governance.undo(self.root,changed['operation_id'])
+        self.assertEqual(self.file('a.md').read_bytes(),b'b\n')
+
+    def test_3_12_inspect_plan_redacts_a_summary_with_no_private_effect(self):
+        self.secret();self.notebook()
+        made=governance.plan(self.root,{'domains/demo/notebooks/nb1/x.md':'public'},'restore',(),{'notebooks':['demo/nb1','demo/secret']})
+        self.assertEqual(governance.inspect_plan(self.root,made['plan_id'])['summary']['notebooks'],['demo/nb1'])
+
+    def test_3_13_doctor_and_backup_name_no_private_notebook(self):
+        self.secret();self.file('bad.md','secret').write_bytes(b'\xff not utf-8')
+        with patch('core.docs.MAX_PAGES',1):
+            self.assertNotIn('secret',json.dumps(docs.health(self.root)));self.assertIn('demo/secret',json.dumps(docs.health(self.root,True)))
+        made=backup.backup(self.root);self.assertNotIn('secret',json.dumps({k:v for k,v in made.items() if k!='backup'}));self.assertEqual(made['private_withheld'],1)
+
+
+class RoundThreeRelocation(StorageBase):
+    def test_3_13_relocation_previews_name_no_private_page(self):
+        self.configure()
+        docs.create_notebook(self.root,'demo','secret','S',private=True);docs.create_page(self.root,'demo','secret','p.md',b'x',include_private=True)
+        plan=storage.relocation_plan(self.root,self.base/'new store')
+        (self.root/'domains/demo/notebooks/secret/p.md').write_bytes(b'changed')
+        shown=storage.inspect_relocation(plan['plan_id'])
+        self.assertNotIn('secret',json.dumps(shown['changed']));self.assertEqual(shown['private_withheld'],1)
+
+
 if __name__=='__main__':
     import unittest;unittest.main()

@@ -200,7 +200,7 @@ def prune_journals(root, keep=KEEP_VERSIONS, days=KEEP_DAYS):
         # only attachment bytes a crashed write staged; nothing refers to them.
         for folder in operations.glob("*") if operations.is_dir() else []:
             if folder.is_dir() and not (folder / PENDING).exists() and not (folder / "journal.json").exists() and \
-                    {p.name for p in folder.iterdir()} <= {"blobs"}:
+                    {p.name for p in folder.iterdir()} <= {"blobs", "doc.json"}:
                 shutil.rmtree(folder, ignore_errors=True)
         folders = set(operations.glob(DOC_OP_PREFIX + "*")) | {p.parent for p in operations.glob("*/doc.json")}
         for folder in sorted(folders):
@@ -709,7 +709,7 @@ def history(root, domain, nb, path, limit=20, version=None, include_private=Fals
             value = json.loads(raw)
         except (OSError, ValueError):
             continue
-        if scope and private_journal(value, scope):
+        if scope and journal_private(root, value, scope):
             continue
         for effect in value.get("effects") or []:
             if effect.get("path") != rel:
@@ -997,6 +997,7 @@ def merge_privacy(root, text):
 
 
 META_PATH = re.compile(r"(domains/[^/]+/notebooks/[^/]+)/notebook\.json")
+MEMBER_PATH = re.compile(r"(domains/[^/]+/notebooks/[^/]+)/.+")
 
 
 def check_notebook_metadata(root, changes):
@@ -1013,6 +1014,12 @@ def check_notebook_metadata(root, changes):
         if left:
             raise ValueError(f"Notebook conflict: {match[1]} still holds {len(left)} files this change keeps, and deleting its "
                              "notebook.json would strand them; delete the notebook as a whole instead")
+    written = {str(k).replace("\\", "/") for k, v in changes.items() if v is not None}
+    for rel in sorted(written):
+        match = MEMBER_PATH.fullmatch(rel)
+        if match and rel != f"{match[1]}/notebook.json" and f"{match[1]}/notebook.json" not in written \
+                and not (Path(root) / match[1] / "notebook.json").is_file():
+            raise ValueError(f"Notebook conflict: {match[1]} has no notebook.json (it was deleted meanwhile), so {rel} would be stranded")
 
 
 def refuse_notes_in(root, domain):
@@ -1027,13 +1034,44 @@ def is_notebook_journal(effects):
     return bool(paths) and all(isinstance(p, str) and (NOTEBOOK_PATH.match(p) or p == PRIVACY) for p in paths) and any(NOTEBOOK_PATH.match(p) for p in paths)
 
 
-def record_index(root, operation_id, paths):
+def record_index(root, operation_id, paths, created=None):
     """The small doc.json beside a notebook operation's journal that retention reads instead of the journal."""
     try:
-        atomic_write(Path(root) / ".operations" / operation_id / "doc.json",
-                     json.dumps({"created": now(), "paths": sorted(paths)}, ensure_ascii=False) + "\n")
+        target = Path(root) / ".operations" / operation_id / "doc.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write(target, json.dumps({"created": created or now(), "paths": sorted(paths)}, ensure_ascii=False) + "\n")
     except OSError:
         pass   # retention falls back to the journal
+
+
+def journal_scope(root, journal):
+    """private_scope of the live store plus the notebook.json files and registry held in the operation's own before and after
+    images: a restore of a private notebook that stopped before any file landed is private already."""
+    import base64
+    prefixes, uids = (set(s) for s in private_scope(root))
+    for side in ("before", "after"):
+        images = {}
+        for e in journal.get("effects") or [] if isinstance(journal, dict) else []:
+            path = e.get("path") if isinstance(e, dict) else None
+            if isinstance(path, str) and not e.get("blob") and e.get(side) and (path == PRIVACY or path.endswith("/notebook.json")):
+                try:
+                    images[path] = base64.b64decode(e[side]).decode("utf-8", errors="replace")
+                except ValueError:
+                    images[path] = "{"   # unreadable counts as private
+        if images:
+            more = private_scope(root, images)
+            prefixes |= set(more[0])
+            uids |= set(more[1])
+    return prefixes, uids
+
+
+def journal_private(root, journal, scope=None):
+    """Whether an operation touched a private notebook, by the live store or by its own images (journal_scope)."""
+    if private_journal(journal, scope if scope is not None else private_scope(root)):
+        return True
+    own = any(isinstance(e, dict) and isinstance(e.get("path"), str) and (e["path"] == PRIVACY or e["path"].endswith("/notebook.json"))
+              for e in journal.get("effects") or [] if isinstance(journal, dict))
+    return own and private_journal(journal, journal_scope(root, journal))
 
 
 def private_journal(journal, scope):
@@ -1074,11 +1112,12 @@ def init_notebook_domain(name, root):
         return {"ok": True, "domain": name, "kind": "notebook", "operation_id": receipt.get("operation_id")}
 
 
-def health(root):
+def health(root, include_private=False):
     """Doctor warnings about notebooks: damaged notebook.json or privacy registry, links inside a notebook, and notebooks
-    past 80% of a limit."""
+    past 80% of a limit. A notebook that is or may be private is not named unless include_private."""
     root = Path(root)
     warnings = []
+    scope = None if include_private else private_scope(root)
     try:
         read_json(root / PRIVACY, None)
     except ValueError:
@@ -1089,6 +1128,8 @@ def health(root):
             continue
         for folder in sorted(p for p in base.iterdir() if p.is_dir()):
             name = f"{folder.parts[-3]}/{folder.name}"
+            if scope and is_private_path(f"domains/{name.replace('/', '/notebooks/', 1)}/", scope):
+                name = f"a private notebook in {folder.parts[-3]} (doctor --include-private names it)"
             if _is_link(folder):
                 warnings.append(f"notebook {name} is a link or junction and is ignored")
                 continue

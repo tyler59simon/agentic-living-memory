@@ -901,11 +901,15 @@ def roll_forward_pending(root):
     for marker in sorted(Path(root).glob(f".operations/*/{PENDING}")):
         operation_id = marker.parent.name
         try:
-            journal = read_json(marker.with_name("journal.json"))  # a damaged journal is reported below, not raised: it must not block every write
-            if not journal:
+            if not marker.with_name("journal.json").exists():
                 # No journal: nothing was applied. The folder holds only the marker and any attachment bytes staged for it.
                 import shutil
                 shutil.rmtree(marker.parent, ignore_errors=True)
+                continue
+            journal = read_json(marker.with_name("journal.json"))  # a damaged journal is reported below, not raised: it must not block every write
+            if not isinstance(journal, dict) or not isinstance(journal.get("effects"), list):
+                # A journal that is there but damaged keeps its folder: its blobs may be the only copy of an attachment.
+                results.append({"ok": False, "operation_id": operation_id, "error": f"corrupt_journal {operation_id}: see RECOVERY.md"})
                 continue
             if journal.get("state") in {"rolled_back", "abandoned"}:
                 retry_sharing(marker.unlink)  # a reversed journal has nothing to finish
