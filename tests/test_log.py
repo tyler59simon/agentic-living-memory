@@ -160,9 +160,25 @@ class Filters(Log):
         for actor in ('viewer','subagent'):self.assertEqual(self.log(actor=actor)['count'],len(self.log()['rows']))
         self.assertIn('log',runtime.ALLOWED_SUBCOMMANDS);self.assertNotIn('log',runtime.MUTATING_SUBCOMMANDS)
 
+class OsUser(Log):
+    """REG-32: a journal records the OS user as "os_user", which sorts before "state" so the tail check still finds the state."""
+    def journal(self,operation_id):return (self.root/'.operations'/operation_id/'journal.json')
+    def test_a_capture_journal_holds_os_user_before_its_state(self):
+        with patch('getpass.getuser',return_value='tester'):n=self.note()
+        op=next(r['op'] for r in self.rows('--event','created') if r['ref']=='demo:'+n['id']);journal=self.journal(op);text=journal.read_text(encoding='utf-8')
+        self.assertEqual(json.loads(text)['os_user'],'tester');self.assertTrue(text.rstrip().endswith('"os_user":"tester","schema":1,"state":"committed"}'))
+        with patch('core.repository.read_json',side_effect=AssertionError('a readable journal was parsed in full')):self.assertEqual(repo.unfinished_operations(self.root),([],[]))
+        self.assertEqual({r['user'] for r in self.rows('--event','created') if r['ref']=='demo:'+n['id']},{'tester'})
+    def test_a_name_that_cannot_be_read_is_left_out_and_capture_still_works(self):
+        for error in (OSError('no login name'),KeyError('no uid'),ImportError('no pwd')):
+            with self.subTest(error=error),patch('getpass.getuser',side_effect=error):
+                n=self.note(f'Cache {type(error).__name__}',f'Body {type(error).__name__}.');op=next(r['op'] for r in self.rows('--event','created') if r['ref']=='demo:'+n['id'])
+                self.assertNotIn('os_user',json.loads(self.journal(op).read_text(encoding='utf-8')))
+        with patch('getpass.getuser',return_value=''):self.assertIsNone(repo.os_user())
+
 class Ledger(Log):
     def setUp(self):
-        super().setUp()
+        names=patch('getpass.getuser',return_value='tester');names.start();self.addCleanup(names.stop);super().setUp()   # REG-32: rows record the OS user
         self.payload={'cwd':str(self.repo),'session_id':'one','prompt':'go'}
     def hook(self,event,**extra):return runtime.process('claude',event,{**self.payload,**extra},self.root)
     def edit(self,name):return self.hook('pre-tool-use',tool_name='Edit',tool_input={'file_path':str(self.repo/name)})
@@ -180,9 +196,9 @@ class Ledger(Log):
     def test_repeated_stops_give_one_session_row(self):
         n=self.work();self.hook('stop');self.hook('stop')
         rows=self.lines();self.assertEqual(len(rows),1);row=rows[0]
-        self.assertEqual(list(row),['t','s','h','d','p','n','f'])
+        self.assertEqual(list(row),['t','s','h','d','p','n','f','u']);self.assertEqual(row['u'],'tester')
         self.assertEqual((row['s'],row['h'],row['d'],row['p'],row['n'],row['f']),(runtime.session_hash('one'),'claude','demo',['paystream'],['demo:'+n['id']],1))
-        self.assertEqual(self.rows('--event','session')[0]['notes'],['demo:'+n['id']])
+        self.assertEqual(self.rows('--event','session')[0]['notes'],['demo:'+n['id']]);self.assertEqual(self.rows('--event','session')[0]['user'],'tester')
         self.hook('user-prompt');self.edit('b.py');self.hook('stop');self.hook('stop')
         self.assertEqual([r['f'] for r in self.lines()],[1,2])
         sessions=self.rows('--event','session');self.assertEqual(len(sessions),1)   # the reader keeps the last row of a session
@@ -195,6 +211,18 @@ class Ledger(Log):
         self.hook('session-start');self.hook('user-prompt');self.edit('billing/a.py')
         row=self.work_ledger()
         self.assertEqual(row['p'],['paystream']);self.assertEqual([r['title'] for r in self.rows('--event','session','--project','paystream')],[self.rows('--event','session')[0]['title']])
+
+    def test_a_row_and_a_journal_leave_the_user_out_when_the_name_cannot_be_read(self):
+        with patch('getpass.getuser',side_effect=OSError('no user')):
+            n=self.work();self.hook('stop')
+        row=self.lines()[-1];self.assertEqual(list(row),['t','s','h','d','p','n','f'])
+        self.assertNotIn('user',self.rows('--event','session')[0]);self.assertEqual(self.rows('--note','demo:'+n['id'],'--event','created')[0]['actor'],'command')
+        self.assertNotIn('user',self.rows('--note','demo:'+n['id'],'--event','created')[0])
+
+    def test_an_older_row_without_the_user_still_reads(self):
+        path=self.root/'ledger'/'sessions-2026.jsonl';path.parent.mkdir()
+        path.write_text('{"t":"2026-11-14T00:00:00+00:00","s":"old","h":"claude","d":"demo","p":[],"n":[],"f":1}\n{"t":"2026-11-15T00:00:00+00:00","s":"new","h":"claude","d":"demo","p":[],"n":[],"f":1,"u":"tester"}\n',encoding='utf-8')
+        by={r['ref']:r for r in self.rows('--event','session')};self.assertNotIn('user',by['old']);self.assertEqual(by['new']['user'],'tester')
 
     def test_a_receipt_without_a_saved_note_marks_the_row(self):
         self.hook('session-start');self.hook('user-prompt');self.edit('a.py')

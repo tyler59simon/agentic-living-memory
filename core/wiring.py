@@ -112,6 +112,16 @@ def check(harness,setup):
     if harness=='copilot' and not setup._copilot_file(config):
         result['config_ok']=False
         result['problems'].append(f'{path} is not a Copilot hooks file of version 1, so Copilot may not load it and setup refuses it; set "version" to 1 (or remove it), then {fix}')
+    if harness=='claude':
+        # Claude Code skips these handlers (without a word) under managed allowManagedHooksOnly or disableAllHooks, or the user's own disableAllHooks.
+        ask='ask whoever manages this computer to deploy the hooks through managed settings (INTEGRATION.md, Managed Claude Code) or to lift the setting'
+        blocked=[{'source':label,'setting':'allowManagedHooksOnly'} for label in setup._managed_hooks_lock()]+[{'source':label,'setting':'disableAllHooks'} for label in setup._hooks_disabled()]
+        if isinstance(config,dict) and config.get('disableAllHooks') is True:blocked.append({'source':str(path),'setting':'disableAllHooks'})
+        result['blocked']=blocked
+        for row in blocked:
+            if row['source']==str(path):result['problems'].append(f'{path} sets disableAllHooks, so Claude Code runs no hooks and memory is never loaded or captured in Claude sessions; remove "disableAllHooks" from it')
+            elif row['setting']=='disableAllHooks':result['problems'].append(f'managed settings in {row["source"]} set disableAllHooks, so Claude Code runs no hooks and memory is never loaded or captured in Claude sessions; {ask}')
+            else:result['problems'].append(f'managed settings in {row["source"]} set allowManagedHooksOnly, so Claude Code skips the hooks in {path} and memory is never loaded or captured in Claude sessions; {ask}')
     if here:
         # Only this copy can say what its own handlers and instruction block should look like.
         try:result['handlers_current']=_current(harness,config,setup)
@@ -139,5 +149,5 @@ def wiring():
     return found
 
 def broken(found):
-    """True when a wired harness's hooks cannot run at all."""
-    return any(isinstance(row,dict) and row.get('wired') and (row.get('script_exists') is False or row.get('interpreter_ok') is False or row.get('config_ok') is False) for row in found.values())
+    """True when a wired harness's hooks cannot run at all (a missing script or interpreter, an unloadable file, or a setting that switches them off)."""
+    return any(isinstance(row,dict) and row.get('wired') and (row.get('script_exists') is False or row.get('interpreter_ok') is False or row.get('config_ok') is False or row.get('blocked')) for row in found.values())

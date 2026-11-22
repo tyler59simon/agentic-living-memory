@@ -1,5 +1,6 @@
 """history: readable per-note rows (event, summary, actor) from the activity cache, and `history --markdown`."""
 import contextlib,io,json,unittest
+from unittest.mock import patch
 from core import activity,notes
 from core.cli import main
 from core.note_format import render
@@ -9,6 +10,8 @@ from test_maintenance import Base,OLD,TAGS
 BODY=render(summary='Rotate the signing keys. Then tell the team.',actions=['Run the migration','Notify support'],named=[('Notes','Keys live in the vault.')],note_type='plan')
 
 class History(Base):
+    def setUp(self):
+        names=patch('getpass.getuser',return_value='tester');names.start();self.addCleanup(names.stop);super().setUp()   # REG-32: journals record the OS user
     def cli(self,*argv):
         out,err=io.StringIO(),io.StringIO()
         with contextlib.redirect_stdout(out),contextlib.redirect_stderr(err):code=main(['--root',str(self.root),'--domain','demo',*argv])
@@ -63,7 +66,7 @@ class History(Base):
         out=self.ok('history','--note',ref,'--markdown');self.assertEqual(sorted(out),['markdown','ok','rows']);self.assertTrue(out['ok'])
         self.assertEqual(out['rows'],self.ok('history','--note',ref));self.assertIsInstance(self.ok('history'),list)
         lines=out['markdown'].split('\n');self.assertEqual(len(lines),len(out['rows']))
-        self.assertRegex(lines[1],r'^- \d{4}-\d\d-\d\d \d\d:\d\d archived \(maintenance\): obsolete_content: The rotation finished')
+        self.assertRegex(lines[1],r'^- \d{4}-\d\d-\d\d \d\d:\d\d archived \(maintenance, tester\): obsolete_content: The rotation finished')
         plain=self.ok('history','--markdown','--limit','2');self.assertEqual(len(plain['rows']),2);self.assertEqual(len(plain['markdown'].split('\n')),2);self.assertIn(plain['rows'][0]['kind'],plain['markdown'])
 
     def test_superseded_names_the_successor_and_long_summaries_are_cut(self):
@@ -107,7 +110,15 @@ class History(Base):
         by_op={r['operation_id']:r for r in rows};note=self.ok('history','--note','demo:'+a['id'])
         for r in note:self.assertEqual((by_op[r['operation_id']]['summary'],by_op[r['operation_id']]['actor']),(r['summary'],r['actor']))
         self.assertIn('maintenance',{r['actor'] for r in rows})
-        self.assertEqual([k for k in rows[0]],['operation_id','kind','state','created','files','summary','actor'])
+        self.assertEqual([k for k in rows[0]],['operation_id','kind','state','created','files','summary','actor','user'])
+
+    def test_history_and_log_rows_name_the_os_user_and_leave_it_out_when_it_is_unknown(self):
+        a,_=self.story();ref='demo:'+a['id']
+        for rows in (self.ok('history'),self.ok('history','--note',ref),self.ok('log','--note',ref)['rows']):self.assertTrue(rows and {r['user'] for r in rows}=={'tester'})
+        with patch('getpass.getuser',side_effect=OSError('no user')):
+            self.ok('update',ref,'--title','Rotated signing keys');newest=self.ok('history','--note',ref)[0]
+        self.assertEqual((newest['event'],'user' in newest),('updated',False))
+        self.assertNotIn(', tester)',self.ok('history','--note',ref,'--markdown')['markdown'].split(chr(10))[0])
 
     def test_a_version_2_cache_is_replaced(self):
         a=self.mk('Old cache note','Body one.');cache=self.root/'.cache'/'activity.json';cache.parent.mkdir(exist_ok=True)

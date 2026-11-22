@@ -17,9 +17,29 @@ Run adapter setup from the installed package (`%LOCALAPPDATA%/agentic-living-mem
 
 Claude uses exec-form settings.json lifecycle groups (including a SessionEnd handler that syncs managed Obsidian vaults when there are any, takes a backup when none is recorded yet or the last recorded one is 24 hours old (not for stores over 1,500 notes) and prunes old journals, and a PreCompact handler whose plain-text stdout steers the compaction summary) and a managed CLAUDE.md block carrying the gated static protocol; SessionStart adds only per-session data (or a shorter fallback protocol, within Codex's 4,000-character hook limit, when the block is missing or stale). Codex gets the same block in `~/.codex/AGENTS.md` and its handlers in `~/.codex/hooks.json` from `setup.py codex`, with status messages and context limits. Factory uses its top-level hooks.json event map (no SubagentStart) and an AGENTS.md block. Copilot uses a dedicated hooks/agentic-living-memory.json file and instruction block, native camelCase names, transformed-prompt output, additionalContext, permission decisions, and agentStop continuation. Codex and Claude translate shared output into hookSpecificOutput and native stop decisions. Claude, Factory and Copilot also receive `allow` for exact, unchained script commands in `core/runtime.py` `ALLOWED_SUBCOMMANDS` (search, read, help, capture, update, supersede, confirm, review, open, check, stats, timeline, history and other read-only or journaled commands). Claude subagent tool calls (payloads with `agent_id`) never arm the parent session's Stop reminder, and their memory-mutating script commands are denied.
 
+Codex Windows commands: Codex runs `commandWindows` through a shell that is not pinned down (PowerShell or `cmd.exe`), so setup writes one command line that runs in both: a program path with no spaces or shell characters, then `-X utf8`, the quoted script path and the event. The program is the `py` launcher when it is on PATH (with `-3.15` or whichever version ran setup), else the Python that ran setup, else that Python's 8.3 short path (`GetShortPathNameW`; some volumes have 8.3 names turned off). Only when none of these works does setup fall back to `powershell.exe -EncodedCommand`, which endpoint security tools often flag, and then its summary carries a warning; installing the `py` launcher, or Python in a folder without spaces in its path, avoids it. Setup refuses an adapter script path that holds `"`, `$`, a backtick or `%`, because no quoting is safe in both shells. Handlers an older build wrote in the encoded form are still recognised, so setup and `doctor` replace or check them as usual. SessionStart can start detached background jobs (source sync, re-baselining, scheduled maintenance); set `LIVING_MEMORY_NO_BACKGROUND=1` in the environment that starts Codex to stop that.
+
 File hints: before a write tool changes a file, PreToolUse may add up to two notes about it as `additionalContext`. These are notes whose `files` property lists the file, or whose body names its path. Each file gets this once per session, and a missing index gives no hint. A hint never denies or delays a tool call. Hints are sent where the host documents PreToolUse `additionalContext`:
 - Claude Code: yes. It can arrive together with a permission decision.
 - Codex: yes, since openai/codex#20692 (May 2026).
 - Copilot CLI and Factory: no, because their PreToolUse output documents only permission decisions and modified arguments. They get no hints.
 
 Claude Code is deployed and verified live on this machine alongside Codex. Factory and Copilot wire formats were checked against current vendor documentation but not exercised in live sessions. Host versions and permissions may affect event support. Moving the package requires regenerating adapters, because commands contain absolute interpreter and script paths.
+
+## Managed Claude Code
+
+Claude Code can be locked down by an administrator, and then it silently skips the hooks in `~/.claude/settings.json`. Three settings do this:
+
+- `allowManagedHooksOnly: true` in managed settings: only hooks that managed settings deploy run.
+- `disableAllHooks: true` in managed settings: no hooks run, not even managed ones.
+- `disableAllHooks: true` in your own `settings.json`: the same, for you only.
+
+`integrations/setup.py claude` warns about the first when it makes its plan, and `doctor` reports all three under `hooks.wiring.claude.blocked` with a remedy in `warnings`, and then `ok` is false: memory that never loads or captures is as broken as a missing script. The managed sources are `managed-settings.json` and `managed-settings.d/*.json` in the system folder (`C:\Program Files\ClaudeCode` on Windows, `/Library/Application Support/ClaudeCode` on macOS, `/etc/claude-code` on Linux) and, on Windows, the `Settings` value under `HKLM` and `HKCU` `SOFTWARE\Policies\ClaudeCode`. Server-managed settings from the claude.ai admin console have no local file, so neither setup nor `doctor` can see them; check `/status` inside Claude Code for those.
+
+To keep memory working under `allowManagedHooksOnly`, ask whoever manages the computer to ship the hooks as managed settings, or to lift the setting. Print the hooks block this copy would write and hand it over:
+
+```powershell
+py -3.15 -c "import json,sys; sys.path.insert(0,r'C:/path/to/app'); from integrations import setup; print(json.dumps({'hooks': setup.hooks('claude')}, indent=2))"
+```
+
+Merge the printed `hooks` object into `managed-settings.json` (or a file in `managed-settings.d/`). The handlers hold absolute interpreter and script paths from the machine that printed them, so run this from the installed copy on the machine that will use it, and again after moving the package or changing Python. The installed copy does not need to change.
