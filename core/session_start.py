@@ -143,6 +143,7 @@ def _named(lines):
     return sum(1 for line in lines if line!=RULES_HEADER and not line.startswith(RULES_MORE.split('{')[0]))
 
 OPEN_NOTES=3
+OVERDUE_ITEMS=3   # overdue items named on the Overdue line
 OPEN_BUGS=2
 ITEM_MAX=100
 LAST_NOTES=3
@@ -228,9 +229,15 @@ def _open_lines(active,root,bindings,project=None):
     unexplained={(d,n['id']) for d,n in bugs};listed={(d,n['id']) for d,n,_ in found[:OPEN_NOTES]}
     bug_only=[(d,n) for d,n in bugs if (d,n['id']) not in listed][:OPEN_BUGS]
     unsaid=' (no root cause recorded yet)'
-    parts=([f"{count} item{'s' if count!=1 else ''} in {len(found)} note{'s' if len(found)!=1 else ''}"] if found else [])+([f"{len(bugs)} bug{'s' if len(bugs)!=1 else ''} without a root cause"] if bugs else [])
+    # An open item with a due date before today leads the list: oldest due first, three named.
+    from . import clock
+    from .note_format import item_fields
+    today=clock.today().isoformat()
+    late=sorted((fields['due'],task,short_ref(d,n['id'])) for d,n,items in found for _,text in items for task,fields,_ in [item_fields(text)] if fields['due'] and fields['due']<today)
+    parts=([f"{count} item{'s' if count!=1 else ''} in {len(found)} note{'s' if len(found)!=1 else ''}"] if found else [])+([f"{len(late)} overdue"] if late else [])+([f"{len(bugs)} bug{'s' if len(bugs)!=1 else ''} without a root cause"] if bugs else [])
     header=f"Open work ({', '.join(parts)}; CMD open lists them, CMD check REF 'item' ticks one):"
     lines=[f"- {short_ref(d,n['id'])} {_title(n['title'])} — {_title(items[0][1])[:ITEM_MAX]}"+(unsaid if (d,n['id']) in unexplained else '') for d,n,items in found[:OPEN_NOTES]]
+    if late:lines.insert(0,'Overdue: '+'; '.join(f'{_title(task)[:ITEM_MAX]} (due {due}) {ref}' for due,task,ref in late[:OVERDUE_ITEMS]))
     return header,lines+[f"- bug {short_ref(d,n['id'])} {_title(n['title'])}: no root cause recorded yet" for d,n in bug_only],len(lines)
 
 def _last_session_line(active,root,session,notes):

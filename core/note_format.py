@@ -427,6 +427,76 @@ def set_action(body, index, done=True):
     return '\n'.join(lines)
 
 
+ITEM_KEYS = ('due', 'owner', 'priority')
+PRIORITIES = ('highest', 'high', 'medium', 'low', 'lowest')
+_PAIR = r'(?:due|owner|priority)\s*:\s*[^,()]+'
+_TAIL = re.compile(r'\s*\(\s*(' + _PAIR + r'(?:\s*,\s*' + _PAIR + r')*)\s*\)\s*$', re.I)
+_DATE = re.compile(r'\d{4}-\d{2}-\d{2}')
+
+
+def valid_date(value):
+    from datetime import date
+    if not _DATE.fullmatch(value):
+        return False
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def item_fields(text):
+    """(task, {'due', 'owner', 'priority'}, problems) for an action item's text. The fields come from a tail at the very end,
+    `(due: YYYY-MM-DD, owner: NAME, priority: high)`, in any order; a parenthesis group holding anything else is plain text.
+    A field with a bad value, or one given twice after the first, is None and named in problems; the task text is never changed."""
+    text = text.strip()
+    fields, problems = dict.fromkeys(ITEM_KEYS), []
+    tail = _TAIL.search(text)
+    if not tail:
+        return text, fields, problems
+    seen = set()
+    for pair in tail[1].split(','):
+        key, _, value = pair.partition(':')
+        key, value = key.strip().casefold(), ' '.join(value.split())
+        if key in seen:
+            problems.append(f'{key} is given more than once; the first is used')
+            continue
+        seen.add(key)
+        if key == 'due' and not valid_date(value):
+            problems.append(f'due {value!r} is not a YYYY-MM-DD date')
+        elif key == 'priority' and value.casefold() not in PRIORITIES:
+            problems.append(f'priority {value!r} is not one of {", ".join(PRIORITIES)}')
+        else:
+            fields[key] = value.casefold() if key == 'priority' else value
+    return text[:tail.start()].rstrip(), fields, problems
+
+
+def set_item_fields(body, index, changes):
+    """The body with the due, owner and priority of one Action item (0-based) changed; changes maps a field to its new value, or
+    to None to clear it, and fields not named keep their value. The item's text and checkbox stay, an empty tail is dropped,
+    and nothing else moves."""
+    lines, found = _action_lines(body)
+    match = _ACTION.match(lines[found[index]])
+    task, fields, _ = item_fields(match[3])
+    for key, value in changes.items():
+        if key not in ITEM_KEYS:
+            raise ValueError(f'Unknown item field {key!r}')
+        value = None if value is None else ' '.join(str(value).split())
+        if key == 'due' and value is not None and not valid_date(value):
+            raise ValueError(f'due must be a YYYY-MM-DD date, got {value!r}')
+        if key == 'priority' and value is not None:
+            value = value.casefold()
+            if value not in PRIORITIES:
+                raise ValueError(f'priority must be one of {", ".join(PRIORITIES)}, got {value!r}')
+        if key == 'owner' and value is not None and (not value or re.search(r'[,()]', value)):
+            raise ValueError('owner must be a name without commas or parentheses')
+        fields[key] = value
+    tail = ', '.join(f'{key}: {fields[key]}' for key in ITEM_KEYS if fields[key])
+    lead = match[3][:len(match[3]) - len(match[3].lstrip())] or ' '
+    lines[found[index]] = f"{match[1]}[{match[2]}]{lead}" + ' '.join(part for part in (task, f'({tail})' if tail else '') if part)
+    return '\n'.join(lines)
+
+
 def without_actions(body):
     """The body minus its Action items section (open steps are expected there)."""
     return '\n\n'.join(text for key, _, text in split(format_body(body)) if key != 'actions')

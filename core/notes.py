@@ -296,6 +296,11 @@ def quality_checks(note):
         # Open steps belong in a bug or risk note's action items; elsewhere they are a passing state.
         text=title+'\n'+(without_actions(body) if unfinished and note_takes_actions(note) else body)
         if pattern.search(text):found.append(message)
+    if note_takes_actions(note):
+        from .note_format import action_items,item_fields
+        for done,text in action_items(note.get('body','')):
+            task,_,problems=item_fields(text)
+            if not done:found+=[f'action item {task[:60]!r}: {problem}' for problem in problems]
     return found
 
 def quality_warnings(note):
@@ -1117,6 +1122,20 @@ def confirm(note_id,domain,root=None):
         result.update(confirmed=after.get('confirmed',[]),review_by=after.get('review_by'))
         return result
 
+def pick_item(items,item=None,index=None):
+    """The 0-based position of one action item among items ([(done, text)]): its 1-based index, else its text (an exact
+    match, case-insensitive, first, then a unique substring)."""
+    if not items:raise ValueError('This note has no action items')
+    if index is not None:
+        if not 1<=index<=len(items):raise ValueError(f'No Action Item {index}; the note has {len(items)}')
+        return index-1
+    wanted=str(item or '').strip().casefold()
+    if not wanted:raise ValueError('Name the item by its text or pass --index N')
+    matches=[i for i,(_,text) in enumerate(items) if text.casefold()==wanted] or [i for i,(_,text) in enumerate(items) if wanted in text.casefold()]
+    if len(matches)>1:raise ValueError('ambiguous_item: '+'; '.join(f'{i+1}. {items[i][1]}' for i in matches[:10])+'. Pass --index N')
+    if not matches:raise ValueError('No Action Item matches '+repr(item)+'. Items: '+'; '.join(f'{i+1}. {t}' for i,(_,t) in enumerate(items[:10])))
+    return matches[0]
+
 def check_action(note_id,domain,root=None,item=None,index=None,done=True):
     """Tick (or with done=False untick) one Action Item, chosen by its 1-based index or its text:
     an exact match (case-insensitive) first, else a unique substring. A journaled, undoable update."""
@@ -1125,18 +1144,7 @@ def check_action(note_id,domain,root=None,item=None,index=None,done=True):
     with store_lock(root):
         _,note=find_note(note_id,domain,root)
         if not takes_actions(note.get('type'),root):raise ValueError('Only plan, bug and risk notes, and custom types that take them, have action items')
-        items=action_items(note['body'])
-        if not items:raise ValueError('This note has no action items')
-        if index is not None:
-            if not 1<=index<=len(items):raise ValueError(f'No Action Item {index}; the note has {len(items)}')
-            chosen=index-1
-        else:
-            wanted=str(item or '').strip().casefold()
-            if not wanted:raise ValueError('Name the item by its text or pass --index N')
-            matches=[i for i,(_,text) in enumerate(items) if text.casefold()==wanted] or [i for i,(_,text) in enumerate(items) if wanted in text.casefold()]
-            if len(matches)>1:raise ValueError('ambiguous_item: '+'; '.join(f'{i+1}. {items[i][1]}' for i in matches[:10])+'. Pass --index N')
-            if not matches:raise ValueError('No Action Item matches '+repr(item)+'. Items: '+'; '.join(f'{i+1}. {t}' for i,(_,t) in enumerate(items[:10])))
-            chosen=matches[0]
+        items=action_items(note['body']);chosen=pick_item(items,item,index)
         if items[chosen][0]==done:
             return {'ok':True,'id':note['id'],'status':'unchanged','item':items[chosen][1],'done':done}
         result=change(note['id'],domain,'update',root,note['revision'],rehash=False,body=set_action(note['body'],chosen,done))

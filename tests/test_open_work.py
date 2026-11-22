@@ -4,7 +4,7 @@ from core import runtime
 from core.cli import main
 from core.capture import finalize,status
 from core.notes import find_note,open_work,check_action,unresolved_bugs
-from core.note_format import action_items,set_action,render
+from core.note_format import action_items,set_action,render,item_fields,set_item_fields
 from core.session_start import build_context
 
 class OpenWork(StoreFixture):
@@ -114,7 +114,7 @@ class OpenWork(StoreFixture):
         code,result=self.cli('open')
         self.assertEqual(code,0,result);self.assertEqual((result['count'],result['notes']),(3,2))
         self.assertEqual(result['items'][1],{'ref':'demo:'+b['id'],'short_ref':'demo:'+b['id'][:8],'title':'Newer bug fix','type':'bug',
-                                             'updated':result['items'][1]['updated'],'index':2,'item':'Add test'})
+                                             'updated':result['items'][1]['updated'],'index':2,'item':'Add test','task':'Add test','due':None,'owner':None,'priority':None,'overdue':None})
         self.assertEqual(self.cli('--actor','subagent','open')[0],0)
     def test_check_by_text_index_and_undo(self):
         p=self.plan('Release plan',['Write the changelog','Write the release notes','Tag v2'])
@@ -245,5 +245,114 @@ class OpenWork(StoreFixture):
         reason=runtime.process('claude','stop',payload,self.root)['continue_reason']
         s='demo:'+bug['id'][:8]
         self.assertIn(f"CMD update {s} --session bug --set-detail '**Fix:** ...' then CMD resolve {s}",reason)
+
+    # Optional due, owner and priority at the end of an action item (CON-1).
+    def test_item_fields_reads_a_tail_at_the_end_of_the_text(self):
+        none={'due':None,'owner':None,'priority':None}
+        self.assertEqual(item_fields('Ship it (due: 2026-12-01, owner: me, priority: high)'),('Ship it',{'due':'2026-12-01','owner':'me','priority':'high'},[]))
+        self.assertEqual(item_fields('Ship it (Priority: HIGH, Owner: Dana Lee, DUE: 2026-12-01)'),('Ship it',{'due':'2026-12-01','owner':'Dana Lee','priority':'high'},[]))
+        self.assertEqual(item_fields('Ship it (owner: me)'),('Ship it',{**none,'owner':'me'},[]))
+        self.assertEqual(item_fields('Ship it'),('Ship it',none,[]))
+        for text in ('Ship it (Codex INST-7.1)','Ship it (due: 2026-12-01, note: x)','Ship it (due: 2026-12-01) and test','Ship it (due: 2026-12-01) later (see docs)'):
+            self.assertEqual(item_fields(text),(text,none,[]),text)   # not a tail: plain text
+        self.assertEqual(item_fields('Ship it (see docs) (due: 2026-12-01)'),('Ship it (see docs)',{**none,'due':'2026-12-01'},[]))
+        task,fields,problems=item_fields('Ship it (due: 2026-13-45)');self.assertEqual((task,fields['due'],len(problems)),('Ship it',None,1));self.assertIn('YYYY-MM-DD',problems[0])
+        self.assertIsNone(item_fields('Ship it (due: 12/01/2026)')[1]['due'])
+        task,fields,problems=item_fields('Ship it (priority: urgent, owner: me)');self.assertEqual((fields['priority'],fields['owner'],len(problems)),(None,'me',1));self.assertIn('highest, high, medium, low, lowest',problems[0])
+        task,fields,problems=item_fields('Ship it (owner: me, owner: you)');self.assertEqual((fields['owner'],len(problems)),('me',1));self.assertIn('more than once',problems[0])
+    def test_set_item_fields_rewrites_one_line_only(self):
+        body=render('A plan.',details=['A fact.'],actions=['First (owner: me)','Second'],done=['Third (due: 2026-01-01)'])
+        after=set_item_fields(body,0,{'due':'2026-12-01','owner':None});self.assertIn('- [ ] First (due: 2026-12-01)',after)
+        self.assertEqual(after.replace('First (due: 2026-12-01)','First (owner: me)'),body)   # nothing else moved
+        self.assertIn('- [ ] Second (priority: low)',set_item_fields(body,1,{'priority':'LOW'}))
+        self.assertIn('- [x] Third (due: 2026-01-01, owner: Dana)',set_item_fields(body,2,{'owner':'Dana'}))
+        self.assertIn('- [ ] First\n',set_item_fields(body,0,{'owner':None}))   # an empty tail is dropped
+        for bad in ({'due':'soon'},{'priority':'urgent'},{'owner':'a, b'},{'owner':''},{'size':'big'}):
+            with self.assertRaises(ValueError):set_item_fields(body,0,bad)
+    def dated(self):
+        a=self.plan('Release plan',['Ship the release (due: 2099-01-01, owner: me)','Write notes (due: 2020-03-01, owner: Dana, priority: high)','Tidy up'])
+        b=self.plan('Bug fix plan',['Find the cause (due: 2020-02-01)','Add a test (owner: me)'],kind='bug')
+        return a,b
+    def test_open_rows_carry_the_fields_and_overdue(self):
+        self.dated()
+        code,result=self.cli('open');self.assertEqual(code,0,result)
+        rows={r['task']:r for r in result['items']}
+        self.assertEqual(rows['Write notes']['item'],'Write notes (due: 2020-03-01, owner: Dana, priority: high)')
+        self.assertEqual({k:rows['Write notes'][k] for k in ('due','owner','priority','overdue')},{'due':'2020-03-01','owner':'Dana','priority':'high','overdue':True})
+        self.assertEqual((rows['Ship the release']['overdue'],rows['Ship the release']['owner']),(False,'me'))
+        self.assertEqual({k:rows['Tidy up'][k] for k in ('due','owner','priority','overdue')},{'due':None,'owner':None,'priority':None,'overdue':None})
+    def test_open_filters_sorts_and_limits(self):
+        self.dated()
+        tasks=lambda *argv:[r['task'] for r in self.cli('open',*argv)[1]['items']]
+        self.assertEqual(tasks('--sort','due'),['Find the cause','Write notes','Ship the release','Add a test','Tidy up'])   # undated last, ties newest note first
+        self.assertEqual(tasks('--due-by','2020-02-15'),['Find the cause']);self.assertEqual(tasks('--due-by','2020-03-01','--sort','due'),['Find the cause','Write notes'])
+        self.assertEqual(tasks('--due-by','2019-01-01'),[])
+        self.assertEqual(tasks('--owner','ME','--sort','due'),['Ship the release','Add a test'])
+        self.assertEqual(tasks('--owner','me','--due-by','2099-12-31'),['Ship the release'])
+        code,result=self.cli('open','--due-by','2020-03-01','--sort','due','--limit','1');self.assertEqual((result['count'],result['notes'],[r['task'] for r in result['items']]),(2,2,['Find the cause']))
+        code,result=self.cli('open','--owner','me');self.assertEqual((result['count'],result['notes']),(2,2))
+        self.assertEqual(self.cli('open','--due-by','soon')[0],2)
+    def test_done_items_are_never_listed_with_their_fields(self):
+        p=self.plan('Release plan',['Ship it (due: 2020-01-01)'])
+        self.assertEqual(self.cli('check','demo:'+p['id'],'Ship it')[0],0)
+        self.assertEqual(self.cli('open','--due-by','2030-01-01')[1]['count'],0)
+    def items(self,note):return action_items(find_note(note['id'],'demo',self.root)[1]['body'])
+    def test_update_item_sets_changes_and_clears_fields(self):
+        p=self.plan('Release plan',['Write the changelog','Write the release notes (owner: me)'],done=['Tag v2']);ref='demo:'+p['id']
+        code,result=self.cli('update',ref,'--item','changelog','--due','2026-12-01','--priority','High');self.assertEqual(code,0,result)
+        self.assertEqual(self.items(p)[0],(False,'Write the changelog (due: 2026-12-01, priority: high)'))
+        code,result=self.cli('update',ref,'--item-index','2','--owner','Dana','--due','2027-01-02');self.assertEqual(code,0,result)
+        self.assertEqual(self.items(p)[1],(False,'Write the release notes (due: 2027-01-02, owner: Dana)'))
+        code,result=self.cli('update',ref,'--item','changelog','--due','none','--priority','none');self.assertEqual(code,0,result)
+        self.assertEqual(self.items(p),[(False,'Write the changelog'),(False,'Write the release notes (due: 2027-01-02, owner: Dana)'),(True,'Tag v2')])
+        self.assertEqual(self.cli('update',ref,'--item','notes','--owner','none','--due','none')[0],0)
+        self.assertEqual(self.items(p)[1],(False,'Write the release notes'))
+    def test_update_item_is_refused_without_a_clear_target_or_field(self):
+        p=self.plan('Release plan',['Write the changelog','Write the release notes']);ref='demo:'+p['id'];body=find_note(p['id'],'demo',self.root)[1]['body']
+        for argv,fragment in ((('--item','Write the','--due','2026-12-01'),'ambiguous_item'),(('--item','nothing','--due','2026-12-01'),'No Action Item matches'),(('--item-index','9','--due','2026-12-01'),'No Action Item 9'),
+                              (('--item','changelog'),'--due, --owner or --priority'),(('--due','2026-12-01'),'--item'),(('--item','changelog','--item-index','1','--due','2026-12-01'),'not both'),
+                              (('--item','changelog','--due','soon'),'YYYY-MM-DD'),(('--item','changelog','--priority','urgent'),'priority must be'),
+                              (('--item','changelog','--due','2026-12-01','--action','New step'),'--action'),(('--item','changelog','--due','2026-12-01','--done','Old'),'--done'),
+                              (('--item','changelog','--due','2026-12-01','--replace-actions'),'--replace-actions')):
+            code,result=self.cli('update',ref,*argv);self.assertEqual(code,2,(argv,result));self.assertIn(fragment,result['error']['message'],argv)
+        self.assertEqual(find_note(p['id'],'demo',self.root)[1]['body'],body)
+        d=self.note('A decision','We chose X.',type='decision');code,result=self.cli('update','demo:'+d['id'],'--item','x','--due','2026-12-01')
+        self.assertEqual(code,2,result);self.assertIn('no action items',result['error']['message'])
+    def test_update_item_is_one_journaled_undoable_update_that_leaves_the_rest_alone(self):
+        p=self.note('Release plan',render('A plan.',details=['A fact.'],links=['[[Other]]'],actions=['Write the changelog','Write the release notes']),type='plan')
+        ref='demo:'+p['id'];before=find_note(p['id'],'demo',self.root)[1]['body']
+        code,result=self.cli('update',ref,'--item','changelog','--due','2026-12-01');self.assertEqual(code,0,result);self.assertTrue(result.get('operation_id'),result)
+        self.assertEqual(find_note(p['id'],'demo',self.root)[1]['body'],before.replace('Write the changelog','Write the changelog (due: 2026-12-01)'))
+        code,undone=self.cli('undo',result['operation_id']);self.assertEqual(code,0,undone);self.assertEqual(find_note(p['id'],'demo',self.root)[1]['body'],before)
+    def test_item_field_problems_are_quality_warnings_on_capture_and_update(self):
+        warned=lambda result:[w for w in result.get('quality_warnings',[]) if w.startswith('action item')]
+        code,result=self.cli('capture','--type','plan','--title','Dated plan','--summary','A plan.','--concern','architecture','--action','Ship it (due: 2026-13-45)','--action','Write it (priority: urgent)','--action','Fine (due: 2026-12-01)')
+        self.assertEqual(code,0,result);self.assertEqual(len(warned(result)),2,warned(result));self.assertIn("action item 'Ship it'",warned(result)[0]);self.assertIn('not a YYYY-MM-DD date',warned(result)[0])
+        ref='demo:'+result['id']
+        code,result=self.cli('update',ref,'--add-action','Late (owner: a, owner: b)');self.assertEqual(code,0,result);self.assertEqual(len(warned(result)),3)
+        code,result=self.cli('update',ref,'--item','Ship it','--due','2026-12-01');self.assertEqual(code,0,result);self.assertEqual(len(warned(result)),2)
+    def test_session_start_counts_and_names_overdue_items_oldest_first(self):
+        from datetime import date
+        from unittest.mock import patch
+        self.plan('Release plan',['Ship the release (due: 2099-01-01)','Tidy up'])
+        self.plan('Docs plan',['Find the cause (due: 2026-11-01)','Add a test (due: 2026-10-01)','Write docs (due: 2026-11-20)','Review (due: 2026-10-15)'])
+        with patch('core.clock.today',return_value=date(2026,11,22)):text=self.start('overdue')
+        self.assertIn('Open work (6 items in 2 notes, 4 overdue;',text)
+        line=next(l for l in text.splitlines() if l.startswith('Overdue:'))
+        self.assertTrue(line.startswith('Overdue: Add a test (due 2026-10-01) demo:'),line)
+        self.assertEqual(line.count(' (due '),3);self.assertIn('Review (due 2026-10-15)',line);self.assertIn('Find the cause (due 2026-11-01)',line);self.assertNotIn('Write docs',line)
+        self.assertLess(text.index('Open work'),text.index('Overdue:'));self.assertLess(text.index('Overdue:'),text.index('Docs plan — Find'))
+        with patch('core.clock.today',return_value=date(2026,9,1)):text=self.start('nothing-late')
+        self.assertNotIn('Overdue:',text);self.assertNotIn('overdue',text)
+    def test_a_simulated_clock_makes_a_future_item_overdue(self):
+        from datetime import date,timedelta
+        from unittest.mock import patch
+        from core.clock import OFFSET_ENV
+        self.plan('Release plan',[f'Ship it (due: {(date.today()+timedelta(days=3)).isoformat()})'])
+        self.assertNotIn('overdue',self.start('now'))
+        with patch.dict('os.environ',{'LIVING_MEMORY_HEADLESS':'1',OFFSET_ENV:str(5*86400)}):text=self.start('later')
+        self.assertIn('1 overdue',text);self.assertIn('Overdue: Ship it (due ',text)
+    def test_version_reports_the_item_fields_capability(self):
+        code,result=self.cli('version');self.assertEqual(code,0,result);self.assertEqual(result['capabilities']['items'],{'fields':1})
 
 if __name__=='__main__':unittest.main()

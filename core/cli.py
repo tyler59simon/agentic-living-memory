@@ -247,6 +247,8 @@ SECTION_ARGS=('summary','detail','link','action','done','important','section')
 AMEND_ARGS=('add_detail','set_detail','add_link','add_action','drop_section')
 # A replace flag and the add flag for the same section contradict each other.
 AMEND_CLASHES=(('detail','add_detail'),('detail','set_detail'),('link','add_link'),('action','add_action'),('done','add_action'))
+# update only: change the due, owner or priority of one action item in place.
+ITEM_ARGS=('item','item_index','due','owner','priority')
 
 def sections_args(p,update=False):
     """Structured note sections (see core/note_format.py); each replaces only its own section."""
@@ -265,10 +267,24 @@ def sections_args(p,update=False):
         p.add_argument('--add-link',action='append',help='Append a Links bullet; the others are kept (repeatable)')
         p.add_argument('--add-action',action='append',help='Append an open action item; the others are kept (repeatable)')
         p.add_argument('--replace-actions',action='store_true',help='Let --action/--done drop action items the note already has')
+        p.add_argument('--item',help="Change the fields of one action item, named by its text (exact, or a unique part of it); with --due, --owner or --priority")
+        p.add_argument('--item-index',type=int,help="Change the fields of one action item by its 1-based position, as open lists it")
+        p.add_argument('--due',help='With --item: the item due date, YYYY-MM-DD, or none to clear it')
+        p.add_argument('--owner',help='With --item: who owns the item, or none to clear it')
+        p.add_argument('--priority',help='With --item: highest, high, medium, low or lowest, or none to clear it')
+
+def _item_args(args):
+    return any(getattr(args,k) is not None for k in ITEM_ARGS)
+
+def _item_only(args,values):
+    """True when the update changes nothing but an action item's fields, which says nothing about the note's facts (like a tick)."""
+    return _item_args(args) and set(values)=={'body'} and args.body is None and not args.body_file and not any(getattr(args,k) for k in SECTION_ARGS+AMEND_ARGS)
 
 def _update_body(args,base,note_type=None,root=None):
     """The body an update's section flags leave: replace flags overwrite their section, add flags extend it."""
     from . import note_format
+    if _item_args(args) and (args.action or args.done or args.replace_actions):
+        raise ValueError('--item changes one action item in place and cannot be combined with --action, --done or --replace-actions')
     for replace,add in AMEND_CLASHES:
         if getattr(args,replace) and getattr(args,add):
             raise ValueError(f"--{replace} replaces the section and --{add.replace('_','-')} adds to it; pass one of them")
@@ -283,6 +299,12 @@ def _update_body(args,base,note_type=None,root=None):
     if any(getattr(args,k) for k in AMEND_ARGS):
         body=note_format.amend(body,args.add_detail or (),args.add_link or (),args.add_action or (),args.set_detail or ())
     for heading in args.drop_section or ():body=note_format.drop_section(body,heading)
+    if _item_args(args):
+        from .notes import pick_item
+        changes={k:(None if getattr(args,k).strip().casefold()=='none' else getattr(args,k)) for k in ('due','owner','priority') if getattr(args,k) is not None}
+        if (args.item is None)==(args.item_index is None):raise ValueError('Name the item by its text (--item) or its position (--item-index N), not both')
+        if not changes:raise ValueError('--item needs --due, --owner or --priority (none clears one)')
+        body=note_format.set_item_fields(body,pick_item(note_format.action_items(body),args.item,args.item_index),changes)
     return body
 
 def _replaced(args,stored,body):
@@ -795,7 +817,7 @@ def build_parser():
     sections_args(p,update=True);_file_flags(p)
     p=sub('supersede');p.add_argument('reference');p.add_argument('--by',required=True,help='REF of the note that replaces it; its links and files are carried over (see --drop-links)');p.add_argument('--drop-links',action='store_true',help='Do not carry the links and files of the replaced note over');p.add_argument('--session');p.add_argument('--turn')
     p=sub('review');p.add_argument('--kind',action='append',choices=['stale','due','interim','duplicate','warned','noisy'],help='Only this kind of row (repeatable): stale, due, interim, duplicate, warned, noisy');p.add_argument('--limit',type=int,default=20);p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)')
-    p=sub('open');p.add_argument('--limit',type=int,default=50);p.add_argument('--all-domains',action='store_true',help='Every domain folder, not parents and global only');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)')
+    p=sub('open');p.add_argument('--due-by',metavar='DATE',help='Only items with a due date on or before DATE (YYYY-MM-DD)');p.add_argument('--owner',help='Only items owned by this name (case-insensitive)');p.add_argument('--sort',choices=['updated','due'],default='updated',help='updated: newest note first (default); due: earliest due date first, undated items last');p.add_argument('--limit',type=int,default=50);p.add_argument('--all-domains',action='store_true',help='Every domain folder, not parents and global only');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)')
     p=sub('check');p.add_argument('reference');p.add_argument('item',nargs='?',help='Text of the action item: exact, or a unique part of it');p.add_argument('--index',type=int,help="1-based position among the note's action items, as open lists it");p.add_argument('--undo',action='store_true',help='Untick instead');p.add_argument('--session');p.add_argument('--turn')
     p=sub('timeline');p.add_argument('reference',nargs='?',help='Anchor note; default: the newest note');p.add_argument('--date',help='YYYY-MM-DD: anchor at the first note on or after this date');p.add_argument('--before',type=int,default=5);p.add_argument('--after',type=int,default=5);p.add_argument('--type',type=_type_name,action='append');p.add_argument('--by',choices=['updated','created'],default='updated');p.add_argument('--all',action='store_true',help='Include superseded, archived and resolved notes')
     p=sub('ingest-plan');p.add_argument('--source',type=Path,help="Auto-memory folder; default: Claude Code's folder for --cwd");p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of skipping the file");p.add_argument('--allow-similar',action='store_true')
@@ -1248,12 +1270,12 @@ def main(argv=None):
             result=note_links(root,domains,args.status)
         elif cmd=='version':
             from .installer_lifecycle import CORE_RELEASE,installed_stamp
-            result={'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'restore':1,'pin':1,'rule':1,'direct_writes':1,'note_types':1,'history':3,'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']},'wiki_agent':{'version':1},
+            result={'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'restore':1,'pin':1,'rule':1,'direct_writes':1,'note_types':1,'history':3,'items':{'fields':1},'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']},'wiki_agent':{'version':1},
                                                                                                                                          'docs':{'version':1,'max_page_bytes':4194304,'max_asset_bytes':26214400,'notebook_only_domains':True,'search':True,'folder_policy':2,'accept_edited':True}}}
         elif cmd=='update':
             from .notes import change
             d,n=_reference(args.reference,domain,root)
-            values=_payload(args) if args.payload_file or not any(getattr(args,k) is not None for k in ('title','body','body_file','tag','type','context','review_by','pin','rule','file','files','shell_command','source','subject','concern','platform','technology','distinct','not_distinct')+SECTION_ARGS+AMEND_ARGS) else {}
+            values=_payload(args) if args.payload_file or not any(getattr(args,k) is not None for k in ('title','body','body_file','tag','type','context','review_by','pin','rule','file','files','shell_command','source','subject','concern','platform','technology','distinct','not_distinct')+SECTION_ARGS+AMEND_ARGS+ITEM_ARGS) else {}
             if args.title is not None:values['title']=args.title
             if args.body is not None:values['body']=args.body
             if args.body_file:values['body']=args.body_file.read_text(encoding='utf-8-sig')
@@ -1261,7 +1283,7 @@ def main(argv=None):
             with store_lock(root):
                 from .notes import find_note
                 current=find_note(n,d,root)[1];stored=current['body'];replaced={}
-                if any(getattr(args,k) for k in SECTION_ARGS+AMEND_ARGS):
+                if any(getattr(args,k) for k in SECTION_ARGS+AMEND_ARGS) or _item_args(args):
                     # Sections given on the command line change only themselves; the rest of the body is kept.
                     values['body']=_update_body(args,values['body'] if 'body' in values else stored,args.type or current.get('type'),root)
                 if isinstance(values.get('body'),str):replaced=_replaced(args,stored,values['body'])
@@ -1320,7 +1342,7 @@ def main(argv=None):
                     changes.update(more)
                     for rel,rev in more_expected.items():expected.setdefault(rel,rev)
                     result=_commit(d,changes,'update',root,expected);result.update(id=n if values else other[0],path=str(find_note(n if values else other[0],d,root)[0]),status='update')
-                else:result=change(n,d,'update',root,revision,**values)
+                else:result=change(n,d,'update',root,revision,rehash=not _item_only(args,values),**values)
             if replaced:result['replaced']=replaced
             if redacted:result['redacted']=redacted
             if suggested:result['suggested_files']=suggested
@@ -1352,9 +1374,18 @@ def main(argv=None):
                 scope=[domain]+scope_domains(domain,load_bindings(root))+global_domains(root)
             else:raise ValueError(UNBOUND)
             found=open_work(list(dict.fromkeys(scope)),root,args.tag)
-            items=[{'ref':f"{d}:{n['id']}",'short_ref':short_ref(d,n['id']),'title':n['title'],'type':n['type'],'updated':str(n.get('updated',''))[:10],'index':i,'item':text}
-                   for d,n,listed in found for i,text in listed]
-            result={'ok':True,'domain':None if args.all_domains else domain,'notes':len(found),'count':len(items),'items':items[:max(1,min(500,args.limit))],
+            from . import clock
+            from .note_format import item_fields,valid_date
+            if args.due_by and not valid_date(args.due_by):raise ValueError('--due-by must be a YYYY-MM-DD date')
+            today=clock.today().isoformat()
+            items=[]
+            for d,n,listed in found:
+                for i,text in listed:
+                    task,fields,_=item_fields(text);due=fields['due']
+                    if args.due_by and not (due and due<=args.due_by) or args.owner and (fields['owner'] or '').casefold()!=args.owner.strip().casefold():continue
+                    items.append({'ref':f"{d}:{n['id']}",'short_ref':short_ref(d,n['id']),'title':n['title'],'type':n['type'],'updated':str(n.get('updated',''))[:10],'index':i,'item':text,'task':task,**fields,'overdue':due<today if due else None})
+            if args.sort=='due':items.sort(key=lambda row:(row['due'] is None,row['due'] or ''))   # stable: ties keep the newest note first
+            result={'ok':True,'domain':None if args.all_domains else domain,'notes':len({row['ref'] for row in items}),'count':len(items),'items':items[:max(1,min(500,args.limit))],
                     'hint':"Tick one when done: check REF 'item text' (or --index N); --undo unticks."}
         elif cmd=='check':
             from .notes import check_action

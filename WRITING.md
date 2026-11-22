@@ -83,6 +83,8 @@ Any plan, bug or risk note can be shown as a dashboard (`views add REF`, see [SC
 - Next comes an ID if the item has one: capitals, digits and hyphens, with at least one hyphen or digit (`CUR-1`, `HM-P4`, `MAP-REKEY`, `UX-Q2`). A plain capitalized word such as `API` is not an ID.
 - The rest is the item's title: `- [ ] [P2] [ALM] HOOK-4 Cap the total UserPromptSubmit context below the hook-context limit`.
 - Put the longer explanation in a Details bullet whose bold label is the ID: `- **HOOK-4:** the UserPromptSubmit path in core/runtime.py ...`. Indented lines under the bullet belong to it. The dashboard shows that text when the item's card is opened, and leaves the bullet out of the Details list. Write one such bullet per ID; an item with no ID or no bullet simply has no detail.
+- To date an item or give it an owner, end the text with a tail of `due`, `owner` and `priority` in any order: `- [ ] [P2] [ALM] CUR-1 Ship the release (due: 2026-12-01, owner: me, priority: high)`. `due` is a real `YYYY-MM-DD` date and `priority` is `highest`, `high`, `medium`, `low` or `lowest`. A parenthesis group that holds any other key, or is not at the very end, is plain text. A bad value is ignored and `capture` and `update` warn about it; the text is never rejected.
+- Change the fields of one item with `update REF --item TEXT --due D`, with `--owner NAME` and `--priority P` as well (`none` clears a field), or `--item-index N` to name the item by its position. `open` shows `due`, `owner`, `priority` and `overdue` for each item and takes `--due-by DATE`, `--owner NAME` and `--sort due`; SessionStart names overdue items first.
 
 Keep the title to one line and the Details bullet to the facts the reader needs to start the work.
 
