@@ -31,7 +31,7 @@ class HivemindGuard(StoreFixture):
         return self.run_hook(harness, tool, command, **extra).get('deny') == REASON
 
     def test_governed_subcommands_are_denied_for_both_harnesses(self):
-        for rest in (APPLY, 'undo op-1', 'recover op-1 --direction backward', 'setup --apply-plan p1', 'archive demo:x', 'rewrite --payload-file r.json', 'remap', 'promote demo:x', 'taxonomy add concern/x', 'source add', 'project create', 'system update', 'change close'):
+        for rest in (APPLY, 'undo op-1', 'recover op-1 --direction backward', 'setup --apply-plan p1', 'archive demo:x', 'rewrite --payload-file r.json', 'remap', 'promote demo:x', 'taxonomy add concern/x', 'source add', 'project create', 'system update'):
             for harness, tool in (('claude', 'Bash'), ('codex', 'shell'), ('codex', 'exec_command')):
                 with self.subTest(rest=rest, harness=harness, tool=tool):
                     result = self.run_hook(harness, tool, self.memory(rest))

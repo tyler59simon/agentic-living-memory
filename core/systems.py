@@ -1,5 +1,5 @@
 """System registry (systems.json): the systems an engineer works on, each with owners, repo folders, dependencies on
-other systems, an Architecture Suite output folder, a passport note and a system/<slug> tag.
+other systems, an optional project slug, an Architecture Suite output folder, a passport note and a system/<slug> tag.
 
 Systems are created and changed only through `system` (direct, journaled, undoable)."""
 from __future__ import annotations
@@ -7,10 +7,11 @@ import uuid
 from pathlib import Path
 from .common import canonical_domain
 from .projects import SLUG,_charter_domain,_repos,_text,infer_tags
+from . import projects
 from .repository import read_json,canonical_json,find_secrets,store_lock,now
 
 STATUSES=('active','deprecated','retired')
-SHARED={'slug','name','description','owners','capabilities','repos','depends_on','architecture','passport'}
+SHARED={'slug','name','description','owners','capabilities','repos','depends_on','project','architecture','passport'}
 FIELDS={'create':SHARED,'update':SHARED|{'status'},'retire':{'slug'}}
 
 def tag(slug):return f'system/{slug}'
@@ -33,7 +34,7 @@ def _strings(value,field,most,high):
     if not isinstance(value,list) or len(value)>most:raise ValueError(f'{field} must be a list of at most {most} strings')
     return list(dict.fromkeys(_text(v,field,1,high) for v in value))
 
-def _clean(values,base,others):
+def _clean(values,base,others,root):
     """Validated registry fields from a payload's values, layered over base (an entry); others are the other systems' slugs."""
     entry=dict(base)
     if 'name' in values:entry['name']=_text(values['name'],'name',1,80)
@@ -51,6 +52,10 @@ def _clean(values,base,others):
         unknown=sorted(set(wanted)-set(others))
         if unknown:raise ValueError('depends_on names unknown systems: '+', '.join(unknown)+'; create them with system create first')
         entry['depends_on']=list(dict.fromkeys(wanted))
+    if 'project' in values:
+        wanted=values['project']
+        if wanted is not None and (not isinstance(wanted,str) or wanted not in {p['slug'] for p in projects.load(root)['projects']}):raise ValueError(f'project names unknown project {wanted}; create it with project create first')
+        entry['project']=wanted
     if 'architecture' in values:
         folder=values['architecture']
         if folder is not None and (not isinstance(folder,str) or not Path(folder).is_absolute()):raise ValueError('architecture must be an absolute folder path or null')
@@ -83,7 +88,7 @@ def system_write(root,action,payload):
             passport=payload.get('passport')
             if not isinstance(passport,dict) or not isinstance(passport.get('body'),str) or not passport['body'].strip():raise ValueError('create requires passport.body (starting with a summary)')
             if set(passport)-{'domain','title','body'}:raise ValueError('passport accepts domain, title and body')
-            entry=_clean({k:v for k,v in payload.items() if k!='passport'},{'slug':slug,'status':'active','description':'','owners':[],'capabilities':[],'repos':[],'depends_on':[],'architecture':None,'created':stamp,'updated':stamp},slugs)
+            entry=_clean({k:v for k,v in payload.items() if k!='passport'},{'slug':slug,'status':'active','description':'','owners':[],'capabilities':[],'repos':[],'depends_on':[],'project':None,'architecture':None,'created':stamp,'updated':stamp},slugs,root)
             from .notes import build_note
             from .tag_taxonomy import content
             known=read_json(root/'tag_taxonomy.json',{'tags':[]});known=known.get('tags',[]) if isinstance(known,dict) else known
@@ -98,13 +103,15 @@ def system_write(root,action,payload):
             return commit(root,changes,'system_create',[domain],{'slug':slug,'tag':tag(slug),'added_tag':added,'passport':entry['passport'],'files':len(changes)})
         if not current:raise ValueError(f'Unknown system {slug}')
         values={'status':'retired'} if action=='retire' else {k:v for k,v in payload.items() if k!='slug'}
-        entry=_clean(values,current,slugs);entry['updated']=stamp
+        entry=_clean(values,current,slugs,root);entry['updated']=stamp
         return commit(root,{'systems.json':_registry(others+[entry])},'system_'+action,[],{'slug':slug,'fields':sorted(values),'files':1})
 
 def listing(root,status='any'):
     """Registry entries (optionally one status) with tag, tag_registered and dependents, and warnings for what no longer resolves."""
     from .notes import find_note,taxonomy
     root=Path(root);known=taxonomy(root);rows=[];warnings=[];entries=load(root)['systems'];slugs={s['slug'] for s in entries}
+    try:project_slugs={p['slug'] for p in projects.load(root)['projects']}
+    except ValueError:project_slugs=set()
     for s in entries:
         if status!='any' and s.get('status')!=status:continue
         who=s['slug'];dependents=sorted(o['slug'] for o in entries if who in o.get('depends_on',[]))
@@ -113,6 +120,7 @@ def listing(root,status='any'):
         warnings+=[f'{who}: repo folder does not exist: {r}' for r in s.get('repos',[]) if not Path(r).is_dir()]
         if s.get('architecture') and not Path(s['architecture']).is_dir():warnings.append(f"{who}: architecture folder does not exist: {s['architecture']}")
         warnings+=[f'{who}: depends on unknown system {d}' for d in s.get('depends_on',[]) if d not in slugs]
+        if s.get('project') and s['project'] not in project_slugs:warnings.append(f"{who}: project {s['project']} is not in the project registry")
         ref=s.get('passport')
         if ref:
             try:domain,note_id=ref.split(':',1);find_note(note_id,canonical_domain(domain,root),root)

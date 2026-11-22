@@ -105,6 +105,25 @@ class Backups(StoreFixture):
                 with self.assertRaisesRegex(ValueError, 'outside the canonical set'):
                     snap.restore_plan(self.root, bad)
 
+    def test_an_old_snapshot_with_changes_json_still_restores_and_drops_it(self):
+        keep = self.note('Keep me', 'Original body.')
+        (self.root / 'changes.json').write_text('{"version":1,"changes":[]}')
+        self.assertNotIn('changes.json', zipfile.ZipFile(snap.backup(self.root)['backup']).namelist())
+        old = self.base / 'old.zip'
+        with zipfile.ZipFile(snap.backup(self.root)['backup']) as source, zipfile.ZipFile(old, 'w') as archive:
+            for info in source.infolist():
+                archive.writestr(info.filename, source.read(info))
+            archive.writestr('changes.json', '{"version":1,"changes":[{"id":1}]}')
+        self.assertEqual(snap.verify(old), [])
+        find_note(keep['id'], 'demo', self.root)[0].unlink()
+        (self.root / 'changes.json').unlink()
+        proposed = snap.restore_plan(self.root, old)
+        paths = {e['path'] for e in inspect_plan(self.root, proposed['plan_id'])['effects']}
+        self.assertNotIn('changes.json', paths)
+        apply(self.root, proposed['plan_id'], proposed['digest'])
+        self.assertFalse((self.root / 'changes.json').exists())
+        self.assertEqual({n['id'] for n in inventory('demo', self.root)}, {keep['id']})
+
     def test_cli_backup_records_the_marker(self):
         self.note()
         out = io.StringIO()

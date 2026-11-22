@@ -18,8 +18,10 @@ INTERVAL_HOURS=24
 STALE_HOURS=48
 # Hooks skip automatic snapshots of very large stores; doctor already flags that size.
 AUTO_MAX_NOTES=1500
-TOP_LEVEL=('bindings.json','tag_taxonomy.json','projects.json','systems.json','sources.json','changes.json','views.json','note_types.json','schema-version.json',
+TOP_LEVEL=('bindings.json','tag_taxonomy.json','projects.json','systems.json','sources.json','views.json','note_types.json','schema-version.json',
            'notebook-privacy.json','notebook-folders.json')
+# Members an older snapshot may hold that the store no longer keeps: verify accepts them and a restore drops them (Changes removed, CON-17).
+LEGACY=('changes.json',)
 # ledger/ is append-only history with no other copy (journals do not hold it), so a snapshot saves it and a restore only adds to it.
 LEDGER=re.compile(r'ledger/sessions-\d{4}\.jsonl')
 MAINT=re.compile(r'maintenance\.json|maintenance/(?:state\.json|runs/\d{4}-\d{2}-\d{2}/[A-Za-z0-9_-]{1,100}\.json)')
@@ -83,7 +85,7 @@ def _allowed(name):
             if rest!='notebook.json' and not re.fullmatch(r'\.proposals/[a-f0-9]{12}\.json|assets/[^/]+',rest):clean_path(rest)
         except ValueError:return False
         return True
-    return name in TOP_LEVEL or name==MANIFEST or bool(MEMBER.fullmatch(name)) or bool(LEDGER.fullmatch(name)) or bool(MAINT.fullmatch(name))
+    return name in TOP_LEVEL or name in LEGACY or name==MANIFEST or bool(MEMBER.fullmatch(name)) or bool(LEDGER.fullmatch(name)) or bool(MAINT.fullmatch(name))
 
 def snapshots(root):
     """Existing snapshots, newest first: by timestamp, then by same-second sequence (lm-T.zip, lm-T-1.zip, ...)."""
@@ -287,6 +289,7 @@ def restore_plan_unlocked(root,source):
         # Attachments stay bytes (the plan stages them as blobs); everything else is UTF-8 text.
         wanted={info.filename:(archive.read(info) if ASSET.fullmatch(info.filename) else archive.read(info).decode('utf-8')) for info in archive.infolist() if info.filename not in skipped}
     manifest=wanted.pop(MANIFEST,None)
+    for rel in LEGACY:wanted.pop(rel,None)
     try:manifest=read_json_bytes(manifest.encode('utf-8')) if manifest is not None else {}
     except ValueError:manifest={}
     # Version 1 snapshots (no manifest) cover no notebook, so a restore from one leaves every live notebook alone.

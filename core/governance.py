@@ -262,7 +262,7 @@ def merge_plan(root,payload):
 # registry writes). Every other kind (merge, delete, bulk retag, migrations, import, ingest, maintenance, bindings, Obsidian, and install or
 # setup operations outside the store) comes back as a plan to approve, so a kind added later fails safe.
 DIRECT_UNDO_KINDS=frozenset({'capture','capture_supersede','capture_promote','update','supersede','resolve','reopen','confirm','archive','rewrite','reference_remap','promote','taxonomy_expansion','config_set','rebaseline'})
-DIRECT_UNDO_PREFIXES=('source_','project_','system_','change_','views_','type_','doc_')
+DIRECT_UNDO_PREFIXES=('source_','project_','system_','change_','views_','type_','doc_')   # change_: legacy journal kind (Changes removed, CON-17)
 
 def _plan_kind(kind,effects=()):
     """True when undoing an operation of this kind needs an approved plan (an undo of X is judged by X's kind, found through the chain).

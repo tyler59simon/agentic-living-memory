@@ -217,9 +217,6 @@ def doctor(root,cwd,explicit=None,domain=None,include_private=False):
     from .type_registry import listing as types_listing
     try:warnings+=['note types: '+w for w in types_listing(root)['warnings']]
     except ValueError as exc:warnings.append(f'note_types.json: {exc}')
-    from .changes import listing as changes_listing
-    try:warnings+=['changes: '+w for w in changes_listing(root)['warnings']]
-    except ValueError as exc:warnings.append(f'changes.json: {exc}')
     from .views import warnings as views_warnings
     try:warnings+=['views: '+w for w in views_warnings(root)]
     except ValueError as exc:warnings.append(f'views.json: {exc}')
@@ -324,11 +321,11 @@ def _sectioned(args,body='',note_type=None,root=None):
 
 # source-sync writes only the derived knowledge-base index (as search --rebuild does the notes' one), so subagents and viewers may run it
 # (not for a remote source, which it would pull from the network: sources.sync refuses that for them).
-READ_ONLY={'help','config','status','search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','types','ask','sources','source-sync','ingest-scan','changes','views','wiki','log','maintenance','rebaseline','recap','proposals','doc'}
+READ_ONLY={'help','config','status','search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','types','ask','sources','source-sync','ingest-scan','views','wiki','log','maintenance','rebaseline','recap','proposals','doc'}
 # Viewer: a human-facing app browsing the store. Read-only, and its reads are not usage evidence for the diary.
 VIEWER=READ_ONLY|{'taxonomy','review','diff','inspect-plan'}
 # Direct journaled writes (no plan); `taxonomy add` is the same kind of write under a read command. Refused to subagents, viewers and Hivemind agents.
-DIRECT_WRITES={'archive','rewrite','remap','promote','source','project','system','change','type','domain'}
+DIRECT_WRITES={'archive','rewrite','remap','promote','source','project','system','type','domain'}
 # Notebook page writes (NS-2A): main actor only, and never from an agent inside a Hivemind terminal. `doc propose` stays open to agents.
 DOC_WRITES={'notebook','create','write','move','delete','attach','accept','reject','undo','folder'}   # runtime.DOC_WRITE_ACTIONS; runtime loads lazily here
 SERVE_API=2
@@ -620,13 +617,13 @@ HELP={'setup':'Choose or move the shared memory folder','bind':'Bind a domain to
  'update':'Change a note','supersede':'Retire a note in favour of another','review':'Notes that are due, stale or duplicated','open':'Open plans, bugs, risks and action items','check':'Tick an action item',
  'timeline':'Notes around a date or note','ingest-plan':'Plan importing Claude auto-memory files','export':'Write notes to a zip file','import-plan':'Plan importing an exported zip','confirm':'Mark a note still true',
  'resolve':'Finish a plan, bug or risk','reopen':'Reopen a resolved note','restore':'Bring back an archived note','archive':'Retire a note without a replacement','stats':'Usage over the last days','logs':'Show the operational log','plan':'Plan deleting one note',
- 'apply':'Apply a plan','inspect-plan':'Show a plan in full','rewrite':'Rewrite several note bodies','merge-plan':'Plan merging notes','history':'Recent operations','recap':'Summary of recent activity','log':'Note and change history',
+ 'apply':'Apply a plan','inspect-plan':'Show a plan in full','rewrite':'Rewrite several note bodies','merge-plan':'Plan merging notes','history':'Recent operations','recap':'Summary of recent activity','log':'Note history',
  'undo':'Undo an operation (merge, delete and bulk retag return a plan)','recover':'Finish or abandon an interrupted operation','diff':'Show what an operation changed','doctor':'Check the install and the store','backup':'Back up the store',
  'restore-plan':'Plan restoring a backup','migration-plan':'Plan a store migration','note-type-plan':'Plan note type changes','baseline-plan':'Plan a verification baseline','rebuild':'Rebuild search indexes',
  'maintenance':'Automatic maintenance','rebaseline':'Re-baseline notes a file change did not touch','semantic':'Semantic search settings','validate':'Check notes against the rules','query':'Query the store','taxonomy':'Show the tag taxonomy, or add tags',
  'project':'Create or change a project','projects':'List projects','system':'Create or change a system','systems':'List systems','type':'Create, change or retire a custom note type','types':'List note types, built-in and custom','source':'Add or remove a knowledge-base source','sources':'List knowledge-base sources',
- 'source-sync':'Re-index knowledge-base sources','ingest-scan':'Scan for files to ingest','ingest-skip':'Skip an ingest candidate','ask':'Ask a question about the project','change':'Create or change a tracked change',
- 'changes':'List tracked changes','views':'Saved views','wiki':'Domain wiki','batch':'Run several commands from a JSON file','retag-plan':'Plan retagging notes','remap':'Move notes between domains','promote':'Promote notes to the global domain',
+ 'source-sync':'Re-index knowledge-base sources','ingest-scan':'Scan for files to ingest','ingest-skip':'Skip an ingest candidate','ask':'Ask a question about the project',
+ 'views':'Saved views','wiki':'Domain wiki','batch':'Run several commands from a JSON file','retag-plan':'Plan retagging notes','remap':'Move notes between domains','promote':'Promote notes to the global domain',
  'recall':'Search this session transcript','off':'Turn Living Memory off for this session','on':'Turn Living Memory back on for this session','status':'Whether Living Memory is on for this session','capture-finalize':'Record which notes a turn saved','list':'List notes','domains':'List domains','config':'Show or change store settings','links':'Links between notes',
  'help':'Protocol details by topic','version':'Version and command list','doc':'Notebook pages: read them, and stage edits with doc propose','domain':'Create a notebook-only domain','serve':'JSON-lines server on stdin and stdout','sync':'Sync a domain with an Obsidian vault','overlay-build':'Build the Obsidian overlay','overlay-teardown-plan':'Plan removing the overlay','overlay-sync-all':'Sync every domain with the vault'}
 
@@ -634,10 +631,10 @@ HELP={'setup':'Choose or move the shared memory folder','bind':'Bind a domain to
 HELP_GROUPS=(
  ('Everyday',('help','capture','propose','proposals','search','read','update','supersede','open','check','confirm','resolve','reopen','ask','list','timeline','links','log','recap','recall','capture-finalize','status','off','on','doc')),
  ('Maintenance',('review','maintenance','rebaseline','stats','history','diff','undo','recover','restore','doctor','validate','rebuild','semantic','backup','logs')),
- ('Direct writes (journaled, undo OPERATION)',('archive','rewrite','remap','promote','source','project','system','change','type')),
+ ('Direct writes (journaled, undo OPERATION)',('archive','rewrite','remap','promote','source','project','system','type')),
  ('Governance (plans)',('plan','apply','inspect-plan','merge-plan','retag-plan','note-type-plan','migration-plan','baseline-plan','restore-plan',
    'import-plan','ingest-plan','overlay-teardown-plan')),
- ('Admin',('setup','bind','unbind','config','domains','domain','projects','systems','types','sources','source-sync','ingest-scan','ingest-skip','taxonomy','changes','views','wiki','export','query','batch','sync','overlay-build','overlay-sync-all','serve','version')))
+ ('Admin',('setup','bind','unbind','config','domains','domain','projects','systems','types','sources','source-sync','ingest-scan','ingest-skip','taxonomy','views','wiki','export','query','batch','sync','overlay-build','overlay-sync-all','serve','version')))
 
 def _grouped_commands():
     width=max(len(name) for _,names in HELP_GROUPS for name in names)+2
@@ -838,7 +835,7 @@ def build_parser():
     p=sub('merge-plan');p.add_argument('--payload-file',type=Path)
     p=sub('history');p.add_argument('--note');p.add_argument('--limit',type=int,default=20);p.add_argument('--include-private',action='store_true',help='Hivemind only: show operations on private notebooks');p.add_argument('--markdown',action='store_true',help='Return {ok, rows, markdown} with a dated list a person can read')
     p=sub('recap');p.add_argument('--days',type=int,default=7,help='Days back, 1 to 90');p.add_argument('--project',help='Project slug');p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain')
-    p=sub('log');p.add_argument('--project',help='Project slug');p.add_argument('--since',help='ISO date or time');p.add_argument('--until',help='ISO date or time, inclusive');p.add_argument('--note',help='One note (REF or ID, deleted notes too) or change (CHG-014)');p.add_argument('--type',help='Note type, change or session');p.add_argument('--event',help='created, updated, confirmed, superseded, resolved, archived, reopened, deleted, promoted, moved, undone, stage, closed or session');p.add_argument('--limit',type=int,default=50)
+    p=sub('log');p.add_argument('--project',help='Project slug');p.add_argument('--since',help='ISO date or time');p.add_argument('--until',help='ISO date or time, inclusive');p.add_argument('--note',help='One note (REF or ID, deleted notes too)');p.add_argument('--type',help='Note type or session');p.add_argument('--event',help='created, updated, confirmed, superseded, resolved, archived, reopened, deleted, promoted, moved, undone or session');p.add_argument('--limit',type=int,default=50)
     p=sub('undo');p.add_argument('operation_id');p.add_argument('--include-private',action='store_true',help='Hivemind only: allow an operation on a private notebook')
     _doc_parsers(sub('doc'),common)
     p=sub('domain');p.add_argument('action',choices=['create']);p.add_argument('name');p.add_argument('--notebook-only',action='store_true',required=True,help='A domain that holds notebooks only (no folder binding, no notes)')
@@ -878,8 +875,6 @@ def build_parser():
     p=sub('ingest-skip');p.add_argument('--payload-file',type=Path)
     p=sub('ask');p.add_argument('query',nargs='+',help='A question about the project');p.add_argument('--limit',type=int,default=5,help='Notes and source excerpts shown, at most, of each')
     p.add_argument('--include-private',action='store_true',help='Hivemind only: include pages of private notebooks')
-    p=sub('change');p.add_argument('action',choices=['create','update','close']);p.add_argument('--payload-file',type=Path)
-    p=sub('changes');p.add_argument('--status',choices=['active','done','cancelled','any'],default='any');p.add_argument('--project',help='Only the changes of this project slug')
     p=sub('views');p.add_argument('action',nargs='?',choices=['list','add','remove','render','published'],help='Default: list');p.add_argument('reference',nargs='?',help='The note (REF, ID prefix or exact title)')
     p.add_argument('--all-domains',action='store_true',help='list: every domain, not only --domain');p.add_argument('--title',help="add: the view's short title (default: the note title)")
     p.add_argument('--all',action='store_true',help='render: every registered view');p.add_argument('--target',choices=['local','artifact'],default='local',help="render: local (dark, reloads itself) or artifact (follows the viewer's theme)")
@@ -1270,7 +1265,7 @@ def main(argv=None):
             result=note_links(root,domains,args.status)
         elif cmd=='version':
             from .installer_lifecycle import CORE_RELEASE,installed_stamp
-            result={'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'restore':1,'pin':1,'rule':1,'direct_writes':1,'note_types':1,'history':3,'items':{'fields':2},'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']},'wiki_agent':{'version':1},
+            result={'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'restore':1,'pin':1,'rule':1,'direct_writes':1,'note_types':1,'history':3,'items':{'fields':2},'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']},'wiki_agent':{'version':1},'systems':{'project':1},
                                                                                                                                          'docs':{'version':1,'max_page_bytes':4194304,'max_asset_bytes':26214400,'notebook_only_domains':True,'search':True,'folder_policy':2,'accept_edited':True}}}
         elif cmd=='update':
             from .notes import change
@@ -1512,8 +1507,7 @@ def main(argv=None):
             import re
             from .activity import log
             note=args.note
-            if note and re.fullmatch(r'CHG-0*[1-9]\d*',note,re.I):note='CHG-%03d'%int(note[4:])
-            elif note:
+            if note:
                 try:note=_reference(note,domain,root)[1]
                 except ValueError:
                     # A deleted note has no file left to resolve, but its journals still name it by full ID.
@@ -1667,12 +1661,6 @@ def main(argv=None):
         elif cmd=='ask':
             if not domain:raise ValueError(UNBOUND)
             result=_ask(root,domain,' '.join(args.query),args.limit,args.include_private)
-        elif cmd=='change':
-            from .changes import change_write
-            result=change_write(root,args.action,_payload(args))
-        elif cmd=='changes':
-            from .changes import listing
-            result=listing(root,args.status,args.project)
         elif cmd=='views':
             from . import views
             action=args.action or 'list'

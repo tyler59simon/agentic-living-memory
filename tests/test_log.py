@@ -1,7 +1,9 @@
-"""log: the activity index over journals and changes.json, its cache, and the session ledger."""
-import json,time,unittest,zipfile
+"""log: the activity index over the operation journals, its cache, and the session ledger."""
+import contextlib,io,json,time,unittest,zipfile
 from unittest.mock import patch
-from test_changes import Fixture
+from test_core import StoreFixture
+from core.cli import main
+from core.note_format import render
 from core import backup,runtime
 from core.capture import finalize
 from core.init_domain import init_domain
@@ -10,6 +12,23 @@ from core import repository as repo
 from core.repository import canonical_json,recover
 
 TAGS=['subject/project','concern/architecture']
+CHARTER=render('PayStream turns payment events into alerts.',(),(),(),(),'','')
+
+class Fixture(StoreFixture):
+    def setUp(self):
+        super().setUp()
+        (self.root/'tag_taxonomy.json').write_text(json.dumps({'tags':['subject/project','concern/architecture','concern/decision','concern/knowledge','concern/workflow']}))
+        self.repo=self.base/'project'/'billing';self.repo.mkdir(parents=True)
+        for command,value in (('project',{'slug':'paystream','name':'PayStream','repos':[str(self.repo)],'charter':{'body':CHARTER}}),('system',{'slug':'billing','name':'Billing','repos':[str(self.repo)],'passport':{'body':CHARTER}})):
+            code,plan=self.cli(command,'create',stdin=json.dumps(value));self.assertEqual(code,0,plan)
+    def cli(self,*argv,stdin=None,cwd=None):
+        out,err=io.StringIO(),io.StringIO()
+        with contextlib.redirect_stdout(out),contextlib.redirect_stderr(err),patch('sys.stdin',io.StringIO(stdin or '')):
+            try:code=main(['--root',str(self.root),*(['--cwd',str(cwd)] if cwd else []),*argv])
+            except SystemExit as exc:code=exc.code
+        text=out.getvalue() or err.getvalue()
+        return code,(json.loads(text) if text.strip()[:1] in '{[' else text)
+    def apply(self,written):return written   # a direct write has nothing left to apply; kept so the call sites read the same
 
 class Log(Fixture):
     def setUp(self):
@@ -54,23 +73,6 @@ class Notes(Log):
         a=self.note('Cache policy','Body one.');code,plan=self.cli('--domain','demo','plan','delete','demo:'+a['id']);self.assertEqual(code,0,plan);self.cli('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest'])   # delete is still a plan
         self.assertEqual([r['event'] for r in self.rows('--note',a['id'])],['deleted','created'])
         self.assertEqual([r['event'] for r in self.rows('--note','demo:'+a['id'])],['deleted','created'])
-
-class Changes(Log):
-    def test_change_rows(self):
-        self.create()
-        code,plan=self.plan('update',{'id':1,'stage':'design'});self.assertEqual(code,0,plan);self.apply(plan)
-        code,plan=self.plan('close',{'id':1});self.assertEqual(code,0,plan);self.apply(plan)
-        title='Prevent duplicate payment alerts'
-        rows=self.rows('--type','change');self.assertEqual([(r['event'],r['ref'],r['title'],r['projects'],r['domain']) for r in rows],
-            [('closed','CHG-001',title,['paystream'],'demo'),('stage','CHG-001',title,['paystream'],'demo'),('created','CHG-001',title,['paystream'],'demo')])
-        self.assertEqual((rows[0]['detail'],rows[1]['detail']),('done','explore -> design'))
-        self.assertEqual([r['event'] for r in self.rows('--note','chg-1')],['closed','stage','created'])
-        notes=self.rows('--type','plan');self.assertEqual([(r['event'],r['projects']) for r in notes],[('resolved',['paystream']),('created',['paystream'])])
-        self.assertEqual(len(self.rows('--project','paystream')),5)
-
-    def test_undone_change(self):
-        receipt,_=self.create();self.apply_undo(receipt['operation_id'])
-        self.assertEqual(sorted(r['event'] for r in self.rows('--type','change')),['created','undone'])
 
 class Cache(Log):
     def cache(self):return json.loads((self.root/'.cache/activity.json').read_text(encoding='utf-8'))['ops']
@@ -125,7 +127,7 @@ class Filters(Log):
         with patch('core.notes.now',return_value='2026-10-01T12:00:00.000000+00:00'),patch('core.repository.now',return_value='2026-10-01T12:00:00.000000+00:00'):self.a=self.note('Old note','Written long ago.')
         self.b=self.note('New note','Written today.')
         self.c=capture('Other domain note','Written elsewhere.',TAGS,'other',self.root)
-        self.create()
+        self.p=capture('Project note','Belongs to the project.',TAGS+['project/paystream'],'demo',self.root)
 
     def test_since_until_note_domain_project_type_event_and_limit(self):
         self.assertEqual(self.events('--until','2026-10-01'),[('created','Old note')])
@@ -135,8 +137,8 @@ class Filters(Log):
         self.assertEqual([r['title'] for r in self.rows('--domain','demo','--note',self.b['id'][:8])],['New note'])
         self.assertEqual([r['title'] for r in self.rows('--domain','other')],['Other domain note'])
         self.assertNotIn('Other domain note',[r['title'] for r in self.rows('--domain','demo')])
-        self.assertEqual({r['ref'] for r in self.rows('--project','paystream')},{'CHG-001',self.entry()['brief']})
-        self.assertEqual({r['type'] for r in self.rows('--type','plan')},{'plan'})
+        self.assertEqual({r['ref'] for r in self.rows('--project','paystream')},{'demo:'+self.p['id']})
+        self.assertEqual({r['type'] for r in self.rows('--type','knowledge')},{'knowledge'})
         self.assertEqual({r['event'] for r in self.rows('--event','created')},{'created'})
         self.assertEqual(len(self.rows('--limit','2')),2);self.assertEqual(self.log('--limit','2')['count'],len(self.log()['rows']))
         self.assertEqual(self.rows('--project','nothing'),[])

@@ -103,6 +103,33 @@ class Systems(Fixture):
         self.assertEqual(self.entry()['status'],'retired');self.assertEqual((self.root/'tag_taxonomy.json').read_text(),tags)
         self.assertNotEqual(self.plan('update',{'slug':'nope','name':'x'})[0],0)
 
+    def project(self,slug='revamp'):
+        code,plan=self.cli('project','create',stdin=json.dumps({'slug':slug,'name':slug.title(),'repos':[],'charter':{'body':BODY}}));self.assertEqual(code,0,plan);return plan
+
+    def test_project_field(self):
+        self.create();self.assertIsNone(self.entry()['project'])
+        self.project();self.create(slug='ledger',name='Ledger',repos=[],project='revamp');self.assertEqual(self.entry('ledger')['project'],'revamp')
+        self.assertEqual(self.cli('systems')[1]['systems'][1]['project'],'revamp')
+        code,plan=self.plan('update',{'slug':'billing','project':'revamp'});self.assertEqual((code,self.entry()['project']),(0,'revamp'))
+        code,plan=self.plan('update',{'slug':'billing','project':None});self.assertEqual((code,self.entry()['project']),(0,None))
+        code,plan=self.plan('update',{'slug':'billing','name':'Billing v2'});self.assertEqual((code,self.entry()['project']),(0,None))
+        for value in ({'slug':'billing','project':'ghost'},{'slug':'billing','project':7}):
+            code,result=self.plan('update',value);self.assertNotEqual(code,0,value);self.assertIn('unknown project',json.dumps(result))
+        code,result=self.plan('create',self.payload(slug='x',project='ghost'));self.assertNotEqual(code,0);self.assertIn('create it with project create first',json.dumps(result))
+
+    def test_project_field_undo_and_old_entries(self):
+        self.create();self.project()
+        code,plan=self.plan('update',{'slug':'billing','project':'revamp'});self.assertEqual(code,0,plan)
+        code,undo=self.cli('undo',plan['operation_id']);self.assertEqual(code,0,undo);self.assertIsNone(self.entry()['project'])
+        reg=self.registry();del reg['systems'][0]['project'];(self.root/'systems.json').write_text(json.dumps(reg))
+        self.assertEqual(self.cli('systems')[0],0);code,plan=self.plan('update',{'slug':'billing','description':'Still works.'});self.assertEqual(code,0,plan)
+
+    def test_project_warning(self):
+        self.create();self.project();self.plan('update',{'slug':'billing','project':'revamp'})
+        self.assertFalse(any('project' in w for w in self.cli('systems')[1]['warnings']))
+        reg=self.registry();reg['systems'][0]['project']='gone';(self.root/'systems.json').write_text(json.dumps(reg))
+        self.assertIn('billing: project gone is not in the project registry',self.cli('systems')[1]['warnings'])
+
     def test_viewer(self):
         self.assertEqual(self.cli('--actor','viewer','systems')[0],0)
         code,result=self.plan('create',self.payload(),actor='viewer');self.assertNotEqual(code,0);self.assertIn('Viewers',json.dumps(result))

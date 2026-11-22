@@ -1,7 +1,7 @@
 """Activity log: what changed in the store and when, derived from records the store already keeps, plus a session ledger.
 
-`log` reads note edits from the operation journals (.operations/*/journal.json: every note change keeps its before and after text),
-the change registry (changes.json) from the same journals, and sessions from ledger/sessions-YYYY.jsonl. The journal rows are a
+`log` reads note edits from the operation journals (.operations/*/journal.json: every note change keeps its before and after text)
+and sessions from ledger/sessions-YYYY.jsonl. The journal rows are a
 derived, incremental cache (.cache/activity.json, keyed by operation ID): a deleted cache rebuilds from the journals, and a
 journal that is not final yet is not cached; an entry also keeps its journal's mtime and size, so a journal that recovery rewrote is read again. The ledger is the only canonical part: append-only, never pruned, no text."""
 from __future__ import annotations
@@ -11,16 +11,15 @@ from pathlib import Path
 from .common import parse_iso
 from .repository import BOOKKEEPING_KINDS,FINAL_STATES,_TAIL_STATE,canonical_json,digest,now,os_user,parse_text,read_json
 
-CACHE_VERSION=3
+CACHE_VERSION=4
 NOTE_PATH=re.compile(r'domains/([^/]+)/(?:notes|archive)/.+\.md')
 CONTENT=('title','body','type','tags','context','files','commands','sources')
 STATUS_EVENT={'superseded':'superseded','resolved':'resolved','archived':'archived','active':'reopened'}
 LIFECYCLE={'created','superseded','resolved','archived','restored','deleted','promoted'}
-EVENTS=('created','updated','confirmed','superseded','resolved','archived','reopened','restored','pinned','unpinned','ruled','unruled','deleted','promoted','moved','undone','stage','closed','session')
-CHANGE_FIELDS=('title','repo','branch','system','element')
+EVENTS=('created','updated','confirmed','superseded','resolved','archived','reopened','restored','pinned','unpinned','ruled','unruled','deleted','promoted','moved','undone','session')
 RETIRED={'superseded','resolved','archived'}
 PLAN_KINDS={'merge','rewrite','bulk_retag','reference_remap','import','ingest','schema_migration','note_type_migration','baseline_migration','taxonomy_expansion'}
-PLAN_PREFIXES=('project_','system_','change_')
+PLAN_PREFIXES=('project_','system_','change_')   # change_: legacy journal kind (Changes removed, CON-17)
 
 def _cache_file(root):return Path(root)/'.cache'/'activity.json'
 def _ledger_dir(root):return Path(root)/'ledger'
@@ -165,29 +164,6 @@ def _note_rows(op,kind,created,effects):
         rows.append(_row(op,created,event,f"{domain}:{note_id}",note.get('title'),note.get('type'),domain,[str(t)[8:] for t in note.get('tags') or [] if str(t).startswith('project/')],summary=_summary(kind,event,slot.get('before'),slot.get('after')),actor=_actor(op,kind,slot.get('before'),slot.get('after'))))
     return rows
 
-def _registry(data):
-    try:value=json.loads(base64.b64decode(data).decode('utf-8')) if data is not None else {}
-    except (ValueError,UnicodeError):return {}
-    return {c['id']:c for c in value.get('changes',[]) if isinstance(c,dict) and type(c.get('id')) is int} if isinstance(value,dict) else {}
-
-def _change_rows(op,kind,created,effects):
-    from .changes import display
-    rows=[]
-    for effect in effects:
-        if effect['path']!='changes.json':continue
-        old,new=_registry(effect['before']),_registry(effect['after'])
-        for number in sorted(set(old)|set(new)):
-            before,after=old.get(number),new.get(number);entry=after or before;extra={}
-            if kind.startswith('undo:'):event='undone'
-            elif not before:event='created'
-            elif not after:event='deleted'
-            elif before.get('stage')!=after.get('stage'):event='stage';extra={'detail':f"{before.get('stage')} -> {after.get('stage')}"}
-            elif before.get('status')!=after.get('status'):event='closed' if after.get('status')!='active' else 'reopened';extra={'detail':after.get('status')}
-            elif any(before.get(k)!=after.get(k) for k in CHANGE_FIELDS):event='updated'
-            else:continue
-            rows.append(_row(op,created,event,display(number),entry.get('title'),'change',str(entry.get('brief') or '').partition(':')[0] or None,[entry['project']] if entry.get('project') else [],summary=extra.get('detail') or event,actor='plan' if kind.startswith('change_') and not str(op).startswith('d-') else 'command',**extra))
-    return rows
-
 def _sig(path):
     """[mtime_ns, size] of a journal file, None when it is gone: recovery rewrites a final journal (committed <-> rolled_back), which changes both."""
     try:st=path.stat()
@@ -200,7 +176,7 @@ def _read(path):
     if state is None or sig is None:return None
     try:
         journal=read_json(path);op,kind,created,effects=journal['id'],str(journal['kind']),str(journal['created']),journal['effects']
-        rows=[] if state!='committed' or kind in BOOKKEEPING_KINDS else _note_rows(op,kind,created,effects)+_change_rows(op,kind,created,effects)
+        rows=[] if state!='committed' or kind in BOOKKEEPING_KINDS else _note_rows(op,kind,created,effects)
         user=journal.get('os_user')
         if isinstance(user,str) and user:   # who ran the process that wrote the journal (an older journal has none)
             for row in rows:row['user']=user
@@ -314,8 +290,8 @@ def _at(row):
     except (ValueError,TypeError):return None
 
 def log(root,domain=None,project=None,since=None,until=None,note=None,kind=None,event=None,limit=50):
-    """Rows newest first {time, event, ref, title, type, domain, projects, op}; a change row may add detail and a session row harness, notes and files; a row adds user (the OS user name) when the journal or ledger row recorded one.
-    note: a full note ID or a change number such as CHG-014. since and until are ISO dates or times compared as instants (naive is UTC; a date alone covers that whole UTC day), until inclusive."""
+    """Rows newest first {time, event, ref, title, type, domain, projects, op}; a session row may add harness, notes and files; a row adds user (the OS user name) when the journal or ledger row recorded one.
+    note: a full note ID. since and until are ISO dates or times compared as instants (naive is UTC; a date alone covers that whole UTC day), until inclusive."""
     if event and event not in EVENTS:raise ValueError('--event must be one of '+', '.join(EVENTS))
     low=_bound(since,'since') if since else None;high=_bound(until,'until',True) if until else None
     wanted=[]
