@@ -17,7 +17,39 @@ CONFIG={'claude':'settings.json','codex':'hooks.json','copilot':'hooks/agentic-l
 # Claude and Codex nest the event map under "hooks"; Factory's hooks.json is the event map itself.
 NESTED={'claude','codex'}
 
+# Claude Code's system folder for managed-settings.json and managed-settings.d/ (code.claude.com/docs/en/managed-settings).
+MANAGED_DIR=Path(r'C:\Program Files\ClaudeCode') if os.name=='nt' else Path('/Library/Application Support/ClaudeCode') if sys.platform=='darwin' else Path('/etc/claude-code')
+
 def _script(harness):return ROOT/'hooks'/(harness+'_hooks.py')
+
+def _registry_policies():
+    """(label, text) for the Claude Code policy JSON in the HKLM and HKCU registry, on Windows."""
+    if os.name!='nt':return
+    import winreg
+    for hive,name in ((winreg.HKEY_LOCAL_MACHINE,'HKLM'),(winreg.HKEY_CURRENT_USER,'HKCU')):
+        try:
+            with winreg.OpenKey(hive,r'SOFTWARE\Policies\ClaudeCode') as key:value,kind=winreg.QueryValueEx(key,'Settings')
+        except OSError:continue
+        if kind in (winreg.REG_SZ,winreg.REG_EXPAND_SZ):yield name+r'\SOFTWARE\Policies\ClaudeCode\Settings',value
+
+def _managed_policies():
+    """(label, settings) for each local Claude Code managed settings source that holds a JSON object. Missing,
+    unreadable and invalid sources are skipped. Server-managed settings have no documented local file, so they are not seen."""
+    files=[MANAGED_DIR/'managed-settings.json']
+    try:files+=sorted((MANAGED_DIR/'managed-settings.d').glob('*.json'))
+    except OSError:pass
+    texts=[]
+    for path in files:
+        try:texts.append((str(path),path.read_text(encoding='utf-8-sig')))
+        except (OSError,UnicodeError):pass
+    for label,text in texts+list(_registry_policies()):
+        try:value=json.loads(text)
+        except ValueError:continue
+        if isinstance(value,dict):yield label,value
+
+def _managed_hooks_lock():
+    """Managed sources that set allowManagedHooksOnly, under which Claude Code skips the hooks in ~/.claude/settings.json."""
+    return [label for label,policy in _managed_policies() if policy.get('allowManagedHooksOnly') is True]
 
 def _legacy_script(harness):
     """Where releases before the harness-neutral install put this adapter (CODEX_HOME/agentic-living-memory)."""
@@ -216,6 +248,9 @@ def setup_plan(harness,home=None,enable_hooks=False,uninstall=False,adopt=False)
     if harness=='factory':summary['note']='Factory: hooks.json shape verified against docs; not exercised in a live Droid session.'
     if harness=='copilot':summary['note']='Copilot: event names verified against the CLI hooks reference; not exercised in a live session.'
     if harness=='codex':summary['note']='Codex: handlers carry status messages and context limits; handlers of the old CODEX_HOME/agentic-living-memory copy are replaced.'
+    if harness=='claude' and not uninstall:
+        locked=_managed_hooks_lock()
+        if locked:summary['warning']=f'allowManagedHooksOnly is true in managed settings ({", ".join(locked)}): Claude Code will not run the hooks this plan adds to settings.json. Living Memory works only through the CLI until an administrator deploys the hooks in managed settings.'
     return plan(home,changes,harness+'_uninstall' if uninstall else harness+'_setup',summary=summary,guards={'read_set':read_set})
 
 def main(argv=None):
@@ -231,5 +266,6 @@ def main(argv=None):
     else:
         result=setup_plan(a.harness,home,a.hooks,a.uninstall_plan,a.adopt)
         for name,diff in result['summary'].get('adopt',{}).items():print(f'Adopting {name}: review this difference, then apply the plan.{chr(10)}{diff}',file=sys.stderr)
+        if result['summary'].get('warning'):print('Warning: '+result['summary']['warning'],file=sys.stderr)
     print(json.dumps(result));return 0
 if __name__=='__main__':raise SystemExit(main())

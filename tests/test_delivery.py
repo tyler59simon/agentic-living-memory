@@ -54,6 +54,38 @@ class Delivery(StoreFixture):
         (home/'settings.json').write_text(json.dumps(settings))
         proposed=setup_plan('claude',home);apply(home,proposed['plan_id'],proposed['digest'])
         self.assertEqual(read_json(home/'settings.json')['hooks']['Other'],settings['hooks']['Other'])
+    def managed(self,files):
+        """A managed settings folder holding files (relative name -> text), with no registry policy."""
+        from integrations import setup
+        folder=self.base/'managed';folder.mkdir(exist_ok=True)
+        for name,text in files.items():(folder/name).parent.mkdir(parents=True,exist_ok=True);(folder/name).write_text(text,encoding='utf-8')
+        return patch.multiple(setup,MANAGED_DIR=folder,_registry_policies=lambda:iter(()))
+    def test_claude_setup_warns_when_managed_settings_allow_only_managed_hooks(self):
+        from integrations.setup import setup_plan
+        for name in ('managed-settings.json','managed-settings.d/50-hooks.json'):
+            with self.subTest(name=name),self.managed({name:'{"allowManagedHooksOnly": true}'}):
+                warning=setup_plan('claude',self.base/'claude').get('summary',{}).get('warning','')
+                self.assertIn('allowManagedHooksOnly',warning);self.assertIn(str(self.base/'managed'/name),warning)
+            (self.base/'managed'/name).unlink()
+    def test_claude_setup_ignores_managed_settings_without_the_hooks_lock(self):
+        from integrations.setup import setup_plan
+        for text in ('{"allowManagedHooksOnly": false}','{"model": "x"}','{"allowManagedHooksOnly": "true"}','{not json','[true]'):
+            with self.subTest(text=text),self.managed({'managed-settings.json':text}):
+                proposed=setup_plan('claude',self.base/'claude');self.assertNotIn('warning',proposed['summary'])
+        with self.managed({}):self.assertNotIn('warning',setup_plan('claude',self.base/'claude')['summary'])
+    def test_hooks_lock_warning_only_for_claude_setup(self):
+        from integrations.setup import setup_plan
+        with self.managed({'managed-settings.json':'{"allowManagedHooksOnly": true}'}):
+            self.assertNotIn('warning',setup_plan('claude',self.base/'claude',uninstall=True)['summary'])
+            self.assertNotIn('warning',setup_plan('codex',self.base/'codex')['summary'])
+    def test_setup_main_prints_hooks_lock_warning_to_stderr(self):
+        import io
+        from contextlib import redirect_stderr,redirect_stdout
+        from integrations.setup import main
+        out,err=io.StringIO(),io.StringIO()
+        with self.managed({'managed-settings.json':'{"allowManagedHooksOnly": true}'}),patch('core.storage.ensure_setup'),redirect_stdout(out),redirect_stderr(err):
+            self.assertEqual(main(['claude','--home',str(self.base/'claude')]),0)
+        self.assertIn('Warning: allowManagedHooksOnly',err.getvalue());self.assertIn('warning',json.loads(out.getvalue())['summary'])
     def test_safe_write_requires_approved_plan(self):
         from core.safe_write import safe_write
         from core.notes import find_note
