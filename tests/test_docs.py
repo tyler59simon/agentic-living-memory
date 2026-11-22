@@ -333,6 +333,17 @@ class Privacy(Fixture):
         self.assertEqual(self.ok('doc','notebooks')['notebooks'],[])
         self.assertEqual([n['notebook'] for n in self.ok('doc','notebooks','--include-hidden')['notebooks']],['quiet'])
 
+    def test_notebook_rows_carry_the_settings_object(self):
+        self.notebook('plain');self.notebook('set')
+        docs.update_notebook(self.root,'demo','set',settings={'daily':{'folder':'Daily','format':'YYYY-MM-DD'}})
+        docs.update_notebook(self.root,'demo','set',settings={'inbox':'Inbox.md'})
+        rows={n['notebook']:n for n in self.ok('doc','notebooks')['notebooks']}
+        self.assertEqual(rows['plain']['settings'],{})
+        self.assertEqual(rows['set']['settings'],{'daily':{'folder':'Daily','format':'YYYY-MM-DD'},'inbox':'Inbox.md'})
+        meta=read_json(self.file('notebook.json','plain'));meta['settings']=['not','an','object']
+        self.file('notebook.json','plain').write_text(json.dumps(meta),encoding='utf-8')
+        self.assertEqual({n['notebook']:n for n in self.ok('doc','notebooks')['notebooks']}['plain']['settings'],{})
+
 
 class Retention(Fixture):
     def edits(self,count):

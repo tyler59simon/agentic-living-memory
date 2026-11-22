@@ -303,7 +303,7 @@ def notebooks(root, domains, include_hidden=False, include_private=False):
             rows.append({"domain": domain, "notebook": folder.name, "title": meta.get("title"), "visibility": meta.get("visibility", "searchable"),
                          "private": bool(meta.get("private")), "revision": revision, "pages": len(_pages(folder)), "assets": len(assets),
                          "asset_bytes": sum((folder / "assets" / a).stat().st_size for a in assets), "proposals": pending,
-                         "updated": meta.get("updated")})
+                         "updated": meta.get("updated"), "settings": meta.get("settings") if isinstance(meta.get("settings"), dict) else {}})
     return {"ok": True, "notebooks": rows}
 
 
