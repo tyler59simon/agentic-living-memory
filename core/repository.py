@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import getpass
 import hashlib
 import json
 import os
@@ -718,6 +719,14 @@ def _fold_case_renames(root, changes, expected):
     return changes, expected, renames
 
 
+def os_user():
+    """The operating system login name of whoever runs this process, or None when it cannot be told. Never an email address or git identity."""
+    try:
+        return getpass.getuser() or None
+    except Exception:
+        return None
+
+
 def transaction(root, changes, kind, expected=None, operation_id=None, skip_unchanged=False, meta=None):
     """Durable intent precedes every write. Recovery accepts only known states.
 
@@ -767,6 +776,10 @@ def transaction(root, changes, kind, expected=None, operation_id=None, skip_unch
         journal = {"schema": 1, "id": operation_id, "kind": kind, "created": now(), "state": "prepared", "effects": effects}
         if meta:
             journal["meta"] = meta
+        # canonical_json sorts keys: "os_user" sorts before "state", so a journal still ends with its state (see _TAIL_STATE).
+        user = os_user()
+        if user:
+            journal["os_user"] = user
         # Attachment bytes are durable before the intent that names them, so recovery always finds them.
         for data in blobs:
             _stage_blob(blob_store(root, operation_id), data)

@@ -51,6 +51,10 @@ def _managed_hooks_lock():
     """Managed sources that set allowManagedHooksOnly, under which Claude Code skips the hooks in ~/.claude/settings.json."""
     return [label for label,policy in _managed_policies() if policy.get('allowManagedHooksOnly') is True]
 
+def _hooks_disabled():
+    """Managed sources that set disableAllHooks, under which Claude Code runs no hooks at all."""
+    return [label for label,policy in _managed_policies() if policy.get('disableAllHooks') is True]
+
 def _legacy_script(harness):
     """Where releases before the harness-neutral install put this adapter (CODEX_HOME/agentic-living-memory)."""
     return Path(os.environ.get('CODEX_HOME',Path.home()/'.codex')).expanduser()/'agentic-living-memory'/'hooks'/(harness+'_hooks.py')
@@ -98,18 +102,37 @@ def managed_handlers(config,harness):
     events=_events(config,harness)
     return {event:[{**group,'hooks':[h for h in group.get('hooks',[]) if _ours(h,harness)]} for group in groups if any(_ours(h,harness) for h in group.get('hooks',[]))] for event,groups in events.items() if isinstance(groups,list) and any(isinstance(group,dict) and any(_ours(h,harness) for h in group.get('hooks',[])) for group in groups)}
 
+def _plain_path(path):
+    """True when a program path can sit unquoted in both PowerShell and cmd.exe: no whitespace and no shell syntax characters."""
+    return bool(path) and not re.search(r"""[\s"'`$%&|<>()^;,{}\[\]@#!]""",path)
+
+def _short_path(path):
+    """The Windows 8.3 short form of a path, or None when the call fails. A volume without 8.3 names returns the long path unchanged."""
+    try:
+        import ctypes
+        buffer=ctypes.create_unicode_buffer(32768)
+        size=ctypes.windll.kernel32.GetShortPathNameW(str(path),buffer,len(buffer))
+        return buffer.value if 0<size<len(buffer) else None
+    except (AttributeError,OSError):return None
+
 def hook_command(script,action):
-    """A Codex command handler. On Windows Codex runs commandWindows; a quoted executable alone is a string
-    expression in PowerShell, so use the py launcher, or an encoded PowerShell command when it is unavailable."""
+    """A Codex command handler. On Windows Codex runs commandWindows through a shell that is not pinned down (PowerShell or
+    cmd.exe), and a quoted executable alone is a string expression in PowerShell, so the program must be a bare path without
+    spaces: the py launcher, else this interpreter, else its 8.3 short path. Only when none of them qualifies does it fall
+    back to an encoded PowerShell command, which EDR tools may flag (setup_plan warns)."""
+    bad='"$`'+('%' if os.name=='nt' else '')
+    if any(c in str(script) for c in bad):raise ValueError(f'The hook script path {script} contains one of {" ".join(bad)}, which no quoting makes safe in both PowerShell and cmd.exe. Install Living Memory in a folder without them.')
     script_arg=f'"{script}"'
     if os.name=='nt':
-        launcher=shutil.which('py')
-        if launcher and not any(c.isspace() for c in launcher):
-            windows=f'{launcher} -{sys.version_info.major}.{sys.version_info.minor} -X utf8 {script_arg} {action}'
+        launcher=shutil.which('py');tail=f'-X utf8 {script_arg} {action}'
+        if _plain_path(launcher):windows=f'{launcher} -{sys.version_info.major}.{sys.version_info.minor} {tail}'
         else:
-            import base64
-            expression='& "'+str(sys.executable).replace('"','`"')+'" -X utf8 '+script_arg+' '+action
-            windows='powershell.exe -NoProfile -NonInteractive -EncodedCommand '+base64.b64encode(expression.encode('utf-16-le')).decode('ascii')
+            program=next((p for p in (sys.executable,_short_path(sys.executable)) if _plain_path(p)),None)
+            if program:windows=f'{program} {tail}'
+            else:
+                import base64
+                expression='& "'+str(sys.executable).replace('"','`"')+'" '+tail
+                windows='powershell.exe -NoProfile -NonInteractive -EncodedCommand '+base64.b64encode(expression.encode('utf-16-le')).decode('ascii')
         return {'type':'command','command':f'python3 {script_arg} {action}','commandWindows':windows}
     return {'type':'command','command':f'"{sys.executable}" {script_arg} {action}'}
 
@@ -248,6 +271,8 @@ def setup_plan(harness,home=None,enable_hooks=False,uninstall=False,adopt=False)
     if harness=='factory':summary['note']='Factory: hooks.json shape verified against docs; not exercised in a live Droid session.'
     if harness=='copilot':summary['note']='Copilot: event names verified against the CLI hooks reference; not exercised in a live session.'
     if harness=='codex':summary['note']='Codex: handlers carry status messages and context limits; handlers of the old CODEX_HOME/agentic-living-memory copy are replaced.'
+    if harness=='codex' and not uninstall and any('-EncodedCommand' in h.get('commandWindows','') for groups in generated.values() for group in groups for h in group['hooks']):
+        summary['warning']='No py launcher or space-free Python path is available, so the Windows hook commands use an encoded PowerShell command, which EDR tools may flag. Installing the py launcher or Python in a folder without spaces in its path avoids it.'
     if harness=='claude' and not uninstall:
         locked=_managed_hooks_lock()
         if locked:summary['warning']=f'allowManagedHooksOnly is true in managed settings ({", ".join(locked)}): Claude Code will not run the hooks this plan adds to settings.json. Living Memory works only through the CLI until an administrator deploys the hooks in managed settings.'

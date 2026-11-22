@@ -9,7 +9,7 @@ import base64,difflib,json,os,re
 from datetime import timedelta,timezone
 from pathlib import Path
 from .common import parse_iso
-from .repository import BOOKKEEPING_KINDS,FINAL_STATES,_TAIL_STATE,canonical_json,digest,now,parse_text,read_json
+from .repository import BOOKKEEPING_KINDS,FINAL_STATES,_TAIL_STATE,canonical_json,digest,now,os_user,parse_text,read_json
 
 CACHE_VERSION=3
 NOTE_PATH=re.compile(r'domains/([^/]+)/(?:notes|archive)/.+\.md')
@@ -201,6 +201,9 @@ def _read(path):
     try:
         journal=read_json(path);op,kind,created,effects=journal['id'],str(journal['kind']),str(journal['created']),journal['effects']
         rows=[] if state!='committed' or kind in BOOKKEEPING_KINDS else _note_rows(op,kind,created,effects)+_change_rows(op,kind,created,effects)
+        user=journal.get('os_user')
+        if isinstance(user,str) and user:   # who ran the process that wrote the journal (an older journal has none)
+            for row in rows:row['user']=user
     except (ValueError,KeyError,TypeError,UnicodeError):return None
     return {'created':created,'kind':kind,'rows':rows,'files':[e['path'] for e in effects],'sig':sig}
 
@@ -234,7 +237,7 @@ def note_history(root,note_id,limit=20):
     rows=[]
     for op,entry in _entries(root).items():
         row=next((r for r in entry['rows'] if r['ref'].rpartition(':')[2]==note_id),None)
-        if row:rows.append({'operation_id':op,'kind':entry['kind'],'state':'committed','created':entry['created'],'files':entry.get('files',[]),'event':row['event'],'title':row['title'],'summary':row.get('summary'),'actor':row.get('actor')})
+        if row:rows.append({'operation_id':op,'kind':entry['kind'],'state':'committed','created':entry['created'],'files':entry.get('files',[]),'event':row['event'],'title':row['title'],'summary':row.get('summary'),'actor':row.get('actor'),**({'user':row['user']} if row.get('user') else {})})
     return sorted(rows,key=lambda r:r['created'],reverse=True)[:max(1,limit)]
 
 def operation_label(entry,op,kind):
@@ -246,8 +249,8 @@ def operation_label(entry,op,kind):
     return _short(text if len(rows)==1 else f"{len(rows)} changes: {text}"),first.get('actor') or 'command'
 
 def markdown(rows):
-    """A dated list a person can read, one line per history row: - 2026-11-14 18:25 archived (maintenance): summary."""
-    return '\n'.join(f"- {str(r['created'])[:16].replace('T',' ')} {r.get('event') or r['kind']}"+(f" ({r['actor']})" if r.get('actor') else '')+(f": {r['summary']}" if r.get('summary') else '') for r in rows)
+    """A dated list a person can read, one line per history row: - 2026-11-14 18:25 archived (maintenance, user): summary (the actor, and the OS user when the row has one)."""
+    return '\n'.join(f"- {str(r['created'])[:16].replace('T',' ')} {r.get('event') or r['kind']}"+(f" ({r['actor']}{', '+r['user'] if r.get('user') else ''})" if r.get('actor') else '')+(f": {r['summary']}" if r.get('summary') else '') for r in rows)
 
 def _absolute(path,prefixes):
     """A touched path as the hooks store it (relative to a folder bound to the domain, else absolute) made absolute: the bound folder that holds the file, else the first."""
@@ -264,15 +267,15 @@ def _slugs(root,cwd,state,domain=None):
 
 def record_session(root,domain,session,state,cwd=None):
     """Append this session's row to ledger/sessions-YYYY.jsonl: {t, s, h, d, p, n, f, r?} (time, session hash, harness, domain, project
-    slugs, refs saved, files changed, and r: 1 when a turn had a receipt but nothing was saved, such as "nothing durable"), no text. A quiet session has no row, and a row is written only when it differs from the
+    slugs, refs saved, files changed, r: 1 when a turn had a receipt but nothing was saved, such as "nothing durable", and u: the OS user name when known), no text. A quiet session has no row, and a row is written only when it differs from the
     session's last one (state['ledger_sig']). Returns the new signature when a row was appended, else None."""
     saved=list(dict.fromkeys(state.get('saved') or []));files=len(state.get('touched_session') or [])
     if not saved and not files:return None
     row={'s':session,'h':state.get('harness') or 'unknown','d':domain,'p':_slugs(root,cwd,state,domain),'n':saved,'f':files,**({'r':1} if state.get('receipted') and not saved else {})}
     sig=digest(canonical_json(row).encode())[:12]
     if sig==state.get('ledger_sig'):return None
-    stamp=now();path=_ledger_dir(root)/f'sessions-{stamp[:4]}.jsonl';path.parent.mkdir(parents=True,exist_ok=True)
-    with path.open('ab') as handle:handle.write((json.dumps({'t':stamp,**row},ensure_ascii=False,separators=(',',':'))+'\n').encode('utf-8'))
+    user=os_user();stamp=now();path=_ledger_dir(root)/f'sessions-{stamp[:4]}.jsonl';path.parent.mkdir(parents=True,exist_ok=True)
+    with path.open('ab') as handle:handle.write((json.dumps({'t':stamp,**row,**({'u':user} if user else {})},ensure_ascii=False,separators=(',',':'))+'\n').encode('utf-8'))
     return sig
 
 def last_session_rows(root):
@@ -292,7 +295,7 @@ def session_rows(root):
     rows=[]
     for sid,r in last_session_rows(root).items():
         notes=[n for n in r.get('n') or [] if isinstance(n,str)];files=r.get('f') if type(r.get('f')) is int else 0;harness=str(r.get('h') or 'unknown')
-        rows.append(_row(None,r['t'],'session',sid,f"{harness}: {len(notes)} note(s) saved, {files} file(s) changed",'session',r.get('d'),[p for p in r.get('p') or [] if isinstance(p,str)],harness=harness,notes=notes,files=files))
+        rows.append(_row(None,r['t'],'session',sid,f"{harness}: {len(notes)} note(s) saved, {files} file(s) changed",'session',r.get('d'),[p for p in r.get('p') or [] if isinstance(p,str)],harness=harness,notes=notes,files=files,**({'user':r['u']} if isinstance(r.get('u'),str) and r['u'] else {})))
     return rows
 
 def _instant(value):
@@ -311,7 +314,7 @@ def _at(row):
     except (ValueError,TypeError):return None
 
 def log(root,domain=None,project=None,since=None,until=None,note=None,kind=None,event=None,limit=50):
-    """Rows newest first {time, event, ref, title, type, domain, projects, op}; a change row may add detail and a session row harness, notes and files.
+    """Rows newest first {time, event, ref, title, type, domain, projects, op}; a change row may add detail and a session row harness, notes and files; a row adds user (the OS user name) when the journal or ledger row recorded one.
     note: a full note ID or a change number such as CHG-014. since and until are ISO dates or times compared as instants (naive is UTC; a date alone covers that whole UTC day), until inclusive."""
     if event and event not in EVENTS:raise ValueError('--event must be one of '+', '.join(EVENTS))
     low=_bound(since,'since') if since else None;high=_bound(until,'until',True) if until else None

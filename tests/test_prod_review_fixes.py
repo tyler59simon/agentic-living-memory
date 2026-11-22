@@ -547,6 +547,22 @@ class HookHints(Cli):
 class Doctor(Cli):
     """ENV-1: doctor says whether each harness's hooks still reach an interpreter and this package."""
 
+    def setUp(self):
+        super().setUp()
+        self.managed({})   # never read the real machine's managed settings or registry policy
+
+    def managed(self, files):
+        """Point setup at a managed settings folder holding files (relative name -> text), with no registry policy."""
+        from integrations import setup
+        folder = self.base / 'managed'
+        folder.mkdir(exist_ok=True)
+        for name, text in files.items():
+            (folder / name).parent.mkdir(parents=True, exist_ok=True)
+            (folder / name).write_text(text, encoding='utf-8')
+        patcher = unittest.mock.patch.multiple(setup, MANAGED_DIR=folder, _registry_policies=lambda: iter(()))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def wire(self, interpreter, script=None):
         home = Path(os.environ['CLAUDE_HOME'])
         home.mkdir(parents=True, exist_ok=True)
@@ -587,6 +603,44 @@ class Doctor(Cli):
         self.wire(sys.executable, other)
         row = self.ok('doctor')['hooks']['wiring']['claude']
         self.assertEqual((row['this_copy'], row['script_exists'], row['problems']), (False, True, []))
+
+    def test_hooks_that_managed_settings_switch_off_make_doctor_fail_with_the_remedy(self):
+        """REG-27: allowManagedHooksOnly or disableAllHooks in managed settings means Claude Code never runs the hooks in settings.json."""
+        for name, setting in (('managed-settings.json', 'allowManagedHooksOnly'), ('managed-settings.d/50-hooks.json', 'allowManagedHooksOnly'),
+                              ('managed-settings.json', 'disableAllHooks')):
+            with self.subTest(name=name, setting=setting):
+                self.wire(sys.executable)
+                self.managed({name: json.dumps({setting: True})})
+                source = str(self.base / 'managed' / name)
+                report = self.ok('doctor')
+                row = report['hooks']['wiring']['claude']
+                self.assertEqual(row['blocked'], [{'source': source, 'setting': setting}])
+                self.assertFalse(report['ok'])
+                warning = next(w for w in report['warnings'] if w.startswith('hooks: claude:') and source in w)
+                self.assertIn(setting, warning)
+                self.assertIn('Managed Claude Code', warning)
+                (self.base / 'managed' / name).unlink()
+
+    def test_the_users_own_disable_all_hooks_makes_doctor_fail_and_says_to_remove_it(self):
+        self.wire(sys.executable)
+        path = Path(os.environ['CLAUDE_HOME']) / 'settings.json'
+        config = json.loads(path.read_text(encoding='utf-8'))
+        config['disableAllHooks'] = True
+        path.write_text(json.dumps(config), encoding='utf-8')
+        report = self.ok('doctor')
+        self.assertEqual(report['hooks']['wiring']['claude']['blocked'], [{'source': str(path), 'setting': 'disableAllHooks'}])
+        self.assertFalse(report['ok'])
+        self.assertTrue(any(str(path) in w and 'remove "disableAllHooks"' in w for w in report['warnings']))
+
+    def test_managed_settings_that_leave_hooks_alone_do_not_change_doctor(self):
+        for text in ('{"allowManagedHooksOnly": false}', '{"disableAllHooks": false}', '{"model": "x"}', '{"allowManagedHooksOnly": "true"}', '{not json'):
+            with self.subTest(text=text):
+                self.wire(sys.executable)
+                self.managed({'managed-settings.json': text})
+                report = self.ok('doctor')
+                self.assertEqual(report['hooks']['wiring']['claude']['blocked'], [])
+                self.assertTrue(report['ok'])
+        self.assertFalse(any(w.startswith('hooks: claude:') and 'managed settings' in w for w in report['warnings']))
 
     def test_unfinished_and_unreadable_journals_are_found_without_parsing_every_journal(self):
         from core import repository

@@ -179,7 +179,7 @@ def history(root,note_id=None,limit=20,include_private=False):
         try:
             value=read_json(path)
             summary,actor=operation_label(entries.get(value['id']),value['id'],str(value['kind']))
-            row={'operation_id':value['id'],'kind':value['kind'],'state':value['state'],'created':value['created'],'files':[e['path'] for e in value['effects']],'summary':summary,'actor':actor}
+            row={'operation_id':value['id'],'kind':value['kind'],'state':value['state'],'created':value['created'],'files':[e['path'] for e in value['effects']],'summary':summary,'actor':actor,**({'user':value['os_user']} if isinstance(value.get('os_user'),str) and value['os_user'] else {})}
             # Operations on a private notebook show no paths and no summary unless the caller passes --include-private (NS-2A).
             if scope and journal_private(root,value,scope):
                 kept=[f for f in row['files'] if not is_private_path(f,scope) and not (value.get('meta') or {}).get('uid') in scope[1]]

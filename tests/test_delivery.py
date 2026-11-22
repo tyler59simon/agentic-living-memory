@@ -6,19 +6,83 @@ from core.repository import read_json,inventory,parse,serialize
 from core.governance import apply,retag_plan
 
 class Delivery(StoreFixture):
+    def through_shells(self,command,action):
+        """Run one hook command through PowerShell and through cmd.exe, as Codex may: both must exit 0 and print JSON or nothing."""
+        env={**os.environ,'LIVING_MEMORY_ROOT':str(self.root)}
+        payload=json.dumps({'cwd':str(self.base/'project'),'session_id':'shell-regression','turn_id':'shell-turn','prompt':'Unicode: λ 漢字'})
+        for shell in ('powershell','cmd'):
+            invocation=['powershell.exe','-NoProfile','-NonInteractive','-Command',command] if shell=='powershell' else 'cmd.exe /d /s /c "'+command+'"'
+            result=subprocess.run(invocation,input=payload,encoding='utf-8',capture_output=True,env=env,timeout=30)
+            self.assertEqual(result.returncode,0,(shell,action,command,result.stderr))
+            if result.stdout.strip():json.loads(result.stdout)
     @unittest.skipUnless(os.name=='nt','Windows shell launch regression')
     def test_generated_hooks_execute_through_windows_shells(self):
         from integrations.setup import hook_command
         script=Path(__file__).resolve().parents[1]/'hooks/codex_hooks.py'
-        env={**os.environ,'LIVING_MEMORY_ROOT':str(self.root)}
         for action in ('session-start','user-prompt','subagent-start','pre-tool-use','stop'):
-            command=hook_command(script,action)['commandWindows']
-            payload=json.dumps({'cwd':str(self.base/'project'),'session_id':'shell-regression','turn_id':'shell-turn','prompt':'Unicode: λ 漢字'})
-            for shell in ('powershell','cmd'):
-                invocation=['powershell.exe','-NoProfile','-NonInteractive','-Command',command] if shell=='powershell' else 'cmd.exe /d /s /c "'+command+'"'
-                result=subprocess.run(invocation,input=payload,encoding='utf-8',capture_output=True,env=env,timeout=30)
-                self.assertEqual(result.returncode,0,(shell,action,result.stderr))
-                if result.stdout.strip():json.loads(result.stdout)
+            self.through_shells(hook_command(script,action)['commandWindows'],action)
+    @unittest.skipUnless(os.name=='nt','Windows shell launch regression')
+    def test_an_interpreter_path_with_spaces_runs_in_both_shells(self):
+        """REG-28: no py launcher and an interpreter under a folder with a space (a junction needs no admin rights): its 8.3 short path, else the encoded fallback."""
+        from integrations import setup
+        if 'WindowsApps' in sys.executable:self.skipTest('a Microsoft Store Python cannot be started through a junction')
+        link=self.base/'Program Files'/'Python Link';link.parent.mkdir()
+        made=subprocess.run(['cmd.exe','/c','mklink','/J',str(link),str(Path(sys.executable).parent)],capture_output=True)
+        if made.returncode:self.skipTest('cannot make a junction here')
+        spaced=str(link/Path(sys.executable).name);script=Path(__file__).resolve().parents[1]/'hooks/codex_hooks.py'
+        with patch.object(sys,'executable',spaced),patch.object(setup.shutil,'which',return_value=None):
+            short=setup._short_path(spaced)
+            if setup._plain_path(short):
+                command=setup.hook_command(script,'stop')['commandWindows']
+                self.assertTrue(command.startswith(short+' -X utf8 '),command);self.assertNotIn('EncodedCommand',command)
+                for action in ('user-prompt','stop'):self.through_shells(setup.hook_command(script,action)['commandWindows'],action)
+            with patch.object(setup,'_short_path',return_value=None):   # 8.3 names are off on the volume
+                for action in ('user-prompt','stop'):
+                    command=setup.hook_command(script,action)['commandWindows'];self.assertIn('-EncodedCommand',command);self.through_shells(command,action)
+    @unittest.skipUnless(os.name=='nt','Windows command shape')
+    def test_hook_command_takes_the_first_program_path_that_is_safe_unquoted(self):
+        import base64
+        from integrations import setup
+        script=Path(__file__).resolve().parents[1]/'hooks/codex_hooks.py';version=f'-{sys.version_info.major}.{sys.version_info.minor}'
+        def command(launcher,executable,short):
+            with patch.object(setup.shutil,'which',return_value=launcher),patch.object(sys,'executable',executable),patch.object(setup,'_short_path',return_value=short):
+                return setup.hook_command(script,'stop')['commandWindows']
+        tail=f'-X utf8 "{script}" stop'
+        self.assertEqual(command(r'C:\Windows\py.EXE',r'C:\Python\python.exe',None),rf'C:\Windows\py.EXE {version} {tail}')   # the launcher, as before
+        self.assertEqual(command(r'C:\Program Files\py.exe',r'C:\Python\python.exe',None),rf'C:\Python\python.exe {tail}')   # no launcher it can use: this interpreter, unquoted
+        self.assertEqual(command(None,r'C:\Python\python.exe',None),rf'C:\Python\python.exe {tail}')
+        self.assertEqual(command(None,r'C:\Program Files\Python\python.exe',r'C:\PROGRA~1\Python\python.exe'),rf'C:\PROGRA~1\Python\python.exe {tail}')   # its 8.3 short path
+        self.assertEqual(command(None,r'C:\Dev & Co\python.exe',r'C:\DEVCO~1\python.exe'),rf'C:\DEVCO~1\python.exe {tail}')   # a character a shell reads is not plain either
+        for short in (None,r'C:\Program Files\Python\python.exe'):   # 8.3 names off: the call fails or hands back the long name
+            fallback=command(None,r'C:\Program Files\Python\python.exe',short);self.assertTrue(fallback.startswith('powershell.exe -NoProfile -NonInteractive -EncodedCommand '))
+            self.assertEqual(base64.b64decode(fallback.rsplit(' ',1)[1]).decode('utf-16-le'),rf'& "C:\Program Files\Python\python.exe" {tail}')
+    @unittest.skipUnless(os.name=='nt','Windows command shape')
+    def test_codex_setup_warns_about_the_encoded_command_only_when_it_is_used(self):
+        from integrations import setup
+        def warning(launcher,executable,short):
+            with patch.object(setup.shutil,'which',return_value=launcher),patch.object(sys,'executable',executable),patch.object(setup,'_short_path',return_value=short):
+                return setup.setup_plan('codex',self.base/'codex')['summary'].get('warning','')
+        spaced=r'C:\Program Files\Python\python.exe';text=warning(None,spaced,None)
+        self.assertIn('EDR',text);self.assertIn('py launcher',text)
+        self.assertEqual(warning(None,r'C:\Python\python.exe',None),'');self.assertEqual(warning(r'C:\Windows\py.EXE',spaced,None),'');self.assertEqual(warning(None,spaced,r'C:\PROGRA~1\Python\python.exe'),'')
+    def test_a_script_path_no_quoting_can_protect_is_refused(self):
+        from integrations.setup import hook_command
+        for bad in ('$env','a"b','back`tick')+(('100%',) if os.name=='nt' else ()):
+            with self.subTest(bad=bad),self.assertRaisesRegex(ValueError,'no quoting'):hook_command(self.base/bad/'codex_hooks.py','stop')
+    @unittest.skipUnless(os.name=='nt','Windows command shape')
+    def test_an_older_encoded_handler_is_still_recognised_and_replaced(self):
+        """REG-28: handlers an older build wrote (an encoded PowerShell command) are found by doctor and replaced by the plain form."""
+        import base64
+        from integrations import setup
+        from core import wiring
+        script=Path(__file__).resolve().parents[1]/'hooks/codex_hooks.py'
+        encoded=base64.b64encode(f'& "C:\\Python\\python.exe" -X utf8 "{script}" stop'.encode('utf-16-le')).decode('ascii')
+        handler={'type':'command','command':f'python3 "{script}" stop','commandWindows':'powershell.exe -NoProfile -NonInteractive -EncodedCommand '+encoded}
+        self.assertEqual(wiring._script(handler,'codex'),str(script));self.assertTrue(setup._ours(handler,'codex'))
+        home=self.base/'codex';home.mkdir();(home/'hooks.json').write_text(json.dumps({'hooks':{'Stop':[{'hooks':[handler]}]}}))
+        with patch.object(setup.shutil,'which',return_value=r'C:\Windows\py.EXE'):
+            proposed=setup.setup_plan('codex',home);apply(home,proposed['plan_id'],proposed['digest'])
+        stops=read_json(home/'hooks.json')['hooks']['Stop'];self.assertEqual(len(stops),1);self.assertNotIn('EncodedCommand',json.dumps(stops))
     def test_package_install_rerun_and_uninstall(self):
         import install
         home=self.base/'local'/'agentic-living-memory'
