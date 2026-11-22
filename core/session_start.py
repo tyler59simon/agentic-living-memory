@@ -211,6 +211,17 @@ def _user_brief(root):
         from .logs import swallowed
         swallowed('session_start.user_brief',exc,root);return None
 
+def _page_overdue(root,domains,today):
+    """[(due, task, 'path:line')] of the open page tasks of injectable notebooks (hosted and folder) that are past due, from the page
+    index as it is: SessionStart never reindexes, and any error means no page tasks."""
+    try:
+        from . import docs_index
+        rows,_=docs_index.task_rows(root,domains,open_only=True,refresh=False,levels=('injectable',),folders=True)
+        return [(t['due'],t['task'],f"{t['path']}:{t['line']}") for t in rows if t['due'] and t['due']<today]
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('session_start.page_overdue',exc,root);return []
+
 def _open_lines(active,root,bindings,project=None):
     """(header line, lines, how many lines are notes with open action items) for the active, parent, child and global domains: those notes
     first (the current project's first, stable; the count in the header does not change), then bugs with no recorded root cause."""
@@ -220,7 +231,10 @@ def _open_lines(active,root,bindings,project=None):
     domains=list(dict.fromkeys([active]+scope_domains(active,bindings)+global_domains(root)))
     # A bug recorded as a pitfall (a gotcha) is listed as one; the rest are open until someone writes down why.
     found=open_work(domains,root);bugs=[(d,n) for d,n in unresolved_bugs(domains,root) if not is_gotcha(n)]
-    if not found and not bugs:return None,[],0
+    from . import clock
+    from .note_format import item_fields
+    today=clock.today().isoformat();page_late=_page_overdue(root,domains,today)
+    if not found and not bugs and not page_late:return None,[],0
     if project:
         from . import projects
         found=sorted(found,key=lambda f:projects.tag(project['slug']) not in (f[1].get('tags') or []))
@@ -230,10 +244,7 @@ def _open_lines(active,root,bindings,project=None):
     bug_only=[(d,n) for d,n in bugs if (d,n['id']) not in listed][:OPEN_BUGS]
     unsaid=' (no root cause recorded yet)'
     # An open item with a due date before today leads the list: oldest due first, three named.
-    from . import clock
-    from .note_format import item_fields
-    today=clock.today().isoformat()
-    late=sorted((fields['due'],task,short_ref(d,n['id'])) for d,n,items in found for _,text in items for task,fields,_ in [item_fields(text)] if fields['due'] and fields['due']<today)
+    late=sorted([(fields['due'],task,short_ref(d,n['id'])) for d,n,items in found for _,text in items for task,fields,_ in [item_fields(text)] if fields['due'] and fields['due']<today]+page_late)
     parts=([f"{count} item{'s' if count!=1 else ''} in {len(found)} note{'s' if len(found)!=1 else ''}"] if found else [])+([f"{len(late)} overdue"] if late else [])+([f"{len(bugs)} bug{'s' if len(bugs)!=1 else ''} without a root cause"] if bugs else [])
     header=f"Open work ({', '.join(parts)}; CMD open lists them, CMD check REF 'item' ticks one):"
     lines=[f"- {short_ref(d,n['id'])} {_title(n['title'])} — {_title(items[0][1])[:ITEM_MAX]}"+(unsaid if (d,n['id']) in unexplained else '') for d,n,items in found[:OPEN_NOTES]]

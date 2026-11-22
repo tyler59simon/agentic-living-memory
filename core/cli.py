@@ -817,7 +817,7 @@ def build_parser():
     sections_args(p,update=True);_file_flags(p)
     p=sub('supersede');p.add_argument('reference');p.add_argument('--by',required=True,help='REF of the note that replaces it; its links and files are carried over (see --drop-links)');p.add_argument('--drop-links',action='store_true',help='Do not carry the links and files of the replaced note over');p.add_argument('--session');p.add_argument('--turn')
     p=sub('review');p.add_argument('--kind',action='append',choices=['stale','due','interim','duplicate','warned','noisy'],help='Only this kind of row (repeatable): stale, due, interim, duplicate, warned, noisy');p.add_argument('--limit',type=int,default=20);p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)')
-    p=sub('open');p.add_argument('--due-by',metavar='DATE',help='Only items with a due date on or before DATE (YYYY-MM-DD)');p.add_argument('--owner',help='Only items owned by this name (case-insensitive)');p.add_argument('--sort',choices=['updated','due'],default='updated',help='updated: newest note first (default); due: earliest due date first, undated items last');p.add_argument('--limit',type=int,default=50);p.add_argument('--all-domains',action='store_true',help='Every domain folder, not parents and global only');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)')
+    p=sub('open');p.add_argument('--due-by',metavar='DATE',help='Only items with a due date on or before DATE (YYYY-MM-DD)');p.add_argument('--owner',help='Only items owned by this name (case-insensitive)');p.add_argument('--sort',choices=['updated','due'],default='updated',help='updated: newest note first (default); due: earliest due date first, undated items last');p.add_argument('--pages',choices=['injectable','searchable','none'],default='injectable',help='Which notebook page tasks join the list: injectable (default: injectable notebooks, hosted or folder), searchable (searchable ones too) or none (notes only)');p.add_argument('--limit',type=int,default=50);p.add_argument('--all-domains',action='store_true',help='Every domain folder, not parents and global only');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match); page tasks have no tags, so none are listed then')
     p=sub('check');p.add_argument('reference');p.add_argument('item',nargs='?',help='Text of the action item: exact, or a unique part of it');p.add_argument('--index',type=int,help="1-based position among the note's action items, as open lists it");p.add_argument('--undo',action='store_true',help='Untick instead');p.add_argument('--session');p.add_argument('--turn')
     p=sub('timeline');p.add_argument('reference',nargs='?',help='Anchor note; default: the newest note');p.add_argument('--date',help='YYYY-MM-DD: anchor at the first note on or after this date');p.add_argument('--before',type=int,default=5);p.add_argument('--after',type=int,default=5);p.add_argument('--type',type=_type_name,action='append');p.add_argument('--by',choices=['updated','created'],default='updated');p.add_argument('--all',action='store_true',help='Include superseded, archived and resolved notes')
     p=sub('ingest-plan');p.add_argument('--source',type=Path,help="Auto-memory folder; default: Claude Code's folder for --cwd");p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of skipping the file");p.add_argument('--allow-similar',action='store_true')
@@ -1270,7 +1270,7 @@ def main(argv=None):
             result=note_links(root,domains,args.status)
         elif cmd=='version':
             from .installer_lifecycle import CORE_RELEASE,installed_stamp
-            result={'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'restore':1,'pin':1,'rule':1,'direct_writes':1,'note_types':1,'history':3,'items':{'fields':1},'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']},'wiki_agent':{'version':1},
+            result={'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'restore':1,'pin':1,'rule':1,'direct_writes':1,'note_types':1,'history':3,'items':{'fields':2},'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']},'wiki_agent':{'version':1},
                                                                                                                                          'docs':{'version':1,'max_page_bytes':4194304,'max_asset_bytes':26214400,'notebook_only_domains':True,'search':True,'folder_policy':2,'accept_edited':True}}}
         elif cmd=='update':
             from .notes import change
@@ -1378,15 +1378,25 @@ def main(argv=None):
             from .note_format import item_fields,valid_date
             if args.due_by and not valid_date(args.due_by):raise ValueError('--due-by must be a YYYY-MM-DD date')
             today=clock.today().isoformat()
-            items=[]
+            items=[];wanted=lambda fields:not (args.due_by and not (fields['due'] and fields['due']<=args.due_by) or args.owner and (fields['owner'] or '').casefold()!=args.owner.strip().casefold())
             for d,n,listed in found:
                 for i,text in listed:
                     task,fields,_=item_fields(text);due=fields['due']
-                    if args.due_by and not (due and due<=args.due_by) or args.owner and (fields['owner'] or '').casefold()!=args.owner.strip().casefold():continue
-                    items.append({'ref':f"{d}:{n['id']}",'short_ref':short_ref(d,n['id']),'title':n['title'],'type':n['type'],'updated':str(n.get('updated',''))[:10],'index':i,'item':text,'task':task,**fields,'overdue':due<today if due else None})
-            if args.sort=='due':items.sort(key=lambda row:(row['due'] is None,row['due'] or ''))   # stable: ties keep the newest note first
-            result={'ok':True,'domain':None if args.all_domains else domain,'notes':len({row['ref'] for row in items}),'count':len(items),'items':items[:max(1,min(500,args.limit))],
-                    'hint':"Tick one when done: check REF 'item text' (or --index N); --undo unticks."}
+                    if not wanted(fields):continue
+                    items.append({'kind':'note','ref':f"{d}:{n['id']}",'short_ref':short_ref(d,n['id']),'title':n['title'],'type':n['type'],'updated':str(n.get('updated',''))[:10],'index':i,'item':text,'task':task,**fields,'overdue':due<today if due else None})
+            stale=False
+            if args.pages!='none' and not args.tag:
+                # Page tasks: hosted notebooks and registered folder notebooks of these domains, at the levels --pages names; no ref or index, a page is ticked by editing it.
+                from . import docs_index
+                names=[d['name'] for d in list_domains(root)['domains']] if args.all_domains else list(dict.fromkeys(scope))
+                rows,stale=docs_index.task_rows(root,names,open_only=True,levels=('injectable','searchable') if args.pages=='searchable' else ('injectable',),folders=True)
+                for t in sorted(rows,key=lambda t:(t['domain'],t['notebook'],t['path'],t['line'])):
+                    fields={k:t[k] for k in ('due','owner','priority')}
+                    if wanted(fields):items.append({'kind':'page','domain':t['domain'],'notebook':t['notebook'],'path':t['path'],'title':t['title'],'line':t['line'],'item':t['text'],'task':t['task'],**fields,'overdue':t['due']<today if t['due'] else None})
+            if args.sort=='due':items.sort(key=lambda row:(row['due'] is None,row['due'] or ''))   # stable: ties keep the newest note first, then the pages in path order
+            result={'ok':True,'domain':None if args.all_domains else domain,'notes':len({row['ref'] for row in items if row['kind']=='note'}),'count':len(items),'items':items[:max(1,min(500,args.limit))],
+                    'hint':"Tick one when done: check REF 'item text' (or --index N); --undo unticks."+(' A page task (kind page) is ticked by editing its page.' if any(row['kind']=='page' for row in items) else '')}
+            if stale:result['pages_stale']=True
         elif cmd=='check':
             from .notes import check_action
             d,n=_reference(args.reference,domain,root)

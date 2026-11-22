@@ -9,23 +9,27 @@ Each call walks at least one notebook and indexes at least one page, even past t
 of several domains, only the one that had that allowance longest ago gets it. A page that cannot be read is retried after the
 others and keeps `pages_stale` true; a folder that cannot be listed keeps the rows of the pages under it until it can be.
 Every notebook is indexed, hidden and private ones too; who may see a page is decided when results are served, from the
-notebook.json files as they are now."""
+notebook.json files as they are now. The registered folder notebooks of a domain (core/folder_policy.py) are listed beside the
+hosted ones, named nb- plus ten hex digits as in sources._notebook_sources, so their task lines reach `open`. Their search is served
+from the sources index, so here they get only file, task and prop rows: no chunks, search text, vocabulary or vectors. Only `open`
+serves them (visible with a policy), judged for each page by the strictest policy over its folder. A folder that is hidden or
+private now is not listed and its rows are dropped; a dot folder, a link and a page over sources.MAX_BYTES are not walked."""
 from __future__ import annotations
 import hashlib,json,os,re,sqlite3,tempfile,time
 from collections import Counter
 from pathlib import Path
 from . import sources
 from .common import file_lock
+from .folder_policy import SERVED
 
-VERSION=1
+VERSION=2   # 2: the task table has owner and priority; an index of another VERSION is replaced by _open_writable
 WALK_SECONDS=0.2
 INDEX_SECONDS=0.5
 WRITE_INDEX_SECONDS=1.0
 TEMP_PREFIX='.docs-'
-SCHEMA=sources.SCHEMA+('CREATE TABLE task(file_id INTEGER NOT NULL,line INTEGER,done INTEGER,text TEXT,due TEXT)','CREATE INDEX task_file ON task(file_id)',
+SCHEMA=sources.SCHEMA+('CREATE TABLE task(file_id INTEGER NOT NULL,line INTEGER,done INTEGER,text TEXT,due TEXT,owner TEXT,priority TEXT)','CREATE INDEX task_file ON task(file_id)',
                        'CREATE TABLE prop(file_id INTEGER NOT NULL,key TEXT,value TEXT)','CREATE INDEX prop_file ON prop(file_id)')
 TASK=re.compile(r'^\s*(?:[-*+]|\d+[.)])\s+\[([ xX])\]\s+(.*\S)\s*$')
-DUE=re.compile(r'(?:\U0001F4C5|\bdue::?)\s*(\d{4}-\d{2}-\d{2})')
 FRONT=re.compile(r'\A﻿?---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)',re.S)
 TABLES={'meta','source','file','chunk','chunk_fts','vocab','task','prop'}
 MAX_PROPS=50
@@ -36,9 +40,31 @@ OPS=('=','!=','<','<=','>','>=','contains','exists','missing')
 def db_path(root,domain):return Path(root)/'domains'/domain/'docs.sqlite3'
 
 
-def _notebooks(root,domain):
-    """{notebook: folder} of the domain's notebooks with a notebook.json, never through a link (notebook.json included).
-    None when the notebooks folder is there but cannot be listed now: that is not the same as having none."""
+def _notebooks(root,domain,folders=False):
+    """{notebook: folder} of the domain's notebooks with a notebook.json, never through a link (notebook.json included); with
+    folders, its registered folder notebooks too (_folder_notebooks; a hosted name wins). None when the notebooks folder is
+    there but cannot be listed now: that is not the same as having none."""
+    found=_hosted_notebooks(root,domain)
+    return {**_folder_notebooks(root,domain),**found} if folders and found is not None else found
+
+
+def _folder_notebooks(root,domain,policy=None):
+    """{name: real folder} of the registered folder notebooks of a domain that agents may reach now (searchable or injectable,
+    none inside a hidden or private folder), named nb- plus 10 hex of the folder as sources._notebook_sources names them.
+    A broken registry has none. policy: a folder_policy.Policy the caller reads for the whole call."""
+    from .folder_policy import Policy,key
+    try:
+        policy=policy or Policy(root)
+        if policy.broken:return {}
+        out={}
+        for path,_ in policy.registered_sources(domain):
+            folder=policy.real(path)
+            if os.path.isdir(folder):out['nb-'+hashlib.sha256(key(folder).encode()).hexdigest()[:10]]=Path(folder)
+        return out
+    except (OSError,ValueError):return {}
+
+
+def _hosted_notebooks(root,domain):
     from .docs import SLUG,_is_link
     base=Path(root)/'domains'/domain/'notebooks'
     if _is_link(Path(root)/'domains') or _is_link(Path(root)/'domains'/domain) or not base.is_dir() or _is_link(base):return {}
@@ -48,11 +74,14 @@ def _notebooks(root,domain):
             and os.path.isfile(os.path.join(e.path,'notebook.json')) and not _is_link(Path(e.path)/'notebook.json')}
 
 
-def _walk_pages(folder,deadline=None,unread=None):
+def _walk_pages(folder,deadline=None,unread=None,inner=None):
     """{page path: (size, mtime_ns)} of a notebook's pages (no attachments, proposals or links), or None past the deadline.
     Raises OSError when the notebook folder itself cannot be listed. A subfolder that cannot be listed is added to `unread`
-    (its pages are unknown, not gone); without that list it raises too."""
+    (its pages are unknown, not gone); without that list it raises too. inner: for a folder notebook, the compare keys of the
+    other folder notebooks, whose folders are not entered; it also means no dot folders, no page over sources.MAX_BYTES and no
+    reserved names (those are a hosted notebook's)."""
     from .docs import RESERVED,_is_link
+    from .folder_policy import key
     found={};stack=['']
     while stack:
         if deadline is not None and time.monotonic()>deadline:return None
@@ -64,10 +93,12 @@ def _walk_pages(folder,deadline=None,unread=None):
         for e in entries:
             path=f'{rel}/{e.name}' if rel else e.name
             try:
-                if (not rel and e.name in RESERVED) or _is_link(Path(e.path)):continue
-                if e.is_dir(follow_symlinks=False):stack.append(path)
+                if (inner is None and not rel and e.name in RESERVED) or _is_link(Path(e.path)):continue
+                if e.is_dir(follow_symlinks=False):
+                    if inner is None or not (e.name.startswith('.') or key(e.path) in inner):stack.append(path)
                 elif e.is_file(follow_symlinks=False) and e.name.casefold().endswith('.md'):
-                    info=e.stat(follow_symlinks=False);found[path]=(info.st_size,info.st_mtime_ns)
+                    info=e.stat(follow_symlinks=False)
+                    if inner is None or info.st_size<=sources.MAX_BYTES:found[path]=(info.st_size,info.st_mtime_ns)
             except OSError:continue
     return found
 
@@ -150,7 +181,9 @@ def properties(text):
 
 
 def tasks(text):
-    """[(line, done, text, due)] of a page's task lines (`- [ ]`, `- [x]`), outside fenced code and frontmatter."""
+    """[(line, done, text, due, owner, priority)] of a page's task lines (`- [ ]`, `- [x]`), outside fenced code and frontmatter.
+    text is what follows the box, cut at 500 characters; the fields are read from that text by note_format.item_fields."""
+    from .note_format import item_fields
     out=[];fence=None;lines=text.replace('\r\n','\n').replace('\r','\n').split('\n')
     start=FRONT.match(text);skip=start[0].count('\n') if start else 0
     for number,line in enumerate(lines,1):
@@ -160,7 +193,7 @@ def tasks(text):
         if fence:continue
         m=TASK.match(line)
         if m:
-            due=DUE.search(m[2]);out.append((number,m[1]!=' ',m[2][:500],due[1] if due else None))
+            cut=m[2][:500];fields=item_fields(cut)[1];out.append((number,m[1]!=' ',cut,fields['due'],fields['owner'],fields['priority']))
             if len(out)>=MAX_TASKS:break
     return out
 
@@ -187,8 +220,9 @@ def _drop(db,file_id,delta):
     db.execute('DELETE FROM file WHERE id=?',(file_id,))
 
 
-def _index_page(db,nb,folder,rel,size,mtime,old,delta):
-    """Bring one page's rows up to date; False when it could not be read now."""
+def _index_page(db,nb,folder,rel,size,mtime,old,delta,chunked=True):
+    """Bring one page's rows up to date; False when it could not be read now. chunked=False (a folder notebook, whose search the
+    sources index serves): the file, task and prop rows only, with no chunks, search text, vocabulary or vectors."""
     try:data=(folder/rel).read_bytes()
     except OSError:return False
     sha=hashlib.sha256(data).hexdigest()
@@ -196,7 +230,7 @@ def _index_page(db,nb,folder,rel,size,mtime,old,delta):
         db.execute('UPDATE file SET mtime_ns=?,size=? WHERE id=?',(mtime,size,old[0]));return True
     if old:_drop(db,old[0],delta)
     text=_decode(data);clean,redacted=sources.redact_text(text);front=FRONT.match(clean)
-    chunks=sources.chunk_file(rel,'\n'*front[0].count('\n')+clean[front.end():] if front else clean)   # properties are not prose: blank lines keep the numbering
+    chunks=sources.chunk_file(rel,'\n'*front[0].count('\n')+clean[front.end():] if front else clean) if chunked else []   # properties are not prose: blank lines keep the numbering
     file_id=db.execute('INSERT INTO file(source,path,mtime_ns,size,sha256,chunks,redacted,title) VALUES(?,?,?,?,?,?,?,?)',
                        (nb,rel,mtime,size,sha,len(chunks),redacted,title_of(clean,rel))).lastrowid
     for c in chunks:
@@ -204,7 +238,7 @@ def _index_page(db,nb,folder,rel,size,mtime,old,delta):
                        (file_id,nb,rel,c['kind'],c['symbol'],c['line_start'],c['line_end'],hashlib.sha256(c['text'].encode()).hexdigest())).lastrowid
         db.execute('INSERT INTO chunk_fts(rowid,symbol,path,names,text) VALUES(?,?,?,?,?)',(cid,c['symbol'],rel,sources._names(c['symbol'],c['text']),c['text']))
         for s in sources._stems(c['symbol'],rel,c['text']):delta[s]+=1
-    db.executemany('INSERT INTO task VALUES(?,?,?,?,?)',[(file_id,n,int(d),t,due) for n,d,t,due in tasks(clean)])
+    db.executemany('INSERT INTO task VALUES(?,?,?,?,?,?,?)',[(file_id,n,int(d),t,due,owner,priority) for n,d,t,due,owner,priority in tasks(clean)])
     db.executemany('INSERT INTO prop VALUES(?,?,?)',[(file_id,k,v) for k,v in properties(clean)])
     return True
 
@@ -215,20 +249,23 @@ def refresh(root,domain,walk_until=None,index_until=None,notebooks=None,rebuild=
     {stale, indexed, removed}, with `error` when the index could not be opened or replaced (another process held it, or
     Windows refused to replace a file a reader has open); stale is True then, and when work was left."""
     root=Path(root);result={'stale':False,'indexed':0,'removed':0}
-    if not (Path(root)/'domains'/domain/'notebooks').is_dir() and not db_path(root,domain).is_file():return result
+    if not (Path(root)/'domains'/domain/'notebooks').is_dir() and not db_path(root,domain).is_file() and not _folder_notebooks(root,domain):return result
     try:
         with _lock(root,domain,lock_timeout):
             present=_notebooks(root,domain)   # under the lock: a notebook a writer just indexed is not mistaken for a deleted one
             if present is None:result.update(stale=True,error='The notebooks folder cannot be listed now');return result
+            folders={n:p for n,p in _folder_notebooks(root,domain).items() if n not in present};present={**folders,**present}
             db=_open_writable(root,domain,rebuild)
-            try:return _refresh(db,root,domain,present,walk_until,index_until,notebooks,embed,result,progress)
+            try:return _refresh(db,root,domain,present,walk_until,index_until,notebooks,embed,result,progress,folders)
             finally:db.close()
     except (TimeoutError,OSError,sqlite3.Error) as exc:
         result.update(stale=True,error=str(exc) or type(exc).__name__);return result
 
 
-def _refresh(db,root,domain,present,walk_until,index_until,only,embed,result,progress=True):
-    delta=Counter()
+def _refresh(db,root,domain,present,walk_until,index_until,only,embed,result,progress=True,folders=None):
+    """folders: the folder notebooks among present, {name: real folder}."""
+    from .folder_policy import key
+    delta=Counter();folders=folders or {}
     for (gone,) in db.execute('SELECT name FROM source').fetchall():
         if gone not in present:
             for (file_id,) in db.execute('SELECT id FROM file WHERE source=?',(gone,)).fetchall():_drop(db,file_id,delta);result['removed']+=1
@@ -240,7 +277,8 @@ def _refresh(db,root,domain,present,walk_until,index_until,only,embed,result,pro
     for nb in names:
         if walk_until is not None and (walked or not progress) and time.monotonic()>walk_until:cut=nb;break
         skipped=[]
-        try:listing=_walk_pages(present[nb],walk_until if (walked or not progress) else None,skipped)   # the first notebook is finished, so a call makes progress
+        inner={key(p) for n,p in folders.items() if n!=nb} if nb in folders else None
+        try:listing=_walk_pages(present[nb],walk_until if (walked or not progress) else None,skipped,inner)   # the first notebook is finished, so a call makes progress
         except OSError:unread+=1;continue   # this notebook cannot be listed now: its rows stay as they are
         unread+=bool(skipped)
         if listing is None:cut=nb;break
@@ -260,7 +298,7 @@ def _refresh(db,root,domain,present,walk_until,index_until,only,embed,result,pro
     for nb,rel,size,mtime,old in todo:
         if index_until is not None and (tried or not progress) and time.monotonic()>index_until:left+=1;continue   # one page always, so each call makes progress
         tried+=1
-        if _index_page(db,nb,present[nb],rel,size,mtime,old,delta):result['indexed']+=1
+        if _index_page(db,nb,present[nb],rel,size,mtime,old,delta,nb not in folders):result['indexed']+=1
         else:now_failed.append(f'{nb}/{rel}')
     waiting={f'{t[0]}/{t[1]}' for t in todo[tried:]}   # past the deadline: not tried this time
     held={f for f in failed if f.split('/',1)[0] not in listed or f in waiting}   # a failure is forgotten once its page is read or gone
@@ -287,6 +325,12 @@ def _identity(root):
     return _vector_identity(root)
 
 
+def page_level(policy,folder,rel):
+    """The level a folder notebook page is served at now: the strictest policy over its folder and every folder above it
+    (None outside every notebook, which is not served either)."""
+    return policy.file(os.path.join(folder,*rel.split('/')))[0]
+
+
 def after_write(root,domain,nb):
     """Reindex the notebook a doc write just changed, outside the journal; a busy or failing index is left for the next walk."""
     try:refresh(root,domain,None,time.monotonic()+WRITE_INDEX_SECONDS,[nb],embed=False)
@@ -296,12 +340,17 @@ def after_write(root,domain,nb):
 
 
 # ---- who may see what -----------------------------------------------------------------------------------------------
-def visible(root,domain,include_private=False,named=None,include_hidden=False):
+def visible(root,domain,include_private=False,named=None,include_hidden=False,policy=None):
     """{notebook: (title, visibility)} of the domain's notebooks the caller may see now: never a private one without
     include_private, never a hidden one unless include_hidden or it is the one named. A damaged notebook.json hides its
-    notebook."""
+    notebook. policy (a folder_policy.Policy) adds the registered folder notebooks that are searchable or injectable by it now;
+    a hidden or private folder notebook is never listed, whoever asks. Those pages are judged one by one with page_level."""
     from .docs import _read_meta
     out={}
+    for nb,folder in _folder_notebooks(root,domain,policy).items() if policy is not None else ():
+        if named and nb!=named:continue
+        level,_,title=policy.folder(folder)
+        if level in SERVED:out[nb]=(title or nb,level)
     for nb in _notebooks(root,domain) or {}:
         if named and nb!=named:continue
         try:meta=_read_meta(root,domain,nb)[0]   # the doc commands' reader: a link or junction on the way, or damage, hides the notebook
@@ -328,7 +377,7 @@ def refresh_all(root,domains):
     """Refresh each domain within one shared budget (WALK_SECONDS, then INDEX_SECONDS), the one that had the progress allowance
     longest ago first; only that one may pass the budget to make progress. True when any of them was left unfinished."""
     start=time.monotonic();walk_until=start+WALK_SECONDS;index_until=walk_until+INDEX_SECONDS;stale=False
-    wanted=[d for d in domains if (Path(root)/'domains'/d/'notebooks').is_dir() or db_path(root,d).is_file()]
+    wanted=[d for d in domains if (Path(root)/'domains'/d/'notebooks').is_dir() or db_path(root,d).is_file() or _folder_notebooks(root,d)]
     from .common import atomic_write
     had=_allowances(root);order=sorted(wanted,key=lambda d:had.get(d,0.0))
     if order:   # recorded before the refresh, so a domain whose refresh fails still passes the allowance on
@@ -393,17 +442,28 @@ def prompt_hits(root,domain,query,limit,gate,least,width,near=None,dropped=None,
     return [dict(h,domain=domain,notebook=h['source'],notebook_title=allowed[h['source']][0]) for h in hits]
 
 
-def task_rows(root,domains,notebook=None,open_only=False,include_private=False,limit=500):
-    """(tasks, stale): task lines of the pages the caller may see: page, line, text, done, due."""
-    stale=refresh_all(root,domains);out=[]
+def task_rows(root,domains,notebook=None,open_only=False,include_private=False,limit=500,refresh=True,levels=None,folders=False):
+    """(tasks, stale): task lines of the pages the caller may see: page, line, text (as written), task (as shown), done, due,
+    owner, priority. refresh=False reads the index as it is, which is what SessionStart does (stale is False then, and an
+    index that is missing or of another VERSION gives no rows). levels: only pages served at one of these levels (default
+    all); folders: the registered folder notebooks too, each page judged by page_level."""
+    from .note_format import item_fields
+    stale=refresh_all(root,domains) if refresh else False;out=[]
+    policy=None
+    if folders:
+        from .folder_policy import Policy
+        policy=Policy(root)
     for domain in domains:
-        allowed=visible(root,domain,include_private,notebook)
+        allowed=visible(root,domain,include_private,notebook,policy=policy)
         db=_readonly(root,domain) if allowed else None
         if db is None:continue
+        where=_folder_notebooks(root,domain,policy) if policy is not None else {}
         try:
-            for nb,path,title,line,done,text,due in db.execute('SELECT f.source,f.path,f.title,t.line,t.done,t.text,t.due FROM task t JOIN file f ON f.id=t.file_id ORDER BY f.source,f.path,t.line'):
+            for nb,path,title,line,done,text,due,owner,priority in db.execute('SELECT f.source,f.path,f.title,t.line,t.done,t.text,t.due,t.owner,t.priority FROM task t JOIN file f ON f.id=t.file_id ORDER BY f.source,f.path,t.line'):
                 if nb not in allowed or (open_only and done):continue
-                out.append({'domain':domain,'notebook':nb,'path':path,'title':title,'line':line,'done':bool(done),'text':text,'due':due})
+                level=page_level(policy,where[nb],path) if nb in where else allowed[nb][1]
+                if (nb in where and level not in SERVED) or (levels is not None and level not in levels):continue
+                out.append({'domain':domain,'notebook':nb,'path':path,'title':title,'line':line,'done':bool(done),'text':text,'task':item_fields(text)[0],'due':due,'owner':owner,'priority':priority})
         finally:db.close()
     out.sort(key=lambda t:(t['done'],t['due'] is None,t['due'] or '',t['domain'],t['notebook'],t['path'],t['line']))
     return out[:limit],stale

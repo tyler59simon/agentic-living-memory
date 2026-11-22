@@ -222,7 +222,7 @@ Generated from the argparse parser in `core/cli.py` by `py -3.15 scripts/gen_scr
 | `note-type-plan` | none |
 | `off` | `--session` |
 | `on` | `--session` |
-| `open` | `--all-domains`, `--due-by`, `--limit`, `--owner`, `--sort`, `--tag` |
+| `open` | `--all-domains`, `--due-by`, `--limit`, `--owner`, `--pages`, `--sort`, `--tag` |
 | `overlay-build` | none |
 | `overlay-sync-all` | `--primary` |
 | `overlay-teardown-plan` | none |

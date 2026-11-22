@@ -431,7 +431,13 @@ ITEM_KEYS = ('due', 'owner', 'priority')
 PRIORITIES = ('highest', 'high', 'medium', 'low', 'lowest')
 _PAIR = r'(?:due|owner|priority)\s*:\s*[^,()]+'
 _TAIL = re.compile(r'\s*\(\s*(' + _PAIR + r'(?:\s*,\s*' + _PAIR + r')*)\s*\)\s*$', re.I)
-_DATE = re.compile(r'\d{4}-\d{2}-\d{2}')
+_DATE = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}')
+# The Obsidian Tasks and Dataview forms, read when the tail does not give the field: `📅 DATE` or `due:: DATE`, and one priority emoji.
+_DUE_FORM = re.compile(r'(?:\U0001F4C5|\bdue::)\s*([0-9]{4}-[0-9]{2}-[0-9]{2})')
+_EMOJI_PRIORITY = {'\U0001F53A': 'highest', '\u23EB': 'high', '\U0001F53C': 'medium', '\U0001F53D': 'low', '\u23EC': 'lowest'}
+_DUE_TEXT = re.compile(r'\s*(?:\U0001F4C5|\bdue::)\s*[0-9]{4}-[0-9]{2}-[0-9]{2}')
+_PRIORITY_TEXT = re.compile(r'\s*[' + ''.join(_EMOJI_PRIORITY) + ']')
+_SHOWN_OUT = re.compile(r'\s*(?:[\U0001F4C5\u2705]\s*[0-9]{4}-[0-9]{2}-[0-9]{2}|[' + ''.join(_EMOJI_PRIORITY) + '])')   # what the display text drops besides the tail
 
 
 def valid_date(value):
@@ -445,10 +451,10 @@ def valid_date(value):
     return True
 
 
-def item_fields(text):
-    """(task, {'due', 'owner', 'priority'}, problems) for an action item's text. The fields come from a tail at the very end,
+def _split_tail(text):
+    """(text without its tail, {'due', 'owner', 'priority'} from the tail only, problems). The tail is at the very end,
     `(due: YYYY-MM-DD, owner: NAME, priority: high)`, in any order; a parenthesis group holding anything else is plain text.
-    A field with a bad value, or one given twice after the first, is None and named in problems; the task text is never changed."""
+    A field with a bad value, or one given twice after the first, is None and named in problems."""
     text = text.strip()
     fields, problems = dict.fromkeys(ITEM_KEYS), []
     tail = _TAIL.search(text)
@@ -471,13 +477,35 @@ def item_fields(text):
     return text[:tail.start()].rstrip(), fields, problems
 
 
+def item_fields(text):
+    """(task, {'due', 'owner', 'priority'}, problems) for an action item or a page task: the one parsing rule. The tail of
+    _split_tail wins; a field it does not give comes from the text: due from the first `📅 YYYY-MM-DD` or `due:: YYYY-MM-DD`,
+    priority from the first of the Tasks emoji (highest, high, medium, low, lowest as `🔺⏫🔼🔽⏬`); owner is the tail only.
+    task is the text people read: without the tail, a `📅 date`, a priority emoji or a `✅ date`. The stored text is never changed."""
+    rest, fields, problems = _split_tail(text)
+    if fields['due'] is None:
+        found = _DUE_FORM.search(rest)
+        if found and valid_date(found[1]):
+            fields['due'] = found[1]
+        elif found:
+            problems.append(f'due {found[1]!r} is not a YYYY-MM-DD date')
+    if fields['priority'] is None:
+        fields['priority'] = next((_EMOJI_PRIORITY[c] for c in rest if c in _EMOJI_PRIORITY), None)
+    return _SHOWN_OUT.sub('', rest).strip(), fields, problems
+
+
 def set_item_fields(body, index, changes):
     """The body with the due, owner and priority of one Action item (0-based) changed; changes maps a field to its new value, or
     to None to clear it, and fields not named keep their value. The item's text and checkbox stay, an empty tail is dropped,
-    and nothing else moves."""
+    and nothing else moves. Only the tail is written; a `📅 date` or `due:: date` the tail would shadow is removed when
+    due changes, and a priority emoji when priority changes, so clearing a field clears it everywhere."""
     lines, found = _action_lines(body)
     match = _ACTION.match(lines[found[index]])
-    task, fields, _ = item_fields(match[3])
+    task, fields, _ = _split_tail(match[3])
+    if 'due' in changes:
+        task = _DUE_TEXT.sub('', task).strip()
+    if 'priority' in changes:
+        task = _PRIORITY_TEXT.sub('', task).strip()
     for key, value in changes.items():
         if key not in ITEM_KEYS:
             raise ValueError(f'Unknown item field {key!r}')

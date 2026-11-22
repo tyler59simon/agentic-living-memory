@@ -1,6 +1,7 @@
-import contextlib,io,json,unittest
+import contextlib,io,json,os,sqlite3,unittest
 from test_core import StoreFixture
-from core import runtime
+from test_docs_review import junction
+from core import docs,docs_index,runtime
 from core.cli import main
 from core.capture import finalize,status
 from core.notes import find_note,open_work,check_action,unresolved_bugs
@@ -114,7 +115,7 @@ class OpenWork(StoreFixture):
         code,result=self.cli('open')
         self.assertEqual(code,0,result);self.assertEqual((result['count'],result['notes']),(3,2))
         self.assertEqual(result['items'][1],{'ref':'demo:'+b['id'],'short_ref':'demo:'+b['id'][:8],'title':'Newer bug fix','type':'bug',
-                                             'updated':result['items'][1]['updated'],'index':2,'item':'Add test','task':'Add test','due':None,'owner':None,'priority':None,'overdue':None})
+                                             'updated':result['items'][1]['updated'],'kind':'note','index':2,'item':'Add test','task':'Add test','due':None,'owner':None,'priority':None,'overdue':None})
         self.assertEqual(self.cli('--actor','subagent','open')[0],0)
     def test_check_by_text_index_and_undo(self):
         p=self.plan('Release plan',['Write the changelog','Write the release notes','Tag v2'])
@@ -353,6 +354,123 @@ class OpenWork(StoreFixture):
         with patch.dict('os.environ',{'LIVING_MEMORY_HEADLESS':'1',OFFSET_ENV:str(5*86400)}):text=self.start('later')
         self.assertIn('1 overdue',text);self.assertIn('Overdue: Ship it (due ',text)
     def test_version_reports_the_item_fields_capability(self):
-        code,result=self.cli('version');self.assertEqual(code,0,result);self.assertEqual(result['capabilities']['items'],{'fields':1})
+        code,result=self.cli('version');self.assertEqual(code,0,result);self.assertEqual(result['capabilities']['items'],{'fields':2})
+
+    # Page tasks of notebooks in the same list (CON-2).
+    PLAN='# Plan\n\n- [ ] Pay invoice \U0001F4C5 2020-01-01\n- [ ] Call Sam (due: 2030-01-01, owner: me)\n- [x] Filed taxes\n- [ ] Order cake \u23EB\n'
+    def folder_nb(self,level='injectable',name='vault',pages=None,private=False):
+        # A folder notebook with a Plan.md, registered at this level.
+        folder=self.base/name;folder.mkdir(exist_ok=True);(folder/'Plan.md').write_text(self.PLAN if pages is None else pages,encoding='utf-8')
+        code,result=self.cli('--json','doc','folder','set',str(folder),'--visibility',level,*(['--private'] if private else []));self.assertEqual(code,0,result);return folder
+    def sidecar(self,folder,**value):
+        (folder/'.hivemind').mkdir(exist_ok=True);(folder/'.hivemind'/'notebook.json').write_text(json.dumps(value))
+    def pages(self,*argv):
+        code,result=self.cli('open',*argv);self.assertEqual(code,0,result);return [r for r in result['items'] if r['kind']=='page']
+    def test_page_tasks_join_open_only_for_injectable_notebooks_and_carry_the_fields(self):
+        self.plan('Release plan',['Ship it (due: 2025-05-05)']);self.folder_nb('injectable')
+        code,result=self.cli('open','--sort','due');self.assertEqual(code,0,result);self.assertNotIn('pages_stale',result)
+        self.assertEqual([(r['kind'],r['task'],r['due']) for r in result['items']],[('page','Pay invoice','2020-01-01'),('note','Ship it','2025-05-05'),('page','Call Sam','2030-01-01'),('page','Order cake',None)])
+        first=result['items'][0]
+        self.assertEqual(first,{'kind':'page','domain':'demo','notebook':first['notebook'],'path':'Plan.md','title':'Plan','line':3,'item':'Pay invoice \U0001F4C5 2020-01-01','task':'Pay invoice',
+                                'due':'2020-01-01','owner':None,'priority':None,'overdue':True})
+        self.assertRegex(first['notebook'],r'^nb-[0-9a-f]{10}$');self.assertEqual((result['count'],result['notes']),(4,1))
+        call=result['items'][2];self.assertEqual((call['owner'],call['overdue'],call['line']),('me',False,4))
+        self.assertEqual(result['items'][3]['priority'],'high');self.assertIn('ticked by editing its page',result['hint'])
+        self.assertNotIn('ticked by editing',self.cli('open','--pages','none')[1]['hint'])
+        self.assertEqual([r['kind'] for r in self.cli('open','--pages','none')[1]['items']],['note'])
+    def test_a_searchable_notebook_needs_pages_searchable_and_hidden_or_private_never_shows(self):
+        self.plan('Release plan',['Ship it']);folder=self.folder_nb('searchable')
+        self.assertEqual(self.pages(),[]);self.assertEqual(len(self.pages('--pages','searchable')),3);self.assertEqual(self.pages('--pages','none'),[])
+        self.assertEqual(self.pages('--pages','injectable'),[])
+        self.cli('--json','doc','folder','set',str(folder),'--visibility','injectable');self.assertEqual(len(self.pages()),3);self.assertEqual(len(self.pages('--pages','searchable')),3)
+        self.folder_nb('hidden');self.assertEqual(self.pages('--pages','searchable'),[])   # at once, before any reindex
+        self.folder_nb('injectable');self.assertEqual(len(self.pages()),3)
+        self.folder_nb('injectable',name='closed',private=True);self.assertEqual(len(self.pages('--pages','searchable')),3)   # the private one adds nothing
+        self.sidecar(folder,visibility='hidden');self.assertEqual(self.pages('--pages','searchable'),[])   # the stricter sidecar wins
+        (folder/'.hivemind'/'notebook.json').write_text('{not json');self.assertEqual(self.pages('--pages','searchable'),[])
+    def test_hidden_and_private_subfolders_and_dot_folders_and_links_never_show(self):
+        folder=self.folder_nb('injectable')
+        for name,value in (('quiet',{'visibility':'hidden'}),('secret',{'visibility':'injectable','private':True}),('open',{'visibility':'injectable'})):
+            (folder/name).mkdir();(folder/name/'T.md').write_text(f'- [ ] Task in {name} \U0001F4C5 2020-02-02\n',encoding='utf-8');self.sidecar(folder/name,**value)
+        for dot in ('.obsidian','.hivemind/deep'):
+            (folder/dot).mkdir(parents=True,exist_ok=True);(folder/dot/'T.md').write_text('- [ ] Task in a dot folder\n',encoding='utf-8')
+        outside=self.base/'outside';outside.mkdir();(outside/'T.md').write_text('- [ ] Task through a link\n',encoding='utf-8')
+        linked=junction(folder/'linked',outside)
+        tasks=lambda:sorted(r['task'] for r in self.pages() if r['path']!='Plan.md')
+        self.assertEqual(tasks(),['Task in open'])
+        db=docs_index._readonly(self.root,'demo')
+        try:indexed={p for (p,) in db.execute('SELECT path FROM file')}
+        finally:db.close()
+        self.assertTrue({'quiet/T.md','secret/T.md'}<=indexed);self.assertFalse({p for p in indexed if p.startswith(('.obsidian','.hivemind','linked'))},indexed)   # the policy is judged when served, so they stay indexed
+        self.sidecar(folder/'open',visibility='hidden');self.assertEqual(tasks(),[])   # a policy change shows at once
+        self.sidecar(folder/'quiet',visibility='injectable');self.assertEqual(tasks(),['Task in quiet'])   # the page was indexed all along
+    def test_filters_and_sort_apply_to_notes_and_pages_alike(self):
+        self.plan('Release plan',['Ship it (due: 2025-05-05, owner: me)','Write docs (owner: Dana)']);self.folder_nb('injectable')
+        tasks=lambda *argv:[r['task'] for r in self.cli('open',*argv)[1]['items']]
+        self.assertEqual(tasks('--sort','due'),['Pay invoice','Ship it','Call Sam','Write docs','Order cake'])   # undated last, ties notes first
+        self.assertEqual(tasks('--due-by','2025-12-31','--sort','due'),['Pay invoice','Ship it']);self.assertEqual(tasks('--owner','ME','--sort','due'),['Ship it','Call Sam'])
+        self.assertEqual(tasks('--tag','subject/project'),['Ship it','Write docs'])   # page tasks have no tags
+        code,result=self.cli('open','--sort','due','--limit','2');self.assertEqual((result['count'],[r['task'] for r in result['items']]),(5,['Pay invoice','Ship it']))
+        self.assertEqual(tasks(),['Ship it','Write docs','Pay invoice','Call Sam','Order cake'])   # newest note first, then the pages in path order
+    def test_hosted_notebooks_follow_the_same_levels(self):
+        for nb,level in (('inj','injectable'),('sea','searchable')):
+            docs.create_notebook(self.root,'demo',nb,nb.title(),visibility=level);docs.create_page(self.root,'demo',nb,'Plan.md',f'- [ ] Task in {nb} (due: 2020-01-01)\n'.encode())
+        self.assertEqual([r['task'] for r in self.pages()],['Task in inj']);self.assertEqual(sorted(r['task'] for r in self.pages('--pages','searchable')),['Task in inj','Task in sea'])
+        row=self.pages()[0];self.assertEqual((row['notebook'],row['path'],row['line'],row['due'],row['overdue']),('inj','Plan.md',1,'2020-01-01',True))
+    def test_open_reports_pages_stale_when_the_index_was_left_unfinished(self):
+        from unittest.mock import patch
+        self.folder_nb('injectable')
+        with patch('core.docs_index.refresh_all',return_value=True):code,result=self.cli('open')
+        self.assertEqual(code,0,result);self.assertTrue(result['pages_stale'])
+    def test_session_start_names_an_overdue_page_task_from_the_index_as_it_is(self):
+        from datetime import date
+        from unittest.mock import patch
+        self.plan('Release plan',['Tidy up']);folder=self.folder_nb('injectable')
+        with patch('core.clock.today',return_value=date(2026,11,22)):text=self.start('nothing-indexed')
+        self.assertNotIn('Overdue',text);self.assertFalse(docs_index.db_path(self.root,'demo').exists())   # SessionStart never builds the index
+        self.assertEqual(len(self.pages()),3)
+        (folder/'Plan.md').write_text(self.PLAN+'- [ ] Added later \U0001F4C5 2019-01-01\n',encoding='utf-8')
+        with patch('core.clock.today',return_value=date(2026,11,22)):text=self.start('indexed')
+        self.assertIn('1 overdue',text);self.assertIn('Overdue: Pay invoice (due 2020-01-01) Plan.md:3',text);self.assertNotIn('Added later',text)   # not reindexed
+        self.sidecar(folder,visibility='searchable')
+        with patch('core.clock.today',return_value=date(2026,11,22)):text=self.start('searchable-now')
+        self.assertNotIn('Overdue',text)
+        self.sidecar(folder,visibility='injectable');(self.root/'domains'/'demo'/'docs.sqlite3').write_bytes(b'not a database')
+        with patch('core.clock.today',return_value=date(2026,11,22)):text=self.start('damaged')
+        self.assertNotIn('Overdue',text)   # fails open: no page tasks, no error
+    def test_a_page_task_alone_makes_the_overdue_line_and_header(self):
+        from datetime import date
+        from unittest.mock import patch
+        self.note('A decision','We chose X.',type='decision');self.folder_nb('injectable');self.assertEqual(len(self.pages()),3)   # no plan, bug or risk note: the page task is the only open work
+        with patch('core.clock.today',return_value=date(2026,11,22)):text=self.start('pages-only')
+        self.assertIn('Open work (1 overdue;',text);self.assertIn('Overdue: Pay invoice (due 2020-01-01) Plan.md:3',text)
+    def test_an_index_of_another_version_is_rebuilt_with_the_new_columns(self):
+        self.folder_nb('injectable');self.assertEqual(len(self.pages()),3)
+        path=docs_index.db_path(self.root,'demo');db=sqlite3.connect(path);db.execute("UPDATE meta SET value='1' WHERE key='version'");db.commit();db.close()
+        self.assertEqual(docs_index.task_rows(self.root,['demo'],refresh=False,folders=True)[0],[])   # read as it is: an older index serves nothing
+        self.assertEqual(len(self.pages()),3)   # a refresh replaces it
+        db=sqlite3.connect(path)
+        try:self.assertEqual((db.execute("SELECT value FROM meta WHERE key='version'").fetchone()[0],[r[1] for r in db.execute('PRAGMA table_info(task)')][-2:]),(str(docs_index.VERSION),['owner','priority']))
+        finally:db.close()
+    def test_a_folder_notebook_page_leaves_no_chunks_search_text_vocabulary_or_vectors(self):
+        docs.create_notebook(self.root,'demo','nb1','Notebook');docs.create_page(self.root,'demo','nb1','a.md',b'# Hosted\n\nQuokka marmalade.\n- [ ] Hosted task\n')
+        def query(sql):
+            db=docs_index._readonly(self.root,'demo')
+            try:return db.execute(sql).fetchall()
+            finally:db.close()
+        before=query('SELECT stem,df FROM vocab ORDER BY stem');chunks=query('SELECT count(*) FROM chunk')[0][0]
+        self.folder_nb('injectable',pages='# Folder\n\nWombat cluster sizing.\n- [ ] Folder task \U0001F4C5 2020-01-01\n---\nowner: me\n');self.assertEqual(len(self.pages()),1)
+        self.assertEqual(query('SELECT stem,df FROM vocab ORDER BY stem'),before);self.assertEqual(query('SELECT count(*) FROM chunk')[0][0],chunks)
+        self.assertEqual(query("SELECT chunks FROM file WHERE source LIKE 'nb-%'"),[(0,)]);self.assertEqual(query("SELECT count(*) FROM chunk WHERE source LIKE 'nb-%'"),[(0,)])
+        self.assertEqual(query("SELECT count(*) FROM chunk_fts WHERE text LIKE '%Wombat%'"),[(0,)]);self.assertEqual(query("SELECT count(*) FROM task t JOIN file f ON f.id=t.file_id WHERE f.source LIKE 'nb-%'"),[(1,)])
+        self.assertEqual(query("SELECT count(*) FROM chunk_fts WHERE text LIKE '%Quokka%'"),[(1,)])   # a hosted page is chunked as before
+        # Unregistering drops the rows of a page that never had chunks.
+        self.cli('--json','doc','folder','unset',str(self.base/'vault'));self.pages()
+        self.assertEqual(query("SELECT count(*) FROM file WHERE source LIKE 'nb-%'"),[(0,)])
+    def test_doc_tasks_carries_the_new_fields_for_hosted_notebooks_only(self):
+        docs.create_notebook(self.root,'demo','nb1','Notebook');docs.create_page(self.root,'demo','nb1','a.md',b'- [ ] Ship it \xe2\x8f\xab (owner: me)\n')
+        self.folder_nb('injectable')
+        code,result=self.cli('--json','doc','tasks','--open');self.assertEqual(code,0,result)
+        self.assertEqual([(t['notebook'],t['task'],t['owner'],t['priority']) for t in result['tasks']],[('nb1','Ship it','me','high')])
 
 if __name__=='__main__':unittest.main()
