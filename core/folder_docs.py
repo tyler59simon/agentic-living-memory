@@ -31,17 +31,30 @@ def registered(root):
     _REGISTRY[str(root)]=(stamp,found);return found
 
 
+def _no_dot_parts(rel):
+    return not any(part.startswith('.') for part in rel.split('/'))
+
+
 def locate(root,file,cwd=None):
     """(entry, real folder, page path relative to it) of the nearest registered folder notebook above `file`, or None. The file
-    need not exist. Only .md and .markdown files are pages; any other file gives None."""
+    need not exist. Only .md and .markdown files outside dot-folders are pages; any other file gives None."""
     if not str(file).casefold().endswith(SUFFIXES):return None
     found=registered(root)
     if not found:return None
     path=Path(os.path.expandvars(str(file))).expanduser()
     path=Path(os.path.abspath(path if path.is_absolute() else Path(cwd or os.getcwd())/path))
-    for folder in path.parents:
-        entry=found.get(key(real(folder)))
-        if entry is not None:return entry,Path(real(folder)),path.relative_to(folder).as_posix()
+    def find_in(p):
+        for folder in p.parents:
+            entry=found.get(key(real(folder)))
+            if entry is not None:
+                rel=p.relative_to(folder).as_posix()
+                if not _no_dot_parts(rel):return None
+                return entry,Path(real(folder)),rel
+        return None
+    hit=find_in(path)
+    if hit is not None:return hit
+    resolved=Path(real(path))
+    if key(resolved)!=key(path):return find_in(resolved)
     return None
 
 
@@ -108,12 +121,17 @@ def _rel(domain,nb,pid):return f'domains/{domain}/folder-proposals/{nb}/{pid}.js
 def _meta(domain,nb,**more):return {'domain':domain,'notebook':nb,'folder_notebook':True,**more}
 
 
-def _page(value):
+def _page(value,strict=True):
     """(page path relative to the folder, checked) of a stored proposal: the file is outside the store, so a hand-edited path
-    must not climb out of the folder."""
+    must not climb out of the folder. strict=False checks traversal/dot-segments/suffix without rejecting pre-existing names."""
     rel=value.get('path')
-    if not isinstance(rel,str) or not rel or not rel.casefold().endswith(SUFFIXES):raise ValueError('The proposal does not name a Markdown page')
-    for part in rel.split('/'):docs._check_part(part)
+    if not isinstance(rel,str) or not rel or '\\' in rel or '\x00' in rel or not rel.casefold().endswith(SUFFIXES):
+        raise ValueError('The proposal does not name a Markdown page')
+    parts=rel.split('/')
+    if any(part in ('','.','..') or part.startswith('.') for part in parts):
+        raise ValueError('The proposal does not name a Markdown page')
+    if strict:
+        for part in parts:docs._check_part(part)
     return rel
 
 
@@ -127,14 +145,29 @@ def folder_of(root,value):
 
 
 def hidden(root,value,include_private=False,policy=None):
-    """Whether the folder of a proposal is private now (a removed private folder counts too): it is then not named or shown."""
-    if include_private or not isinstance(value.get('folder'),str):return False
-    try:return (policy or Policy(root)).folder(real(value['folder']))[0]=='private'
+    """Whether the folder or page of a proposal is private now (a removed private folder, private subfolder or damaged registry
+    counts too): it is then not named or shown."""
+    if include_private:return False
+    if not isinstance(value,dict) or not isinstance(value.get('folder'),str):return True
+    try:
+        p=policy or Policy(root)
+        if p.broken:return True
+        folder=real(value['folder'])
+        if p.folder(folder)[0]=='private':return True
+        rel=value.get('path')
+        if isinstance(rel,str) and rel:
+            if '\\' in rel or '\x00' in rel or any(part in ('','.','..') for part in rel.split('/')):return True
+            if p.file(os.path.join(folder,*rel.split('/')))[0]=='private':return True
+        return False
     except (OSError,ValueError):return True
 
 
 def check_visible(root,value,include_private=False):
     if hidden(root,value,include_private):raise ValueError(f"not_found: no proposal {value.get('id')}")
+
+
+def _old_hash(value):
+    return value['previous_revision'] if 'previous_revision' in value else value.get('base_revision')
 
 
 def _old_state(value):
@@ -151,17 +184,24 @@ def rows(root,domains,nb=None,include_private=False,status='pending',session=Non
     out=[];policy=Policy(root);wanted=hashlib.sha256(session.encode()).hexdigest()[:16] if session else None
     for domain in domains:
         for file in sorted(Path(root).glob(f'domains/{domain}/folder-proposals/*/*.json')):
-            if not docs.PROPOSAL_ID.fullmatch(file.stem) or docs._is_link(file) or (nb and file.parts[-2]!=nb):continue
+            if not docs.PROPOSAL_ID.fullmatch(file.stem) or (nb and file.parts[-2]!=nb):continue
+            cursor=Path(root)
+            if any(docs._is_link(cursor:=cursor/part) for part in ('domains',domain,'folder-proposals',file.parts[-2])) or docs._is_link(file):continue
             value=docs._read_proposal(file)
             if not isinstance(value,dict) or value.get('kind')!='folder' or (status!='all' and value.get('status')!=status):continue
             if (wanted and value.get('session')!=wanted) or hidden(root,value,include_private,policy):continue
             folder,entry=folder_of(root,value)
+            safe=None
+            if folder is not None:
+                try:safe=_safe(folder,_page(value,strict=False))
+                except ValueError:safe=None
             row={k:value.get(k) for k in ('id','domain','notebook','path','base_revision','note','created','status','reason','settled','edited','folder')}
             row.update(size=len(str(value.get('body') or '').encode()),orphaned=entry is None,
-                       file=(folder/value['path']).as_posix() if folder and isinstance(value.get('path'),str) else None,applied=False)
+                       file=safe.as_posix() if safe is not None else None,applied=False)
             if value.get('status')=='accepted':
-                current=_sha(_bytes(folder/value['path'])) if folder else None
-                row['applied']=not (folder is not None and current==_old_state(value)[0] and current!=value.get('revision'))
+                try:current=_sha(_bytes(safe)) if safe is not None else None
+                except OSError:current=None
+                row['applied']=not (safe is not None and current==_old_hash(value) and current!=value.get('revision'))
             out.append(row)
     return out
 
@@ -178,8 +218,10 @@ def accept(root,pid,file,value,expected=None,include_private=False,body=None):
     if status not in ('pending','accepted'):raise ValueError(f'Proposal {pid} is {status}')
     folder,_=folder_of(root,value)
     if folder is None:raise ValueError(f"not_found: the folder notebook {value.get('folder')} is no longer registered; reject proposal {pid}")
-    rel=_page(value);path=_safe(folder,rel)
+    rel=_page(value,strict=False);path=_safe(folder,rel)
     if path is None:raise ValueError('Links and junctions are not allowed inside a notebook')
+    if not path.exists():
+        for part in rel.split('/'):docs._check_part(part)
     domain,nb=value['domain'],value['notebook'];prel=_rel(domain,nb,pid)
     data=_bytes(path);current=_sha(data)
     if status=='accepted':
@@ -221,7 +263,7 @@ def reject(root,pid,file,value,reason=None,include_private=False):
                         {'domain':value['domain'],'notebook':value['notebook'],'proposal':pid},{prel:digest(file.read_bytes())})
 
 
-def revert_accept(root,journal):
+def revert_accept(root,journal,include_private=False):
     """Before governance.undo sets an accepted folder proposal back to pending: put the page back as it was. Returns a function
     that puts the accepted text back again, for when the settlement itself cannot be undone, or None when no write was needed.
     Refused when the page is neither what the accept wrote nor what it replaced."""
@@ -229,9 +271,10 @@ def revert_accept(root,journal):
     if effect is None or effect.get('before') is None or effect.get('after') is None:return None
     new_record=json.loads(base64.b64decode(effect['after']))
     if not isinstance(new_record,dict):return None
+    check_visible(root,new_record,include_private)
     folder,_=folder_of(root,new_record)
     if folder is None:raise ValueError(f"not_found: the folder notebook {new_record.get('folder')} is no longer registered, so its page cannot be put back; restore it from Hivemind file history")
-    rel=_page(new_record);path=_safe(folder,rel)
+    rel=_page(new_record,strict=False);path=_safe(folder,rel)
     if path is None:raise ValueError('Links and junctions are not allowed inside a notebook')
     old_hash,old_bytes=_old_state(new_record);revision=new_record.get('revision');current=_sha(_bytes(path))
     if current==old_hash:return None   # the accept never wrote it, or it was put back already

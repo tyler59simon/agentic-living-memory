@@ -204,6 +204,46 @@ class Settle(Folder):
         self.assertEqual(self.listing(),[]);self.assertEqual(self.ok('proposals','--kind','page','--include-private')['proposals'][0]['id'],pid)
         self.fails('proposals','show',pid)
 
+    def test_private_subfolder_and_damaged_registry_hide_folder_proposals(self):
+        self.put('sub/a.md',b'one');pid=self.propose('sub/a.md',b'two')['id']
+        sidecar=self.nb/'sub'/'.hivemind'/'notebook.json'
+        sidecar.parent.mkdir(parents=True,exist_ok=True)
+        sidecar.write_text('{"private":true}',encoding='utf-8')
+        self.assertEqual(self.listing(),[])
+        self.fails('proposals','show',pid)
+        self.fails('proposals','accept',pid)
+        self.fails('proposals','reject',pid)
+        self.assertEqual(self.ok('proposals','--kind','page','--include-private')['proposals'][0]['id'],pid)
+        sidecar.unlink()
+        (self.root/'notebook-folders.json').write_text('{damaged',encoding='utf-8')
+        self.assertEqual(self.listing(),[])
+        self.fails('proposals','show',pid)
+
+    def test_undo_and_doc_undo_refuse_private_folder_proposals_without_include_private(self):
+        self.put('a.md',b'one');prop=self.propose('a.md',b'two');pid=prop['id']
+        done=self.ok('proposals','accept',pid)
+        self.set('--private')
+        self.fails('undo',done['operation_id'])
+        self.fails('doc','undo',done['operation_id'])
+        self.fails('undo',prop['operation_id'])
+        self.assertEqual(self.nb.joinpath('a.md').read_bytes(),b'two')
+        self.ok('undo',done['operation_id'],'--include-private')
+        self.assertEqual(self.nb.joinpath('a.md').read_bytes(),b'one')
+
+    def test_dot_folders_are_ignored_by_folder_proposals_and_aside_unlink_failure_does_not_rollback(self):
+        self.put('.obsidian/readme.md',b'one')
+        self.fails('doc','read','--file',str(self.nb/'.obsidian'/'readme.md'))
+        self.put('a.md',b'one');pid=self.propose('a.md',b'two')['id']
+        real_unlink=Path.unlink
+        def flaky_unlink(p,*a,**k):
+            if p.name.endswith('.aside'):raise PermissionError('locked by av')
+            return real_unlink(p,*a,**k)
+        with patch.object(Path,'unlink',flaky_unlink):
+            self.ok('proposals','accept',pid)
+        self.assertEqual(self.nb.joinpath('a.md').read_bytes(),b'two')
+        self.assertEqual(self.record(pid)['status'],'accepted')
+        self.assertFalse([p for p in self.nb.iterdir() if '(kept ' in p.name])
+
     def test_history_hides_folder_proposals_unless_include_private(self):
         self.put('a.md',b'one');pid=self.propose('a.md',b'two')['id'];done=self.ok('proposals','accept',pid)
         text=json.dumps(self.ok('history'));self.assertNotIn('folder-proposals',text);self.assertNotIn(self.nid,text)
@@ -266,6 +306,15 @@ class OneCommand(Folder):
         note=self.stage();self.put('a.md',b'one');page=self.propose('a.md',b'two')['id']
         self.ok('proposals','accept',note,env={'HIVEMIND_SESSION':'hm-1'})
         self.fails('proposals','accept',page,env={'HIVEMIND_SESSION':'hm-1'});self.ok('proposals','--kind','page',env={'HIVEMIND_SESSION':'hm-1'})
+
+    def test_proposals_list_filters_notes_by_domain_and_notebook_and_refuses_private_on_note_accept(self):
+        note=self.stage()
+        self.assertEqual(self.ok('proposals','--domain','other')['proposals'],[])
+        self.assertEqual([r['id'] for r in self.ok('proposals','--domain','demo')['proposals']],[note])
+        self.assertEqual(self.ok('proposals','--notebook','nb1')['proposals'],[])
+        self.fails('proposals','--kind','note','--notebook','nb1')
+        self.fails('proposals','accept',note,'--include-private',env={'HIVEMIND_SESSION':'hm-1'})
+        self.fails('proposals','accept',note,'--include-private',actor='subagent')
 
 
 if __name__=='__main__':unittest.main()

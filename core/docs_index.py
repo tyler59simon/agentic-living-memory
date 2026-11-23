@@ -96,7 +96,7 @@ def _walk_pages(folder,deadline=None,unread=None,inner=None):
                 if (inner is None and not rel and e.name in RESERVED) or _is_link(Path(e.path)):continue
                 if e.is_dir(follow_symlinks=False):
                     if inner is None or not (e.name.startswith('.') or key(e.path) in inner):stack.append(path)
-                elif e.is_file(follow_symlinks=False) and e.name.casefold().endswith('.md'):
+                elif e.is_file(follow_symlinks=False) and e.name.casefold().endswith(('.md','.markdown') if inner is not None else '.md'):
                     info=e.stat(follow_symlinks=False)
                     if inner is None or info.st_size<=sources.MAX_BYTES:found[path]=(info.st_size,info.st_mtime_ns)
             except OSError:continue
@@ -264,8 +264,9 @@ def refresh(root,domain,walk_until=None,index_until=None,notebooks=None,rebuild=
 
 def _refresh(db,root,domain,present,walk_until,index_until,only,embed,result,progress=True,folders=None):
     """folders: the folder notebooks among present, {name: real folder}."""
-    from .folder_policy import key
+    from .folder_policy import Policy,key
     delta=Counter();folders=folders or {}
+    all_registered={k for k,(_,e) in Policy(root).entries.items() if not e.get('removed')} if folders else set()
     for (gone,) in db.execute('SELECT name FROM source').fetchall():
         if gone not in present:
             for (file_id,) in db.execute('SELECT id FROM file WHERE source=?',(gone,)).fetchall():_drop(db,file_id,delta);result['removed']+=1
@@ -277,7 +278,7 @@ def _refresh(db,root,domain,present,walk_until,index_until,only,embed,result,pro
     for nb in names:
         if walk_until is not None and (walked or not progress) and time.monotonic()>walk_until:cut=nb;break
         skipped=[]
-        inner={key(p) for n,p in folders.items() if n!=nb} if nb in folders else None
+        inner=(all_registered-{key(present[nb])}) if nb in folders else None
         try:listing=_walk_pages(present[nb],walk_until if (walked or not progress) else None,skipped,inner)   # the first notebook is finished, so a call makes progress
         except OSError:unread+=1;continue   # this notebook cannot be listed now: its rows stay as they are
         unread+=bool(skipped)
@@ -459,14 +460,22 @@ def task_rows(root,domains,notebook=None,open_only=False,include_private=False,l
         if db is None:continue
         where=_folder_notebooks(root,domain,policy) if policy is not None else {}
         try:
+            from .folder_policy import key as _fkey
             for nb,path,title,line,done,text,due,owner,priority in db.execute('SELECT f.source,f.path,f.title,t.line,t.done,t.text,t.due,t.owner,t.priority FROM task t JOIN file f ON f.id=t.file_id ORDER BY f.source,f.path,t.line'):
                 if nb not in allowed or (open_only and done):continue
-                level=page_level(policy,where[nb],path) if nb in where else allowed[nb][1]
-                if (nb in where and level not in SERVED) or (levels is not None and level not in levels):continue
+                if nb in where:
+                    level,owner_folder,_=policy.file(os.path.join(where[nb],*path.split('/')))
+                    if level not in SERVED:continue
+                    if owner_folder is not None and _fkey(owner_folder)!=_fkey(where[nb]):
+                        reg=policy.entries.get(_fkey(owner_folder))
+                        if reg is not None and not reg[1].get('removed'):continue
+                else:
+                    level=allowed[nb][1]
+                if levels is not None and level not in levels:continue
                 out.append({'domain':domain,'notebook':nb,'path':path,'title':title,'line':line,'done':bool(done),'text':text,'task':item_fields(text)[0],'due':due,'owner':owner,'priority':priority})
         finally:db.close()
     out.sort(key=lambda t:(t['done'],t['due'] is None,t['due'] or '',t['domain'],t['notebook'],t['path'],t['line']))
-    return out[:limit],stale
+    return (out if limit is None else out[:limit]),stale
 
 
 def _number(value):

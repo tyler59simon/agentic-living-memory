@@ -136,6 +136,19 @@ class FolderGuard(StoreFixture):
         self.register(private=True);deny=self.hook('Write',{'file_path':page})['deny']
         self.assertIn('private folder notebook',deny);self.assertIn('Tell the user',deny);self.assertNotIn('doc propose',deny)
 
+    def test_apply_patch_crlf_move_to_dot_folders_and_private_sidecar_subfolder(self):
+        page=str(self.nb/'a.md');moved=str(self.nb/'b.md')
+        crlf_patch=f'*** Begin Patch\r\n*** Update File: {page}\r\n@@\r\n-old\r\n+new\r\n*** End Patch\r\n'
+        self.assertIn('deny',self.hook('apply_patch',{'input':crlf_patch}))
+        move_patch=f'*** Begin Patch\n*** Update File: {self.base/"elsewhere"/"x.txt"}\n*** Move to: {moved}\n@@\n*** End Patch\n'
+        self.assertIn('deny',self.hook('apply_patch',{'input':move_patch}))
+        self.assertNotIn('deny',self.hook('Write',{'file_path':str(self.nb/'.obsidian'/'readme.md')}))
+        sub=self.nb/'secret'
+        (sub/'.hivemind').mkdir(parents=True,exist_ok=True)
+        (sub/'.hivemind'/'notebook.json').write_text('{"private":true}',encoding='utf-8')
+        deny=self.hook('Write',{'file_path':str(sub/'note.md')})['deny']
+        self.assertIn('private folder notebook',deny);self.assertNotIn('doc propose',deny)
+
     def test_the_registry_is_cached_by_its_mtime_and_a_damaged_one_denies_nothing(self):
         page=str(self.nb/'a.md');self.assertIn('deny',self.hook('Write',{'file_path':page}))
         (self.root/'notebook-folders.json').write_text('{"version":1,"folders":[]}');os.utime(self.root/'notebook-folders.json',(1,2))

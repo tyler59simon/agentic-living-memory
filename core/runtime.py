@@ -95,14 +95,21 @@ def folder_rule(path,cwd,root):
     if path in {'/dev/null','dev/null'}:return None
     try:
         from .folder_docs import locate
+        from .folder_policy import Policy,level_of,stricter
         hit=locate(root,path,cwd)
+        if not hit:return None
+        entry,folder,rel=hit
+        policy=Policy(root)
+        base=level_of(entry.get('visibility'),bool(entry.get('private')))
+        eff='private' if policy.broken else stricter(base,policy.file(folder/rel)[0])
+        return dict(entry,effective_level=eff)
     except (ValueError,OSError):return None
-    return hit[0] if hit else None
 
 def folder_deny(path,entry,cmd):
     """The refusal for an agent that edits a page of a folder notebook directly."""
     from .folder_policy import level_of
-    if level_of(entry.get('visibility'),bool(entry.get('private')))=='private':return f'Living Memory: {path} is a page of a private folder notebook; agents may not change it. Tell the user.'
+    if entry.get('effective_level')=='private' or level_of(entry.get('visibility'),bool(entry.get('private')))=='private':
+        return f'Living Memory: {path} is a page of a private folder notebook; agents may not change it. Tell the user.'
     return (f'Living Memory: {path} is a page of folder notebook {entry.get("path")}. Read it with {cmd} doc read --file "{path}", then stage your edit with '
             f'{cmd} doc propose --file "{path}" --base-revision R --body-file F; the user reviews it in Hivemind\'s Inbox.')
 
@@ -140,7 +147,7 @@ def raw_paths(value):
         return found
     if isinstance(value,list):return [p for item in value for p in raw_paths(item)]
     if isinstance(value,str):
-        patch=re.findall(r'(?m)^\*\*\* (?:Add|Delete|Update) File:\s*(.+)$',value)
+        patch=[m.strip() for m in re.findall(r'(?m)^\*\*\* (?:(?:Add|Delete|Update) File|Move to):\s*(.+)$',value) if m.strip()]
         # Quoted absolute paths include spaces. This is an agent guard, not a shell parser.
         quoted=re.findall(r'[\"\x27]((?:[A-Za-z]:[\\/]|/)[^\"\x27]+)[\"\x27]',value)
         absolute=re.findall(r'(?<![\w])(?:[A-Za-z]:[\\/]|/)[^\s\"\x27;|<>]+',value)

@@ -714,7 +714,7 @@ def _proposal_kind(pid):
 
 def _accept_note(parser,args):
     """`proposals accept ID` for a staged note: the code path of `capture --from-proposal ID` with nothing beside it. --rule and --pin go with it."""
-    stray=[flag for flag,given in (('--edited',args.edited),('--body-file',args.body_file),('--expected-revision',args.expected_revision),('--reason',args.reason)) if given]
+    stray=[flag for flag,given in (('--edited',args.edited),('--body-file',args.body_file),('--expected-revision',args.expected_revision),('--reason',args.reason),('--include-private',args.include_private),('--notebook',args.notebook)) if given]
     if stray:raise ValueError(', '.join(stray)+' belong to a page edit, not a staged note')
     cap=parser.parse_args(['capture','--from-proposal',args.id])
     for name in ('root','domain','cwd','json','actor','session','turn','rule','pin'):setattr(cap,name,getattr(args,name))
@@ -729,7 +729,11 @@ def _proposals(args,root):
         stray=[flag for flag,given in (('an ID',args.id),('--reason',args.reason),('--rule',args.rule),('--pin',args.pin),('--turn',args.turn),('--expected-revision',args.expected_revision),('--body-file',args.body_file),('--edited',args.edited)) if given]
         if stray:raise ValueError('proposals list takes only --kind, --status, --session, --notebook and --domain, not '+', '.join(stray))
         rows=[]
-        if args.kind in ('note','all'):rows+=[dict(proposals.listing(r),kind='note') for r in proposals.rows(root,'any' if args.status=='all' else args.status,args.session)]
+        if args.kind=='note' and args.notebook:raise ValueError('--notebook belongs to page edits, not staged notes')
+        if args.kind in ('note','all') and not args.notebook:
+            want_domain=canonical_domain(args.domain,root) if args.domain else None
+            rows+=[dict(proposals.listing(r),kind='note') for r in proposals.rows(root,'any' if args.status=='all' else args.status,args.session)
+                   if not want_domain or r.get('domain')==want_domain]
         if args.kind in ('page','all'):
             names=[canonical_domain(args.domain,root)] if args.domain else [d['name'] for d in list_domains(root)['domains'] if any((root/'domains'/d['name']/x).is_dir() for x in ('notebooks','folder-proposals'))]
             rows+=[dict(r,kind='page') for r in docs.proposals(root,names,args.notebook,private,args.status,session=args.session)['proposals']]
@@ -979,7 +983,6 @@ def main(argv=None):
     cwd=args.cwd or os.getcwd()
     invocation={'start':time.perf_counter(),'argv':list(argv) if argv is not None else sys.argv[1:]}
     try:
-        if args.command=='proposals' and args.action=='accept' and _proposal_kind(args.id)=='note':args=_accept_note(parser,args)   # one command for both kinds; a note runs as the capture it always was
         # Agents started inside a Hivemind terminal inherit HIVEMIND_SESSION; Hivemind's own backend does not. Every path (batch and serve
         # re-enter main) reaches this point before a governed command runs.
         if os.environ.get('HIVEMIND_SESSION') and (args.command in {'apply','undo','recover'}|DIRECT_WRITES or (args.command=='setup' and args.apply_plan) or (args.command=='taxonomy' and args.action=='add') or (args.command=='doc' and args.doc_action in DOC_WRITES)
@@ -994,6 +997,7 @@ def main(argv=None):
             raise ValueError('--include-private is for Hivemind itself; private notebooks are not shown to subagents.')
         if _IN_BATCH[0] and getattr(args,'include_private',False):
             raise ValueError('--include-private is not accepted inside batch: the hook checks only the outer command; run it on its own')
+        if args.command=='proposals' and args.action=='accept' and _proposal_kind(args.id)=='note':args=_accept_note(parser,args)   # one command for both kinds; a note runs as the capture it always was
         if args.command=='help':
             from .instructions import help_topic
             _emit(help_topic(args.topic),args);return 0
@@ -1429,7 +1433,7 @@ def main(argv=None):
                 # Page tasks: hosted notebooks and registered folder notebooks of these domains, at the levels --pages names; no ref or index, a page is ticked by editing it.
                 from . import docs_index
                 names=[d['name'] for d in list_domains(root)['domains']] if args.all_domains else list(dict.fromkeys(scope))
-                rows,stale=docs_index.task_rows(root,names,open_only=True,levels=('injectable','searchable') if args.pages=='searchable' else ('injectable',),folders=True)
+                rows,stale=docs_index.task_rows(root,names,open_only=True,levels=('injectable','searchable') if args.pages=='searchable' else ('injectable',),folders=True,limit=None)
                 for t in sorted(rows,key=lambda t:(t['domain'],t['notebook'],t['path'],t['line'])):
                     fields={k:t[k] for k in ('due','owner','priority')}
                     if wanted(fields):items.append({'kind':'page','domain':t['domain'],'notebook':t['notebook'],'path':t['path'],'title':t['title'],'line':t['line'],'item':t['text'],'task':t['task'],**fields,'overdue':t['due']<today if t['due'] else None})

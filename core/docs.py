@@ -1109,10 +1109,37 @@ def journal_scope(root, journal):
     return prefixes, uids
 
 
+def _folder_proposal_private(root, journal):
+    """Whether any folder-proposal effect in `journal` belongs to a private folder notebook or cannot be decoded (fail closed)."""
+    import base64
+    from . import folder_docs
+    effects = [e for e in (journal.get("effects") or []) if isinstance(e, dict) and FOLDER_PROPOSALS.match(str(e.get("path", "")))]
+    if not effects:
+        return False
+    for e in effects:
+        seen = False
+        for side in ("after", "before"):
+            raw = e.get(side)
+            if raw is None:
+                continue
+            seen = True
+            try:
+                record = json.loads(base64.b64decode(raw))
+            except (ValueError, TypeError):
+                return True
+            if not isinstance(record, dict) or folder_docs.hidden(root, record, include_private=False):
+                return True
+        if not seen:
+            return True
+    return False
+
+
 def journal_private(root, journal, scope=None, authorize=False):
     """Whether an operation touched a private notebook, by the live store or by its own images (journal_scope). authorize:
     see private_journal."""
     if private_journal(journal, scope if scope is not None else private_scope(root), authorize):
+        return True
+    if authorize and isinstance(journal, dict) and _folder_proposal_private(root, journal):
         return True
     own = any(isinstance(e, dict) and isinstance(e.get("path"), str) and (e["path"] == PRIVACY or e["path"].endswith("/notebook.json"))
               for e in journal.get("effects") or [] if isinstance(journal, dict))

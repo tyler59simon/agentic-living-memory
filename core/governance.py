@@ -349,7 +349,7 @@ def undo(root,operation_id,include_private=False,revert_files=True):
             folder=(value.get('meta') or {}).get('folder_notebook')
             if folder and kind=='doc_accept' and str(value['kind']).startswith('undo:'):raise ValueError('The page of a folder notebook proposal is not put back by undoing an undo; accept the proposal again')
             from .folder_docs import revert_accept
-            again=revert_accept(root,value) if folder and revert_files and str(value['kind'])=='doc_accept' else None
+            again=revert_accept(root,value,include_private) if folder and revert_files and str(value['kind'])=='doc_accept' else None
             # A `doc-` id and the journal's meta: notebook retention covers the undo, and doc undo still knows it after its parent is pruned.
             new_id=DOC_OP_PREFIX+uuid.uuid4().hex
             try:receipt=commit(root,changes,'undo:'+operation_id,domains,guards=guards,operation_id=new_id,meta=value.get('meta'))

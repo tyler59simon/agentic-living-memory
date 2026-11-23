@@ -4,6 +4,7 @@ Nothing here follows a link or junction, and a file is replaced only while it st
 from __future__ import annotations
 import hashlib,os,time,tempfile
 from pathlib import Path
+from .common import retry_sharing
 from .repository import is_link_or_junction as _is_link
 
 
@@ -31,13 +32,13 @@ def _place(src,dst):
     """Move src to dst unless something is at dst (a file saved meanwhile is never replaced): FileExistsError then. Windows
     rename never replaces; elsewhere a hard link is made and src removed, or, on a filesystem without hard links, dst is
     checked just before an ordinary rename."""
-    if os.name=='nt':os.rename(src,dst);return
+    if os.name=='nt':retry_sharing(lambda:os.rename(src,dst));return
     try:os.link(src,dst)
     except FileExistsError:raise
     except OSError:
         if os.path.lexists(dst):raise FileExistsError(dst)
-        os.rename(src,dst);return
-    os.unlink(src)
+        retry_sharing(lambda:os.rename(src,dst));return
+    retry_sharing(lambda:os.unlink(src))
 
 
 def _put_back(aside,path):
@@ -67,7 +68,8 @@ def _put(base,rel,data,expect):
     aside=None
     if expect is not None:
         aside=path.with_name(f'.{path.name}.{os.getpid()}-{time.monotonic_ns()}.aside')
-        os.rename(path,aside)   # the bytes now at the path are judged where nobody else writes
+        try:retry_sharing(lambda:os.rename(path,aside))   # the bytes now at the path are judged where nobody else writes
+        except FileNotFoundError:return False
         try:changed=_sha(_bytes(aside))!=expect
         except OSError:changed=True   # cannot be judged: put back
         if changed:   # changed just before the rename: put back, or beside a save made since
@@ -79,12 +81,18 @@ def _put(base,rel,data,expect):
                 with os.fdopen(fd,'wb') as f:f.write(data)
                 _place(temp,path)   # never over a file saved meanwhile
             except FileExistsError:
-                if aside is not None:aside.unlink()   # the expected bytes are known; the new save stays
+                if aside is not None:
+                    try:retry_sharing(aside.unlink)   # the expected bytes are known; the new save stays
+                    except OSError:pass
                 return False
             finally:
-                if os.path.exists(temp):os.unlink(temp)
-        if aside is not None:aside.unlink()
-        return True
+                if os.path.exists(temp):
+                    try:retry_sharing(lambda:os.unlink(temp))
+                    except OSError:pass
     except BaseException:
         if aside is not None and aside.exists():_put_back(aside,path)
         raise
+    if aside is not None:
+        try:retry_sharing(aside.unlink)
+        except OSError:pass
+    return True

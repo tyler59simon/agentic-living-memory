@@ -473,4 +473,31 @@ class OpenWork(StoreFixture):
         code,result=self.cli('--json','doc','tasks','--open');self.assertEqual(code,0,result)
         self.assertEqual([(t['notebook'],t['task'],t['owner'],t['priority']) for t in result['tasks']],[('nb1','Ship it','me','high')])
 
+    def test_nested_cross_domain_and_hidden_folder_notebooks_do_not_leak_and_markdown_suffix_indexes(self):
+        self.cli('--json','bind','other',str(self.base/'other-proj'))
+        folder=self.folder_nb('injectable',pages='- [ ] Outer task\n')
+        (folder/'Extra.markdown').write_text('- [ ] Markdown ext task\n',encoding='utf-8')
+        nested_other=folder/'other_sub'
+        nested_other.mkdir();(nested_other/'Secret.md').write_text('- [ ] Other domain task\n',encoding='utf-8')
+        nested_priv=folder/'priv_sub'
+        nested_priv.mkdir();(nested_priv/'Priv.md').write_text('- [ ] Private nested task\n',encoding='utf-8')
+        self.cli('--json','doc','folder','set',str(nested_other),'--domain','other','--visibility','injectable')
+        self.cli('--json','doc','folder','set',str(nested_priv),'--domain','demo','--visibility','hidden')
+        demo_tasks=[r['task'] for r in self.pages()]
+        self.assertEqual(sorted(demo_tasks),['Markdown ext task','Outer task'])
+        db=docs_index._readonly(self.root,'demo')
+        try:indexed_paths=[r[0] for r in db.execute('SELECT path FROM file').fetchall()]
+        finally:db.close()
+        self.assertFalse(any('priv_sub' in p or 'other_sub' in p for p in indexed_paths))
+
+    def test_open_owner_filter_is_not_truncated_by_500_row_page_cap(self):
+        folder=self.base/'bigvault';folder.mkdir(exist_ok=True)
+        for i in range(6):
+            lines=[f'- [ ] Filler {i}-{j}\n' for j in range(100)]
+            if i==5:lines.append('- [ ] Needle task (owner: zed)\n')
+            (folder/f'p{i}.md').write_text(''.join(lines),encoding='utf-8')
+        self.cli('--json','doc','folder','set',str(folder),'--domain','demo','--visibility','injectable')
+        code,result=self.cli('open','--owner','zed');self.assertEqual(code,0,result)
+        self.assertEqual([r['task'] for r in result['items']],['Needle task'])
+
 if __name__=='__main__':unittest.main()
