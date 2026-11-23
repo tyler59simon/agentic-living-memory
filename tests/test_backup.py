@@ -52,14 +52,21 @@ class Backups(StoreFixture):
         marker.write_text(json.dumps({'at': '2000-01-01T00:00:00+00:00'}))
         self.assertIsNotNone(snap.maybe_backup(self.root))
 
-    def test_session_end_takes_the_daily_backup_and_never_fails(self):
+    def test_session_end_schedules_housekeeping_and_housekeep_takes_the_daily_backup(self):
         self.note()
         payload = {'cwd': str(self.base / 'project'), 'session_id': 's'}
+        # Under LIVING_MEMORY_NO_BACKGROUND (test default), session-end does not spawn or run backups inline.
         self.assertEqual(runtime.process('claude', 'session-end', payload, self.root), {})
+        self.assertEqual(len(snap.snapshots(self.root)), 0)
+        with patch.dict(os.environ, {'LIVING_MEMORY_NO_BACKGROUND': ''}), patch('core.runtime._spawn_housekeeping') as spawn:
+            self.assertEqual(runtime.process('claude', 'session-end', payload, self.root), {})
+        self.assertEqual(spawn.call_count, 1)
+        # Running the worker command takes the daily backup and absorbs disk errors without failing.
+        self.assertTrue(runtime.housekeep(self.root)['backup'])
         self.assertEqual(len(snap.snapshots(self.root)), 1)
         with patch('core.backup.backup', side_effect=OSError('disk full')):
             (self.root / 'hooks/last-backup.json').unlink()
-            self.assertEqual(runtime.process('claude', 'session-end', payload, self.root), {})
+            self.assertFalse(runtime.housekeep(self.root)['backup'])
 
     def test_doctor_warns_when_backups_are_missing_or_stale(self):
         def warnings():

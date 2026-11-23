@@ -36,6 +36,7 @@ APPLIED_KEY = {'update': 'updated', 'confirm': 'confirmed', 'archive': 'archived
 ARCHIVE_RULES = {'status': ('expired_status',), 'action': ('cancelled_work', 'obsolete_content', 'obsolete_source_claim'),
                  'other': ('obsolete_content', 'obsolete_source_claim')}
 STATE_PRIORITY = {'changed': 0, 'missing': 1, 'unavailable': 2, 'unchecked': 3, 'current': 4}
+APPLY_YIELD_SECONDS = 0.2      # pause between decisions so 50 ms file_lock waiters acquire .store.lock between saves
 
 
 def _clock(now):
@@ -863,7 +864,8 @@ def apply(root, run, report, manifest, cfg=None, now=None, deadline=None):
     for ref, info in manifest['deferred'].items():
         if ref not in decided:
             results.append(_close(root, run, ref, 'defer', 'deferred', info['reason_code'], info, now, True))
-    for dec in report['decisions']:
+    decisions = report['decisions']
+    for index, dec in enumerate(decisions):
         if dec['ref'] in decided:
             results.append({'ref': dec['ref'], 'action': dec['action'], 'result': 'already_applied', 'reason_code': None})
             continue
@@ -871,6 +873,8 @@ def apply(root, run, report, manifest, cfg=None, now=None, deadline=None):
             results.append(_decide(root, run, dec['ref'], dec, manifest, now, deadline, clock))
         except (OSError, TimeoutError, ms.Unavailable) as exc:
             results.append({'ref': dec['ref'], 'action': dec['action'], 'result': 'skipped', 'reason_code': 'apply_failed', 'error': str(exc)[:200]})
+        if APPLY_YIELD_SECONDS > 0 and index + 1 < len(decisions) and (deadline is None or clock() < deadline):
+            time.sleep(APPLY_YIELD_SECONDS)
     _settle_pairs(root, manifest, results)
     return {'ok': True, 'results': results, 'counts': _counts([r for r in results if r['result'] != 'already_applied']),
             'warnings': [f"{r['ref']}: {r['warning']}" for r in results if r.get('warning')]}

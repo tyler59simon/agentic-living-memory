@@ -687,33 +687,95 @@ def _package_plan_folders():
     if (app/'.core-ownership-v1.json').is_file():homes.append(app.parent)
     return [home for home in dict.fromkeys(homes) if (home/'.plans').is_dir()]
 
+def _prune_due(root):
+    marker=Path(root)/'hooks'/'last-prune.json'
+    try:age=(clock.now()-parse_iso((read_json(marker,{}) or {})['at'])).total_seconds()
+    except (KeyError,TypeError,ValueError):return True
+    return age>=24*3600
+
+def _backup_due(root):
+    from datetime import datetime,timezone
+    from .backup import INTERVAL_HOURS
+    marker=Path(root)/'hooks'/'last-backup.json'
+    try:age=(datetime.now(timezone.utc)-parse_iso((read_json(marker,{}) or {})['at'])).total_seconds()/3600
+    except (KeyError,TypeError,ValueError):return True
+    return age>=INTERVAL_HOURS
+
+def _housekeeping_due(root):return _backup_due(root) or _prune_due(root)
+
+HOUSEKEEP_COOLDOWN=600
+
+def _spawn_housekeeping(root):
+    """Start `housekeep` detached, as maintenance._spawn and sources.spawn do."""
+    import subprocess,tempfile
+    argv=[sys.executable,str(SCRIPT),'--root',str(root),'housekeep']
+    options={'stdin':subprocess.DEVNULL,'stdout':subprocess.DEVNULL,'stderr':subprocess.DEVNULL,'close_fds':True,'cwd':tempfile.gettempdir()}
+    if os.name=='nt':
+        flags=0x00000008|0x00000200   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, and CREATE_BREAKAWAY_FROM_JOB when allowed
+        try:subprocess.Popen(argv,creationflags=flags|0x01000000,**options)
+        except OSError:subprocess.Popen(argv,creationflags=flags,**options)
+    else:subprocess.Popen(argv,start_new_session=True,**options)
+
+def schedule_housekeeping(root):
+    """Start a detached `housekeep` worker when daily backup or pruning is due. Never waits and never raises."""
+    try:
+        if os.environ.get('LIVING_MEMORY_NO_BACKGROUND'):return 'background_disabled'
+        if os.environ.get('LIVING_MEMORY_MAINTENANCE_CHILD'):return 'maintenance_child'
+        if not _housekeeping_due(root):return 'not_due'
+        try:
+            with file_lock(Path(root)/'hooks'/'housekeep.lock',timeout=0):pass
+        except (TimeoutError,OSError):return 'already_running'
+        marker=Path(root)/'hooks'/'housekeep.spawned'
+        try:
+            if time.time()-float(marker.read_text(encoding='utf-8'))<HOUSEKEEP_COOLDOWN:return 'cooldown'
+        except (OSError,ValueError):pass
+        _spawn_housekeeping(root)
+        atomic_write(marker,str(time.time()))
+        return 'spawned'
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('runtime.schedule_housekeeping',exc,root);return 'error'
+
+def housekeep(root):
+    """Run daily backup and pruning under a non-blocking worker lock; one worker at a time."""
+    from contextlib import ExitStack
+    root=Path(root).resolve()
+    with ExitStack() as stack:
+        try:stack.enter_context(file_lock(root/'hooks'/'housekeep.lock',timeout=0))
+        except (TimeoutError,OSError):return {'ok':True,'skipped':'already_running','backup':False,'pruned':False}
+        backup=_daily_backup(root);pruned=_prune_journals(root)
+        return {'ok':True,'backup':bool(backup),'pruned':pruned is not None,'counts':pruned}
+
 def _prune_journals(root):
     """At most once a day, drop old sync-bookkeeping journals from the store and each managed vault.
     Never fails the hook."""
     try:
+        from contextlib import ExitStack
         from .repository import prune_journals,prune_plans
-        marker=root/'hooks'/'last-prune.json'
-        try:age=(clock.now()-parse_iso(read_json(marker,{})['at'])).total_seconds()
-        except (KeyError,TypeError,ValueError):age=None
-        if age is not None and age<24*3600:return None
-        atomic_write(marker,canonical_json({'at':now()}))
-        from .logs import prune
-        prune(root)
-        # Session state and the usage diary (.turns/) keep 30 days, also for users who rarely finalize a capture.
-        from .capture import prune as prune_turns
-        prune_turns(root)
-        roots={str(root)}
-        for state in (root/'domains').glob('*/sync-state.json'):
-            vault=(read_json(state,{}) or {}).get('vault')
-            if vault and Path(vault).is_dir():roots.add(str(vault))
-        out={r:prune_journals(Path(r)) for r in sorted(roots)}
-        from .docs import prune_journals as prune_page_journals
-        out['notebook_operations']=prune_page_journals(root)
-        prune_plans(root)
-        # Undo reads journals, never plan files, so those folders only need the long retention for a plan applied late.
-        # A harness home is not ours: only files that have the shape of a plan are touched.
-        for home in _package_plan_folders():prune_plans(home,applied_days=30,require_plan=True)
-        return out
+        root=Path(root).resolve()
+        if not _prune_due(root):return None
+        with ExitStack() as stack:
+            try:stack.enter_context(file_lock(root/'hooks'/'prune.lock',timeout=0))
+            except (TimeoutError,OSError):return None
+            if not _prune_due(root):return None
+            from .logs import prune
+            prune(root)
+            # Session state and the usage diary (.turns/) keep 30 days, also for users who rarely finalize a capture.
+            from .capture import prune as prune_turns
+            prune_turns(root)
+            roots={str(root)}
+            for state in (root/'domains').glob('*/sync-state.json'):
+                vault=(read_json(state,{}) or {}).get('vault')
+                if vault and Path(vault).is_dir():roots.add(str(vault))
+            out={r:prune_journals(Path(r)) for r in sorted(roots)}
+            from .docs import prune_journals as prune_page_journals
+            out['notebook_operations']=prune_page_journals(root)
+            prune_plans(root)
+            # Undo reads journals, never plan files, so those folders only need the long retention for a plan applied late.
+            # A harness home is not ours: only files that have the shape of a plan are touched.
+            for home in _package_plan_folders():prune_plans(home,applied_days=30,require_plan=True)
+            atomic_write(root/'hooks'/'last-prune.json',canonical_json({'at':now()}))
+            return out
     except Exception as exc:
         from .logs import swallowed
         swallowed('runtime.prune_journals',exc,root);return None
@@ -1909,7 +1971,7 @@ def _process(harness,event,payload,root=None,info=None):
         info['off']=True;detail['reason']='off';detail['off']=off
         if event=='session-end':
             # Store-wide housekeeping only; nothing about this session is recorded.
-            _sync_vaults(root,'session end');_daily_backup(root);_prune_journals(root)
+            _sync_vaults(root,'session end');detail['housekeeping']={'worker':schedule_housekeeping(root)}
             return {}
         if event=='pre-tool-use':
             # The protected-path guard keeps the store intact whether or not memory is on.
@@ -1992,8 +2054,8 @@ def _process(harness,event,payload,root=None,info=None):
         try:atomic_write(root/'hooks/last-delivery.json',canonical_json({'harness':harness,'event':event,'timestamp':now(),'bound':bool(domain),'cwd':str(cwd),'domain':domain,'payload_keys':sorted(payload)}))
         except OSError:pass  # Diagnostics only; never cost the session its memory context.
     if event=='session-end':
-        synced=_sync_vaults(root,'session end');backup=_daily_backup(root);pruned=_prune_journals(root)
-        detail['housekeeping']={'synced':len(synced.get('results',[])) if isinstance(synced,dict) else None,'backup':bool(backup),'pruned':pruned is not None}
+        synced=_sync_vaults(root,'session end');worker=schedule_housekeeping(root)
+        detail['housekeeping']={'synced':len(synced.get('results',[])) if isinstance(synced,dict) else None,'worker':worker}
         return {}
     if event=='pre-tool-use' and os.environ.get('HIVEMIND_SESSION'):
         # Before the unbound-project return: an agent in a Hivemind terminal may not apply or undo a plan whatever its working directory.
@@ -2049,8 +2111,8 @@ def _process(harness,event,payload,root=None,info=None):
                 _update(root,session,lambda s:s.update(bind_hint=True));result['context']=hint
         return result
     if event=='session-start':
-        # Codex has no SessionEnd: its session start does the end-of-session housekeeping.
-        if harness=='codex':_sync_vaults(root,'session start',SESSION_START_SYNC_SECONDS);_daily_backup(root);_prune_journals(root)
+        # Codex has no SessionEnd: its session start schedules the end-of-session housekeeping in the background.
+        if harness=='codex':_sync_vaults(root,'session start',SESSION_START_SYNC_SECONDS);detail['housekeeping']=schedule_housekeeping(root)
         from .session_start import build_context,BUDGET,MIN_BUDGET,HARD_CAP,_cap
         rules=protocol(root,domain,harness,session)
         # The fallback protocol stands in for the instruction block, which BUDGET does not count either: without this the briefing got only

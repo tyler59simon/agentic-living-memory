@@ -41,7 +41,7 @@ def _session_state(root,session):
 SESSION_ENV='CLAUDE_CODE_SESSION_ID'   # Claude Code gives every shell command its session ID, the one hooks receive
 SWITCH={'off','on','status'}
 # Commands that still run while memory is off for the session: the switch itself and checks that touch no notes.
-OFF_ALLOWED=SWITCH|{'version','doctor','help'}
+OFF_ALLOWED=SWITCH|{'version','doctor','help','housekeep'}
 
 def _switch(root,cmd,session):
     """alm off / on / status for one session: a flag in the hooks' session state (runtime.session_off)."""
@@ -618,7 +618,7 @@ HELP={'setup':'Choose or move the shared memory folder','bind':'Bind a domain to
  'timeline':'Notes around a date or note','ingest-plan':'Plan importing Claude auto-memory files','export':'Write notes to a zip file','import-plan':'Plan importing an exported zip','confirm':'Mark a note still true',
  'resolve':'Finish a plan, bug or risk','reopen':'Reopen a resolved note','restore':'Bring back an archived note','archive':'Retire a note without a replacement','stats':'Usage over the last days','logs':'Show the operational log','plan':'Plan deleting one note',
  'apply':'Apply a plan','inspect-plan':'Show a plan in full','rewrite':'Rewrite several note bodies','merge-plan':'Plan merging notes','history':'Recent operations','recap':'Summary of recent activity','log':'Note history',
- 'undo':'Undo an operation (merge, delete and bulk retag return a plan)','recover':'Finish or abandon an interrupted operation','diff':'Show what an operation changed','doctor':'Check the install and the store','backup':'Back up the store',
+ 'undo':'Undo an operation (merge, delete and bulk retag return a plan)','recover':'Finish or abandon an interrupted operation','diff':'Show what an operation changed','doctor':'Check the install and the store','backup':'Back up the store','housekeep':'Run daily backup and prune old journals, logs and plans',
  'restore-plan':'Plan restoring a backup','migration-plan':'Plan a store migration','note-type-plan':'Plan note type changes','baseline-plan':'Plan a verification baseline','rebuild':'Rebuild search indexes',
  'maintenance':'Automatic maintenance','rebaseline':'Re-baseline notes a file change did not touch','semantic':'Semantic search settings','validate':'Check notes against the rules','query':'Query the store','taxonomy':'Show the tag taxonomy, or add tags',
  'project':'Create or change a project','projects':'List projects','system':'Create or change a system','systems':'List systems','type':'Create, change or retire a custom note type','types':'List note types, built-in and custom','source':'Add or remove a knowledge-base source','sources':'List knowledge-base sources',
@@ -630,7 +630,7 @@ HELP={'setup':'Choose or move the shared memory folder','bind':'Bind a domain to
 # The groups `alm --help` lists the commands under (CLI-2); every command is in exactly one.
 HELP_GROUPS=(
  ('Everyday',('help','capture','propose','proposals','search','read','update','supersede','open','check','confirm','resolve','reopen','ask','list','timeline','links','log','recap','recall','capture-finalize','status','off','on','doc')),
- ('Maintenance',('review','maintenance','rebaseline','stats','history','diff','undo','recover','restore','doctor','validate','rebuild','semantic','backup','logs')),
+ ('Maintenance',('review','maintenance','rebaseline','stats','history','diff','undo','recover','restore','doctor','validate','rebuild','semantic','backup','housekeep','logs')),
  ('Direct writes (journaled, undo OPERATION)',('archive','rewrite','remap','promote','source','project','system','type')),
  ('Governance (plans)',('plan','apply','inspect-plan','merge-plan','retag-plan','note-type-plan','migration-plan','baseline-plan','restore-plan',
    'import-plan','ingest-plan','overlay-teardown-plan')),
@@ -907,6 +907,7 @@ def build_parser():
     p=sub('diff');p.add_argument('operation_id');p.add_argument('--include-private',action='store_true',help='Hivemind only: show changes inside private notebooks')
     p=sub('doctor');p.add_argument('--include-private',action='store_true',help='Hivemind only: name private notebooks in warnings')
     p=sub('backup');p.add_argument('--keep',type=int,default=7)
+    p=sub('housekeep')
     p=sub('restore-plan');p.add_argument('file',type=Path)
     p=sub('migration-plan')
     p=sub('note-type-plan')
@@ -1030,7 +1031,7 @@ def main(argv=None):
             invocation['domain']=domain
         except ValueError:
             # Snapshots exist to repair a damaged store, so restoring must not depend on readable bindings.
-            if cmd not in {'restore-plan','inspect-plan','apply','backup','history'}:raise
+            if cmd not in {'restore-plan','inspect-plan','apply','backup','housekeep','history'}:raise
             domain=None
         # propose writes only a draft in .turns/, which the main agent accepts or rejects.
         if args.actor=='subagent' and cmd not in READ_ONLY|{'propose'}:raise ValueError('Subagents are read-only; stage a draft with propose for the main agent')
@@ -1608,6 +1609,9 @@ def main(argv=None):
             from .common import atomic_write
             from datetime import datetime,timezone   # real time, like backup.maybe_backup that reads this marker; not the test clock
             atomic_write(root/'hooks'/'last-backup.json',canonical_json({'at':datetime.now(timezone.utc).isoformat(),'backup':Path(result['backup']).name}))
+        elif cmd=='housekeep':
+            from .runtime import housekeep
+            result=housekeep(root)
         elif cmd=='restore-plan':
             from .backup import restore_plan
             result=restore_plan(root,args.file)

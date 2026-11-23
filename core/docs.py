@@ -196,48 +196,75 @@ def prune_journals(root, keep=KEEP_VERSIONS, days=KEEP_DAYS):
     from .repository import PENDING, _TAIL_STATE, FINAL_STATES
     root = Path(root).resolve()
     cutoff = clock.now() - timedelta(days=days)
-    rows = []
-    with store_lock(root):
-        operations = root / ".operations"
-        # Under the store lock no write is between staging and its marker, so a folder with neither marker nor journal holds
-        # only attachment bytes a crashed write staged; nothing refers to them.
-        for folder in operations.glob("*") if operations.is_dir() else []:
+    operations = root / ".operations"
+    # Scan without store_lock so a large .operations/ folder never stalls hooks; re-check each candidate under lock.
+    orphans = []
+    for folder in sorted(operations.glob("*")) if operations.is_dir() else []:
+        try:
             if folder.is_dir() and not (folder / PENDING).exists() and not (folder / "journal.json").exists() and \
                     {p.name for p in folder.iterdir()} <= {"blobs", "doc.json"}:
-                shutil.rmtree(folder, ignore_errors=True)
-        folders = set(operations.glob(DOC_OP_PREFIX + "*")) | {p.parent for p in operations.glob("*/doc.json")}
-        for folder in sorted(folders):
+                orphans.append(folder)
+        except OSError:
+            continue
+    for folder in orphans:
+        with store_lock(root):
+            # Under the store lock no write is between staging and its marker, so a folder with neither marker nor journal holds
+            # only attachment bytes a crashed write staged; nothing refers to them.
+            try:
+                if folder.is_dir() and not (folder / PENDING).exists() and not (folder / "journal.json").exists() and \
+                        {p.name for p in folder.iterdir()} <= {"blobs", "doc.json"}:
+                    shutil.rmtree(folder, ignore_errors=True)
+            except OSError:
+                continue
+    rows = []
+    folders = (set(operations.glob(DOC_OP_PREFIX + "*")) | {p.parent for p in operations.glob("*/doc.json")}) if operations.is_dir() else set()
+    for folder in sorted(folders):
+        journal = folder / "journal.json"
+        if (folder / PENDING).exists() or not journal.is_file():
+            continue
+        try:
+            with journal.open("rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                handle.seek(max(0, handle.tell() - 64))
+                match = _TAIL_STATE.search(handle.read())
+            index = read_json(folder / "doc.json", None)
+            if not isinstance(index, dict):
+                value = read_json(journal)
+                index = {"created": value.get("created"), "paths": [e.get("path") for e in value.get("effects") or []]}
+                match = match or re.search(rb'"state":"([a-z_]+)"', json.dumps(value).encode())
+            created = parse_iso(str(index.get("created")))
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+        if not match or match[1].decode() not in FINAL_STATES:
+            continue
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        rows.append((created, folder, [p for p in index.get("paths") or [] if isinstance(p, str)]))
+    newest = set()
+    by_path = {}
+    for created, folder, paths in rows:
+        for path in paths:
+            by_path.setdefault(path, []).append((created, folder.name))
+    for ops in by_path.values():
+        newest |= {name for _, name in sorted(ops, reverse=True)[:keep]}
+    candidates = [folder for created, folder, _ in rows if not (folder.name in newest and created >= cutoff)]
+    removed = 0
+    for folder in candidates:
+        with store_lock(root):
             journal = folder / "journal.json"
-            if (folder / PENDING).exists() or not journal.is_file():
+            if not folder.is_dir() or (folder / PENDING).exists() or not journal.is_file():
                 continue
             try:
                 with journal.open("rb") as handle:
                     handle.seek(0, os.SEEK_END)
                     handle.seek(max(0, handle.tell() - 64))
                     match = _TAIL_STATE.search(handle.read())
-                index = read_json(folder / "doc.json", None)
-                if not isinstance(index, dict):
+                if not match:
                     value = read_json(journal)
-                    index = {"created": value.get("created"), "paths": [e.get("path") for e in value.get("effects") or []]}
-                    match = match or re.search(rb'"state":"([a-z_]+)"', json.dumps(value).encode())
-                created = parse_iso(str(index.get("created")))
-            except (OSError, ValueError, TypeError, AttributeError):
+                    match = re.search(rb'"state":"([a-z_]+)"', json.dumps(value).encode())
+            except (OSError, ValueError, TypeError):
                 continue
             if not match or match[1].decode() not in FINAL_STATES:
-                continue
-            if created.tzinfo is None:
-                created = created.replace(tzinfo=timezone.utc)
-            rows.append((created, folder, [p for p in index.get("paths") or [] if isinstance(p, str)]))
-        newest = set()
-        by_path = {}
-        for created, folder, paths in rows:
-            for path in paths:
-                by_path.setdefault(path, []).append((created, folder.name))
-        for ops in by_path.values():
-            newest |= {name for _, name in sorted(ops, reverse=True)[:keep]}
-        removed = 0
-        for created, folder, _ in rows:
-            if folder.name in newest and created >= cutoff:
                 continue
             shutil.rmtree(folder, ignore_errors=True)
             removed += 1

@@ -368,6 +368,23 @@ class Recovery(Base):
         stored=ms._current(self.root,run);self.assertEqual((stored['state'],stored['cost_complete']),('interrupted',False));self.assertEqual(len(stored['decisions']),2)
         self.assertEqual(self.get(n)['status'],'archived')
 
+    def test_apply_yields_between_decisions_only_when_more_remain_before_deadline(self):
+        from unittest import mock
+        n=self.mk('Sprint status','Done.',type='status',review_by=OLD);m=self.mk('Release status','Also done.',type='status',review_by=OLD)
+        run,manifest,_=self.prepare()
+        decs=[self.d(manifest,n,'archive',rule='expired_status'),self.d(manifest,m,'keep')]
+        with mock.patch('core.maintenance.time.sleep') as sleep:
+            self.apply(run,manifest,decs)
+        sleep.assert_called_once_with(maintenance.APPLY_YIELD_SECONDS)
+        # Past deadline: no inter-decision pause.
+        n2=self.mk('Old sprint','Done.',type='status',review_by=OLD);m2=self.mk('Old release','Done.',type='status',review_by=OLD)
+        ms.finish(self.root,run,0,'completed',self.now);self.tick()
+        run2,manifest2,_=self.prepare()
+        decs2=[self.d(manifest2,n2,'archive',rule='expired_status'),self.d(manifest2,m2,'keep')]
+        with mock.patch('core.maintenance.time.sleep') as sleep:
+            self.apply(run2,manifest2,decs2,deadline=self.now-timedelta(seconds=1))
+        sleep.assert_not_called()
+
 class Record(unittest.TestCase):
     def test_retirement_record_carries_the_maintenance_fields_and_existing_callers_are_unchanged(self):
         self.assertEqual(set(notes.retirement_record('archive','agent')),{'version','at','action','actor'})

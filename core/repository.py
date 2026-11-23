@@ -832,30 +832,95 @@ def unfinished_operations(root):
     return pending, unreadable
 
 
+def _pruneable_journal(journal_path, cutoff, kinds):
+    folder = journal_path.parent
+    if (folder / PENDING).exists():
+        return False
+    try:
+        value = read_json(journal_path, None)
+    except ValueError:
+        return False
+    if not isinstance(value, dict) or value.get("kind") not in kinds or value.get("state") != "committed":
+        return False
+    try:
+        created = parse_iso(str(value.get("created")))
+    except ValueError:
+        return False
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    return created < cutoff
+
+
 def prune_journals(root, days=14, kinds=BOOKKEEPING_KINDS):
     """Delete committed journals of the given kinds older than `days`; returns how many were removed."""
     from datetime import timedelta
     import shutil
+    root = Path(root).resolve()
     cutoff = clock.now() - timedelta(days=days)
+    # Scan without store_lock so a large .operations/ folder never stalls hooks; lock only per candidate deletion.
+    candidates = [path for path in sorted(root.glob(".operations/*/journal.json")) if _pruneable_journal(path, cutoff, kinds)]
     removed = 0
-    with store_lock(Path(root).resolve()):
-        for journal_path in sorted(Path(root).glob(".operations/*/journal.json")):
-            folder = journal_path.parent
-            if (folder / PENDING).exists():
+    for journal_path in candidates:
+        with store_lock(root):
+            if not _pruneable_journal(journal_path, cutoff, kinds):
                 continue
-            value = read_json(journal_path, None)
-            if not isinstance(value, dict) or value.get("kind") not in kinds or value.get("state") != "committed":
-                continue
-            try:
-                created = parse_iso(str(value.get("created")))
-            except ValueError:
-                continue
-            if created.tzinfo is None:
-                created = created.replace(tzinfo=timezone.utc)
-            if created < cutoff:
-                shutil.rmtree(folder, ignore_errors=True)
-                removed += 1
+            shutil.rmtree(journal_path.parent, ignore_errors=True)
+            removed += 1
     return removed
+
+
+def _waiting_plans(root):
+    """Plan IDs an Obsidian approval still waits on, or None when sync state cannot be read (prune nothing)."""
+    waiting = set()
+    for state_path in Path(root).glob("domains/*/sync-state.json"):
+        try:
+            entries = (read_json(state_path, {}) or {}).get("entries") or {}
+            waiting |= {e["pending_plan"] for e in entries.values() if isinstance(e, dict) and e.get("pending_plan")}
+        except (ValueError, AttributeError, TypeError):
+            return None
+    for state_path in Path(root).glob("domains/*/notebook-sync.json"):   # a page deletion waiting for its tick (NS-2B)
+        try:
+            pending = (read_json(state_path, {}) or {}).get("pending") or {}
+            waiting |= {p["plan_id"] for p in pending.values() if isinstance(p, dict) and p.get("plan_id")}
+        except (ValueError, AttributeError, TypeError):
+            return None
+    return waiting
+
+
+def _pruneable_plan(root, plan_path, waiting, now_utc, applied_days, unapplied_days, require_plan):
+    from datetime import timedelta
+    if not re.fullmatch("[a-f0-9]{32}", plan_path.stem) or plan_path.stem in waiting:
+        return False
+    try:
+        value = read_json(plan_path, None)
+        if not isinstance(value, dict):
+            return False
+        created = parse_iso(str(value.get("created")))
+    except (ValueError, AttributeError, TypeError):
+        return False
+    if require_plan:
+        try:
+            shaped = (value.get("id") == plan_path.stem and isinstance(value.get("kind"), str) and isinstance(value.get("changes"), dict)
+                      and isinstance(value.get("digest"), str)
+                      and value["digest"] == hashlib.sha256(canonical_json({k: v for k, v in value.items() if k != "digest"}).encode()).hexdigest())
+        except (UnicodeEncodeError, TypeError, ValueError):
+            shaped = False   # a lone surrogate or an odd value cannot be a plan we wrote; keep it and go on to the next file
+        if not shaped:
+            return False
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    folder = Path(root) / ".operations" / plan_path.stem
+    if folder.exists():
+        try:
+            journal = read_json(folder / "journal.json", None)
+        except ValueError:
+            return False
+        if not isinstance(journal, dict) or journal.get("state") != "committed" or (folder / PENDING).exists():
+            return False
+        cutoff = now_utc - timedelta(days=applied_days)
+    else:
+        cutoff = now_utc - timedelta(days=unapplied_days)
+    return created < cutoff
 
 
 def prune_plans(root, applied_days=1, unapplied_days=30, require_plan=False):
@@ -863,58 +928,26 @@ def prune_plans(root, applied_days=1, unapplied_days=30, require_plan=False):
     than `unapplied_days`. A plan whose journal is in any other state, or unreadable, stays, and so does one an
     Obsidian approval still waits on (`pending_plan` in a domain's sync-state.json, `pending` in its notebook-sync.json). Returns the count removed.
     require_plan: for a folder this store does not own (a harness home), touch only files shaped like governance.plan() output."""
-    from datetime import timedelta
+    import shutil
+    root = Path(root).resolve()
     now_utc = clock.now()
+    waiting = _waiting_plans(root)
+    if waiting is None:
+        return 0  # cannot tell which plans a vault approval needs; prune nothing
+    # Scan without store_lock; lock only per candidate deletion after re-checking waiting state and journal.
+    candidates = [path for path in sorted(root.glob(".plans/*.json"))
+                  if _pruneable_plan(root, path, waiting, now_utc, applied_days, unapplied_days, require_plan)]
     removed = 0
-    with store_lock(Path(root).resolve()):
-        waiting = set()
-        for state_path in Path(root).glob("domains/*/sync-state.json"):
-            try:
-                entries = (read_json(state_path, {}) or {}).get("entries") or {}
-                waiting |= {e["pending_plan"] for e in entries.values() if isinstance(e, dict) and e.get("pending_plan")}
-            except (ValueError, AttributeError, TypeError):
-                return removed  # cannot tell which plans a vault approval needs; prune nothing
-        for state_path in Path(root).glob("domains/*/notebook-sync.json"):   # a page deletion waiting for its tick (NS-2B)
-            try:
-                pending = (read_json(state_path, {}) or {}).get("pending") or {}
-                waiting |= {p["plan_id"] for p in pending.values() if isinstance(p, dict) and p.get("plan_id")}
-            except (ValueError, AttributeError, TypeError):
+    for plan_path in candidates:
+        with store_lock(root):
+            live_waiting = _waiting_plans(root)
+            if live_waiting is None:
                 return removed
-        for plan_path in sorted(Path(root).glob(".plans/*.json")):
-            if not re.fullmatch("[a-f0-9]{32}", plan_path.stem) or plan_path.stem in waiting:
+            if not _pruneable_plan(root, plan_path, live_waiting, now_utc, applied_days, unapplied_days, require_plan):
                 continue
-            try:
-                value = read_json(plan_path, None)
-                created = parse_iso(str(value.get("created")))
-            except (ValueError, AttributeError):
-                continue
-            if require_plan:
-                try:
-                    shaped = (value.get("id") == plan_path.stem and isinstance(value.get("kind"), str) and isinstance(value.get("changes"), dict)
-                              and isinstance(value.get("digest"), str)
-                              and value["digest"] == hashlib.sha256(canonical_json({k: v for k, v in value.items() if k != "digest"}).encode()).hexdigest())
-                except (UnicodeEncodeError, TypeError, ValueError):
-                    shaped = False   # a lone surrogate or an odd value cannot be a plan we wrote; keep it and go on to the next file
-                if not shaped:
-                    continue
-            if created.tzinfo is None:
-                created = created.replace(tzinfo=timezone.utc)
-            folder = Path(root) / ".operations" / plan_path.stem
-            if folder.exists():
-                try:
-                    journal = read_json(folder / "journal.json", None)
-                except ValueError:
-                    continue
-                if not isinstance(journal, dict) or journal.get("state") != "committed" or (folder / PENDING).exists():
-                    continue
-                cutoff = now_utc - timedelta(days=applied_days)
-            else:
-                cutoff = now_utc - timedelta(days=unapplied_days)
-            if created < cutoff:
-                plan_path.unlink(missing_ok=True)
-                import shutil
-                shutil.rmtree(plan_path.with_suffix(""), ignore_errors=True)   # attachment bytes a plan staged (NS-2A)
-                removed += 1
+            plan_path.unlink(missing_ok=True)
+            shutil.rmtree(plan_path.with_suffix(""), ignore_errors=True)   # attachment bytes a plan staged (NS-2A)
+            removed += 1
     return removed
 
 

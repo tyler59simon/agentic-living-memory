@@ -188,3 +188,102 @@ class Pruning(StoreFixture):
         before = journals(place)
         self.assertEqual(transaction(place, {'a.md': 'same', 'gone.md': None}, 'overlay_views', skip_unchanged=True)['state'], 'unchanged')
         self.assertEqual(journals(place), before)
+
+    def test_prune_journals_writes_marker_only_after_completion(self):
+        marker = self.root / 'hooks' / 'last-prune.json'
+        with patch('core.repository.prune_journals', side_effect=RuntimeError('interrupted')):
+            self.assertIsNone(runtime._prune_journals(self.root))
+        self.assertFalse(marker.exists())
+        with patch('core.repository.prune_journals', return_value=0) as prune:
+            self.assertIsNotNone(runtime._prune_journals(self.root))
+            self.assertIsNone(runtime._prune_journals(self.root))
+        self.assertTrue(marker.exists())
+        self.assertEqual(prune.call_count, 1)
+
+    def test_prune_journals_skips_when_prune_lock_is_held(self):
+        from core.common import file_lock
+        with file_lock(self.root / 'hooks' / 'prune.lock'):
+            with patch('core.repository.prune_journals', return_value=0) as prune:
+                self.assertIsNone(runtime._prune_journals(self.root))
+        self.assertEqual(prune.call_count, 0)
+        self.assertFalse((self.root / 'hooks' / 'last-prune.json').exists())
+
+    def test_prune_journals_and_plans_scan_unlocked_and_recheck_under_lock(self):
+        from contextlib import contextmanager
+        from core import repository
+        from core.governance import plan, apply
+        place = self.base / 'place';place.mkdir()
+        recent = transaction(place, {'a.md': 'one'}, 'overlay_views')['operation_id']
+        # No candidates -> store_lock is never acquired during the scan.
+        with patch.object(repository, 'store_lock', side_effect=AssertionError('locked during scan')):
+            self.assertEqual(repository.prune_journals(place), 0)
+            self.assertEqual(repository.prune_plans(place), 0)
+        # Candidate becomes pending before lock acquisition -> re-check skips deletion.
+        old = transaction(place, {'b.md': 'two'}, 'overlay_views')['operation_id']
+        self.age(place, old, 30)
+        real_lock = repository.store_lock
+        lock_calls = []
+        @contextmanager
+        def racing_journal_lock(root, *a, **kw):
+            lock_calls.append(root)
+            (place / '.operations' / old / 'pending').write_text('pending\n')
+            with real_lock(root, *a, **kw):
+                yield
+        with patch.object(repository, 'store_lock', side_effect=racing_journal_lock):
+            self.assertEqual(repository.prune_journals(place), 0)
+        self.assertEqual(len(lock_calls), 1)
+        self.assertEqual(set(journals(place)), {recent, old})
+        # Plan becomes waiting in sync-state.json before lock acquisition -> re-check skips deletion.
+        proposed = plan(place, {'c.md': 'three'}, 'x')
+        apply(place, proposed['plan_id'], proposed['digest'])
+        plan_path = place / '.plans' / (proposed['plan_id'] + '.json')
+        later = datetime.now(timezone.utc) + timedelta(days=5)
+        @contextmanager
+        def racing_plan_lock(root, *a, **kw):
+            state_path = place / 'domains' / 'demo' / 'sync-state.json'
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text(json.dumps({'entries': {'n1': {'pending_plan': proposed['plan_id']}}}))
+            with real_lock(root, *a, **kw):
+                yield
+        with patch('core.repository.clock.now', return_value=later), patch.object(repository, 'store_lock', side_effect=racing_plan_lock):
+            self.assertEqual(repository.prune_plans(place), 0)
+        self.assertTrue(plan_path.exists())
+
+    def test_housekeeping_scheduling_and_cli_gates(self):
+        import io
+        from contextlib import redirect_stdout, redirect_stderr
+        from core.cli import main as cli
+        from core.common import file_lock
+        self.note()
+        self.assertEqual(runtime.schedule_housekeeping(self.root), 'background_disabled')
+        with patch.dict(os.environ, {'LIVING_MEMORY_NO_BACKGROUND': '', 'LIVING_MEMORY_MAINTENANCE_CHILD': '1'}):
+            self.assertEqual(runtime.schedule_housekeeping(self.root), 'maintenance_child')
+        with patch.dict(os.environ, {'LIVING_MEMORY_NO_BACKGROUND': '', 'LIVING_MEMORY_MAINTENANCE_CHILD': ''}), \
+                patch('core.runtime._spawn_housekeeping') as spawn, \
+                patch('core.rebaseline._spawn'), patch('core.sources.spawn'):
+            with file_lock(self.root / 'hooks' / 'housekeep.lock'):
+                self.assertEqual(runtime.schedule_housekeeping(self.root), 'already_running')
+            self.assertEqual(runtime.schedule_housekeeping(self.root), 'spawned')
+            self.assertEqual(runtime.schedule_housekeeping(self.root), 'cooldown')
+            self.assertEqual(spawn.call_count, 1)
+            # Codex session-start and off-session session-end schedule housekeeping without running it inline.
+            (self.root / 'hooks' / 'housekeep.spawned').unlink()
+            runtime.process('codex', 'session-start', {'cwd': str(self.base / 'project'), 'session_id': 'cx'}, self.root)
+            self.assertEqual(spawn.call_count, 2)
+            (self.root / 'hooks' / 'housekeep.spawned').unlink()
+            with patch.dict(os.environ, {'LIVING_MEMORY_OFF': '1'}):
+                runtime.process('claude', 'session-end', {'cwd': str(self.base / 'project'), 'session_id': 'off'}, self.root)
+            self.assertEqual(spawn.call_count, 3)
+        # CLI `housekeep` works even when LIVING_MEMORY_OFF=1, and is refused to subagents and viewers.
+        out = io.StringIO()
+        with patch.dict(os.environ, {'LIVING_MEMORY_OFF': '1'}), redirect_stdout(out):
+            self.assertEqual(cli(['--root', str(self.root), '--json', 'housekeep']), 0)
+        res = json.loads(out.getvalue())
+        self.assertTrue(res['ok'] and res['backup'] and res['pruned'])
+        # Both markers are fresh -> not_due.
+        with patch.dict(os.environ, {'LIVING_MEMORY_NO_BACKGROUND': '', 'LIVING_MEMORY_MAINTENANCE_CHILD': ''}):
+            self.assertEqual(runtime.schedule_housekeeping(self.root), 'not_due')
+        for actor in ('subagent', 'viewer'):
+            err = io.StringIO()
+            with redirect_stderr(err):
+                self.assertNotEqual(cli(['--root', str(self.root), '--actor', actor, '--json', 'housekeep']), 0)

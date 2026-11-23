@@ -13,6 +13,7 @@
   {"cli": ["capture", "--session", "{session}", "--title", "Cache entries expire after ten minutes", "--summary", "A TTL of ten minutes applies on top of LRU.", "--type", "decision"], "as": "ttl", "expect": {"exit": 0, "status": "created"}},
   {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/cache.py"}}, "expect": {"mutation": "tracked", "deny": false}},
   {"hook": "stop", "expect": {"stop_reason": "receipt", "reminder": null}},
-  {"hook": "session-end", "expect": {"detail": {"housekeeping": {"backup": true}}}}
+  {"hook": "session-end", "expect": {"detail": {"housekeeping": {"worker": "background_disabled"}}}},
+  {"cli": ["housekeep"], "expect": {"exit": 0, "result": {"ok": true, "backup": true, "pruned": true}}}
  ]
 }

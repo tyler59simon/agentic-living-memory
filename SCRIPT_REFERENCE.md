@@ -199,6 +199,7 @@ Generated from the argparse parser in `core/cli.py` by `py -3.15 scripts/gen_scr
 | `export` | `--all`, `--out`, `--tag`, `--type` |
 | `help` | none |
 | `history` | `--include-private`, `--limit`, `--markdown`, `--note` |
+| `housekeep` | none |
 | `import-plan` | none |
 | `ingest-plan` | `--allow-similar`, `--redact`, `--source` |
 | `ingest-scan` | `--changed`, `--limit`, `--source` |

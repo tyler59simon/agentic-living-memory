@@ -371,6 +371,23 @@ class Retention(Fixture):
         docs.prune_journals(self.root,keep=1)
         self.assertIn(ops[1],self.kept());self.assertNotIn(ops[0],self.kept());self.assertIn(ops[2],self.kept())
 
+    def test_prune_journals_scans_unlocked_and_rechecks_under_lock(self):
+        from contextlib import contextmanager
+        from unittest.mock import patch
+        ops=self.edits(2)
+        with patch.object(docs,'store_lock',side_effect=AssertionError('locked during scan')):
+            self.assertEqual(docs.prune_journals(self.root,keep=100),0)
+        real_lock=docs.store_lock;calls=[]
+        @contextmanager
+        def racing_lock(root,*a,**kw):
+            calls.append(root)
+            (self.root/'.operations'/ops[0]/'pending').write_text('pending\n')
+            with real_lock(root,*a,**kw):yield
+        with patch.object(docs,'store_lock',side_effect=racing_lock):
+            docs.prune_journals(self.root,keep=1)
+        self.assertGreaterEqual(len(calls),1)
+        self.assertIn(ops[0],self.kept())
+
 
 class NotebookOnlyDomains(Fixture):
     def test_create_refuse_notes_and_convert(self):
