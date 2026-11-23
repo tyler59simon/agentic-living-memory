@@ -1,6 +1,6 @@
 """Notebook pages in the hook (NS-2A): which `doc` commands each actor may run, the Hivemind terminal rule, --include-private
 denied to every agent, and file-reading tools kept out of private notebooks (in the full hook and in hookfast)."""
-import os,sys,unittest
+import json,os,sys,unittest
 from unittest.mock import patch
 from test_core import StoreFixture
 from core import runtime,hookfast,docs
@@ -46,7 +46,8 @@ class Hook(StoreFixture):
         with patch.dict(os.environ,{'HIVEMIND_SESSION':'hm-1'}):
             self.assertEqual(self.shell('doc write demo open p.md --expected-revision x')['deny'],runtime.HIVEMIND_DENY)
             self.assertEqual(self.shell('domain create nb --notebook-only')['deny'],runtime.HIVEMIND_DENY)
-            self.assertTrue(runtime.hivemind_governed(f'alm doc accept abc && echo done','bash'))
+            self.assertTrue(runtime.hivemind_governed(f'alm doc undo d-1 && echo done','bash'))
+            self.assertTrue(runtime.hivemind_governed(f'alm proposals accept abcdef123456 && echo done','bash'))
             self.assertNotIn('deny',self.shell('doc propose demo open p.md --base-revision x'))
 
     def test_include_private_is_denied_to_agents_everywhere(self):
@@ -86,6 +87,61 @@ class Hook(StoreFixture):
     def test_protected_config_files(self):
         for name in ('notebook-privacy.json','notebook-folders.json'):
             with self.subTest(name=name):self.assertEqual(runtime.protected_rule(str(self.root/name),str(self.base),self.root),'config')
+
+
+class FolderGuard(StoreFixture):
+    """An agent may not edit a page of a folder notebook directly (CON-9): it is told to read it and stage the edit with doc propose --file."""
+    def setUp(self):
+        super().setUp()
+        self.nb=self.base/'wiki';self.nb.mkdir();(self.nb/'a.md').write_text('one');(self.nb/'a.markdown').write_text('one');(self.nb/'a.txt').write_text('one')
+        (self.base/'elsewhere').mkdir();(self.base/'elsewhere'/'a.md').write_text('one')
+        self.register()
+    def register(self,**more):
+        entry={'path':self.nb.resolve().as_posix(),'domain':'demo','visibility':'searchable','private':False,**more}
+        (self.root/'notebook-folders.json').write_text(json.dumps({'version':1,'folders':[entry]}))
+    def hook(self,tool,tool_input,cwd=None,**extra):
+        payload={'cwd':str(cwd or self.base/'project'),'session_id':'s1','tool_name':tool,'tool_input':tool_input,**extra}
+        with patch.dict(os.environ,{'LIVING_MEMORY_ROOT':str(self.root)}):return runtime.process('claude','pre-tool-use',payload,self.root)
+
+    def test_edit_tools_are_denied_on_markdown_pages_of_a_folder_notebook(self):
+        page=str(self.nb/'a.md')
+        for tool,args in (('Edit',{'file_path':page}),('Write',{'file_path':page}),('MultiEdit',{'file_path':page,'edits':[]}),('NotebookEdit',{'notebook_path':page}),
+                          ('Edit',{'file_path':str(self.nb/'a.markdown')}),('apply_patch',{'input':f'*** Begin Patch\n*** Update File: {page}\n@@\n-one\n+two\n*** End Patch'}),
+                          ('Write',{'file_path':str(self.nb/'new'/'page.md')})):
+            with self.subTest(tool=tool,args=args):
+                deny=self.hook(tool,args)['deny']
+                self.assertIn('doc read --file',deny);self.assertIn('doc propose --file',deny);self.assertIn('--base-revision',deny);self.assertIn('Inbox',deny)
+                self.assertIn(self.nb.resolve().as_posix(),deny)
+
+    def test_every_session_is_covered_bound_or_not_and_subagents_too(self):
+        page=str(self.nb/'a.md')
+        for extra in ({'agent_id':'a1'},{'cwd':self.base/'elsewhere'}):
+            with self.subTest(extra=extra):self.assertIn('deny',self.hook('Write',{'file_path':page},**extra))
+        with patch.dict(os.environ,{'HIVEMIND_SESSION':'hm-1'}):self.assertIn('doc propose --file',self.hook('Write',{'file_path':page})['deny'])
+        with patch.object(runtime,'FOLDER_GUARD','off'):self.assertNotIn('deny',self.hook('Write',{'file_path':page}))
+        self.assertEqual(runtime.FOLDER_GUARD,'all')
+
+    def test_other_files_other_folders_and_copies_are_allowed(self):
+        for tool,path in (('Edit',self.nb/'a.txt'),('Write',self.nb/'notes.json'),('Edit',self.base/'elsewhere'/'a.md'),('Write',self.base/'wiki-copy'/'a.md'),('Read',self.nb/'a.md'),('Grep',self.nb/'a.md')):
+            with self.subTest(tool=tool,path=path):self.assertNotIn('deny',self.hook(tool,{'file_path':str(path)}))
+        self.assertNotIn('deny',self.hook('Bash',{'command':f'echo x > "{self.nb/"a.md"}"'}))   # shell writes are not covered
+        self.assertIsNone(runtime.folder_rule(str(self.nb/'a.txt'),str(self.base),self.root))
+        self.assertEqual(runtime.folder_rule(str(self.nb/'a.md'),str(self.base),self.root)['domain'],'demo')
+        self.assertEqual(runtime.folder_rule('wiki/a.md',str(self.base),self.root)['domain'],'demo')   # relative to the working folder
+
+    def test_a_removed_folder_is_no_notebook_and_a_private_one_says_to_tell_the_user(self):
+        page=str(self.nb/'a.md')
+        self.register(removed=True);self.assertNotIn('deny',self.hook('Write',{'file_path':page}))
+        self.register(visibility='hidden');self.assertIn('doc propose --file',self.hook('Write',{'file_path':page})['deny'])
+        self.register(private=True);deny=self.hook('Write',{'file_path':page})['deny']
+        self.assertIn('private folder notebook',deny);self.assertIn('Tell the user',deny);self.assertNotIn('doc propose',deny)
+
+    def test_the_registry_is_cached_by_its_mtime_and_a_damaged_one_denies_nothing(self):
+        page=str(self.nb/'a.md');self.assertIn('deny',self.hook('Write',{'file_path':page}))
+        (self.root/'notebook-folders.json').write_text('{"version":1,"folders":[]}');os.utime(self.root/'notebook-folders.json',(1,2))
+        self.assertNotIn('deny',self.hook('Write',{'file_path':page}))
+        (self.root/'notebook-folders.json').write_text('{damaged');os.utime(self.root/'notebook-folders.json',(1,3))
+        self.assertNotIn('deny',self.hook('Write',{'file_path':page}))
 
 
 if __name__=='__main__':unittest.main()

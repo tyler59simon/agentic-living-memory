@@ -51,8 +51,8 @@ class Mirror(Fixture):
         docs.write_page(self.root,'demo','nb1','Plan.md',b'memory text\n',digest(PAGE))
         result=self.build();self.assertEqual(result['proposed'],1)
         self.assertEqual(self.copy('Plan.md').read_bytes(),b'memory text\n');self.assertEqual(self.file('Plan.md').read_bytes(),b'memory text\n')
-        staged=self.ok('doc','proposals','demo','nb1')['proposals'];self.assertEqual(len(staged),1)
-        self.assertEqual(self.ok('doc','proposal',staged[0]['id'])['proposal']['body'],'vault text\n')
+        staged=self.ok('proposals','--kind','page','--notebook','nb1')['proposals'];self.assertEqual(len(staged),1)
+        self.assertEqual(self.ok('proposals','show',staged[0]['id'])['proposal']['body'],'vault text\n')
         self.assertIn('changed in the vault and in memory',self.status())
 
     def test_a_new_vault_file_becomes_a_page(self):

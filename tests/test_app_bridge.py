@@ -26,6 +26,8 @@ class AppBridge(StoreFixture):
         code,result=self.cli('version')
         self.assertEqual(code,0);self.assertEqual(result['api'],2)
         self.assertTrue({'serve','list','domains','version'}<=set(result['commands']))
+        self.assertEqual(result['capabilities']['proposals'],1)   # one command for staged notes and page edits
+        self.assertEqual(result['capabilities']['docs']['folder_proposals'],1)   # doc read|propose --file for folder notebook pages
 
     def test_list_pages_filters_and_reports_revisions(self):
         a=self.note('Cache','The local cache is rebuildable.');b=self.note('Queue','The queue is durable.',type='decision')

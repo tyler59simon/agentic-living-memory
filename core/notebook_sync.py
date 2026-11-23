@@ -3,7 +3,7 @@
 Each searchable or injectable, non-private notebook of a domain with a managed vault is mirrored byte for byte to
 <vault>/Notebooks/<domain>/<notebook>/, its attachments under assets/. Edits made in the vault come back after the quiet
 period as a page write against the revision last mirrored; when the page changed in memory too, the vault text becomes a
-proposal (`doc proposals`) and the vault shows the memory version again. A new .md file in a mirrored notebook becomes a page. A
+proposal (`proposals list`) and the vault shows the memory version again. A new .md file in a mirrored notebook becomes a page. A
 mirrored page deleted in the vault becomes a delete plan, ticked on the Sync Status page like a note's; the tick applies only
 while the copy is still gone, the notebook still mirrored and no vault reset is under way. Hidden and private notebooks are
 never mirrored, and every file in the mirror of one that turns hidden or private leaves the vault at the next sync: an edited
@@ -18,97 +18,13 @@ from __future__ import annotations
 import hashlib,os,re,tempfile,time
 from pathlib import Path
 from .repository import canonical_json,now,read_json,store_lock,transaction
+from .safe_put import _sha,_bytes,_safe,_put
 
 MIRROR='Notebooks'
 STATE='notebook-sync.json'
 APPROVAL=re.compile(r'^\s*[-*]\s*\[[xX]\].*<!--\s*lm-page:([a-f0-9]{32})\s*-->')
 MASS_MISSING=(5,0.2)
 SERVED=('searchable','injectable')
-
-
-def _sha(data):return hashlib.sha256(data).hexdigest() if data is not None else None
-
-
-def _bytes(path):
-    """A file's bytes; None when it is not there. Other errors (a folder in its place, a locked file) raise OSError."""
-    try:return path.read_bytes()
-    except (FileNotFoundError,NotADirectoryError):return None
-
-
-def _safe(base,rel):
-    """base/rel when no part below base is a link or junction (the last one included), else None."""
-    from .docs import _is_link
-    cursor=Path(base)
-    for part in rel.split('/'):
-        cursor=cursor/part
-        try:
-            if _is_link(cursor):return None
-        except OSError:return None
-    return cursor
-
-
-def _place(src,dst):
-    """Move src to dst unless something is at dst (a file saved meanwhile is never replaced): FileExistsError then. Windows
-    rename never replaces; elsewhere a hard link is made and src removed, or, on a filesystem without hard links, dst is
-    checked just before an ordinary rename."""
-    if os.name=='nt':os.rename(src,dst);return
-    try:os.link(src,dst)
-    except FileExistsError:raise
-    except OSError:
-        if os.path.lexists(dst):raise FileExistsError(dst)
-        os.rename(src,dst);return
-    os.unlink(src)
-
-
-def _put_back(aside,path):
-    """Return a file moved aside to its place, or, when a new save is there, beside it under a name of its own."""
-    try:_place(aside,path);return
-    except FileExistsError:pass
-    stamp=time.strftime('%Y%m%d-%H%M%S')
-    for n in range(1,1000):
-        kept=path.with_name(f'{path.stem} (kept {stamp}{"" if n==1 else f" {n}"}){path.suffix}')
-        try:_place(aside,kept);return
-        except FileExistsError:continue
-    raise FileExistsError(path)
-
-
-def _put(base,rel,data,expect):
-    """Write base/rel (remove it, with data None) while it holds the bytes whose hash is `expect` (None: absent). False when it
-    changed meanwhile or a link or junction is in the way. A save made at any moment is never lost: the file is first moved
-    aside by a rename and judged there (a save after the rename makes a new file, which the final no-overwrite rename then
-    refuses), and a file found changed is moved back."""
-    from .docs import _is_link
-    path=_safe(base,rel)
-    if path is None or _sha(_bytes(path))!=expect:return False
-    cursor=Path(base)
-    for part in rel.split('/')[:-1]:
-        cursor=cursor/part
-        if not cursor.is_dir():cursor.mkdir()
-        if _is_link(cursor):return False
-    aside=None
-    if expect is not None:
-        aside=path.with_name(f'.{path.name}.{os.getpid()}-{time.monotonic_ns()}.aside')
-        os.rename(path,aside)   # the bytes now at the path are judged where nobody else writes
-        try:changed=_sha(_bytes(aside))!=expect
-        except OSError:changed=True   # cannot be judged: put back
-        if changed:   # changed just before the rename: put back, or beside a save made since
-            _put_back(aside,path);return False
-    try:
-        if data is not None:
-            fd,temp=tempfile.mkstemp(prefix='.',suffix='.mirror',dir=path.parent)
-            try:
-                with os.fdopen(fd,'wb') as f:f.write(data)
-                _place(temp,path)   # never over a file saved meanwhile
-            except FileExistsError:
-                if aside is not None:aside.unlink()   # the expected bytes are known; the new save stays
-                return False
-            finally:
-                if os.path.exists(temp):os.unlink(temp)
-        if aside is not None:aside.unlink()
-        return True
-    except BaseException:
-        if aside is not None and aside.exists():_put_back(aside,path)
-        raise
 
 
 def _files(folder,unread=None):
@@ -303,7 +219,7 @@ def sync_notebooks(domain,vault,root):
                         else:   # changed on both sides, or met for the first time with other text: memory wins, the vault text is proposed
                             staged=docs.propose(root,domain,nb,rel,held,ps,'Edited in Obsidian while the page changed in memory')
                             to_vault(key,page,held,{'revision':ps,'vault':ps},'mirrored');counts['proposed']+=1
-                            conflicts.append({'notebook':nb,'text':f"- {key}: changed in the vault and in memory. The vault shows the memory version again; your text is proposal {staged['id']} (`doc proposal {staged['id']}`)."})
+                            conflicts.append({'notebook':nb,'text':f"- {key}: changed in the vault and in memory. The vault shows the memory version again; your text is proposal {staged['id']} (`proposals show {staged['id']}`)."})
                     elif held is not None:
                         pending.pop(key,None)
                         if st and vs==st.get('vault'):to_vault(key,None,held,None,'removed')   # deleted in memory

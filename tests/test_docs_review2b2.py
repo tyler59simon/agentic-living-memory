@@ -6,7 +6,7 @@ from unittest.mock import patch
 import test_docs,test_docs_sync,test_sources_notebooks
 from test_docs_review2b import own,junction
 from test_docs_sync import PAGE
-from core import digests,docs,docs_index,folder_policy,governance,notebook_sync,runtime,sources
+from core import digests,docs,docs_index,folder_policy,governance,notebook_sync,runtime,safe_put,sources
 from core.repository import read_json
 from core.sync import teardown_plan
 
@@ -184,12 +184,12 @@ class Vault(test_docs_sync.Mirror):
         self.assertEqual(target.read_bytes(),b'user image')
 
     def test_R05_put_never_replaces_a_save_made_after_its_check(self):
-        self.build();copy=self.copy('Plan.md');real=notebook_sync._bytes;done=[False]
+        self.build();copy=self.copy('Plan.md');real=safe_put._bytes;done=[False]
         def bytes_(path):
             found=real(path)
             if Path(path)==copy and not done[0]:done[0]=True;copy.write_bytes(b'saved meanwhile\n')
             return found
-        with patch('core.notebook_sync._bytes',bytes_):ok=notebook_sync._put(self.vault,'Notebooks/demo/nb1/Plan.md',b'new\n',notebook_sync._sha(PAGE))
+        with patch('core.safe_put._bytes',bytes_):ok=notebook_sync._put(self.vault,'Notebooks/demo/nb1/Plan.md',b'new\n',notebook_sync._sha(PAGE))
         self.assertFalse(ok);self.assertEqual(copy.read_bytes(),b'saved meanwhile\n')
 
     def test_R06_R07_teardown_never_follows_a_junction_and_journals_no_page(self):

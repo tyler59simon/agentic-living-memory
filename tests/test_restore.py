@@ -169,9 +169,9 @@ class Restore(StoreFixture):
     def test_version_lists_the_new_capabilities_and_command(self):
         version = self.ok('version')
         self.assertIn('restore', version['commands'])
-        self.assertEqual(version['capabilities'], {'restore': 1, 'pin': 1, 'rule': 1, 'direct_writes': 1, 'note_types': 1, 'history': 3, 'items': {'fields': 2},
+        self.assertEqual(version['capabilities'], {'proposals': 1, 'restore': 1, 'pin': 1, 'rule': 1, 'direct_writes': 1, 'note_types': 1, 'history': 3, 'items': {'fields': 2},
                                                    'maintenance': {'version': 1, 'actions': ['status', 'preview', 'run', 'enable', 'disable', 'history']}, 'wiki_agent': {'version': 1}, 'systems': {'project': 1},
-                                                   'docs': {'version': 1, 'max_page_bytes': 4194304, 'max_asset_bytes': 26214400, 'notebook_only_domains': True, 'search': True, 'folder_policy': 2, 'accept_edited': True}})
+                                                   'docs': {'version': 1, 'max_page_bytes': 4194304, 'max_asset_bytes': 26214400, 'notebook_only_domains': True, 'search': True, 'folder_policy': 2, 'accept_edited': True, 'folder_proposals': 1}})
 
     def test_the_log_shows_restored_and_the_archive_row(self):
         a = self.note('Cache policy', 'The cache is rebuildable.')
@@ -500,7 +500,7 @@ class Rule(StoreFixture):
         self.assertEqual((out['status'], out['id']), ('duplicate', a['id']))
         self.assertIn(f"update demo:{a['id'][:8]} --pin", out['pin_warning'])
         staged = self.ok('propose', '--session', 's1', *args, '--title', 'Commit policy', '--summary', 'Commits stay small.', '--pin')
-        out = self.ok('capture', '--from-proposal', staged['id'])
+        out = self.ok('proposals', 'accept', staged['id'])
         self.assertIn(f"update demo:{a['id'][:8]} --pin", out['pin_warning'])
         self.assertNotIn('pinned', self.get(a))
         self.ok('update', 'demo:' + a['id'], '--pin')
@@ -516,19 +516,19 @@ class Rule(StoreFixture):
     def test_propose_rule_and_from_proposal_rule_keep_the_flag(self):
         args = ('--session', 's1', '--type', 'policy', '--subject', 'project', '--concern', 'architecture')
         staged = self.ok('propose', *args, '--title', 'Release policy', '--summary', 'Releases wait for the user.', '--rule')
-        saved = self.ok('capture', '--from-proposal', staged['id'])
+        saved = self.ok('proposals', 'accept', staged['id'])
         self.assertIs(self.get(saved)['rule'], True)
         plain = self.ok('propose', *args, '--title', 'Branch policy', '--summary', 'Work happens on branches.')
-        saved = self.ok('capture', '--from-proposal', plain['id'], '--rule')
+        saved = self.ok('proposals', 'accept', plain['id'], '--rule')
         self.assertIs(self.get(saved)['rule'], True)
 
     def test_propose_pin_and_from_proposal_pin_keep_the_flag(self):
         args = ('--session', 's1', '--type', 'policy', '--subject', 'project', '--concern', 'architecture')
         staged = self.ok('propose', *args, '--title', 'Release policy', '--summary', 'Releases wait for the user.', '--pin')
-        saved = self.ok('capture', '--from-proposal', staged['id'])
+        saved = self.ok('proposals', 'accept', staged['id'])
         self.assertIs(self.get(saved).get('pinned'), True)
         plain = self.ok('propose', *args, '--title', 'Branch policy', '--summary', 'Work happens on branches.')
-        saved = self.ok('capture', '--from-proposal', plain['id'], '--pin')
+        saved = self.ok('proposals', 'accept', plain['id'], '--pin')
         self.assertIs(self.get(saved).get('pinned'), True)
 
     def test_propose_refuses_a_non_bool_pin_before_staging(self):
@@ -540,7 +540,7 @@ class Rule(StoreFixture):
                 code, result = self.cli('propose', '--session', 's1', '--payload-file', str(payload))
                 self.assertEqual(code, 2, result)
                 self.assertIn('pinned must be true or false', result['error']['message'])
-        self.assertEqual(self.ok('proposals', '--status', 'any')['proposals'], [])
+        self.assertEqual(self.ok('proposals', '--status', 'all')['proposals'], [])
 
     def test_propose_refuses_a_non_bool_rule_before_staging(self):
         payload = self.base / 'draft.json'
@@ -551,7 +551,7 @@ class Rule(StoreFixture):
                 code, result = self.cli('propose', '--session', 's1', '--payload-file', str(payload))
                 self.assertEqual(code, 2, result)
                 self.assertIn('rule must be true or false', result['error']['message'])
-        self.assertEqual(self.ok('proposals', '--status', 'any')['proposals'], [])
+        self.assertEqual(self.ok('proposals', '--status', 'all')['proposals'], [])
 
     def test_a_rule_only_vault_edit_keeps_updated(self):
         a = self.policy()

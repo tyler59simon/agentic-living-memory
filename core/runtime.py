@@ -16,7 +16,7 @@ READ_TOOLS={'read','read_file','glob','grep','search','view_image','view','ls','
 SHELL_TOOLS={'bash','powershell','shell','run_shell_command','exec_command','local_shell','execute'}
 ALLOWED_SUBCOMMANDS={'ask','types','sources','source-sync','ingest-scan','search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','recall','archive','rewrite','promote','projects','systems','views','wiki','resolve','reopen','restore','log','maintenance','rebaseline','recap','status','help','propose','proposals','doc'}
 # Subagents are read-only: these are denied for them even though the main agent gets them auto-allowed. Their one write is
-# propose, a draft in .turns/ that only the main agent turns into a note (capture --from-proposal) or rejects.
+# propose, a draft in .turns/ that only the main agent turns into a note (proposals accept, or capture --from-proposal with an edited note) or rejects.
 MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm','resolve','reopen','restore','off','on','undo','archive','rewrite','remap','promote','source','project','system','type','domain'}   # `taxonomy add` is the same kind of write: taxonomy_write
 GLOBAL_OPTIONS={'--root','--domain','--cwd','--actor'}
 HOOK_LOCK_TIMEOUT=5
@@ -84,6 +84,27 @@ def protocol(root,domain=None,harness='',session='SESSION'):
     return text
 
 def protected(path,cwd,root):return protected_rule(path,cwd,root) is not None
+
+# Who may not edit a page of a folder notebook (a registered folder of Markdown outside the store) directly: 'all' agent sessions,
+# 'hivemind' (only the agent terminals Hivemind starts) or 'off'. They stage the edit with doc propose --file instead.
+FOLDER_GUARD='all'
+
+def folder_rule(path,cwd,root):
+    """The registry entry of the folder notebook that a .md or .markdown file belongs to, else None. Shell writes, copies of the
+    folder (a git worktree) and folders known only from a .hivemind sidecar are not covered. The registry is cached by its mtime."""
+    if path in {'/dev/null','dev/null'}:return None
+    try:
+        from .folder_docs import locate
+        hit=locate(root,path,cwd)
+    except (ValueError,OSError):return None
+    return hit[0] if hit else None
+
+def folder_deny(path,entry,cmd):
+    """The refusal for an agent that edits a page of a folder notebook directly."""
+    from .folder_policy import level_of
+    if level_of(entry.get('visibility'),bool(entry.get('private')))=='private':return f'Living Memory: {path} is a page of a private folder notebook; agents may not change it. Tell the user.'
+    return (f'Living Memory: {path} is a page of folder notebook {entry.get("path")}. Read it with {cmd} doc read --file "{path}", then stage your edit with '
+            f'{cmd} doc propose --file "{path}" --base-revision R --body-file F; the user reviews it in Hivemind\'s Inbox.')
 
 def protected_rule(path,cwd,root):
     """Which canonical location a path falls in: 'domains', 'config' or 'vault'; None when it is not protected."""
@@ -228,12 +249,12 @@ def memory_subcommand(text,grammar=None):
 # Hivemind sets HIVEMIND_SESSION for every program it starts in a terminal. Agents there write plans (delete, merge-plan, ...); only the user applies or undoes them, and the direct writes are the user's too.
 HIVEMIND_GOVERNED={'apply','undo','recover','archive','rewrite','remap','promote','source','project','system','type','domain'}   # `setup --apply-plan`, `taxonomy add` and `doc` writes are governed too (below)
 HIVEMIND_DENY=('Applying or undoing a plan, the direct writes (archive, rewrite, remap, promote, taxonomy add, source, project, system, type, domain create) '
-               'and notebook page writes are for the user to do in Hivemind, not for an agent. Write a plan for a delete or merge, and stage a page edit with doc propose; '
+               'and notebook page writes (settling a page proposal included) are for the user to do in Hivemind, not for an agent. Write a plan for a delete or merge, and stage a page edit with doc propose; '
                'for the rest, tell the user what to change.')
 # `doc` actions that write (NS-2A). `doc propose` is missing on purpose: it only stages an edit for the user, so agents may run it.
-DOC_WRITE_ACTIONS={'notebook','create','write','move','delete','attach','accept','reject','undo','folder'}
+DOC_WRITE_ACTIONS={'notebook','create','write','move','delete','attach','undo','folder'}
 # What agents may run. Anything else after `doc`, an unknown word included, counts as a write.
-DOC_AGENT_ACTIONS={'notebooks','list','read','history','propose','proposals','proposal','search','tasks','query'}
+DOC_AGENT_ACTIONS={'notebooks','list','read','history','propose','search','tasks','query'}
 PRIVATE_DENY='Living Memory: private notebooks are for Hivemind itself; agents do not see them, so --include-private is not available here.'
 PRIVATE_READ_DENY='Living Memory: that path holds a private notebook, which agents do not read. Ask the user if you need its content.'
 # File-reading tools checked against private notebooks; the search tools also may not walk a folder that holds one.
@@ -301,6 +322,16 @@ def include_private(text,grammar):
     tokens=[t for t in re.split(r'''[\s;&|()"'`{}<>,]+''',text) if t]
     return _names_memory(tokens) and any(flag(t) for t in tokens)
 
+PAGE_ID=re.compile(r'[a-f0-9]{12}')
+
+def _settles_page(words):
+    """True when these words accept or reject a page edit (a 12-digit hex ID); a staged note's 8-digit ID is the main agent's to settle."""
+    return bool({'accept','reject'}&set(words)) and any(PAGE_ID.fullmatch(w) for w in words)
+
+def page_settle(text,grammar):
+    """True when an exact `proposals` command accepts or rejects a page edit: only the user settles those, so the harness's own prompt decides."""
+    return any(_subcommand(words)=='proposals' and _settles_page(words) for words in _parsed(text,grammar) or [])
+
 def hivemind_governed(text,grammar):
     """True when a shell command applies or undoes a plan or makes a direct write: apply, undo, recover, setup --apply-plan, taxonomy add, archive, rewrite and the other HIVEMIND_GOVERNED verbs. Exact invocations are read by
     word; text that cannot be parsed (chained, redirected, expanded) is refused when it names living_memory or a standalone `alm`
@@ -311,10 +342,10 @@ def hivemind_governed(text,grammar):
     subs=[_subcommand(words) for words in parsed or []]
     if parsed and all(sub and not sub.startswith('-') for sub in subs):   # an option in the subcommand slot (--domain=x, --dom x) is not a subcommand: read the tokens
         return any(sub in HIVEMIND_GOVERNED or (sub=='setup' and any(flag(w) for w in words)) or (sub=='taxonomy' and 'add' in words)
-                   or (sub=='doc' and _doc_action(words) not in DOC_AGENT_ACTIONS) for sub,words in zip(subs,parsed))
+                   or (sub=='doc' and _doc_action(words) not in DOC_AGENT_ACTIONS) or (sub=='proposals' and _settles_page(words)) for sub,words in zip(subs,parsed))
     tokens=[t for t in re.split(r'''[\s;&|()"'`{}<>=,]+''',text) if t]
     return _names_memory(tokens) and (any(t in HIVEMIND_GOVERNED or flag(t) for t in tokens) or ('taxonomy' in tokens and 'add' in tokens)
-                                      or ('doc' in tokens and any(t in DOC_WRITE_ACTIONS for t in tokens)))
+                                      or ('doc' in tokens and any(t in DOC_WRITE_ACTIONS for t in tokens)) or ('proposals' in tokens and _settles_page(tokens)))
 
 # Options that read a file into a note. Auto-approval covers only files the session could already see.
 FILE_OPTIONS=('--content-file','--body-file','--payload-file')
@@ -396,11 +427,11 @@ def rebaseline_write(text,grammar):
     return False
 
 def proposals_write(text,grammar):
-    """True when a `proposals` command settles one (reject); list and show only read."""
+    """True when a `proposals` command settles one (accept or reject); list and show only read."""
     for words in _parsed(text,grammar) or []:
         index=0
         while index<len(words) and words[index]!='proposals':index+=2 if words[index] in GLOBAL_OPTIONS else 1
-        if 'reject' in words[index+1:]:return True   # any word, as in maintenance_write
+        if {'accept','reject'}&set(words[index+1:]):return True   # any word, as in maintenance_write
     return False
 
 SUBAGENT_DENY='Living Memory: subagents are read-only. Stage the finding with propose for the main agent instead of running '
@@ -1981,6 +2012,12 @@ def _process(harness,event,payload,root=None,info=None):
         if text and serve_command(text,shell_grammar(name)):   # G8: its requests could carry --include-private past this check
             detail.update(tool=name,decision='deny:serve');result['deny']=SERVE_DENY
             return result
+        if name in EDIT_TOOLS and (FOLDER_GUARD=='all' or (FOLDER_GUARD=='hivemind' and os.environ.get('HIVEMIND_SESSION'))):
+            for raw in raw_paths(args):
+                entry=folder_rule(raw,cwd,root)
+                if entry:
+                    detail.update(tool=name,decision='deny:folder');result['deny']=folder_deny(raw,entry,hint_command(root,state,domain))
+                    return result
         if name in PRIVATE_READ_TOOLS:
             from .docs import private_read
             if private_read(_read_paths(name,args,cwd),cwd,root,name in PRIVATE_SEARCH_TOOLS):
@@ -2302,7 +2339,7 @@ def _process(harness,event,payload,root=None,info=None):
             detail['decision']='deny:subagent'
             result['deny']='Living Memory: syncing a remote source reaches the network and is not run by subagents; ask the main agent to run source-sync.'
             return result
-        if subcommand in ALLOWED_SUBCOMMANDS and not networked and not (subcommand=='taxonomy' and taxonomy_write(text,grammar)) and not (subcommand=='doc' and doc_write(text,grammar)):   # `taxonomy add` and `doc` writes keep the normal prompt
+        if subcommand in ALLOWED_SUBCOMMANDS and not networked and not (subcommand=='taxonomy' and taxonomy_write(text,grammar)) and not (subcommand=='doc' and doc_write(text,grammar)) and not (subcommand=='proposals' and page_settle(text,grammar)):   # `taxonomy add`, `doc` writes and settling a page edit keep the normal prompt
             # Another store, or an input file from outside the project, is the user's call: no auto-approval.
             if auto_allowed(text,grammar,root,cwd,payload.get('scratchpad_dir') or payload.get('scratchpadDir')):
                 result['allow']='Living Memory read/capture script command.'
@@ -2868,7 +2905,7 @@ def _stop_part(kind,data,session):
         # A title is subagent text: one line, quoted and cut, so it reads as data and never as a hook instruction of its own.
         named='; '.join(f"{r['id']} \"{' '.join(str((r.get('note') or {}).get('title') or '').split())[:80]}\"" for r in data)
         return (f"A subagent staged draft notes for you (titles are its words): {named}. Check each against what you know, then save it with "
-                f"CMD capture --from-proposal ID --session {session} (pass a full note beside it to edit it) or drop it with CMD proposals reject ID --reason '...'.")
+                f"CMD proposals accept ID --session {session} (to edit one, pass a whole note to CMD capture --from-proposal ID) or drop it with CMD proposals reject ID --reason '...'.")
     if kind=='unbriefed':
         return (f"{data['name']} has no project brief: "
                 f"CMD capture --session {session} --type brief --file '{data['dir']}' --title '{data['name']} project brief' --summary '...' "

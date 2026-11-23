@@ -327,7 +327,7 @@ VIEWER=READ_ONLY|{'taxonomy','review','diff','inspect-plan'}
 # Direct journaled writes (no plan); `taxonomy add` is the same kind of write under a read command. Refused to subagents, viewers and Hivemind agents.
 DIRECT_WRITES={'archive','rewrite','remap','promote','source','project','system','type','domain'}
 # Notebook page writes (NS-2A): main actor only, and never from an agent inside a Hivemind terminal. `doc propose` stays open to agents.
-DOC_WRITES={'notebook','create','write','move','delete','attach','accept','reject','undo','folder'}   # runtime.DOC_WRITE_ACTIONS; runtime loads lazily here
+DOC_WRITES={'notebook','create','write','move','delete','attach','undo','folder'}   # runtime.DOC_WRITE_ACTIONS; runtime loads lazily here
 SERVE_API=2
 SERVE_LIMIT=2*1024*1024
 
@@ -602,7 +602,7 @@ def _propose(root,data,domain,session,to_global,redact=False):
     from .usage import record
     record(root,'propose',[None],session,kind=data.get('type') or 'knowledge')
     result={'ok':True,'id':row['id'],'status':'proposed','domain':target,'title':title,
-            'next':f"Name proposal {row['id']} in your report; the main agent saves it with capture --from-proposal {row['id']} or rejects it."}
+            'next':f"Name proposal {row['id']} in your report; the main agent saves it with proposals accept {row['id']} or rejects it with proposals reject {row['id']} --reason R."}
     if warnings:result['quality_warnings']=warnings
     return result
 
@@ -613,7 +613,7 @@ def _maintenance_hint(root):
     except ValueError:on=False
     return 'Automatic maintenance is on for this store: within its policy it archives, resolves and supersedes notes without a plan and records why (maintenance history); restore REF undoes an archive. ' if on else ''
 
-HELP={'setup':'Choose or move the shared memory folder','bind':'Bind a domain to project folders','unbind':'Remove a domain binding','capture':'Save a note','propose':'Stage a draft note for the main agent (subagents)','proposals':'List, show or reject staged draft notes','search':'Find notes','read':'Show one note',
+HELP={'setup':'Choose or move the shared memory folder','bind':'Bind a domain to project folders','unbind':'Remove a domain binding','capture':'Save a note','propose':'Stage a draft note for the main agent (subagents)','proposals':'List, show, accept or reject staged notes and page edits','search':'Find notes','read':'Show one note',
  'update':'Change a note','supersede':'Retire a note in favour of another','review':'Notes that are due, stale or duplicated','open':'Open plans, bugs, risks and action items','check':'Tick an action item',
  'timeline':'Notes around a date or note','ingest-plan':'Plan importing Claude auto-memory files','export':'Write notes to a zip file','import-plan':'Plan importing an exported zip','confirm':'Mark a note still true',
  'resolve':'Finish a plan, bug or risk','reopen':'Reopen a resolved note','restore':'Bring back an archived note','archive':'Retire a note without a replacement','stats':'Usage over the last days','logs':'Show the operational log','plan':'Plan deleting one note',
@@ -644,7 +644,10 @@ def _doc_parsers(p,common):
     """The `doc` command group (NS-2A): `doc ACTION ...`, and `doc notebook ACTION ...` under it."""
     ds=p.add_subparsers(dest='doc_action',required=True,metavar='ACTION')
     def dsub(name,text,parent=ds):q=parent.add_parser(name,description=text,help=text);common(q,True);return q
-    def where(q):q.add_argument('doc_domain',metavar='DOMAIN');q.add_argument('notebook',metavar='NOTEBOOK')
+    def where(q,optional=False):
+        kw={'nargs':'?'} if optional else {}
+        q.add_argument('doc_domain',metavar='DOMAIN',**kw);q.add_argument('notebook',metavar='NOTEBOOK',**kw)
+    def folder_page(q):q.add_argument('--file',metavar='PATH',help='A page of a folder notebook (absolute, or relative to the working folder) instead of DOMAIN NOTEBOOK PATH')
     def private(q):q.add_argument('--include-private',action='store_true',help='Hivemind only: include private notebooks')
     visibility=['hidden','searchable','injectable']
     q=dsub('notebooks','List notebooks');q.add_argument('--all-domains',action='store_true');q.add_argument('--include-hidden',action='store_true',help='Also list hidden notebooks');private(q)
@@ -655,19 +658,14 @@ def _doc_parsers(p,common):
     for name in ('order','icons','pinned','settings'):q.add_argument(f'--{name}-file',type=Path)
     q=dsub('delete','Delete a notebook (with pages: a plan to approve)',ns);where(q);q.add_argument('--with-pages',action='store_true')
     q=dsub('list','Pages and sections of a notebook');where(q);q.add_argument('--section');private(q)
-    q=dsub('read','Read a page');where(q);q.add_argument('path');q.add_argument('--max-chars',type=int);private(q)
+    q=dsub('read','Read a page (--file: a page of a folder notebook)');where(q,True);q.add_argument('path',nargs='?');folder_page(q);q.add_argument('--max-chars',type=int);private(q)
     q=dsub('create','Create a page (text from --body-file or stdin)');where(q);q.add_argument('path');q.add_argument('--body-file',type=Path)
     q=dsub('write','Replace a page');where(q);q.add_argument('path');q.add_argument('--expected-revision',required=True);q.add_argument('--body-file',type=Path)
     q=dsub('move','Rename or move a page or section');where(q);q.add_argument('source');q.add_argument('target');q.add_argument('--rewrite-links',action='store_true',help='Rewrite [[links]] to it in the same notebook')
     q=dsub('delete','Delete a page');where(q);q.add_argument('path');q.add_argument('--expected-revision',required=True)
     q=dsub('attach','Copy a file into the notebook\'s attachments');where(q);q.add_argument('--from-file',type=Path,required=True);q.add_argument('--name')
     q=dsub('history','Operations that changed a page');where(q);q.add_argument('path');q.add_argument('--limit',type=int,default=20);q.add_argument('--version',help='An operation ID: the page as it left it');private(q)
-    q=dsub('propose','Stage an edit for the user to review (agents may run it)');where(q);q.add_argument('path');q.add_argument('--base-revision',help='The revision you read; leave out for a new page');q.add_argument('--body-file',type=Path);q.add_argument('--note');q.add_argument('--session');private(q)
-    q=dsub('proposals','Staged page edits');q.add_argument('doc_domain',nargs='?',metavar='DOMAIN');q.add_argument('notebook',nargs='?',metavar='NOTEBOOK');q.add_argument('--status',choices=['pending','accepted','rejected','all'],default='pending');private(q)
-    q=dsub('proposal','Show one staged edit');q.add_argument('id');private(q)
-    q=dsub('accept','Apply a staged edit (main actor)');q.add_argument('id');q.add_argument('--expected-revision')
-    q.add_argument('--edited',action='store_true',help='Write your merge of the edit (from --body-file or stdin) instead, against --expected-revision (left out: the page must not exist)');q.add_argument('--body-file',type=Path)
-    q=dsub('reject','Drop a staged edit (main actor)');q.add_argument('id');q.add_argument('--reason')
+    q=dsub('propose','Stage an edit for the user to review (agents may run it; --file: a page of a folder notebook)');where(q,True);q.add_argument('path',nargs='?');folder_page(q);q.add_argument('--base-revision',help='The revision you read; leave out for a new page');q.add_argument('--body-file',type=Path);q.add_argument('--note');q.add_argument('--session');private(q)
     q=dsub('undo','Undo a notebook operation');q.add_argument('operation_id')
     q=dsub('folder','Folder notebooks: how far agents reach into them (Hivemind)');fs=q.add_subparsers(dest='folder_action',required=True,metavar='ACTION')
     q=dsub('set','Add or change a folder notebook',fs);q.add_argument('path');q.add_argument('--visibility',choices=visibility,help='Left out: the folder keeps what Living Memory holds for it (a new one is searchable)')
@@ -694,6 +692,15 @@ def _doc_body(args,required=False):
     if absent:return b''
     return stream.buffer.read(MAX_PAGE_BYTES+1) if hasattr(stream,'buffer') else stream.read().encode('utf-8')
 
+def _file_form(args,what):
+    """Whether a doc read or propose names a folder notebook page with --file; DOMAIN NOTEBOOK PATH must then be absent, and without --file all three are needed."""
+    given=[args.doc_domain,args.notebook,args.path]
+    if args.file:
+        if any(given):raise ValueError(f'doc {what} takes --file PATH or DOMAIN NOTEBOOK PATH, not both')
+        return True
+    if not all(given):raise ValueError(f'doc {what} needs DOMAIN NOTEBOOK PATH, or --file PATH for a page of a folder notebook')
+    return False
+
 def _doc_json(path,what):
     if path is None:return None
     if path.stat().st_size>256*1024:raise ValueError(f'{what} is larger than 256 KiB')
@@ -701,8 +708,54 @@ def _doc_json(path,what):
 
 _IN_BATCH=[0]   # >0 while batch runs its items: they may not ask for private notebooks
 
+def _proposal_kind(pid):
+    from .proposals import kind_of
+    return kind_of(pid)
 
-def _doc(args,root,domain):
+def _accept_note(parser,args):
+    """`proposals accept ID` for a staged note: the code path of `capture --from-proposal ID` with nothing beside it. --rule and --pin go with it."""
+    stray=[flag for flag,given in (('--edited',args.edited),('--body-file',args.body_file),('--expected-revision',args.expected_revision),('--reason',args.reason)) if given]
+    if stray:raise ValueError(', '.join(stray)+' belong to a page edit, not a staged note')
+    cap=parser.parse_args(['capture','--from-proposal',args.id])
+    for name in ('root','domain','cwd','json','actor','session','turn','rule','pin'):setattr(cap,name,getattr(args,name))
+    cap.accepting=True
+    return cap
+
+def _proposals(args,root):
+    """`proposals list|show|accept|reject` for staged notes (8 hex digits, core/proposals.py) and page edits (12, core/docs.py, hosted and folder notebooks)."""
+    from . import proposals,docs
+    private=args.include_private
+    if args.action=='list':
+        stray=[flag for flag,given in (('an ID',args.id),('--reason',args.reason),('--rule',args.rule),('--pin',args.pin),('--turn',args.turn),('--expected-revision',args.expected_revision),('--body-file',args.body_file),('--edited',args.edited)) if given]
+        if stray:raise ValueError('proposals list takes only --kind, --status, --session, --notebook and --domain, not '+', '.join(stray))
+        rows=[]
+        if args.kind in ('note','all'):rows+=[dict(proposals.listing(r),kind='note') for r in proposals.rows(root,'any' if args.status=='all' else args.status,args.session)]
+        if args.kind in ('page','all'):
+            names=[canonical_domain(args.domain,root)] if args.domain else [d['name'] for d in list_domains(root)['domains'] if any((root/'domains'/d['name']/x).is_dir() for x in ('notebooks','folder-proposals'))]
+            rows+=[dict(r,kind='page') for r in docs.proposals(root,names,args.notebook,private,args.status,session=args.session)['proposals']]
+        return {'ok':True,'kind':args.kind,'status':args.status,'proposals':rows,
+                'next':'proposals show ID reads one; proposals accept ID saves it (a note as staged, a page edit as proposed); proposals reject ID --reason R drops it; capture --from-proposal ID with a whole note saves an edited note'}
+    if not args.id:raise ValueError(f'proposals {args.action} needs the proposal ID')
+    kind=_proposal_kind(args.id)
+    if not kind:raise ValueError('A proposal ID is 8 hexadecimal characters (a staged note) or 12 (a page edit), as proposals list shows it')
+    if args.action=='show':
+        if args.reason:raise ValueError('--reason belongs to reject')
+        return {'ok':True,'kind':kind,'proposal':proposals.get(root,args.id) if kind=='note' else docs.show_proposal(root,args.id,private)['proposal']}
+    if args.action=='accept':   # a note was turned into a capture before this point
+        stray=[flag for flag,given in (('--rule',args.rule),('--pin',args.pin),('--turn',args.turn),('--reason',args.reason)) if given]
+        if stray:raise ValueError(', '.join(stray)+' belong to a staged note, not a page edit')
+        if args.body_file and not args.edited:raise ValueError('--body-file goes with --edited')
+        return dict(docs.accept(root,args.id,args.expected_revision,private,_doc_body(args,required=True) if args.edited else None),kind='page')
+    if kind=='page':return dict(docs.reject(root,args.id,args.reason,private),kind='page')
+    if not args.reason:raise ValueError('proposals reject needs --reason (one line: why it is not worth a note)')
+    from .repository import store_lock as _lock
+    with _lock(root):row=proposals.settle(root,args.id,'rejected',reason=' '.join(args.reason.split())[:200])
+    from .usage import record
+    record(root,'proposal-reject',[None],args.session or os.environ.get(SESSION_ENV))
+    return {'ok':True,'kind':'note','id':row['id'],'status':'rejected'}
+
+
+def _doc(args,root,domain,cwd=None):
     import re
     from . import docs
     action=args.doc_action;private=getattr(args,'include_private',False)
@@ -721,18 +774,22 @@ def _doc(args,root,domain):
                                         include_private=private)
         return docs.delete_notebook(root,args.doc_domain,args.notebook,args.with_pages,private)
     if action=='list':return docs.list_pages(root,args.doc_domain,args.notebook,args.section,private)
-    if action=='read':return docs.read_page(root,args.doc_domain,args.notebook,args.path,args.max_chars,private)
+    if action=='read':
+        if _file_form(args,'read'):
+            from . import folder_docs
+            return folder_docs.read_file(root,args.file,cwd,args.max_chars,private)
+        return docs.read_page(root,args.doc_domain,args.notebook,args.path,args.max_chars,private)
     if action=='create':return docs.create_page(root,args.doc_domain,args.notebook,args.path,_doc_body(args),private)
     if action=='write':return docs.write_page(root,args.doc_domain,args.notebook,args.path,_doc_body(args),args.expected_revision,private)
     if action=='move':return docs.move(root,args.doc_domain,args.notebook,args.source,args.target,args.rewrite_links,private)
     if action=='delete':return docs.delete_page(root,args.doc_domain,args.notebook,args.path,args.expected_revision,private)
     if action=='attach':return docs.attach(root,args.doc_domain,args.notebook,args.from_file,args.name,private)
     if action=='history':return docs.history(root,args.doc_domain,args.notebook,args.path,max(1,min(200,args.limit)),args.version,private)
-    if action=='propose':return docs.propose(root,args.doc_domain,args.notebook,args.path,_doc_body(args),args.base_revision,args.note,args.session or os.environ.get(SESSION_ENV),private)
-    if action=='proposals':
-        names=[canonical_domain(args.doc_domain,root)] if args.doc_domain else every()
-        return docs.proposals(root,names,args.notebook,private,args.status)
-    if action=='proposal':return docs.show_proposal(root,args.id,private)
+    if action=='propose':
+        if _file_form(args,'propose'):
+            from . import folder_docs
+            return folder_docs.propose_file(root,args.file,_doc_body(args),cwd,args.base_revision,args.note,args.session or os.environ.get(SESSION_ENV),private)
+        return docs.propose(root,args.doc_domain,args.notebook,args.path,_doc_body(args),args.base_revision,args.note,args.session or os.environ.get(SESSION_ENV),private)
     if action=='folder':
         from . import folder_policy
         if args.folder_action=='unset':return folder_policy.unset_folder(root,args.path,args.forget)
@@ -757,10 +814,6 @@ def _doc(args,root,domain):
             return {'ok':True,'domains':names,'tasks':rows,**({'pages_stale':True} if stale else {})}
         rows,stale=docs_index.query(root,names,_doc_json(args.payload_file,'--payload-file'),private)
         return {'ok':True,'domains':names,'pages':rows,**({'pages_stale':True} if stale else {})}
-    if action=='accept':
-        if args.body_file and not args.edited:raise ValueError('--body-file goes with --edited')
-        return docs.accept(root,args.id,args.expected_revision,private,_doc_body(args,required=True) if args.edited else None)
-    if action=='reject':return docs.reject(root,args.id,args.reason,private)
     from .governance import undo
     try:journal=read_json(root/'.operations'/args.operation_id/'journal.json',None) if re.fullmatch(r'[A-Za-z0-9_-]{1,100}',args.operation_id) else None
     except ValueError:journal=None
@@ -795,11 +848,17 @@ def build_parser():
      p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
      sections_args(p);_file_flags(p)
     p=sub('capture');capture_flags(p)
-    p.add_argument('--from-proposal',metavar='ID',help='Settle this subagent proposal: alone, save it as staged; with a full note (title and content), save that edited note instead')
+    p.add_argument('--from-proposal',metavar='ID',help='Save this staged note edited: give the whole note (title and content) beside it. To save it as staged run proposals accept ID')
     p=sub('propose');capture_flags(p)
-    p=sub('proposals');p.add_argument('action',nargs='?',choices=['list','show','reject'],default='list');p.add_argument('id',nargs='?',help='show, reject: the proposal ID')
-    p.add_argument('--status',choices=['pending','accepted','rejected','any'],default='pending',help='list: which proposals (default pending)');p.add_argument('--session',help='list: only this session')
-    p.add_argument('--reason',help='reject: why, one line')
+    p=sub('proposals');p.add_argument('action',nargs='?',choices=['list','show','accept','reject'],default='list');p.add_argument('id',nargs='?',help='show, accept, reject: the proposal ID (8 hex digits: a staged note; 12: a page edit)')
+    p.add_argument('--kind',choices=['note','page','all'],default='all',help='list: staged notes, page edits or both (default all)')
+    p.add_argument('--status',choices=['pending','accepted','rejected','all'],default='pending',help='list: which proposals (default pending)');p.add_argument('--session',help='list: only this session; accept a note: the session that saves it')
+    p.add_argument('--notebook',help='list: only the page edits of this notebook (--domain narrows them to a domain)')
+    p.add_argument('--reason',help='reject: why, one line (a staged note needs it)')
+    p.add_argument('--rule',action='store_true',help='accept a note: make it a rule');p.add_argument('--pin',action='store_true',help='accept a note: pin it');p.add_argument('--turn',help='accept a note: with --session, the turn it settles')
+    p.add_argument('--expected-revision',help='accept a page edit: the page must be at this revision');p.add_argument('--body-file',type=Path)
+    p.add_argument('--edited',action='store_true',help='accept a page edit: write your merge of it (from --body-file or stdin) instead, against --expected-revision (left out: the page must not exist)')
+    p.add_argument('--include-private',action='store_true',help='Hivemind only: include private notebooks')
     p=sub('search');p.add_argument('query',nargs='?',default='');p.add_argument('--file',help='Notes about this file or folder: listed in their files property, or named in the body');p.add_argument('--scope',choices=['active','fallback','all'],default='fallback');p.add_argument('--limit',type=int,default=5);p.add_argument('--filter',action='append',default=[]);p.add_argument('--rebuild',action='store_true');p.add_argument('--sources',action='store_true',help='Source excerpts from the project knowledge base only');p.add_argument('--explain',action='store_true',help='Add why each note was found: backend, scores, gate and the section the prompt hook would deliver')
     p.add_argument('--include-private',action='store_true',help='Hivemind only: include pages of private notebooks')
     p=sub('read');p.add_argument('reference');p.add_argument('--max-chars',type=int,default=16000);p.add_argument('--metadata-only',action='store_true');p.add_argument('--section',help='Only this section, by heading (as search evidence and prompt lines name it)')
@@ -920,9 +979,11 @@ def main(argv=None):
     cwd=args.cwd or os.getcwd()
     invocation={'start':time.perf_counter(),'argv':list(argv) if argv is not None else sys.argv[1:]}
     try:
+        if args.command=='proposals' and args.action=='accept' and _proposal_kind(args.id)=='note':args=_accept_note(parser,args)   # one command for both kinds; a note runs as the capture it always was
         # Agents started inside a Hivemind terminal inherit HIVEMIND_SESSION; Hivemind's own backend does not. Every path (batch and serve
         # re-enter main) reaches this point before a governed command runs.
-        if os.environ.get('HIVEMIND_SESSION') and (args.command in {'apply','undo','recover'}|DIRECT_WRITES or (args.command=='setup' and args.apply_plan) or (args.command=='taxonomy' and args.action=='add') or (args.command=='doc' and args.doc_action in DOC_WRITES)):
+        if os.environ.get('HIVEMIND_SESSION') and (args.command in {'apply','undo','recover'}|DIRECT_WRITES or (args.command=='setup' and args.apply_plan) or (args.command=='taxonomy' and args.action=='add') or (args.command=='doc' and args.doc_action in DOC_WRITES)
+                                                    or (args.command=='proposals' and args.action in {'accept','reject'} and _proposal_kind(args.id)=='page')):
             from .runtime import HIVEMIND_DENY
             raise ValueError('hivemind: '+HIVEMIND_DENY)
         # Private notebooks stay out of agent sessions; only Hivemind's own bridge, which has no HIVEMIND_SESSION, asks for them (NS-2A).
@@ -970,7 +1031,7 @@ def main(argv=None):
         # propose writes only a draft in .turns/, which the main agent accepts or rejects.
         if args.actor=='subagent' and cmd not in READ_ONLY|{'propose'}:raise ValueError('Subagents are read-only; stage a draft with propose for the main agent')
         if cmd=='taxonomy' and args.action=='add' and args.actor in {'subagent','viewer'}:raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' are read-only; run taxonomy add as --actor main')
-        if cmd=='proposals' and args.action=='reject' and args.actor in {'subagent','viewer'}:raise ValueError('Only the main agent rejects proposals; run it as --actor main')
+        if cmd=='proposals' and args.action in {'accept','reject'} and args.actor in {'subagent','viewer'}:raise ValueError(f'Only the main agent settles proposals; run proposals {args.action} as --actor main')
         if cmd=='doc' and args.doc_action in DOC_WRITES and args.actor in {'subagent','viewer'}:
             raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' only read notebook pages'+('; stage an edit with doc propose' if args.actor=='subagent' else '')+'; run writes as --actor main')
         if cmd=='doc' and args.doc_action=='propose' and args.actor=='viewer':raise ValueError('Viewers are read-only; run doc propose as --actor main or --actor subagent')
@@ -1018,7 +1079,7 @@ def main(argv=None):
             else:
                 if args.key is None or args.value is None:raise ValueError('config set needs KEY and VALUE')
                 result=settings.set_(root,args.key,args.value)
-        elif cmd=='doc':result=_doc(args,root,domain)
+        elif cmd=='doc':result=_doc(args,root,domain,cwd)
         elif cmd=='domain':
             from .docs import init_notebook_domain
             result=init_notebook_domain(args.name,root)
@@ -1044,6 +1105,7 @@ def main(argv=None):
                 # Saved as staged. An edit passes the whole note, so a lone --title or --tag would be half an edit: refuse it.
                 beside=[flag for flag,given in (('--title',args.title),('--tag',args.tag),('--type',args.type),('--file',args.file),('--files',args.files)) if given]
                 if beside:raise ValueError('To edit a proposal pass the whole note (--title with --summary or a body) beside --from-proposal; '+', '.join(beside)+' alone would be lost')
+                if not getattr(args,'accepting',False):raise ValueError(f'capture --from-proposal takes the whole edited note beside it; to save the staged draft as it is, run proposals accept {args.from_proposal}')
                 data=dict(proposal['note'],domain=proposal.get('domain') or domain)
                 if args.rule:data['rule']=True   # the main agent may make the staged draft a rule; capture checks its type
                 if args.pin:data['pinned']=True
@@ -1149,24 +1211,7 @@ def main(argv=None):
                 from .usage import record
                 record(root,'proposal-accept',[saved],session,kind='edited' if edited else 'as-staged')
                 result['proposal']={'id':args.from_proposal,'status':'accepted'}
-        elif cmd=='proposals':
-            from . import proposals
-            if args.action=='list':
-                if args.id or args.reason:raise ValueError('proposals list takes only --status and --session')
-                rows=proposals.rows(root,args.status,args.session)
-                result={'ok':True,'status':args.status,'proposals':[proposals.listing(r) for r in rows],
-                        'next':'capture --from-proposal ID saves one (alone as staged; with a full note, edited); proposals reject ID --reason R drops it'}
-            else:
-                if not args.id:raise ValueError(f'proposals {args.action} needs the proposal ID')
-                if args.action=='show':
-                    if args.reason:raise ValueError('--reason belongs to reject')
-                    result={'ok':True,**proposals.get(root,args.id)}
-                else:
-                    if not args.reason:raise ValueError('proposals reject needs --reason (one line: why it is not worth a note)')
-                    with store_lock(root):row=proposals.settle(root,args.id,'rejected',reason=' '.join(args.reason.split())[:200])
-                    from .usage import record
-                    record(root,'proposal-reject',[None],session)
-                    result={'ok':True,'id':row['id'],'status':'rejected'}
+        elif cmd=='proposals':result=_proposals(args,root)
         elif cmd=='search':
             from .search import search_domains,search_domain
             if not domain:raise ValueError(UNBOUND)
@@ -1265,8 +1310,8 @@ def main(argv=None):
             result=note_links(root,domains,args.status)
         elif cmd=='version':
             from .installer_lifecycle import CORE_RELEASE,installed_stamp
-            result={'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'restore':1,'pin':1,'rule':1,'direct_writes':1,'note_types':1,'history':3,'items':{'fields':2},'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']},'wiki_agent':{'version':1},'systems':{'project':1},
-                                                                                                                                         'docs':{'version':1,'max_page_bytes':4194304,'max_asset_bytes':26214400,'notebook_only_domains':True,'search':True,'folder_policy':2,'accept_edited':True}}}
+            result={'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'proposals':1,'restore':1,'pin':1,'rule':1,'direct_writes':1,'note_types':1,'history':3,'items':{'fields':2},'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']},'wiki_agent':{'version':1},'systems':{'project':1},
+                                                                                                                                         'docs':{'version':1,'max_page_bytes':4194304,'max_asset_bytes':26214400,'notebook_only_domains':True,'search':True,'folder_policy':2,'accept_edited':True,'folder_proposals':1}}}
         elif cmd=='update':
             from .notes import change
             d,n=_reference(args.reference,domain,root)

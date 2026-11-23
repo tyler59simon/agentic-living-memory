@@ -2,8 +2,8 @@
 
 A proposal is transient hook state like a capture receipt: one JSON file per draft in .turns/ (pruned with the rest
 of .turns/ after 30 days), never a note, an index row or a journal entry. It stores the session as a hash, as the
-usage diary does. Only the main agent turns a proposal into a note (capture --from-proposal ID) or drops it
-(proposals reject ID); the hooks and the CLI refuse both for subagents.
+usage diary does. Only the main agent turns a proposal into a note (proposals accept ID, or capture --from-proposal ID with an edited
+note) or drops it (proposals reject ID); the hooks and the CLI refuse both for subagents.
 """
 import re,secrets
 from pathlib import Path
@@ -14,6 +14,10 @@ PREFIX='proposal-'
 # What a proposal carries into capture. Supersedes and allow_similar stay the main agent's call; a digest keeps its
 # sources and the idempotency key derived from them, so the saved note still goes stale when its file changes.
 FIELDS=('title','body','tags','type','context','files','commands','review_by','sources','idempotency_key','rule','pinned')
+
+def kind_of(pid):
+    """'note' for a staged note's ID (8 hex digits), 'page' for a page edit's (12, core/docs.py), None for anything else."""
+    return {8:'note',12:'page'}.get(len(pid)) if isinstance(pid,str) and re.fullmatch(r'[0-9a-f]+',pid) else None
 
 def _path(root,pid):
     if not isinstance(pid,str) or not re.fullmatch(r'[0-9a-f]{8}',pid):raise ValueError('A proposal ID is 8 hex characters, as proposals list shows it')
@@ -56,7 +60,7 @@ def settle(root,pid,status,note_ref=None,reason=None):
     return row
 
 def listing(row):
-    """The short form proposals list shows."""
+    """The short form proposals list shows (cli adds `kind`)."""
     note=row.get('note') or {}
     return {k:v for k,v in {'id':row.get('id'),'status':row.get('status'),'created':row.get('created'),'domain':row.get('domain'),
                             'type':note.get('type','knowledge'),'title':note.get('title'),'note_ref':row.get('note_ref'),'reason':row.get('reason')}.items() if v}

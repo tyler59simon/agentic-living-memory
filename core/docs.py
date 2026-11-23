@@ -177,7 +177,7 @@ def _commit(root, changes, kind, meta, summary, expected=None):
     operation_id = DOC_OP_PREFIX + uuid.uuid4().hex
     receipt = transaction(root, changes, kind, expected, operation_id, meta=meta)
     record_index(root, operation_id, changes)   # retention reads this instead of every journal's page text
-    if meta and meta.get("domain") and meta.get("notebook"):
+    if meta and meta.get("domain") and meta.get("notebook") and not meta.get("folder_notebook"):   # a folder notebook has no store index
         from .docs_index import after_write
         after_write(root, meta["domain"], meta["notebook"])   # search sees the change at once; a missed reindex is caught by the next walk
     receipt.update(kind=kind, summary=summary, undo=f"undo {operation_id}")
@@ -759,7 +759,7 @@ def propose(root, domain, nb, path, body, base_revision=None, note=None, session
         rel = _rel(domain, nb, f".proposals/{pid}.json")
         receipt = _commit(root, {rel: _proposal_text(value)}, "doc_propose", _journal_meta(domain, nb, meta),
                           {"domain": domain, "notebook": nb, "path": path, "proposal": pid}, {rel: None})
-        receipt.update(id=pid, status="proposed", next=f"The user reviews it in Hivemind (doc accept {pid} or doc reject {pid})")
+        receipt.update(id=pid, status="proposed", next=f"The user reviews it in Hivemind (proposals accept {pid} or proposals reject {pid})")
         if warnings:
             receipt.setdefault("warnings", []).extend(warnings)
         return receipt
@@ -785,11 +785,22 @@ def _find_proposal(root, pid):
         value = _read_proposal(file)
         if value is not None:
             return domain, nb, file, value
+    for file in Path(root).glob(f"domains/*/folder-proposals/*/{pid}.json"):   # a folder notebook's page (folder_docs)
+        domain, nb = file.parts[-4], file.parts[-2]
+        cursor = Path(root)
+        if any(_is_link(cursor := cursor / part) for part in ("domains", domain, "folder-proposals", nb)) or _is_link(file):
+            continue
+        value = _read_proposal(file)
+        if value is not None and value.get("kind") == "folder":
+            return domain, nb, file, value
     raise ValueError(f"not_found: no proposal {pid}")
 
 
-def proposals(root, domains, nb=None, include_private=False, status="pending", limit=50):
-    rows = []
+def proposals(root, domains, nb=None, include_private=False, status="pending", limit=50, session=None):
+    """Page proposals: those of the store's notebooks and of folder notebooks (folder_docs). session limits them to one session."""
+    from . import folder_docs
+    wanted = digest(session.encode())[:16] if session else None
+    rows = folder_docs.rows(root, domains, nb, include_private, status, session)
     for domain in domains:
         base = Path(root) / "domains" / domain / "notebooks"
         folders = sorted(p.name for p in base.iterdir() if p.is_dir() and SLUG.fullmatch(p.name)) if base.is_dir() and not _is_link(base) else []
@@ -800,7 +811,7 @@ def proposals(root, domains, nb=None, include_private=False, status="pending", l
             except ValueError:
                 continue
             value = _read_proposal(file)
-            if not isinstance(value, dict) or (status != "all" and value.get("status") != status):
+            if not isinstance(value, dict) or (status != "all" and value.get("status") != status) or (wanted and value.get("session") != wanted):
                 continue
             rows.append({k: value.get(k) for k in ("id", "domain", "notebook", "path", "base_revision", "note", "created", "status", "reason", "settled", "edited")}
                         | {"size": len(str(value.get("body") or "").encode())})
@@ -810,7 +821,11 @@ def proposals(root, domains, nb=None, include_private=False, status="pending", l
 
 def show_proposal(root, pid, include_private=False):
     domain, nb, _, value = _find_proposal(root, pid)
-    _open(root, domain, nb, include_private)
+    if value.get("kind") == "folder":
+        from . import folder_docs
+        folder_docs.check_visible(root, value, include_private)
+    else:
+        _open(root, domain, nb, include_private)
     return {"ok": True, "proposal": value}
 
 
@@ -824,6 +839,9 @@ def accept(root, pid, expected=None, include_private=False, body=None):
     warnings = _check_body(body) if body is not None else []
     with store_lock(root):
         domain, nb, file, value = _find_proposal(root, pid)
+        if value.get("kind") == "folder":
+            from . import folder_docs
+            return folder_docs.accept(root, pid, file, value, expected, include_private, body)
         domain, nb, meta, _ = _open(root, domain, nb, include_private)
         if value.get("status") != "pending":
             raise ValueError(f"Proposal {pid} is {value.get('status')}")
@@ -857,6 +875,9 @@ def reject(root, pid, reason=None, include_private=False):
     root = Path(root).resolve()
     with store_lock(root):
         domain, nb, file, value = _find_proposal(root, pid)
+        if value.get("kind") == "folder":
+            from . import folder_docs
+            return folder_docs.reject(root, pid, file, value, reason, include_private)
         domain, nb, meta, _ = _open(root, domain, nb, include_private)
         if value.get("status") != "pending":
             raise ValueError(f"Proposal {pid} is {value.get('status')}")
@@ -934,7 +955,8 @@ def private_scope(root, changes=None):
     return prefixes, uids
 
 
-BOOKKEEPING = re.compile(r"notebook-folders\.json|domains/[^/]+/notebook-sync\.json")
+FOLDER_PROPOSALS = re.compile(r"domains/[^/]+/folder-proposals/")   # staged edits of folder notebook pages (folder_docs): their text is outside the store
+BOOKKEEPING = re.compile(r"notebook-folders\.json|domains/[^/]+/notebook-sync\.json|domains/[^/]+/folder-proposals/.+")
 
 
 def is_private_path(path, scope):
@@ -1052,7 +1074,8 @@ def refuse_notes_in(root, domain):
 def is_notebook_journal(effects):
     """Whether an operation changed only notebook files (and the privacy registry): a notebook operation, whatever its kind."""
     paths = [e.get("path") for e in effects or [] if isinstance(e, dict)]
-    return bool(paths) and all(isinstance(p, str) and (NOTEBOOK_PATH.match(p) or p == PRIVACY) for p in paths) and any(NOTEBOOK_PATH.match(p) for p in paths)
+    here = lambda p: bool(NOTEBOOK_PATH.match(p) or FOLDER_PROPOSALS.match(p))
+    return bool(paths) and all(isinstance(p, str) and (here(p) or p == PRIVACY) for p in paths) and any(here(p) for p in paths)
 
 
 def record_index(root, operation_id, paths, created=None):

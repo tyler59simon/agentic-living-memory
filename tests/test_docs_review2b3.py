@@ -6,7 +6,7 @@ from unittest.mock import patch
 import test_docs,test_docs_sync,test_sources_notebooks
 from test_docs_review2b import own,junction
 from test_docs_sync import PAGE
-from core import digests,docs,docs_index,folder_policy,governance,notebook_sync,runtime,sources
+from core import digests,docs,docs_index,folder_policy,governance,notebook_sync,runtime,safe_put,sources
 from core.repository import read_json
 from core.sync import teardown_plan
 
@@ -144,21 +144,21 @@ class Vault(test_docs_sync.Mirror):
         status=self.vault/'Dashboards'/'Sync Status - demo.md';status.write_text(self.status().replace('- [ ] Delete page','- [x] Delete page'),encoding='utf-8')
 
     def test_F04_a_file_that_cannot_be_judged_is_put_back(self):
-        self.build();copy=self.copy('Plan.md');real=notebook_sync._bytes
+        self.build();copy=self.copy('Plan.md');real=safe_put._bytes
         def bytes_(path):
             if str(path).endswith('.aside'):raise PermissionError('locked')
             return real(path)
-        with patch('core.notebook_sync._bytes',bytes_):
+        with patch('core.safe_put._bytes',bytes_):
             try:notebook_sync._put(self.vault,'Notebooks/demo/nb1/Plan.md',b'new\n',notebook_sync._sha(PAGE))
             except OSError:pass
         self.assertEqual(copy.read_bytes(),PAGE);self.assertFalse(list(copy.parent.glob('*.aside')))
 
     def test_F04_on_posix_a_second_save_is_never_replaced_when_a_file_is_put_back(self):
-        self.build();copy=self.copy('Plan.md');real=notebook_sync._bytes
+        self.build();copy=self.copy('Plan.md');real=safe_put._bytes
         def bytes_(path):
             if str(path).endswith('.aside'):copy.write_bytes(b'second save\n');return b'changed'   # saved twice around the rename
             return real(path)
-        with patch('core.notebook_sync._bytes',bytes_),patch.object(notebook_sync,'os',posix()):
+        with patch('core.safe_put._bytes',bytes_),patch.object(safe_put,'os',posix()):
             self.assertFalse(notebook_sync._put(self.vault,'Notebooks/demo/nb1/Plan.md',b'new\n',notebook_sync._sha(PAGE)))
         self.assertEqual(copy.read_bytes(),b'second save\n')
         self.assertEqual([p.read_bytes() for p in copy.parent.glob('Plan (kept*')],[PAGE])
@@ -166,7 +166,7 @@ class Vault(test_docs_sync.Mirror):
     def test_F11_a_filesystem_without_hard_links_still_gets_new_copies(self):
         self.build()
         def no_link(*a):raise PermissionError('hard links not supported')
-        with patch.object(notebook_sync,'os',posix(link=no_link)):
+        with patch.object(safe_put,'os',posix(link=no_link)):
             self.assertTrue(notebook_sync._put(self.vault,'Notebooks/demo/nb1/New.md',b'new page\n',None))
         self.assertEqual(self.copy('New.md').read_bytes(),b'new page\n')
 

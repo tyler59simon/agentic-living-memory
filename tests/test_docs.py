@@ -212,25 +212,25 @@ class Proposals(Fixture):
         self.assertIn('doc propose',text)
         staged=self.ok('doc','propose','demo','nb1','p.md','--base-revision',digest(b'one\n'),'--note','tidy',stdin='two\n',actor='subagent')
         self.assertEqual(self.file('p.md').read_bytes(),b'one\n')
-        listed=self.ok('doc','proposals');self.assertEqual([p['id'] for p in listed['proposals']],[staged['id']])
-        self.fails('doc','accept',staged['id'],actor='subagent')
-        self.ok('doc','accept',staged['id']);self.assertEqual(self.file('p.md').read_bytes(),b'two\n')
-        self.assertEqual(self.ok('doc','proposals')['proposals'],[])
+        listed=self.ok('proposals','--kind','page');self.assertEqual([p['id'] for p in listed['proposals']],[staged['id']])
+        self.fails('proposals','accept',staged['id'],actor='subagent')
+        self.ok('proposals','accept',staged['id']);self.assertEqual(self.file('p.md').read_bytes(),b'two\n')
+        self.assertEqual(self.ok('proposals','--kind','page')['proposals'],[])
 
     def test_accept_refuses_a_page_changed_since(self):
         self.notebook();self.page('p.md',b'one')
         pid=docs.propose(self.root,'demo','nb1','p.md',b'two',digest(b'one'))['id']
         docs.write_page(self.root,'demo','nb1','p.md',b'three',digest(b'one'))
-        code,text=self.fails('doc','accept',pid);self.assertEqual(code,6,text)
+        code,text=self.fails('proposals','accept',pid);self.assertEqual(code,6,text)
 
     def test_accept_edited_writes_the_merge_and_settles_it_in_one_operation(self):
         # NS-2C review, D3: Hivemind's merge of a stale proposal is written and settled together, against the page as merged.
         self.notebook();self.page('p.md',b'one\r\n')
         pid=docs.propose(self.root,'demo','nb1','p.md',b'two\r\n',digest(b'one\r\n'))['id']
         docs.write_page(self.root,'demo','nb1','p.md',b'three\r\n',digest(b'one\r\n'))
-        code,text=self.fails('doc','accept',pid,'--edited','--expected-revision',digest(b'one\r\n'),stdin='merged\r\n');self.assertEqual(code,6,text)
+        code,text=self.fails('proposals','accept',pid,'--edited','--expected-revision',digest(b'one\r\n'),stdin='merged\r\n');self.assertEqual(code,6,text)
         self.assertEqual(self.file('p.md').read_bytes(),b'three\r\n')
-        done=self.ok('doc','accept',pid,'--edited','--expected-revision',digest(b'three\r\n'),'--body-file',self.body_file(b'two and three\r\n'))
+        done=self.ok('proposals','accept',pid,'--edited','--expected-revision',digest(b'three\r\n'),'--body-file',self.body_file(b'two and three\r\n'))
         self.assertEqual(self.file('p.md').read_bytes(),b'two and three\r\n');self.assertEqual(done['revision'],digest(b'two and three\r\n'))
         settled=read_json(self.file(f'.proposals/{pid}.json'));self.assertEqual((settled['status'],settled.get('edited')),('accepted',True))
         self.assertEqual([p['edited'] for p in docs.proposals(self.root,['demo'],status='all')['proposals']],[True])
@@ -241,21 +241,21 @@ class Proposals(Fixture):
         self.notebook()
         pid=docs.propose(self.root,'demo','nb1','n.md',b'agent')['id']
         self.page('n.md',b'someone else')
-        code,text=self.fails('doc','accept',pid,'--edited',stdin='mine');self.assertEqual(code,6,text)
+        code,text=self.fails('proposals','accept',pid,'--edited',stdin='mine');self.assertEqual(code,6,text)
         self.assertEqual(self.file('n.md').read_bytes(),b'someone else')
         docs.reject(self.root,pid,'no')
-        self.fails('doc','accept',pid,'--edited','--expected-revision',digest(b'someone else'),stdin='mine')
+        self.fails('proposals','accept',pid,'--edited','--expected-revision',digest(b'someone else'),stdin='mine')
         self.assertEqual(self.file('n.md').read_bytes(),b'someone else')
         fresh=docs.propose(self.root,'demo','nb1','m.md',b'agent')['id']
-        self.ok('doc','accept',fresh,'--edited',stdin='mine');self.assertEqual(self.file('m.md').read_bytes(),b'mine')
-        self.fails('doc','accept',fresh,'--body-file',self.body_file(b'x'))
+        self.ok('proposals','accept',fresh,'--edited',stdin='mine');self.assertEqual(self.file('m.md').read_bytes(),b'mine')
+        self.fails('proposals','accept',fresh,'--body-file',self.body_file(b'x'))
 
     def test_accept_edited_needs_a_body_given_on_purpose(self):
         # NS-2C re-review, R2-D5, through the real boundaries (review of 7f06bda, R3-T2): a serve frame without `stdin`
         # and a terminal are refused; a frame with an empty `stdin` is an empty merge given on purpose.
         self.notebook();self.page('p.md',b'one')
         pid=docs.propose(self.root,'demo','nb1','p.md',b'two',digest(b'one'))['id']
-        accept=['doc','accept','--edited','--expected-revision',digest(b'one'),'--actor','main','--',pid]
+        accept=['proposals','accept','--edited','--expected-revision',digest(b'one'),'--actor','main','--',pid]
         def serve(*frames):
             lines=''.join(json.dumps(f)+'\n' for f in frames);out=io.StringIO()
             with patch('sys.stdin',io.StringIO(lines)),contextlib.redirect_stdout(out):
@@ -281,7 +281,7 @@ class Proposals(Fixture):
         done=docs.write_page(self.root,'demo','nb1','p.md',b'fixed\n',digest(bad))
         self.ok('undo',done['operation_id']);self.assertEqual(self.file('p.md').read_bytes(),bad)
         pid=docs.propose(self.root,'demo','nb1','p.md',b'agent\n',digest(bad))['id']
-        done=self.ok('doc','accept',pid,'--edited','--expected-revision',digest(bad),stdin='merged\n')
+        done=self.ok('proposals','accept',pid,'--edited','--expected-revision',digest(bad),stdin='merged\n')
         self.ok('undo',done['operation_id']);self.assertEqual(self.file('p.md').read_bytes(),bad)
         self.assertEqual(read_json(self.file(f'.proposals/{pid}.json'))['status'],'pending')
 
@@ -290,8 +290,8 @@ class Proposals(Fixture):
         pid=docs.propose(self.root,'demo','nb1','new.md',b'hello')['id']
         self.page('exists.md',b'z')
         with self.assertRaisesRegex(ValueError,'base-revision'):docs.propose(self.root,'demo','nb1','exists.md',b'x')
-        rejected=self.ok('doc','reject',pid,'--reason','no');self.assertEqual(read_json(self.file(f'.proposals/{pid}.json'))['status'],'rejected')
-        self.fails('doc','accept',pid)
+        rejected=self.ok('proposals','reject',pid,'--reason','no');self.assertEqual(read_json(self.file(f'.proposals/{pid}.json'))['status'],'rejected')
+        self.fails('proposals','accept',pid)
 
     def test_viewer_cannot_propose(self):
         self.notebook();self.fails('doc','propose','demo','nb1','v.md',stdin='x',actor='viewer')

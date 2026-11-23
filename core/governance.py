@@ -13,7 +13,7 @@ def reconciled_domains(paths):
     out=set()
     for p in paths:
         parts=Path(p).parts
-        if len(parts)>2 and parts[0]=='domains' and parts[2]!='notebooks':out.add(parts[1])
+        if len(parts)>2 and parts[0]=='domains' and parts[2] not in ('notebooks','folder-proposals'):out.add(parts[1])
     return out
 
 
@@ -271,7 +271,8 @@ def _plan_kind(kind,effects=()):
     if kind=='restore':return not any(Path(e['path']).name=='.derived-dirty' for e in effects)
     return not (kind in DIRECT_UNDO_KINDS or kind.startswith(DIRECT_UNDO_PREFIXES))
 
-def undo(root,operation_id,include_private=False):
+def undo(root,operation_id,include_private=False,revert_files=True):
+    """revert_files: for the accept of a folder notebook proposal, put the page outside the store back first (folder_docs.revert_accept)."""
     if not __import__('re').fullmatch(r'[A-Za-z0-9_-]{1,100}',operation_id):raise ValueError('Invalid operation ID')
     root=Path(root).resolve();journal=root/'.operations'/operation_id/'journal.json'
     try:value=read_json(journal)
@@ -345,9 +346,16 @@ def undo(root,operation_id,include_private=False):
         if kind.startswith('undo:') and notebook_op and operation_id.startswith(DOC_OP_PREFIX):kind='doc_undo'
         if _plan_kind(kind,judged_effects):return plan(root,changes,'undo:'+operation_id,domains,guards=guards)
         if notebook_op:
+            folder=(value.get('meta') or {}).get('folder_notebook')
+            if folder and kind=='doc_accept' and str(value['kind']).startswith('undo:'):raise ValueError('The page of a folder notebook proposal is not put back by undoing an undo; accept the proposal again')
+            from .folder_docs import revert_accept
+            again=revert_accept(root,value) if folder and revert_files and str(value['kind'])=='doc_accept' else None
             # A `doc-` id and the journal's meta: notebook retention covers the undo, and doc undo still knows it after its parent is pruned.
             new_id=DOC_OP_PREFIX+uuid.uuid4().hex
-            receipt=commit(root,changes,'undo:'+operation_id,domains,guards=guards,operation_id=new_id,meta=value.get('meta'))
+            try:receipt=commit(root,changes,'undo:'+operation_id,domains,guards=guards,operation_id=new_id,meta=value.get('meta'))
+            except BaseException:
+                if again:again()
+                raise
             record_index(root,new_id,changes)
             return receipt
         return commit(root,changes,'undo:'+operation_id,domains,guards=guards)

@@ -170,7 +170,7 @@ class ClaudeIntegrationFixes(StoreFixture):
         self.assertEqual(code,0,result);return result['id']
     def test_subagents_may_stage_proposals_but_not_settle_them(self):
         for rest,decision in (("propose --session s1 --title 'T' --summary 'S'",'allow'),('proposals list','allow'),('proposals show abcd1234','allow'),
-                              ("proposals reject abcd1234 --reason 'x'",'deny'),('capture --from-proposal abcd1234','deny')):
+                              ("proposals reject abcd1234 --reason 'x'",'deny'),('proposals accept abcd1234','deny'),('capture --from-proposal abcd1234','deny')):
             with self.subTest(rest=rest):
                 event=self.payload(tool_name='Bash',tool_input={'command':self.memory(rest)},agent_id='a1')
                 self.assertIn(decision,self.run_hook('pre-tool-use',event))
@@ -178,6 +178,7 @@ class ClaudeIntegrationFixes(StoreFixture):
         self.assertEqual(self.cli('propose','--actor','subagent','--session','s1','--title','T','--summary','A fact.')[0],0)
         self.assertNotEqual(self.cli('capture','--actor','subagent','--from-proposal','abcd1234')[0],0)
         self.assertNotEqual(self.cli('proposals','reject','abcd1234','--reason','x','--actor','subagent')[0],0)
+        self.assertNotEqual(self.cli('proposals','accept','abcd1234','--actor','subagent')[0],0)
     def test_subagent_start_names_the_propose_command(self):
         context=self.run_hook('subagent-start',self.payload(agent_id='a1'))['context']
         self.assertIn('propose --session s1',context);self.assertIn('Do not capture',context)
@@ -190,9 +191,9 @@ class ClaudeIntegrationFixes(StoreFixture):
         code,result=self.cli('capture','--from-proposal',pid,'--type','decision','--title','Run date tests with TZ=UTC','--summary','tests/test_dates.py:42 needs TZ=UTC.')
         self.assertEqual(code,0,result);self.assertEqual(result['proposal'],{'id':pid,'status':'accepted'})
         self.assertEqual([n['title'] for n in inventory('demo',self.root)],['Run date tests with TZ=UTC'])
-        code,result=self.cli('capture','--from-proposal',pid);self.assertNotEqual(code,0);self.assertIn('already accepted',result['error']['message'])
+        code,result=self.cli('proposals','accept',pid);self.assertNotEqual(code,0);self.assertIn('already accepted',result['error']['message'])
         other=self.propose('Second finding')
-        self.assertEqual(self.cli('capture','--from-proposal',other)[0],0)   # alone: saved as staged
+        self.assertEqual(self.cli('proposals','accept',other)[0],0)   # saved as staged
         self.assertIn('Second finding',[n['title'] for n in inventory('demo',self.root)])
         third=self.propose('Third finding')
         self.assertNotEqual(self.cli('proposals','reject',third)[0],0)   # a reason is required
@@ -239,7 +240,7 @@ class ClaudeIntegrationFixes(StoreFixture):
             if not racing.done:racing.done=True;proposals.settle(root,ident,'rejected',reason='another agent')   # settled after the first check
             return row
         racing.done=False
-        with patch.object(proposals,'get',racing):code,result=self.cli('capture','--from-proposal',pid)
+        with patch.object(proposals,'get',racing):code,result=self.cli('proposals','accept',pid)
         self.assertNotEqual(code,0);self.assertIn('settled meanwhile',result['error']['message'])
         self.assertEqual(inventory('demo',self.root),[])
     def test_a_subagent_in_an_unbound_folder_cannot_write_memory(self):
@@ -263,7 +264,7 @@ class ClaudeIntegrationFixes(StoreFixture):
         pid=self.propose();self.propose('Elsewhere',session='s2')
         first=self.run_hook('stop',self.payload())
         self.assertIn(pid,first['continue_reason']);self.assertNotIn('Elsewhere',first['continue_reason'])
-        self.assertIn('capture --from-proposal',first['continue_reason'])
+        self.assertIn('proposals accept',first['continue_reason'])
         self.run_hook('user-prompt',self.payload(prompt='and the next thing',timestamp='t2'))
         self.assertEqual(self.run_hook('stop',self.payload()),{})   # asked once
         self.run_hook('user-prompt',self.payload(prompt='plan the rest',timestamp='t3'))

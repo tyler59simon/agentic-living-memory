@@ -137,6 +137,17 @@ class HivemindGuard(StoreFixture):
                 self.assertTrue(self.denied(f'{base} {rest}', tool='PowerShell'))
         self.assertFalse(self.denied(f'{base} --domain=demo search cache'))
 
+    def test_page_proposals_are_the_users_to_settle_but_staging_and_listing_stay_open(self):
+        for harness, tool in (('claude', 'Bash'), ('codex', 'shell')):
+            for rest in ('proposals accept abcdef123456', 'proposals reject abcdef123456 --reason x', 'proposals --kind page reject abcdef123456'):
+                with self.subTest(rest=rest, harness=harness):
+                    self.assertTrue(self.denied(self.memory(rest), harness, tool))
+            for rest in ('doc propose --file wiki/a.md --base-revision R', 'doc read --file wiki/a.md', 'proposals list', 'proposals show abcdef123456',
+                         'proposals accept abcd1234', "proposals reject abcd1234 --reason 'x'"):   # a staged note is the main agent's to settle
+                with self.subTest(rest=rest, harness=harness):
+                    self.assertFalse(self.denied(self.memory(rest), harness, tool))
+        self.assertTrue(self.denied(f'"{sys.executable}" "{runtime.SCRIPT}" proposals accept abcdef123456 && echo done'))   # unparseable text is read by its tokens
+
 
 class HivemindCli(StoreFixture):
     """The CLI refuses governed commands itself: batch and serve re-enter main(), so they pass the same check."""
@@ -196,6 +207,18 @@ class HivemindCli(StoreFixture):
         self.assertEqual(replies[0]['exit_code'], 2)
         self.assertEqual(replies[0]['error']['code'], 'hivemind')
         self.assertEqual(replies[1]['exit_code'], 0)
+
+    def test_page_proposals_are_refused_inside_a_terminal_but_listing_is_not(self):
+        self.with_env('hm-1')
+        for argv in (['proposals', 'accept', 'abcdef123456'], ['proposals', 'reject', 'abcdef123456']):
+            with self.subTest(argv=argv):
+                code, out, err = self.run_main('--json', *argv)
+                self.assertEqual(code, 2)
+                self.assertTrue(self.refused(err), err)
+        code, out, err = self.run_main('--json', 'proposals', 'list')
+        self.assertEqual(code, 0, err)
+        code, out, err = self.run_main('--json', 'proposals', 'show', 'abcdef123456')
+        self.assertNotEqual(json.loads(err)['error']['code'], 'hivemind')   # reads are open: this one finds nothing
 
 
 if __name__ == '__main__':
