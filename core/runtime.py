@@ -676,7 +676,7 @@ def _package_plan_folders():
     """Where install.py and integrations/setup.py keep their plans (full settings copies): each harness home, and the install folder when
     this code is the installed copy (app/ beside its plans; a source checkout never reaches into the user's install folder)."""
     from .instructions import harness_home
-    app=SCRIPT.parent;homes=[harness_home(h) for h in ('claude','codex','copilot','factory')]
+    app=SCRIPT.parent;homes=[harness_home(h) for h in ('claude','codex','copilot','factory','antigravity')]
     if (app/'.core-ownership-v1.json').is_file():homes.append(app.parent)
     return [home for home in dict.fromkeys(homes) if (home/'.plans').is_dir()]
 

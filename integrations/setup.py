@@ -1,6 +1,6 @@
 """Plan-bound native adapter setup. Never changes sandbox or trust policies."""
 from __future__ import annotations
-import argparse,difflib,hashlib,json,os,re,shutil,sys
+import argparse,difflib,hashlib,json,os,re,shlex,shutil,sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from core.common import retry_sharing
@@ -13,7 +13,9 @@ EVENTS={'SessionStart':'session-start','UserPromptSubmit':'user-prompt','Subagen
 # (Agent, formerly Task) come for codebase maps; hooks/claude_hooks.py answers repeat reads from core/hookfast.py.
 PRE_TOOL_MATCHER='Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|Read|Glob|Grep|Agent|Task'
 
-CONFIG={'claude':'settings.json','codex':'hooks.json','copilot':'hooks/agentic-living-memory.json','factory':'hooks.json'}
+CONFIG={'claude':'settings.json','codex':'hooks.json','copilot':'hooks/agentic-living-memory.json','factory':'hooks.json','antigravity':'hooks.json'}
+ANTIGRAVITY_GROUP='agentic-living-memory'
+ANTIGRAVITY_OWNERSHIP='.living-memory-antigravity-ownership.json'
 # Claude and Codex nest the event map under "hooks"; Factory's hooks.json is the event map itself.
 NESTED={'claude','codex'}
 
@@ -96,6 +98,8 @@ def _copilot_file(config):
     return isinstance(events,dict) and version==1 and not isinstance(version,bool) and all(isinstance(handlers,list) for handlers in events.values())
 
 def managed_handlers(config,harness):
+    if harness=='antigravity':
+        return {ANTIGRAVITY_GROUP:config[ANTIGRAVITY_GROUP]} if isinstance(config,dict) and ANTIGRAVITY_GROUP in config else {}
     if harness=='copilot':   # Copilot lists handlers under each event directly, with no groups
         events=config.get('hooks',{}) if _copilot_file(config) else {}
         return {event:[h for h in handlers if _ours(h,harness)] for event,handlers in events.items() if any(_ours(h,harness) for h in handlers)}
@@ -150,6 +154,20 @@ def codex_groups(script):
 
 def hooks(harness):
     script=_script(harness)
+    if harness=='antigravity':
+        from hooks.antigravity_hooks import EVENTS as ANTIGRAVITY_EVENTS, TOOLS
+        if os.name=='nt':
+            for path in (sys.executable,str(script)):
+                if any(char in path for char in ('"', '%', '!', '\r', '\n')):
+                    raise ValueError(f'Antigravity CLI cannot safely quote the hook path {path}')
+            command=f'"{sys.executable}" -X utf8 "{script}"'
+        else:
+            command=f'{shlex.quote(sys.executable)} -X utf8 {shlex.quote(str(script))}'
+        events={}
+        for event in ANTIGRAVITY_EVENTS:
+            handlers=[{'type':'command','command':f'{command} {event}','timeout':30}]
+            events[event]=[{'matcher':'|'.join(TOOLS),'hooks':handlers}] if event=='PreToolUse' else handlers
+        return {ANTIGRAVITY_GROUP:events}
     if harness=='codex':return codex_groups(script)
     if harness=='copilot':
         mapped={'sessionStart':'sessionStart','userPromptTransformed':'userPromptTransformed','subagentStart':'subagentStart','preToolUse':'preToolUse','agentStop':'agentStop'}
@@ -203,9 +221,32 @@ def _reader(home):
         except (OSError,UnicodeError,json.JSONDecodeError) as exc:raise ValueError(f'Invalid or unreadable configuration preserved: {home/rel}') from exc
     return read,read_config,read_set
 
+def _antigravity_plan(home,uninstall,adopt):
+    """Own one named hook group in Antigravity's shared config file."""
+    _,read_config,read_set=_reader(home)
+    name=CONFIG['antigravity']
+    current=read_config(name,{})
+    state=read_config(ANTIGRAVITY_OWNERSHIP,{})
+    if not isinstance(current,dict) or not isinstance(state,dict):
+        raise ValueError(f'Invalid Antigravity hook configuration or ownership record preserved under {home}')
+    previous=managed_handlers(current,'antigravity')
+    wanted={} if uninstall else hooks('antigravity')
+    summary={'harness':'antigravity','hooks':not uninstall,'package':str(ROOT),'interpreter':sys.executable,'sandbox':'unchanged'}
+    if (previous or state) and digest(canonical_json(previous).encode())!=state.get('hooks_hash'):
+        if not adopt:
+            _refuse('Unknown or modified managed hook group',home/name,'antigravity',uninstall)
+        summary['adopt']={name:_diff(name,pretty(previous),pretty(wanted))}
+    updated={k:v for k,v in current.items() if k!=ANTIGRAVITY_GROUP}
+    updated.update(wanted)
+    changes={ANTIGRAVITY_OWNERSHIP:None if uninstall else canonical_json({'hooks_hash':digest(canonical_json(wanted).encode())})}
+    if wanted or previous:
+        changes[name]=pretty(updated)
+    return plan(home,changes,'antigravity_uninstall' if uninstall else 'antigravity_setup',summary=summary,guards={'read_set':read_set})
+
 def setup_plan(harness,home=None,enable_hooks=False,uninstall=False,adopt=False):
     if harness not in CONFIG:raise ValueError('Unknown harness')
     home=Path(home or harness_home(harness)).expanduser().resolve();home.mkdir(parents=True,exist_ok=True)
+    if harness=='antigravity':return _antigravity_plan(home,uninstall,adopt)
     read,read_config,read_set=_reader(home)
     state=read_config('.living-memory-ownership.json',{'files':{},'instruction_hash':None})
     instruction=INSTRUCTION_FILE[harness]

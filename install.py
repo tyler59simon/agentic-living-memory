@@ -2,7 +2,7 @@
 
 Windows: %LOCALAPPDATA%/agentic-living-memory/app. Elsewhere: ~/.local/lib/agentic-living-memory/app.
 Plans, journals and the ownership record live beside app/ in that folder. Each harness (Claude Code, Codex,
-Copilot, Factory) is wired afterwards with integrations/setup.py HARNESS --hooks, run from the installed copy.
+Copilot, Factory, Antigravity CLI) is wired afterwards with integrations/setup.py HARNESS --hooks, run from the installed copy.
 Older releases installed into CODEX_HOME/agentic-living-memory; --retire-legacy-plan removes that copy once
 no harness points at it.
 
@@ -22,7 +22,7 @@ from core.instructions import harness_home
 
 SOURCE = Path(__file__).resolve().parent
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser().resolve()
-HARNESSES = ("claude", "codex", "copilot", "factory")
+HARNESSES = ("claude", "codex", "copilot", "factory", "antigravity")
 
 
 def _install_home() -> Path:
@@ -41,7 +41,7 @@ LAUNCHER_DIR = Path.home() / ".local" / "bin"
 PROFILE_LINE = 'export PATH="$HOME/.local/bin:$PATH"  # agentic-living-memory'
 
 
-CONFIG_NAMES = {"claude": "settings.json", "codex": "hooks.json", "copilot": "hooks/agentic-living-memory.json", "factory": "hooks.json"}
+CONFIG_NAMES = {"claude": "settings.json", "codex": "hooks.json", "copilot": "hooks/agentic-living-memory.json", "factory": "hooks.json", "antigravity": "hooks.json"}
 
 
 def default_homes() -> list:

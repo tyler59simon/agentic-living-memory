@@ -5,7 +5,7 @@ the package moves, every hooked tool call fails inside the harness, where nothin
 say why. `doctor` is the one place that can, so it reads each harness's hook configuration and checks
 what the handlers point at. Nothing here writes."""
 from __future__ import annotations
-import os,re,shutil,subprocess
+import os,re,shlex,shutil,subprocess
 from pathlib import Path
 from .instructions import harness_home,installed
 
@@ -41,6 +41,9 @@ def _script(handler,harness):
     for key in COMMAND_KEYS:
         if not isinstance(handler.get(key),str):continue
         text=_plain(handler[key])
+        if harness=='antigravity' and os.name!='nt':
+            try:return next((word for word in shlex.split(text) if re.search(tail+r'\Z',word)),None)
+            except ValueError:return None
         match=re.search(r'"([^"]*'+tail+r')"',text) or re.search(r"'([^']*"+tail+r")'",text) or re.search(r'(\S*'+tail+r')',text)
         if match:return match[1]
     return None
@@ -55,12 +58,15 @@ def _first_words(line):
         if len(words)==2:break
     return words+['']*(2-len(words))
 
-def _interpreter(handler):
+def _interpreter(handler,harness=None):
     """(what the handler runs first, the word after it) on this platform."""
     if isinstance(handler.get('args'),list):return str(handler.get('command','')),''
     windows=os.name=='nt'
     line=next((handler[key] for key in (('commandWindows','powershell','command','bash') if windows else ('command','bash'))
                if isinstance(handler.get(key),str) and handler[key].strip()),'')
+    if harness=='antigravity' and not windows:
+        try:return (shlex.split(line)+['',''])[:2]
+        except ValueError:return '',''
     first,second=_first_words(_plain(line))
     return first,second
 
@@ -91,15 +97,24 @@ def _current(harness,config,setup):
 def check(harness,setup):
     """One harness's wiring, or None when it has no hook handlers of ours."""
     from .repository import read_json
-    path=harness_home(harness)/setup.CONFIG[harness]
-    if not path.is_file():return None
+    home=harness_home(harness)
+    path=home/setup.CONFIG[harness]
+    expected=harness=='antigravity' and (home/setup.ANTIGRAVITY_OWNERSHIP).is_file()
+    if not path.is_file() and not expected:return None
     try:config=read_json(path,{})
-    except ValueError:return {'config':str(path),'wired':False,'problems':[f'{path} is not valid JSON, so the harness cannot load its hooks']}
-    ours=[(handler,_script(handler,harness)) for handler in _handlers(config)]
+    except ValueError:
+        return {'config':str(path),'wired':expected,'config_ok':False,
+                'problems':[f'{path} is not valid JSON, so the harness cannot load its hooks']}
+    managed=setup.managed_handlers(config,harness) if harness=='antigravity' else config
+    ours=[(handler,_script(handler,harness)) for handler in _handlers(managed)]
     ours=[(handler,script) for handler,script in ours if script]
-    if not ours:return None
+    if not ours:
+        if expected or (harness=='antigravity' and managed):
+            return {'config':str(path),'wired':True,'config_ok':False,
+                    'problems':[f'{path} has no Living Memory Antigravity commands; rerun integrations/setup.py antigravity from the installed copy']}
+        return None
     handler,script=ours[0]
-    program,argument=_interpreter(handler)
+    program,argument=_interpreter(handler,harness)
     runs=_runs(program,argument);here=_same(script,ROOT/'hooks'/(harness+'_hooks.py'))
     result={'config':str(path),'wired':True,'handlers':len(ours),'script':script,'script_exists':Path(script).is_file(),
             'interpreter':' '.join(part for part in (program,argument if LAUNCHER_VERSION.fullmatch(argument or '') else '') if part),
@@ -112,6 +127,11 @@ def check(harness,setup):
     if harness=='copilot' and not setup._copilot_file(config):
         result['config_ok']=False
         result['problems'].append(f'{path} is not a Copilot hooks file of version 1, so Copilot may not load it and setup refuses it; set "version" to 1 (or remove it), then {fix}')
+    if harness=='antigravity':
+        group=managed[setup.ANTIGRAVITY_GROUP]
+        if isinstance(group,dict) and group.get('enabled') is False:
+            result['blocked']=[{'source':str(path),'setting':'enabled'}]
+            result['problems'].append(f'the Living Memory hook group is disabled in {path}; {fix}')
     if harness=='claude':
         # Claude Code skips these handlers (without a word) under managed allowManagedHooksOnly or disableAllHooks, or the user's own disableAllHooks.
         ask='ask whoever manages this computer to deploy the hooks through managed settings (INTEGRATION.md, Managed Claude Code) or to lift the setting'
@@ -126,10 +146,11 @@ def check(harness,setup):
         # Only this copy can say what its own handlers and instruction block should look like.
         try:result['handlers_current']=_current(harness,config,setup)
         except Exception:result['handlers_current']=None
-        result['instructions']='current' if installed(harness) else 'stale_or_missing'
+        if harness!='antigravity':
+            result['instructions']='current' if installed(harness) else 'stale_or_missing'
         if result['handlers_current'] is False and not result['problems']:
             result['problems'].append(f"the hook handlers differ from what this copy and interpreter would write (events, matcher or timeouts changed); {fix}")
-        if result['instructions']!='current':
+        if result.get('instructions')=='stale_or_missing':
             result['problems'].append(f'the managed instruction block is missing or out of date, so each session start injects the full protocol instead; {fix}')
     else:
         result['note']='the hooks run another copy of this package; run doctor from that copy to check its handlers and instruction block'

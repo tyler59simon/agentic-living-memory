@@ -41,7 +41,7 @@ class Sim:
 
     # ---- environment and store ----
     def env(self):
-        homes={h.upper()+'_HOME':str(self.base/('home-'+h)) for h in HARNESSES}
+        homes={h.upper()+'_HOME':str(self.base/('home-'+h)) for h in (*HARNESSES,'antigravity')}
         return {**homes,'LIVING_MEMORY_ROOT':str(self.root),'LIVING_MEMORY_LOG_LEVEL':'debug','LIVING_MEMORY_LOG_CONTENT':'1' if self.content else '',
                 'LIVING_MEMORY_ACTOR':'main','LIVING_MEMORY_NO_BACKGROUND':'1',
                 'LIVING_MEMORY_HEADLESS':'','CLAUDE_CODE_SESSION_ATTENDED':'1','CLAUDE_CODE_ENTRYPOINT':'cli',**self.extra}   # not headless unless a step says so (step "env"); the scenario runs source-sync itself: no detached process outlives its sandbox

@@ -116,7 +116,8 @@ def merge_block(original,block,owned_hash,digest,uninstall=False):
 def harness_home(harness):
     """<HARNESS>_HOME first (tests set it), then CLAUDE_CONFIG_DIR, which Claude Code reads, then ~/.<harness>."""
     value=os.environ.get(harness.upper()+'_HOME') or (os.environ.get('CLAUDE_CONFIG_DIR') if harness=='claude' else None)
-    return Path(value or Path.home()/('.'+harness)).expanduser()
+    default=Path.home()/'.gemini'/'config' if harness=='antigravity' else Path.home()/('.'+harness)
+    return Path(value or default).expanduser()
 
 def installed(harness):
     """True when the harness's instruction file carries the current static block verbatim."""

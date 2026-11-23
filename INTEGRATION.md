@@ -1,6 +1,6 @@
 # Native harness integration
 
-`install.py` installs only the package, in its own per-user folder. All four adapters (Claude Code, Codex, Copilot, Factory) are wired the same way, with `integrations/setup.py`, and share the same Python core and memory store.
+`install.py` installs only the package, in its own per-user folder. Claude Code, Codex, Copilot, Factory and Antigravity CLI use `integrations/setup.py` and share the same Python core and memory store.
 
 Run `py -3.15 living_memory.py setup` once before installing adapters. Every adapter reads `~/.config/agentic-living-memory/config.json`; no per-harness data directory or environment variable is needed. Installer `--location PATH` supports unattended first-time selection. Subsequent adapters reuse the existing selection. Uninstalling an adapter preserves the shared configuration and memory. Generated adapter commands use the interpreter that runs installation; substitute `-3.15` below to select Python 3.15.
 
@@ -9,6 +9,7 @@ py -3.15 integrations/setup.py claude --home C:/path/to/.claude
 py -3.15 integrations/setup.py codex --home C:/path/to/.codex
 py -3.15 integrations/setup.py copilot --home C:/path/to/.copilot
 py -3.15 integrations/setup.py factory --home C:/path/to/.factory --hooks
+py -3.15 integrations/setup.py antigravity
 ```
 
 These commands generate plans. Apply with the same harness/home arguments plus `--apply-plan ID --expected-plan-sha256 HASH`. `--uninstall-plan` removes only managed blocks/handlers; modified managed content is preserved as a conflict. Setup treats a handler as managed when it runs the adapter script from this copy, the installed copy, the source checkout this copy was installed from or the legacy folder, so wiring a harness from the checkout first does not block later runs. A real edit to a managed handler or to the managed instruction block stops the plan with an error that names the file and the command to run. To keep going without undoing the edit, add `--adopt` to the plan command (`setup.py HARNESS --hooks --adopt`, or with `--uninstall-plan`): the plan then carries a unified diff from your edited text to what setup would write, under `summary.adopt` (also printed on stderr), and taking ownership happens only when you apply that plan with its digest. `--adopt` is refused with `--apply-plan`. Unrelated settings and later unrelated hook additions survive reruns. Factory defaults to instructions; `--hooks` opts into native command hooks.
@@ -25,6 +26,14 @@ File hints: before a write tool changes a file, PreToolUse may add up to two not
 - Copilot CLI and Factory: no, because their PreToolUse output documents only permission decisions and modified arguments. They get no hints.
 
 Claude Code is deployed and verified live on this machine alongside Codex. Factory and Copilot wire formats were checked against current vendor documentation but not exercised in live sessions. Host versions and permissions may affect event support. Moving the package requires regenerating adapters, because commands contain absolute interpreter and script paths.
+
+## Antigravity CLI
+
+Run `integrations/setup.py antigravity` from the installed package and apply the plan with its digest. Setup manages the `agentic-living-memory` group in `~/.gemini/config/hooks.json`. Start a new local `agy` conversation in a project bound to Living Memory. Use `/hooks` inside `agy` to check the group, and run `alm doctor --cwd PATH` to check the handler paths. Generate an `antigravity --uninstall-plan` and apply it to remove the group while keeping your other hooks and memory.
+
+The adapter uses `SessionStart` for the briefing, `PreInvocation` for recall on a new user turn, `PreToolUse` for supported guards, and `Stop` for at most one capture continuation. Antigravity shares the global hooks file across its surfaces. The adapter uses the CLI-specific conversation path before it reads the store. It applies Living Memory denials to the supported file, search and shell tools and leaves other decisions to Antigravity. Native subagents in the verified CLI build start a separate conversation with zero trajectory steps and no user input. The adapter recognizes that startup sequence and applies Living Memory's subagent write guard. The CLI payload provides no explicit parent ID.
+
+The Windows wire format was verified with `agy` 1.5.15. Earlier Windows releases need at least 1.5.8 to handle quoted hook commands. Prompt deduplication reads step types and indices from the tail of the CLI's trajectory log when available. If that metadata is unavailable, repeating the same prompt may skip recall. Transcript search, compaction handoffs, file hints and remote CLI sessions are outside this adapter's supported scope. See the [Antigravity hooks reference](https://antigravity.google/docs/hooks) and [changelog](https://antigravity.google/docs/changelog).
 
 ## Managed Claude Code
 
