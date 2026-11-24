@@ -30,6 +30,7 @@ def _entries(bindings: dict):
             yield name,value,prefixes
 
 def resolve_domain(cwd: str|Path, bindings: dict|None=None) -> str|None:
+    from .paths import is_within
     bindings=bindings if bindings is not None else load_bindings()
     try: current=Path(cwd).expanduser().resolve()
     except (OSError,ValueError): return None
@@ -38,8 +39,7 @@ def resolve_domain(cwd: str|Path, bindings: dict|None=None) -> str|None:
         for raw in prefixes:
             try: prefix=Path(os.path.expandvars(str(raw))).expanduser().resolve()
             except (OSError,ValueError): continue
-            try: current.relative_to(prefix)
-            except ValueError: continue
+            if not is_within(current,prefix,resolve=False): continue
             found.append((len(str(prefix)),name))
     return max(found)[1] if found else None
 
@@ -55,9 +55,10 @@ def domain_prefixes(domain: str|None, bindings: dict) -> list[Path]:
 
 def display_path(path: Path, prefixes: list[Path]) -> str|None:
     """A note's view of a file: relative to the bound project folder, else absolute; forward slashes."""
+    from .paths import is_within
     for prefix in prefixes:
-        if path.is_relative_to(prefix):
-            rel=path.relative_to(prefix).as_posix()
+        if is_within(path,prefix,resolve=False):
+            rel=Path(*Path(os.path.abspath(path)).parts[len(Path(os.path.abspath(prefix)).parts):]).as_posix()
             return None if rel=='.' else rel
     return path.as_posix()
 

@@ -55,11 +55,12 @@ def unbind_domain(name,root=None):
 def unbind_prefix(name,prefix,root=None):
     """Drop one folder from a domain's binding and keep the domain and its notes (BIND-RENAME: after a bound folder is renamed, `bind`
     adds the new folder and this removes the old one). Folders are matched as `resolve_domain` reads them: environment variables and ~
-    expanded, case-insensitive on Windows, from `prefixes` (or legacy `paths`) and legacy `root` or `path`. Refused for an unknown
+    expanded, case-insensitive on Windows and macOS, from `prefixes` (or legacy `paths`) and legacy `root` or `path`. Refused for an unknown
     domain, a folder the domain is not bound to, and the domain's last folder (use `unbind NAME` for that)."""
     import os
     from .common import _entries
-    def norm(value):return os.path.normcase(str(Path(os.path.expandvars(str(value))).expanduser().resolve()))
+    from .paths import fold
+    def norm(value):return fold(Path(os.path.expandvars(str(value))).expanduser().resolve())
     def folders(entry):return [norm(p) for _,_,prefixes in _entries({'domains':{name:entry}}) for p in prefixes]
     root=Path(root or memory_root()).resolve();name=safe_domain(name)
     with store_lock(root):

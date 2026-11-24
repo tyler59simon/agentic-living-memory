@@ -22,8 +22,9 @@ _SIDECARS={}   # sidecar path -> ((mtime_ns, size), (level, title)): re-read onl
 
 
 def key(path):
-    """The form two paths are compared in: absolute, normalised and, on Windows, case-folded."""
-    return os.path.normcase(os.path.normpath(os.path.abspath(str(path))))
+    """The form two paths are compared in: absolute, normalised and, on Windows and macOS, case-folded (paths.fold)."""
+    from .paths import path_key
+    return path_key(path,resolve=False)
 
 
 def real(path):

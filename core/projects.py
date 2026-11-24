@@ -21,7 +21,9 @@ def load(root):
         raise ValueError(f'Invalid or unreadable configuration preserved: {_path(root)}')
     return data
 
-def _norm(path):return Path(os.path.normcase(os.path.normpath(str(path).replace('\\','/'))))
+def _norm(path):
+    from .paths import fold
+    return Path(fold(os.path.normpath(str(path).replace('\\','/'))))
 
 def match_path(path,projects):
     """The active project whose repo folder contains path (longest repo prefix wins), else None. Pure: no filesystem access."""

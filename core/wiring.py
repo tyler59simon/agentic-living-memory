@@ -84,7 +84,8 @@ def _runs(program,argument):
     return True
 
 def _same(a,b):
-    try:return os.path.normcase(str(Path(a).resolve()))==os.path.normcase(str(Path(b).resolve()))
+    from .paths import same_path
+    try:return same_path(Path(a).resolve(),Path(b).resolve())
     except (OSError,ValueError):return False
 
 def _current(harness,config,setup):

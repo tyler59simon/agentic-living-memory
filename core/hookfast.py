@@ -1,11 +1,12 @@
 """PreToolUse fast path for Read, Glob and Grep: answer without loading the runtime when the session state says
 every repo the call reads needs nothing more (its map hint was given, or it already counts as explored).
 
-Read calls are the most frequent hook, so this imports only the standard library and never writes or logs.
+Read calls are the most frequent hook, so this imports only the standard library and core/paths.py and never writes or logs.
 Anything uncertain returns None and the full hook runs. It mirrors runtime._pointer, common.git_root and
 runtime._target_repos; tests/test_maps.py checks that they agree."""
 import hashlib,json,os
 from pathlib import Path
+from .paths import is_within
 
 FAST_TOOLS={'read','glob','grep'}
 PATH_KEYS=('file_path','path','notebook_path','filepath')
@@ -49,9 +50,9 @@ def quick(payload):
             if not isinstance(value,str) or not value.strip():continue
             path=Path(os.path.expandvars(value.strip())).expanduser()
             path=(path if path.is_absolute() else Path(cwd)/path).resolve()
-            if path.is_relative_to(root) or (name!='read' and root.is_relative_to(path)):return None
+            if is_within(path,root) or (name!='read' and is_within(root,path)):return None
         here=Path(cwd).resolve()
-        if name!='read' and not any(args.get(k) for k in PATH_KEYS) and (here.is_relative_to(root) or root.is_relative_to(here)):return None
+        if name!='read' and not any(args.get(k) for k in PATH_KEYS) and (is_within(here,root) or is_within(root,here)):return None
         agent=str(payload.get('agent_id') or payload.get('agentId') or '')
         for repo in dict.fromkeys(r for r in found if r):
             done=(repos.get(repo.as_posix()) or {}).get('done') or []

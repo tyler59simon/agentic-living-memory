@@ -121,12 +121,13 @@ def protected_rule(path,cwd,root):
         if not p.is_absolute():p=Path(cwd)/p
         p=p.resolve();root=Path(root).resolve()
         from .storage import config_path
-        if p.is_relative_to(root/'domains'):return 'domains'
-        if p.is_relative_to(root/'ledger') or p.is_relative_to(root/'.views') or p.is_relative_to(root/'maintenance'):return 'config'
-        if p in {root/'bindings.json',root/'tag_taxonomy.json',root/'projects.json',root/'systems.json',root/'sources.json',root/'note_types.json',root/'maintenance.json',root/'views.json',root/'.relocated.json',
-                 root/'notebook-privacy.json',root/'notebook-folders.json',config_path().resolve()}:return 'config'
+        from .paths import is_within,path_key
+        if is_within(p,root/'domains'):return 'domains'
+        if is_within(p,root/'ledger') or is_within(p,root/'.views') or is_within(p,root/'maintenance'):return 'config'
+        if path_key(p) in {path_key(x) for x in (root/'bindings.json',root/'tag_taxonomy.json',root/'projects.json',root/'systems.json',root/'sources.json',root/'note_types.json',root/'maintenance.json',root/'views.json',root/'.relocated.json',
+                 root/'notebook-privacy.json',root/'notebook-folders.json',config_path())}:return 'config'
         # Vault edits are auto-applied and vault checkboxes approve plans, so agents must not write there either.
-        return 'vault' if any(p.is_relative_to(v/folder) for v in vault_roots(root) for folder in ('Domains','Archive','Dashboards','Notebooks')) else None
+        return 'vault' if any(is_within(p,v/folder) for v in vault_roots(root) for folder in ('Domains','Archive','Dashboards','Notebooks')) else None
     except (ValueError,OSError):return None
 
 def vault_roots(root):

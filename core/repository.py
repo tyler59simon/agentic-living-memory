@@ -17,6 +17,7 @@ from pathlib import Path
 
 from . import clock
 from .common import atomic_write, file_lock, memory_root, parse_iso, retry_sharing
+from .paths import fold, name_key
 
 STATUSES = {"active", "resolved", "archived", "superseded"}
 FACETS = ("subject", "concern", "platform", "technology", "project", "system")
@@ -141,7 +142,7 @@ def read_json(path, default=None):
 @contextmanager
 def store_lock(root, allow_retired=False, timeout=None):
     root = Path(root).resolve()
-    key = str(root)
+    key = fold(root)
     held = getattr(_locks, "held", set())
     if key in held:
         yield
@@ -437,7 +438,7 @@ def _note_files(root, directory):
                     raise ValueError("Symbolic links are not allowed in the store")
                 if entry.is_dir(follow_symlinks=False):
                     pending.append(Path(entry.path))
-                elif os.path.normcase(entry.name).endswith(".md"):
+                elif fold(entry.name).endswith(".md"):
                     found.append((Path(entry.path), entry.stat(follow_symlinks=False)))
     return sorted(found, key=lambda item: item[0])
 
@@ -704,7 +705,7 @@ def _fold_case_renames(root, changes, expected):
     renames = []
     for old in [rel for rel, content in changes.items() if content is None]:
         for new in [rel for rel, content in changes.items() if content is not None]:
-            if str(old) == str(new) or str(old).casefold() != str(new).casefold():
+            if str(old) == str(new) or name_key(old) != name_key(new):
                 continue
             try:
                 same = os.path.samefile(root / old, root / new)

@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 from test_docs import Fixture,PAGE
 from test_storage import StorageBase
+from core.paths import fold
 from core import backup,docs,governance,hookfast,notes,repository,runtime,storage
 from core.repository import digest,read_json,recover,transaction
 
@@ -387,7 +388,7 @@ class RoundThree(Fixture):
         self.secret();snapshot=backup.backup(self.root)['backup'];held=[]
         real=backup._merge_privacy
         def watch(root,text):
-            held.append(str(Path(root).resolve()) in getattr(repository._locks,'held',set()));return real(root,text)
+            held.append(fold(Path(root).resolve()) in getattr(repository._locks,'held',set()));return real(root,text)
         self.file('p.md','secret').write_bytes(b'changed')
         with patch('core.backup._merge_privacy',watch):backup.restore_plan(self.root,snapshot)
         self.assertEqual(held,[True])

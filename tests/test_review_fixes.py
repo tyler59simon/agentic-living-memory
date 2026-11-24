@@ -6,6 +6,7 @@ from unittest.mock import patch
 from urllib.parse import quote
 
 from test_core import StoreFixture
+from core.paths import fold
 from core import runtime, session_start
 from core.backup import snapshots
 from core.governance import apply, retag_plan
@@ -79,7 +80,7 @@ class PlanRaces(StoreFixture):
         held = []
         real = tag_taxonomy.read_json
         def spy(*a, **k):
-            held.append(str(self.root.resolve()) in getattr(repository._locks, 'held', set()))
+            held.append(fold(self.root.resolve()) in getattr(repository._locks, 'held', set()))
             return real(*a, **k)
         with patch.object(tag_taxonomy, 'read_json', spy):
             tag_taxonomy.add_tags(['concern/bug'], self.root)

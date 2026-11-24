@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 
 from .common import canonical_domain, load_bindings
+from .paths import name_key
 from .repository import atomic_write, blob_store, digest, find_secret, is_link_or_junction, now, read_json, store_lock, transaction
 
 MAX_PAGE_BYTES = 4 * 1024 * 1024
@@ -107,7 +108,7 @@ def _clash(root, domain, nb, path):
             names = os.listdir(folder)
         except FileNotFoundError:
             return
-        twin = next((n for n in names if n.casefold() == part.casefold() and n != part), None)
+        twin = next((n for n in names if name_key(n) == name_key(part) and n != part), None)
         if twin:
             raise ValueError(f'"{part}" differs only in letter case from "{twin}", which already exists')
         folder = folder / part
@@ -594,9 +595,9 @@ def move(root, domain, nb, source, target, rewrite_links=False, include_private=
         if is_page != src.is_file():
             raise ValueError(f"{source} is a {'section' if is_page else 'page'}")
         # On a case-insensitive disk a case-only rename is one file, which a journal cannot undo with its old spelling (R1).
-        if source.casefold() == target.casefold():
+        if name_key(source) == name_key(target):
             raise ValueError(f"Change the letter case of a {'page' if is_page else 'section'} in two steps, through another name")
-        if (target + "/").casefold().startswith((source + "/").casefold()):
+        if name_key(target + "/").startswith(name_key(source + "/")):
             raise ValueError("A section cannot move into itself")
         _clash(root, domain, nb, target)
         if dst.exists():
@@ -1000,6 +1001,7 @@ def is_private_path(path, scope):
 def private_read(paths, cwd, root, search):
     """The folder of a private notebook a file-reading tool would reach: a path inside one, or for a search tool (Glob, Grep)
     a folder that holds one. None when there is none."""
+    from .paths import is_within
     folders = private_folders(root)
     if not folders:
         return None
@@ -1011,7 +1013,7 @@ def private_read(paths, cwd, root, search):
             continue
         for folder in folders:
             folder = folder.resolve()
-            if path == folder or path.is_relative_to(folder) or (search and folder.is_relative_to(path)):
+            if is_within(path, folder) or (search and is_within(folder, path)):
                 return folder
     return None
 
