@@ -26,7 +26,7 @@ class Hook(StoreFixture):
     def test_doc_write_detector(self):
         for rest,writes in (('doc read demo open p.md',False),('doc --json list demo open',False),('doc notebooks',False),('doc propose demo open p.md',False),
                             ('doc write demo open p.md --expected-revision x',True),('doc --domain demo notebook create demo nb --title T',True),
-                            ('doc move demo open a.md b.md',True),('doc attach demo open --from-file x',True),('doc accept abc',True),('doc undo d-1',True),
+                            ('doc move demo open a.md b.md',True),('doc attach demo open --from-file x',True),('doc folder set /x',True),('doc undo d-1',True),
                             ('doc read demo write a.md',False)):
             with self.subTest(rest=rest):self.assertEqual(runtime.doc_write(self.command(rest),None),writes)
 

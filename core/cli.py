@@ -679,6 +679,13 @@ def _doc_parsers(p,common):
     for name,q in [(n,p) for n,p in ds.choices.items() if n not in ('notebook','folder')]+list(ns.choices.items()):
         if not any('--include-private' in a.option_strings for a in q._actions):private(q)
 
+def _spec_file(path):
+    """The query a --spec-file holds (JSON, at most 64 KB); views.check_spec checks it."""
+    from .views import SPEC_MAX
+    if path.stat().st_size>SPEC_MAX:raise ValueError('invalid_view_spec: a query is at most 64 KB')
+    try:return json.loads(path.read_text(encoding='utf-8-sig'))
+    except ValueError as exc:raise ValueError(f'invalid_view_spec: the file is not valid JSON ({exc})') from None
+
 def _doc_body(args,required=False):
     """A page body as bytes, exactly as given: --body-file, else stdin (in serve, the request's stdin text). Never decoded here.
     required: a terminal or a serve request without stdin is refused instead of read as an empty body."""
@@ -939,8 +946,9 @@ def build_parser():
     p=sub('ingest-skip');p.add_argument('--payload-file',type=Path)
     p=sub('ask');p.add_argument('query',nargs='+',help='A question about the project');p.add_argument('--limit',type=int,default=5,help='Notes and source excerpts shown, at most, of each')
     p.add_argument('--include-private',action='store_true',help='Hivemind only: include pages of private notebooks')
-    p=sub('views');p.add_argument('action',nargs='?',choices=['list','add','remove','render','published'],help='Default: list');p.add_argument('reference',nargs='?',help='The note (REF, ID prefix or exact title)')
-    p.add_argument('--all-domains',action='store_true',help='list: every domain, not only --domain');p.add_argument('--title',help="add: the view's short title (default: the note title)")
+    p=sub('views');p.add_argument('action',nargs='?',choices=['list','add','update','remove','render','published'],help='Default: list');p.add_argument('reference',nargs='?',help='The note (REF, ID prefix or exact title); for update and remove of a query view, its ID (q-xxxxxxxx)')
+    p.add_argument('--all-domains',action='store_true',help='list: every domain, not only --domain');p.add_argument('--title',help="add: the view's short title (default: the note title; a query view needs one); update: a new title")
+    p.add_argument('--spec-file',type=Path,help='add (with no REF): a query view from this JSON file; update: replace the query')
     p.add_argument('--all',action='store_true',help='render: every registered view');p.add_argument('--target',choices=['local','artifact'],default='local',help="render: local (dark, reloads itself) or artifact (follows the viewer's theme)")
     p.add_argument('--format',choices=['html','json'],default='html',help='render: the page, or the view model as JSON');p.add_argument('--out',type=Path,help='render: write here instead of the standard path');p.add_argument('--url',help='published: where the artifact page lives')
     p=sub('wiki');p.add_argument('--archived',action='store_true',help='Include retired notes')
@@ -1315,7 +1323,7 @@ def main(argv=None):
             result=note_links(root,domains,args.status)
         elif cmd=='version':
             from .installer_lifecycle import CORE_RELEASE,installed_stamp
-            result={'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'proposals':1,'restore':1,'pin':1,'rule':1,'direct_writes':1,'note_types':1,'history':3,'items':{'fields':2},'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']},'wiki_agent':{'version':1},'systems':{'project':1},
+            result={'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'proposals':1,'restore':1,'pin':1,'rule':1,'direct_writes':1,'note_types':1,'history':3,'items':{'fields':2},'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']},'wiki_agent':{'version':1},'systems':{'project':1},'views':{'version':2,'kinds':['note','query']},
                                                                                                                                          'docs':{'version':1,'max_page_bytes':4194304,'max_asset_bytes':26214400,'notebook_only_domains':True,'search':True,'folder_policy':2,'accept_edited':True,'folder_proposals':1}}}
         elif cmd=='update':
             from .notes import change
@@ -1723,8 +1731,18 @@ def main(argv=None):
             elif action=='render' and args.all:
                 if args.reference:raise ValueError('Name one note or pass --all, not both')
                 if args.out:raise ValueError('--out needs exactly one view')
-                rows=views.render(root,views.load(root)['views'],args.target,None,args.format)
+                rows=views.render(root,views.note_rows(root),args.target,None,args.format)
                 result={'ok':True,'count':len(rows),**({'models':[r['model'] for r in rows]} if args.format=='json' else {'rendered':rows})}
+            elif args.spec_file and not (action=='update' or action=='add' and not args.reference):raise ValueError('--spec-file belongs to views add (with no REF) and views update')
+            elif action=='update' or action=='add' and not args.reference:
+                if action=='add':
+                    if not args.spec_file or not args.title:raise ValueError('views add without a note needs --spec-file FILE and --title T')
+                    result=views.add_query(root,args.title,_spec_file(args.spec_file))
+                elif not args.reference or not views.QUERY_ID.fullmatch(args.reference):raise ValueError('views update needs a query view ID (q-xxxxxxxx; views lists them)')
+                else:result=views.update_query(root,args.reference,_spec_file(args.spec_file) if args.spec_file else None,args.title)
+            elif args.reference and views.QUERY_ID.fullmatch(args.reference) and action in {'remove','render'}:
+                if action=='render':raise ValueError('query_views_run_in_hivemind: a query view is run by Hivemind over its own index; ALM only stores it')
+                result=views.remove(root,args.reference)
             else:
                 if not args.reference:raise ValueError(f'views {action} needs a note: REF, ID prefix or exact title')
                 try:d,n=_reference(args.reference,domain,root)
@@ -1732,10 +1750,10 @@ def main(argv=None):
                     # A view whose note was deleted can still be removed by its registered ID, or an 8+ character prefix of it.
                     import re
                     prefix=args.reference.split(':')[-1].lower()
-                    orphan=[v for v in views.load(root)['views'] if v['note'].startswith(prefix)] if action=='remove' and re.fullmatch(r'[0-9a-f][0-9a-f-]{7,}',prefix) else []
+                    orphan=[v for v in views.note_rows(root) if v['note'].startswith(prefix)] if action=='remove' and re.fullmatch(r'[0-9a-f][0-9a-f-]{7,}',prefix) else []
                     if len(orphan)!=1 or views._find(orphan[0],root):raise
                     d,n=orphan[0]['domain'],orphan[0]['note']
-                registered=next((v for v in views.load(root)['views'] if v['note']==n),None)
+                registered=next((v for v in views.note_rows(root) if v['note']==n),None)
                 if action=='add':result=views.add(root,d,n,args.title)
                 elif action=='remove':result=views.remove(root,n)
                 elif action=='published':

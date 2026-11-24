@@ -1,6 +1,7 @@
-"""Note views: a note shown as a self-contained HTML dashboard (registry views.json, derived output under .views/).
+"""Views (registry views.json, derived output under .views/). A note view shows one note as a self-contained HTML dashboard.
+A query view (kind 'query') is a saved page query that Hivemind runs over its own index, so ALM only stores and validates it.
 
-A view is a registry entry naming one note. The note stays the only source of truth: the page is rendered from
+A note view is a registry entry naming one note. The note stays the only source of truth: the page is rendered from
 view_model(note), written to <store>/.views/<domain>/<slug>-<id8>.html and re-rendered by reconcile() (through
 refresh) whenever the note's revision differs from the one cached in .cache/views.json. .views/ and that cache are
 derived: they are left out of snapshots and relocation, and `views render --all` rebuilds them.
@@ -8,7 +9,7 @@ derived: they are left out of snapshots and relocation, and `views render --all`
 The page needs no network: styles, script, font and logo are inline, and the data is a JSON block that the script
 turns into elements with textContent only. Note text is agent-written, so it is never put into markup unescaped."""
 from __future__ import annotations
-import base64,html,json,re,textwrap
+import base64,html,json,re,textwrap,uuid
 from pathlib import Path
 from .common import atomic_write
 from .repository import read_json,canonical_json,store_lock,transaction,now
@@ -22,14 +23,71 @@ URL=re.compile(r'https?://[^\s<>"\']+')
 def _path(root):return Path(root)/'views.json'
 def _cache_path(root):return Path(root)/'.cache'/'views.json'
 
+QUERY_ID=re.compile(r'q-[0-9a-f]{8}')
+SPEC_MAX=64*1024
+OPS=('eq','ne','lt','le','gt','ge','contains','exists','missing');VALUED=OPS[:7]
+MAX_WHERE,MAX_SORT,MAX_LIMIT=10,5,1000
+
+def _kind(v):return v.get('kind','note')
+
+def _valid(v):
+    if not isinstance(v,dict):return False
+    if _kind(v)=='note':return isinstance(v.get('note'),str) and isinstance(v.get('domain'),str)
+    return _kind(v)=='query' and isinstance(v.get('id'),str) and bool(QUERY_ID.fullmatch(v['id'])) and isinstance(v.get('title'),str) and isinstance(v.get('spec'),dict)
+
 def load(root):
-    """The registry as {'version':1,'views':[...]}; a missing file is an empty registry."""
+    """The registry as {'version':1 or 2,'views':[...]}; a missing file is an empty registry. A row without `kind` is a note view."""
     data=read_json(_path(root),{'version':1,'views':[]});rows=data.get('views') if isinstance(data,dict) else None
-    if not isinstance(rows,list) or any(not isinstance(v,dict) or not isinstance(v.get('note'),str) or not isinstance(v.get('domain'),str) for v in rows) or len({v['note'] for v in rows})!=len(rows):
+    if not isinstance(rows,list) or data.get('version') not in (1,2) or not all(_valid(v) for v in rows) or any(len({v[key] for v in rows if _kind(v)==kind})!=sum(_kind(v)==kind for v in rows) for kind,key in (('note','note'),('query','id'))):
         raise ValueError(f'Invalid or unreadable configuration preserved: {_path(root)}')
     return data
 
-def _registry(entries):return canonical_json({'version':1,'views':sorted(entries,key=lambda v:(v['domain'],v['note']))})+'\n'
+def note_rows(root):return [v for v in load(root)['views'] if _kind(v)=='note']
+
+def _registry(entries):return canonical_json({'version':2,'views':sorted(entries,key=lambda v:(_kind(v)=='query',v.get('domain',''),v.get('note') or v['id']))})+'\n'
+
+def _text(v):
+    """A condition value as text: a string, or a number as JSON writes it; None for anything else."""
+    if isinstance(v,str):return v
+    if isinstance(v,bool) or not isinstance(v,(int,float)):return None
+    return str(int(v)) if float(v).is_integer() else str(v)
+
+def check_spec(spec):
+    """The query a JSON value says, checked and normalized (the rules of parseSpec in Hivemind's src/features/notes/queries.ts); unknown fields are
+    dropped. A bad query raises invalid_view_spec."""
+    def bad(why):return ValueError('invalid_view_spec: '+why)
+    def name(v):return v.strip() if isinstance(v,str) and v.strip() else None
+    if not isinstance(spec,dict):raise bad('a query is a JSON object')
+    if len(json.dumps(spec,ensure_ascii=False).encode('utf-8'))>SPEC_MAX:raise bad('a query is at most 64 KB')
+    if type(spec.get('version')) is not int or spec['version']!=1:raise bad('a query needs "version": 1')
+    source=spec.get('from',{})
+    if not isinstance(source,dict):raise bad('"from" is an object with notebooks, folder and tag')
+    books=source.get('notebooks',[])
+    if not isinstance(books,list) or any(not isinstance(n,str) for n in books):raise bad('"from.notebooks" is a list of notebook ids')
+    folder=name(source.get('folder'));tag=name(source.get('tag'))
+    out={'version':1,'from':{'notebooks':books,'folder':folder.strip('/') or None if folder else None,'tag':tag.removeprefix('#').lower() if tag else None},'where':[],'sort':[]}
+    where=spec.get('where',[])
+    if not isinstance(where,list) or len(where)>MAX_WHERE:raise bad(f'"where" is a list of at most {MAX_WHERE} conditions')
+    for c in where:
+        if not isinstance(c,dict) or not name(c.get('prop')) or c.get('op') not in OPS:raise bad('a condition is {"prop","op","value"} with an op of '+', '.join(OPS))
+        row={'prop':name(c['prop']),'op':c['op']}
+        if c['op'] in VALUED:
+            if _text(c.get('value')) is None:raise bad(f'the condition on {row["prop"]} needs a value')
+            row['value']=_text(c['value'])
+        out['where'].append(row)
+    sort=spec.get('sort',[])
+    if not isinstance(sort,list) or len(sort)>MAX_SORT:raise bad(f'"sort" is a list of at most {MAX_SORT} keys')
+    for s in sort:
+        if not isinstance(s,dict) or not name(s.get('prop')) or s.get('dir',None) not in (None,'asc','desc'):raise bad('a sort key is {"prop","dir"} with dir asc or desc')
+        out['sort'].append({'prop':name(s['prop']),'dir':'desc' if s.get('dir')=='desc' else 'asc'})
+    if spec.get('view','table') not in ('table','board'):raise bad('"view" is table or board')
+    out['view']=spec.get('view','table');columns=spec.get('columns',[])
+    if not isinstance(columns,list) or any(not isinstance(c,str) for c in columns):raise bad('"columns" is a list of property names')
+    out['columns']=[c.strip() for c in columns if c.strip()];out['groupBy']=name(spec.get('groupBy'));limit=spec.get('limit',500)
+    if isinstance(limit,bool) or not isinstance(limit,(int,float)) or not float(limit).is_integer() or not 1<=limit<=MAX_LIMIT:raise bad(f'"limit" is a whole number from 1 to {MAX_LIMIT}')
+    out['limit']=int(limit)
+    if out['view']=='board' and not out['groupBy']:raise bad('a board needs "groupBy": the property its columns are made from')
+    return out
 
 def _cache(root):
     """note ID -> {'revision', 'renderer'} of the local pages as last rendered; {} when missing or damaged (derived data)."""
@@ -468,7 +526,7 @@ def refresh(domain,root):
         if not _path(root).is_file():return
         # A promoted or remapped note keeps its registry domain, so also take views whose note file now lives here
         # (one scan of the domain folder, and only when some view is registered elsewhere).
-        registered=load(root)['views'];here=_ids_in(root,domain) if any(v['domain']!=domain for v in registered) else set()
+        registered=note_rows(root);here=_ids_in(root,domain) if any(v['domain']!=domain for v in registered) else set()
         entries=[v for v in registered if v['domain']==domain or v['note'][:8] in here]
         if not entries:return
         from .repository import inventory
@@ -487,19 +545,20 @@ def refresh(domain,root):
         swallowed('views.refresh',exc,root)
 
 def listing(root,domain=None):
-    """Registry rows with their derived state (domain None: every domain)."""
+    """Registry rows with their derived state (domain None: every domain). Query views belong to no domain and are always listed."""
     rows=[];cache=_cache(root)
     for entry in load(root)['views']:
+        if _kind(entry)=='query':rows.append({'kind':'query','id':entry['id'],'title':entry['title'],'spec':entry['spec'],'added':entry.get('added')});continue
         if domain and entry['domain']!=domain:continue
         note=_find(entry,root);revision=_revision(note);seen=cache.get(entry['note']) or {};path=view_path(root,entry)
-        rows.append({'note':entry['note'],'domain':entry['domain'],'title':entry.get('title'),'note_title':note['title'] if note else None,'path':str(path),
+        rows.append({'kind':'note','note':entry['note'],'domain':entry['domain'],'title':entry.get('title'),'note_title':note['title'] if note else None,'path':str(path),
                      'fresh':bool(seen.get('revision')==revision and seen.get('renderer')==RENDERER),'artifact_url':entry.get('artifact_url'),
                      'artifact_current':bool(entry.get('artifact_url') and entry.get('published_revision')==revision),'exists':path.is_file()})
     return {'ok':True,'views':rows}
 
 def warnings(root):
     """Doctor lines for views whose note no longer resolves."""
-    return [f"view {v['title'] or v['note'][:8]}: note {v['note']} not found; remove it with views remove" for v in listing(root)['views'] if v['note_title'] is None]
+    return [f"view {v['title'] or v['note'][:8]}: note {v['note']} not found; remove it with views remove" for v in listing(root)['views'] if v['kind']=='note' and v['note_title'] is None]
 
 def add(root,domain,note_id,title=None):
     """Register a view (kind views_add) and render it at once."""
@@ -507,28 +566,58 @@ def add(root,domain,note_id,title=None):
     with store_lock(root):
         note=_find({'note':note_id,'domain':domain},root)
         if not note:raise ValueError('No such note')
-        entries=load(root)['views'];found=next((v for v in entries if v['note']==note_id),None)
+        entries=load(root)['views'];found=next((v for v in entries if v.get('note')==note_id),None)
         title=(title or '').strip() or (found or {}).get('title') or note['title']
         if len(title)>120 or '\n' in title:raise ValueError('title must be one line of at most 120 characters')
         entry=dict(found or {'note':note_id,'domain':note['domain'],'added':now(),'artifact_url':None,'published_revision':None},title=title)
-        receipt=transaction(root,{'views.json':_registry([v for v in entries if v['note']!=note_id]+[entry])},'views_add') if entry!=found else {}
+        receipt=transaction(root,{'views.json':_registry([v for v in entries if v.get('note')!=note_id]+[entry])},'views_add') if entry!=found else {}
         cache=_cache(root);path=_render_local(root,entry,note,cache);_write_cache(root,cache)
     return {'ok':True,'note':note_id,'domain':entry['domain'],'title':title,'path':str(path),'status':'exists' if not receipt else 'added','operation_id':receipt.get('operation_id')}
 
-def remove(root,note_id):
-    """Drop a view (kind views_remove) and delete its pages."""
+def _new_id(entries):
+    taken={v.get('id') for v in entries}
+    while (found:='q-'+uuid.uuid4().hex[:8]) in taken:pass
+    return found
+
+def _one_line(title):
+    title=(title or '').strip()
+    if not title or len(title)>120 or '\n' in title:raise ValueError('title must be one line of at most 120 characters')
+    return title
+
+def add_query(root,title,spec):
+    """Register a query view (kind views_add): a title and a checked query. Returns its new ID."""
+    root=Path(root).resolve();title=_one_line(title);spec=check_spec(spec)
+    with store_lock(root):
+        entries=load(root)['views'];entry={'kind':'query','id':_new_id(entries),'title':title,'spec':spec,'added':now()}
+        receipt=transaction(root,{'views.json':_registry(entries+[entry])},'views_add')
+    return {'ok':True,'kind':'query','id':entry['id'],'title':title,'status':'added','operation_id':receipt.get('operation_id')}
+
+def update_query(root,query_id,spec=None,title=None):
+    """Change a query view's query and/or title (kind views_update)."""
+    if spec is None and title is None:raise ValueError('views update needs --spec-file or --title')
+    root=Path(root).resolve();title=None if title is None else _one_line(title);spec=None if spec is None else check_spec(spec)
+    with store_lock(root):
+        entries=load(root)['views'];entry=next((v for v in entries if v.get('id')==query_id),None)
+        if not entry:raise ValueError(f'No query view {query_id}')
+        new=dict(entry,**({'title':title} if title is not None else {}),**({'spec':spec} if spec is not None else {}))
+        receipt=transaction(root,{'views.json':_registry([v for v in entries if v is not entry]+[new])},'views_update') if new!=entry else {}
+    return {'ok':True,'kind':'query','id':query_id,'title':new['title'],'status':'updated' if receipt else 'unchanged','operation_id':receipt.get('operation_id')}
+
+def remove(root,key):
+    """Drop a view (kind views_remove): a note view (its note ID, and its pages are deleted) or a query view (its ID)."""
     root=Path(root).resolve()
     with store_lock(root):
-        entries=load(root)['views'];entry=next((v for v in entries if v['note']==note_id),None)
+        entries=load(root)['views'];entry=next((v for v in entries if v.get('note')==key or v.get('id')==key),None)
         if not entry:raise ValueError('That note has no view')
         rest=[v for v in entries if v is not entry]
         receipt=transaction(root,{'views.json':_registry(rest) if rest else None},'views_remove')
+        if _kind(entry)=='query':return {'ok':True,'kind':'query','id':key,'status':'removed','operation_id':receipt.get('operation_id')}
         for target in TARGETS:
             try:view_path(root,entry,target).unlink()
             except FileNotFoundError:pass
         cache=_cache(root)
-        if cache.pop(note_id,None) is not None:_write_cache(root,cache)
-    return {'ok':True,'note':note_id,'status':'removed','operation_id':receipt.get('operation_id')}
+        if cache.pop(key,None) is not None:_write_cache(root,cache)
+    return {'ok':True,'note':key,'status':'removed','operation_id':receipt.get('operation_id')}
 
 def project_key(cwd):
     """The repo a session works in, as a view entry records it: the origin identity of the git work tree around cwd, else
@@ -543,7 +632,7 @@ def published(root,note_id,url,project=None):
     if not isinstance(url,str) or not re.fullmatch(r'https?://[^\s<>"\']+',url):raise ValueError('--url must be an http(s) address')
     root=Path(root).resolve()
     with store_lock(root):
-        entries=load(root)['views'];entry=next((v for v in entries if v['note']==note_id),None)
+        entries=load(root)['views'];entry=next((v for v in entries if v.get('note')==note_id),None)
         if not entry:raise ValueError('That note has no view; add one with views add REF')
         note=_find(entry,root)
         if not note:raise ValueError('The note of this view was not found')
@@ -586,7 +675,7 @@ def behind(root,domains,cmd='CMD',project=None):   # domains: names, or a functi
     published from a repo (`project`, see project_key) is reported only to sessions in that repo; one without stays domain-wide."""
     try:
         if not _path(root).is_file():return []
-        wanted=set(domains() if callable(domains) else domains);rows=[v for v in load(root)['views'] if v.get('artifact_url') and v['domain'] in wanted and v.get('project') in (None,project)]
+        wanted=set(domains() if callable(domains) else domains);rows=[v for v in note_rows(root) if v.get('artifact_url') and v['domain'] in wanted and v.get('project') in (None,project)]
         if not rows:return []
         from .notes import short_ref
         cache=_cache(root);found=[]

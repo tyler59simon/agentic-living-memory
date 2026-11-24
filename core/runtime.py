@@ -383,14 +383,14 @@ def remote_sync(text,grammar,root):
     return False
 
 def views_write(text,grammar):
-    """True when a `views` command writes: add, remove, published, or render except `--format json` with no --out."""
+    """True when a `views` command writes: add, update, remove, published, or render except `--format json` with no --out."""
     for words in _parsed(text,grammar) or []:
         index=0
         while index<len(words) and words[index]!='views':index+=2 if words[index] in GLOBAL_OPTIONS else 1
         rest=words[index+1:]
         if not rest:continue
         action=next((w for w in rest if not w.startswith('-')),'list')
-        if action in {'add','remove','published'}:return True
+        if action in {'add','update','remove','published'}:return True
         if action=='render' and (_option_values(rest,('--out',)) or not _json_format(rest)):return True
     return False
 

@@ -161,7 +161,7 @@ class Registry(Fixture):
         added=self.add(note_id);path=Path(added['path']);self.assertTrue(path.is_file());self.assertEqual(path.parent,(self.root/'.views'/'demo'))
         self.assertTrue(path.name.startswith('hook-plan-'+note_id[:8]),path.name)
         registry=json.loads((self.root/'views.json').read_text());entry=registry['views'][0]
-        self.assertEqual((registry['version'],entry['note'],entry['domain'],entry['title'],entry['artifact_url'],entry['published_revision']),(1,note_id,'demo','Hook plan',None,None));self.assertTrue(entry['added'])
+        self.assertEqual((registry['version'],entry['note'],entry['domain'],entry['title'],entry['artifact_url'],entry['published_revision']),(2,note_id,'demo','Hook plan',None,None));self.assertTrue(entry['added'])
         row=self.ok('views')['views'][0]
         self.assertEqual((row['note'],row['domain'],row['title'],row['note_title'],row['path'],row['fresh'],row['artifact_url'],row['artifact_current'],row['exists']),
                          (note_id,'demo','Hook plan','Hook plan',str(path),True,None,False,True))
@@ -205,6 +205,93 @@ class Registry(Fixture):
         self.assertEqual(self.ok('views','render',other,'--format','json')['model']['title'],'Other plan')
         self.assertNotEqual(self.cli('views','render',note_id,'--all')[0],0)
         local.unlink();self.ok('views','render','--all');self.assertTrue(local.is_file())
+
+SPEC={'version':1,'from':{'notebooks':['lm:demo:open'],'folder':'/Projects/','tag':'#Active'},'where':[{'prop':' status ','op':'eq','value':'active'},{'prop':'due','op':'exists','value':'ignored'},{'prop':'n','op':'gt','value':3}],
+      'sort':[{'prop':'due'}],'view':'board','columns':[' owner ',''],'groupBy':' status ','limit':50,'extra':1}
+
+class QueryViews(Fixture):
+    def spec_file(self,spec=SPEC,name='q.json'):
+        path=self.base/name;path.write_text(spec if isinstance(spec,str) else json.dumps(spec),encoding='utf-8');return str(path)
+    def add_query(self,title='Active projects',spec=SPEC):return self.ok('views','add','--spec-file',self.spec_file(spec),'--title',title)
+    def refused(self,*argv,**kw):
+        code,error=self.cli(*argv,**kw);self.assertEqual(code,2,error);return str(error)
+    def raw(self):return json.loads((self.root/'views.json').read_text())
+
+    def test_check_spec_normalizes_like_hivemind(self):
+        self.assertEqual(views.check_spec(SPEC),{'version':1,'from':{'notebooks':['lm:demo:open'],'folder':'Projects','tag':'active'},
+            'where':[{'prop':'status','op':'eq','value':'active'},{'prop':'due','op':'exists'},{'prop':'n','op':'gt','value':'3'}],'sort':[{'prop':'due','dir':'asc'}],
+            'view':'board','columns':['owner'],'groupBy':'status','limit':50})
+        self.assertEqual(views.check_spec({'version':1}),{'version':1,'from':{'notebooks':[],'folder':None,'tag':None},'where':[],'sort':[],'view':'table','columns':[],'groupBy':None,'limit':500})
+
+    def test_bad_specs_are_refused(self):
+        ok={'version':1}
+        for why,spec in (('not an object',[1]),('no version',{}),('version 2',{'version':2}),('bool version',{'version':True}),('from not an object',dict(ok,**{'from':'x'})),
+                         ('notebooks not strings',dict(ok,**{'from':{'notebooks':[1]}})),('bad op',dict(ok,where=[{'prop':'a','op':'like','value':'x'}])),
+                         ('no value',dict(ok,where=[{'prop':'a','op':'eq'}])),('no prop',dict(ok,where=[{'op':'exists'}])),('eleven conditions',dict(ok,where=[{'prop':'a','op':'exists'}]*11)),
+                         ('six sort keys',dict(ok,sort=[{'prop':'a'}]*6)),('bad dir',dict(ok,sort=[{'prop':'a','dir':'up'}])),('bad view',dict(ok,view='list')),
+                         ('board without groupBy',dict(ok,view='board')),('blank groupBy',dict(ok,view='board',groupBy='  ')),('columns not strings',dict(ok,columns=[1])),
+                         ('limit 0',dict(ok,limit=0)),('limit 1001',dict(ok,limit=1001)),('limit 1.5',dict(ok,limit=1.5)),('limit bool',dict(ok,limit=True)),
+                         ('too large',dict(ok,columns=['x'*1000]*70))):
+            with self.subTest(why),self.assertRaisesRegex(ValueError,'^invalid_view_spec: '):views.check_spec(spec)
+        for why,text in (('not JSON','{oops'),('too large','{"version":1,"columns":["'+'x'*70000+'"]}'),('board without groupBy','{"version":1,"view":"board"}')):
+            with self.subTest(why):self.assertIn('invalid_view_spec',self.refused('views','add','--spec-file',self.spec_file(text),'--title','T'))
+        self.assertFalse((self.root/'views.json').exists())
+
+    def test_add_list_update_remove_and_undo(self):
+        added=self.add_query();qid=added['id'];self.assertRegex(qid,r'^q-[0-9a-f]{8}$');self.assertEqual((added['kind'],added['status']),('query','added'))
+        registry=self.raw();self.assertEqual(registry['version'],2);row=registry['views'][0]
+        self.assertEqual((row['kind'],row['id'],row['title'],row['spec']['from']['folder'],row['spec']['limit'],bool(row['added'])),('query',qid,'Active projects','Projects',50,True));self.assertNotIn('extra',row['spec'])
+        self.assertEqual([r['id'] for r in self.ok('views')['views']],[qid]);self.assertEqual([r['id'] for r in self.ok('views','--all-domains',domain=None)['views']],[qid])   # a query view has no domain: always listed
+        self.assertEqual(self.ok('views')['views'][0],{'kind':'query','id':qid,'title':'Active projects','spec':row['spec'],'added':row['added']})
+        updated=self.ok('views','update',qid,'--spec-file',self.spec_file(dict(SPEC,view='table',limit=5)),'--title','Active')
+        self.assertEqual((updated['status'],updated['title'],self.raw()['views'][0]['spec']['limit']),('updated','Active',5))
+        self.assertEqual(self.ok('views','update',qid,'--title','Active')['status'],'unchanged')
+        self.ok('undo',updated['operation_id']);self.assertEqual((self.raw()['views'][0]['title'],self.raw()['views'][0]['spec']['limit']),('Active projects',50))
+        self.ok('views','update',qid,'--title','Renamed');self.assertEqual((self.raw()['views'][0]['title'],self.raw()['views'][0]['spec']['limit']),('Renamed',50))   # a title alone keeps the query
+        removed=self.ok('views','remove',qid);self.assertEqual((removed['status'],removed['kind']),('removed','query'));self.assertFalse((self.root/'views.json').exists())
+        self.ok('undo',removed['operation_id']);self.assertEqual(self.ok('views')['views'][0]['id'],qid)
+        for argv in (('views','update','q-00000000','--title','x'),('views','remove','q-00000000'),('views','update'),('views','update',qid),('views','update','not-an-id','--title','x'),
+                     ('views','add','--title','T'),('views','add','--spec-file',self.spec_file()),('views','add','--spec-file',self.spec_file(),'--title','x'*121),('views','add','--spec-file',self.spec_file(),'--title','  '),
+                     ('views','update',qid,'--spec-file',self.spec_file({'version':1,'view':'board'}))):
+            with self.subTest(argv=argv):self.refused(*argv)
+        self.assertEqual(self.raw()['views'][0]['spec']['limit'],50)
+
+    def test_undo_of_an_add_removes_the_query_view(self):
+        added=self.add_query();self.ok('undo',added['operation_id']);self.assertFalse((self.root/'views.json').exists())
+
+    def test_ids_are_unique_and_titles_may_repeat(self):
+        first,second=self.add_query()['id'],self.add_query()['id'];self.assertNotEqual(first,second);self.assertEqual(len(self.ok('views')['views']),2)
+
+    def test_a_version_1_file_still_loads(self):
+        note_id=self.plan_note();self.add(note_id);registry=self.raw();registry['version']=1;(self.root/'views.json').write_text(json.dumps(registry))
+        self.assertEqual([(r['kind'],r['note']) for r in self.ok('views')['views']],[('note',note_id)])
+        qid=self.add_query()['id'];self.assertEqual(self.raw()['version'],2);self.assertEqual([r['kind'] for r in self.ok('views')['views']],['note','query'])
+        self.assertNotIn('kind',self.raw()['views'][0]);self.assertEqual(self.raw()['views'][0]['note'],note_id);self.ok('views','remove',qid)   # note rows are written as before: no kind
+        row={'kind':'query','id':'q-12345678','title':'t','spec':{}}
+        for broken in ({'version':3,'views':[]},{'version':2,'views':[dict(row,kind='other')]},{'version':2,'views':[dict(row,id='x')]},{'version':2,'views':[row,row]},{'version':2,'views':[dict(row,spec=[])]}):
+            with self.subTest(broken=broken):
+                (self.root/'views.json').write_text(json.dumps(broken));self.assertEqual(self.cli('views')[0],2)
+
+    def test_note_commands_ignore_query_rows(self):
+        qid=self.add_query()['id'];note_id=self.plan_note();self.add(note_id);page=Path(self.ok('views')['views'][0]['path'])   # a note view sorts first
+        self.assertEqual([r['kind'] for r in self.ok('views')['views']],['note','query'])
+        views.refresh('demo',self.root);reconcile('demo',self.root)
+        self.assertEqual(self.ok('views','render','--all')['count'],1);self.assertEqual(len(self.ok('views','render','--all','--format','json')['models']),1)
+        self.assertIn('query_views_run_in_hivemind',self.refused('views','render',qid));self.refused('views','render',qid,'--format','json')
+        self.assertEqual((views.warnings(self.root),views.behind(self.root,['demo'])),([],[]));self.assertFalse([w for w in self.ok('doctor')['warnings'] if 'view' in w])
+        self.ok('--cwd',str(self.base),'views','published',note_id,'--url','https://claude.ai/artifact/abc');self.ok('update',note_id,'--add-detail','changed');self.assertEqual(len(views.behind(self.root,['demo'])),1)
+        self.ok('views','remove',note_id);self.assertFalse(page.exists());self.assertEqual([r['id'] for r in self.ok('views')['views']],[qid])   # removing a note view keeps the query views
+
+    def test_version_reports_the_capability(self):
+        self.assertEqual(self.ok('version')['capabilities']['views'],{'version':2,'kinds':['note','query']})
+
+    def test_viewers_and_subagents_cannot_write(self):
+        qid=self.add_query()['id'];before=(self.root/'views.json').read_text()
+        for actor in ('subagent','viewer'):
+            self.assertEqual(self.ok('views',actor=actor)['views'][0]['id'],qid)
+            for argv in (('views','add','--spec-file',self.spec_file(),'--title','T'),('views','update',qid,'--title','x'),('views','remove',qid)):
+                self.assertNotEqual(self.cli(*argv,actor=actor)[0],0,(actor,argv))
+        self.assertEqual((self.root/'views.json').read_text(),before)
 
 class Refresh(Fixture):
     def test_renders_on_a_revision_change_and_not_otherwise(self):
@@ -336,7 +423,7 @@ class ReviewFixes(Fixture):
     def test_subagents_are_denied_view_writes_in_the_hook(self):
         note_id=self.plan_note();project=self.base/'project';project.mkdir(exist_ok=True);cwd=str(project)
         for rest in (f'views add {note_id}',f'views remove {note_id}',f'views published {note_id} --url https://x.example/a',f'views render {note_id}',
-                     f'views render {note_id} --format json --out x.json',f'views render --all'):
+                     f'views render {note_id} --format json --out x.json',f'views render --all','views update q-12345678 --title x','views add --spec-file q.json --title T'):
             with self.subTest(rest=rest):self.assertIn('deny',self.decision(rest,cwd,agent_id='sub1'))
         for rest in ('views','views --all-domains',f'views render {note_id} --format json',f'views render {note_id} --format=json'):
             with self.subTest(rest=rest):self.assertIn('allow',self.decision(rest,cwd,agent_id='sub1'))
