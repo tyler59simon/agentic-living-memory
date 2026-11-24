@@ -168,10 +168,21 @@ def _env():
 
 
 def provider(cfg=None, executable=None):
-    """{ok, argv} for the installed claude, or {ok: False, reason_code}. `executable` (an argv prefix) is for tests; otherwise `claude` is
-    looked up on PATH, and a .cmd or .bat shim is refused because cmd.exe would reinterpret the argument text."""
+    """{ok, argv} for the installed claude, or {ok: False, reason_code}. `executable` (an argv prefix) is for tests; otherwise
+    LIVING_MEMORY_CLAUDE (the absolute path of the native claude executable) is tried, then PATH, then the usual install folders
+    off Windows (a hook or a macOS app may run with a short PATH). A .cmd or .bat shim is refused because cmd.exe would
+    reinterpret the argument text."""
+    chosen = os.environ.get('LIVING_MEMORY_CLAUDE', '').strip()
+    if executable is None and chosen:
+        if not Path(chosen).is_absolute() or not Path(chosen).is_file():
+            return {'ok': False, 'reason_code': 'provider_unavailable', 'detail': 'LIVING_MEMORY_CLAUDE is not the absolute path of an existing file'}
+        if chosen.lower().endswith(('.cmd', '.bat')):
+            return {'ok': False, 'reason_code': 'provider_unsupported', 'detail': 'claude is a script shim; a native executable is required'}
+        executable = [chosen]
     if executable is None:
-        found = shutil.which('claude')
+        found = shutil.which('claude') or (None if os.name == 'nt' else next(
+            (str(p) for p in (Path.home() / '.claude/local/claude', Path.home() / '.local/bin/claude', Path('/opt/homebrew/bin/claude'),
+                              Path('/usr/local/bin/claude')) if p.is_file() and os.access(p, os.X_OK)), None))
         if not found:
             return {'ok': False, 'reason_code': 'provider_unavailable'}
         if found.lower().endswith(('.cmd', '.bat')):

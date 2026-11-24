@@ -169,7 +169,7 @@ class Retrieval(UnitIndexCase):
         db=sqlite3.connect(':memory:')
         try:
             with patch.object(vectors,'_library_path',return_value=str(self.base/'missing'/'vec0')):
-                self.assertEqual(vectors.load(db),(False,'load_blocked'))
+                self.assertIn(vectors.load(db),[(False,'load_blocked'),(False,'load_unsupported')])   # a Python built without extension loading (some macOS builds)
         finally:db.close()
 
     def test_lexical_only_store_still_answers(self):

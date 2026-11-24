@@ -4,7 +4,7 @@ import json,os,shutil,sqlite3,time
 from pathlib import Path
 from unittest.mock import patch
 import test_docs,test_docs_sync,test_sources_notebooks
-from test_docs_review2b import own,junction
+from test_docs_review2b import own,junction,unjunction
 from test_docs_sync import PAGE
 from core import digests,docs,docs_index,folder_policy,governance,notebook_sync,runtime,safe_put,sources
 from core.repository import read_json
@@ -45,7 +45,7 @@ class Reach(test_sources_notebooks.Notebooks):
         second=self.base/'second';second.mkdir()
         alias=self.base/'alias';junction(alias,first,self);self.register(name='alias',kind='folder',path=str(alias));self.sync()
         self.assertIn('A.md',self.plain('zeppelin marmalade'))
-        os.rmdir(alias);junction(alias,second,self)
+        unjunction(alias);junction(alias,second,self)
         self.assertNotIn('A.md',self.plain('zeppelin marmalade'));self.assertTrue(sources.stale(self.root,'demo'))
 
     def test_R04_set_unset_and_restore_take_the_strictest_of_duplicate_rows(self):

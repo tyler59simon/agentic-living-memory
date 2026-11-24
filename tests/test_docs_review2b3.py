@@ -4,7 +4,7 @@ import base64,json,os,shutil,sqlite3,time,types
 from pathlib import Path
 from unittest.mock import patch
 import test_docs,test_docs_sync,test_sources_notebooks
-from test_docs_review2b import own,junction
+from test_docs_review2b import own,junction,unjunction
 from test_docs_sync import PAGE
 from core import digests,docs,docs_index,folder_policy,governance,notebook_sync,runtime,safe_put,sources
 from core.repository import read_json
@@ -42,7 +42,7 @@ class Reach(test_sources_notebooks.Notebooks):
         (first/'Page.md').write_text('alpha zeppelin\n');(second/'Page.md').write_text('bravo marmalad\n')
         stamp=os.stat(first/'Page.md').st_mtime_ns;os.utime(second/'Page.md',ns=(stamp,stamp))
         alias=self.base/'alias';junction(alias,first,self);self.register(name='alias',kind='folder',path=str(alias));self.sync()
-        os.rmdir(alias);junction(alias,second,self);self.sync()
+        unjunction(alias);junction(alias,second,self);self.sync()
         self.assertNotIn('Page.md',self.plain('alpha zeppelin'));self.assertIn('Page.md',self.plain('bravo marmalad'))
 
     def test_F12_an_ordinary_source_named_like_a_notebook_source_reads_as_missing(self):
@@ -59,7 +59,7 @@ class Reach(test_sources_notebooks.Notebooks):
     def test_F14_counts_and_ingest_scan_leave_out_rows_of_a_retargeted_link(self):
         first=self.base/'first';first.mkdir();(first/'A.md').write_text('# A\n\nzeppelin\n');empty=self.base/'empty';empty.mkdir()
         alias=self.base/'alias';junction(alias,first,self);self.register(name='alias',kind='folder',path=str(alias));self.sync()
-        os.rmdir(alias);junction(alias,empty,self)
+        unjunction(alias);junction(alias,empty,self)
         row=next(r for r in sources.listing(self.root,'demo')['sources'] if r['name']=='alias')
         self.assertEqual(row['files'],0);self.assertIn('folder moved',row['state'])
         self.assertFalse([i for i in digests.scan(self.root,'demo','alias')['items'] if i['path'].endswith('A.md')])

@@ -15,6 +15,7 @@ from datetime import date
 from pathlib import Path
 from . import clock
 from .common import memory_root,atomic_write,load_bindings
+from .paths import is_os_junk,remove_empty_dir
 from .repository import inventory,parse,parse_text,validate,serialize,store_lock,read_json,canonical_json,transaction,digest,confined,now,reconcile,clean_files,clean_commands
 from .governance import plan
 from .note_types import normalize,STALE_DAYS,keep_baseline
@@ -71,8 +72,7 @@ def _prune_legacy_dirs(vault):
     legacy=vault/LEGACY
     if not legacy.is_dir() or legacy.is_symlink():return
     for d in sorted((p for p in legacy.rglob('*') if p.is_dir()),key=lambda p:len(p.parts),reverse=True)+[legacy]:
-        try:d.rmdir()
-        except OSError:pass
+        remove_empty_dir(d)
 
 def vault_id(vault,create=True):
     """Stable identity of a vault, so sync state is never applied to a different (new, moved) vault."""
@@ -211,8 +211,9 @@ def sync(domain,vault,root=None,trigger=None):
         moved={}
         for path in sorted((vault/NOTES/domain).rglob('*.md')) if (vault/NOTES/domain).is_dir() else []:
             rel=path.relative_to(vault).as_posix()
-            if rel in overlays:continue
-            found=parse_text(_text(path) or '',path)
+            if rel in overlays or is_os_junk(path.name):continue
+            try:found=parse_text(_text(path) or '',path)
+            except UnicodeDecodeError:continue   # not a note; the capture scan below reports it
             note_id=found.get('id') if found else None
             entry=entries.get(note_id) if note_id else None
             if entry and entry.get('overlay') and not (vault/entry['overlay']).exists():moved[note_id]=rel
@@ -362,11 +363,13 @@ def sync(domain,vault,root=None,trigger=None):
         # New drafts: (path_rel, hash read, note id, title, managed copy rel, canonical write or None for a replay).
         # Canonical captures are committed after the drafts are re-checked, just before the vault write.
         drafts=[];captured_ids=set()
-        for path in (p for d in scan_dirs if d.is_dir() for p in sorted(d.rglob('*.md'))):
+        for path in (p for d in scan_dirs if d.is_dir() for p in sorted(d.rglob('*.md')) if not is_os_junk(p.name)):
             confined(vault,path.relative_to(vault));path_rel=path.relative_to(vault).as_posix()
             if path_rel in known_paths or path_rel in view_changes:continue
             if _recent(path):deferred+=1;continue
-            text=_text(path);note=parse_text(text,path);h=digest(text.encode())
+            try:text=_text(path)
+            except UnicodeDecodeError:staged+=1;capture_errors[path_rel]='Not UTF-8 text; save it as UTF-8';continue
+            note=parse_text(text,path);h=digest(text.encode())
             if 'capture-'+h in entries:continue
             staging_changes[f'domains/{domain}/staged/capture-{h[:16]}.md']=text
             try:
@@ -440,6 +443,9 @@ def sync(domain,vault,root=None,trigger=None):
                 'deferred':deferred+skipped,'restored':restored,'renamed':renamed,'new_vault':new_vault}
 
 def _undo_command(domain,operation_id):
+    import os,shlex
+    if os.name!='nt':
+        return f'{shlex.quote(sys.executable)} {shlex.quote(str(SCRIPT))} --domain {domain} undo {operation_id}'
     return f'& "{sys.executable}" "{SCRIPT}" --domain {domain} undo {operation_id}'
 
 def _status_page(domain,root,notes,view_conflicts=(),failure=None):

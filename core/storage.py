@@ -16,6 +16,7 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from .common import atomic_write, file_lock
+from .paths import is_os_junk
 
 
 def config_path():
@@ -164,6 +165,8 @@ def _manifest(root):
         # Derived indexes with their SQLite side files; the destination rebuilds them (docs.sqlite3 is the notebook index).
         if len(rel.parts) <= 3 and (DERIVED_INDEX.fullmatch(path.name) or path.name.startswith(('.sources-', '.vectors-', '.docs-'))):
             continue
+        if is_os_junk(path.name):   # Finder files: not store content
+            continue
         if path.name.startswith('.') and path.name.endswith('.relocation-copy'):   # the copy loop's temporary files; an attachment may end so
             continue
         if len(rel.parts) == 3 and rel.parts[0] == 'domains' and path.name in ('INDEX.md', 'ARCHIVE.md', '.derived-dirty'):
@@ -177,7 +180,7 @@ def relocation_plan(source, destination):
     source, destination = local_path(source), local_path(destination)
     if source == destination or source in destination.parents or destination in source.parents:
         raise ValueError('Source and destination must be separate, non-nested folders')
-    if destination.exists() and (not destination.is_dir() or any(p.name != '.store.lock' for p in destination.iterdir())):
+    if destination.exists() and (not destination.is_dir() or any(p.name != '.store.lock' and not is_os_junk(p.name) for p in destination.iterdir())):
         raise ValueError('Relocation requires an empty destination; stores are never merged')
     with store_lock(source):
         validate_store(source)
@@ -293,7 +296,7 @@ def apply_relocation(identity, expected):
             if _manifest(source) != plan['files']:
                 raise ValueError('Stale source store; create a new relocation plan')
             if not journal:
-                if any(p.name != '.store.lock' for p in destination.iterdir()):
+                if any(p.name != '.store.lock' and not is_os_junk(p.name) for p in destination.iterdir()):
                     raise ValueError('Destination conflict: no files were overwritten')
                 journal = {'plan_id': identity, 'state': 'copying'}
                 _write(journal_path, journal)
@@ -383,7 +386,7 @@ def setup(location=None, non_interactive=False, source=None):
     destination = local_path(location)
     if source:
         return relocation_plan(source, destination)
-    if destination.exists() and any(p.name != '.store.lock' for p in destination.iterdir()):
+    if destination.exists() and any(p.name != '.store.lock' and not is_os_junk(p.name) for p in destination.iterdir()):
         with store_lock(destination):
             validate_store(destination)
     else:

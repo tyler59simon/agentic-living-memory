@@ -17,6 +17,13 @@ Its plans, journals and ownership record sit beside `app/` in that folder. The p
 
 Updating or uninstalling a harness preserves the shared pointer and data.
 
+On macOS and Linux, use `python3` (3.10 or later) where this guide says `py -3.15`, and POSIX paths:
+- `python3 living_memory.py setup --location ~/LivingMemory --non-interactive`
+- `python3 install.py --plan`, then `python3 install.py --apply-plan ID --expected-plan-sha256 DIGEST`
+- `alm bind my-project ~/Projects/MyProject` and `alm doctor --cwd ~/Projects/MyProject`
+
+On macOS, the Python from Xcode's Command Line Tools may be older than 3.10; install a current one from python.org or Homebrew. The python.org build needs its `Install Certificates.command` run once before `semantic` can download a model. Store paths are compared ignoring letter case and Unicode spelling, as APFS names files.
+
 ## Starter instruction file
 
 [templates/CLAUDE.md](templates/CLAUDE.md) and [templates/AGENTS.md](templates/AGENTS.md) are a starting point for the harness's global instruction file. Both hold the same two sections: Behavior (coding guidelines) and Writing style (plain writing for replies, commits, docs and notes, matching [WRITING.md](WRITING.md)). Living Memory notes follow the Writing style rules too.
@@ -32,7 +39,7 @@ Edit the sections freely; setup changes only its own block. Credits: the Behavio
 
 - **Where:** `~/.local/bin/alm.exe` on Windows, `~/.local/bin/alm` (an sh script) elsewhere. The plan summary lists it under `launcher` (`create`, `replace`, `keep`, `remove` or `none`, with the reason).
 - **Windows build:** `alm.exe` is built at install time from pip's bundled launcher stub (`pip/_vendor/distlib/t64.exe`, or the arm64 or 32-bit variant) plus the interpreter path and a zip holding the entry point, the same layout as `pip.exe`. It needs pip: if there is no stub the plan says `none` and suggests `py -m ensurepip`. No `.cmd` or `.ps1` is written, because `cmd.exe` would expand `%VAR%` text inside note arguments and `.ps1` runs into execution policy. After writing it the installer runs `alm --help`; if that fails (for example Smart App Control blocks the exe) the launcher is removed and a warning says so.
-- **PATH:** when `~/.local/bin` is not on your PATH the plan includes a `path_change`, which you approve with the plan. On Windows it appends the folder to the user `Path` value under `HKCU\Environment` (keeping its value type) and broadcasts the change. Elsewhere it appends `export PATH="$HOME/.local/bin:$PATH"  # agentic-living-memory` to `~/.zprofile` (zsh), `~/.bash_profile` if it exists else `~/.profile` (bash), or `~/.profile`. Apply refuses as stale if that registry value or file changed after the plan. Open a new terminal, and restart running agent sessions, to see it.
+- **PATH:** when `~/.local/bin` is not on your PATH the plan includes a `path_change`, which you approve with the plan. On Windows it appends the folder to the user `Path` value under `HKCU\Environment` (keeping its value type) and broadcasts the change. Elsewhere it appends `export PATH="$HOME/.local/bin:$PATH"  # agentic-living-memory` to `~/.zprofile` (zsh; `$ZDOTDIR/.zprofile` when `ZDOTDIR` is set), `~/.bash_profile` if it exists else `~/.profile` (bash), or `~/.profile`. Apply refuses as stale if that registry value or file changed after the plan. Open a new terminal, and restart running agent sessions, to see it.
 - **Ownership:** every launcher carries the marker `# agentic-living-memory launcher`. Install and uninstall replace or remove only a file with that marker. A foreign `alm`, or a symlink, is left alone and reported as `none`.
 - **Agents:** while this install's launcher is the first `alm` on PATH, hooks give agents `CMD = alm --json --domain NAME` and auto-allow bare `alm` read/search/capture commands as they do the full form. If another `alm` shadows it, a `.cmd` or `.ps1` sits beside it, or it was built for a different interpreter or script, agents keep the full quoted command and the host's normal permission prompt applies. Install and hooks must use the same Python for this to match.
 - **Uninstall:** `install.py --uninstall-plan` removes our launcher but leaves the PATH entry, since other programs may use the folder. `undo` does not touch the launcher.

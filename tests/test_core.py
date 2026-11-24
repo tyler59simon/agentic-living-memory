@@ -12,7 +12,7 @@ os.environ.setdefault('LIVING_MEMORY_NO_BACKGROUND','1')
 class StoreFixture(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(prefix='living-memory-test-');self.addCleanup(self.tmp.cleanup)
-        self.base=Path(self.tmp.name);self.root=self.base/'store'
+        self.base=Path(self.tmp.name).resolve();self.root=self.base/'store'   # macOS: /var is a link to /private/var
         # Tests edit vault files and sync immediately; production waits for Obsidian to go quiet.
         quiet=patch('core.sync.QUIET_SECONDS',0);quiet.start();self.addCleanup(quiet.stop)
         # SessionStart checks the harness's real instruction file; point every harness home at an empty folder.

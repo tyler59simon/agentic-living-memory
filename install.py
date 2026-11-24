@@ -194,7 +194,7 @@ def _launcher_state(path: Path):
 
 
 def _norm_dir(text):
-    return os.path.normcase(os.path.normpath(os.path.expandvars(text)))
+    return os.path.normcase(os.path.normpath(os.path.expanduser(os.path.expandvars(text))))
 
 
 def _on_path(folder, path_value, sep):
@@ -239,7 +239,7 @@ def _registry_path():
 def _profile():
     shell = os.path.basename(os.environ.get('SHELL', ''))
     home = Path.home()
-    return home / '.zprofile' if shell == 'zsh' else home / '.bash_profile' if shell == 'bash' and (home / '.bash_profile').exists() else home / '.profile'
+    return Path(os.environ.get('ZDOTDIR') or home) / '.zprofile' if shell == 'zsh' else home / '.bash_profile' if shell == 'bash' and (home / '.bash_profile').exists() else home / '.profile'
 
 
 def _path_plan():
@@ -252,10 +252,10 @@ def _path_plan():
             return None
         return {'kind': 'registry', 'target': 'HKCU\\Environment\\Path', 'before': value, 'before_type': kind, 'add': str(LAUNCHER_DIR)}
     profile = _profile()
-    text = profile.read_text(encoding='utf-8') if profile.is_file() else None
-    if text is not None and PROFILE_LINE in text:
+    data = profile.read_bytes() if profile.is_file() else None   # bytes: a CRLF or non-UTF-8 profile must hash as _path_stale reads it
+    if data is not None and PROFILE_LINE.encode() in data:
         return None
-    return {'kind': 'profile', 'target': str(profile), 'before': _sha(text.encode()) if text is not None else None, 'add': PROFILE_LINE}
+    return {'kind': 'profile', 'target': str(profile), 'before': _sha(data) if data is not None else None, 'add': PROFILE_LINE}
 
 
 def _path_stale(change):
@@ -277,9 +277,9 @@ def _add_to_path_windows(change):
 
 def _add_to_path_posix(change):
     profile = Path(change['target'])
-    text = profile.read_text(encoding='utf-8') if profile.is_file() else ''
+    data = profile.read_bytes() if profile.is_file() else b''
     profile.parent.mkdir(parents=True, exist_ok=True)
-    profile.write_text(text + ('' if not text or text.endswith('\n') else '\n') + change['add'] + '\n', encoding='utf-8')
+    profile.write_bytes(data + (b'' if not data or data.endswith(b'\n') else b'\n') + change['add'].encode() + b'\n')
 
 
 def _path_done(change):
@@ -287,7 +287,7 @@ def _path_done(change):
     if change['kind'] == 'registry':
         return _on_path(change['add'], _registry_path()[0], ';')
     profile = Path(change['target'])
-    return profile.is_file() and change['add'] in profile.read_text(encoding='utf-8')
+    return profile.is_file() and change['add'].encode() in profile.read_bytes()
 
 
 def _launcher_stale(record):

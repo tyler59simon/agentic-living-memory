@@ -124,5 +124,10 @@ class MatchPath(unittest.TestCase):
     def test_case_insensitive(self):
         ps=[{'slug':'p','status':'active','repos':['C:/Work/App']}]
         self.assertEqual(projects.match_path('c:\\work\\app\\src\\x.py',ps)['slug'],'p')
+    @unittest.skipIf(os.name=='nt','POSIX paths are not absolute on Windows')
+    def test_case_insensitive_on_macos(self):
+        ps=[{'slug':'p','status':'active','repos':['/Users/A/App']}]
+        with patch('core.paths.sys.platform','darwin'),patch('core.paths.os.path.normcase',lambda s:s):
+            self.assertEqual(projects.match_path('/users/a/APP/src/x.py',ps)['slug'],'p')
 
 if __name__=='__main__':unittest.main()

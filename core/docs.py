@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 
 from .common import canonical_domain, load_bindings
-from .paths import name_key
+from .paths import is_os_junk, name_within, remove_empty_dir, same_name
 from .repository import atomic_write, blob_store, digest, find_secret, is_link_or_junction, now, read_json, store_lock, transaction
 
 MAX_PAGE_BYTES = 4 * 1024 * 1024
@@ -108,7 +108,7 @@ def _clash(root, domain, nb, path):
             names = os.listdir(folder)
         except FileNotFoundError:
             return
-        twin = next((n for n in names if name_key(n) == name_key(part) and n != part), None)
+        twin = next((n for n in names if same_name(n, part) and n != part), None)
         if twin:
             raise ValueError(f'"{part}" differs only in letter case from "{twin}", which already exists')
         folder = folder / part
@@ -285,7 +285,7 @@ def _files(folder):
         dirs[:] = [d for d in dirs if not _is_link(Path(current) / d)]
         for name in names:
             full = Path(current) / name
-            if not _is_link(full):
+            if not _is_link(full) and not is_os_junk(name):
                 out.append(full.relative_to(folder).as_posix())
     return sorted(out)
 
@@ -595,9 +595,9 @@ def move(root, domain, nb, source, target, rewrite_links=False, include_private=
         if is_page != src.is_file():
             raise ValueError(f"{source} is a {'section' if is_page else 'page'}")
         # On a case-insensitive disk a case-only rename is one file, which a journal cannot undo with its old spelling (R1).
-        if name_key(source) == name_key(target):
+        if same_name(source, target):
             raise ValueError(f"Change the letter case of a {'page' if is_page else 'section'} in two steps, through another name")
-        if name_key(target + "/").startswith(name_key(source + "/")):
+        if name_within(target, source):
             raise ValueError("A section cannot move into itself")
         _clash(root, domain, nb, target)
         if dst.exists():
@@ -675,11 +675,7 @@ def move(root, domain, nb, source, target, rewrite_links=False, include_private=
 def _prune_empty(path, stop):
     """Remove `path` and its parents up to `stop` while they are empty folders (a moved section leaves its folder)."""
     for current, dirs, files in sorted(os.walk(path, topdown=False), key=lambda w: -len(w[0])):
-        if not os.listdir(current):
-            try:
-                os.rmdir(current)
-            except OSError:
-                pass
+        remove_empty_dir(current)
 
 
 def attach(root, domain, nb, source, name=None, include_private=False):

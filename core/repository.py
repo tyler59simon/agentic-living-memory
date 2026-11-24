@@ -17,7 +17,7 @@ from pathlib import Path
 
 from . import clock
 from .common import atomic_write, file_lock, memory_root, parse_iso, retry_sharing
-from .paths import fold, name_key
+from .paths import fold, is_os_junk, same_name
 
 STATUSES = {"active", "resolved", "archived", "superseded"}
 FACETS = ("subject", "concern", "platform", "technology", "project", "system")
@@ -438,7 +438,7 @@ def _note_files(root, directory):
                     raise ValueError("Symbolic links are not allowed in the store")
                 if entry.is_dir(follow_symlinks=False):
                     pending.append(Path(entry.path))
-                elif fold(entry.name).endswith(".md"):
+                elif os.path.normcase(entry.name).endswith(".md") and not is_os_junk(entry.name):
                     found.append((Path(entry.path), entry.stat(follow_symlinks=False)))
     return sorted(found, key=lambda item: item[0])
 
@@ -705,10 +705,13 @@ def _fold_case_renames(root, changes, expected):
     renames = []
     for old in [rel for rel, content in changes.items() if content is None]:
         for new in [rel for rel, content in changes.items() if content is not None]:
-            if str(old) == str(new) or name_key(old) != name_key(new):
+            if str(old) == str(new) or not same_name(old, new):
                 continue
             try:
-                same = os.path.samefile(root / old, root / new)
+                # Two hard links (Linux allows both spellings as separate entries) are two names, not one: only collapse
+                # when the folder lists a single entry for them.
+                names = {Path(old).name, Path(new).name}
+                same = os.path.samefile(root / old, root / new) and not (len(names) == 2 and names <= set(os.listdir((root / new).parent)))
             except OSError:
                 same = False
             if same:

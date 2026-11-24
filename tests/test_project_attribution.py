@@ -1,5 +1,5 @@
 """Project auto-attribution on capture, cross-domain reads, metadata-only updates and SessionStart project context."""
-import contextlib,io,json,os,time,unittest
+import contextlib,io,json,os,sys,time,unittest
 from datetime import date,timedelta
 from unittest.mock import patch
 from test_core import StoreFixture
@@ -57,7 +57,7 @@ class Attribution(Fixture):
         self.write([self.entry(s) for s in 'abc'])
         r=self.cap('Eight','--file','a/x','--file','b/x','--file','c/x');self.assertEqual(self.tagged(r),[]);self.assertEqual(r['project_candidates'],['a','b','c'])
         r=self.cap('Nine','--file','a/x','--file','b/x');self.assertEqual(self.tagged(r),['project/a','project/b']);self.assertNotIn('project_candidates',r)
-    @unittest.skipUnless(os.name=='nt','case folding is Windows-only')
+    @unittest.skipUnless(sys.platform in ('win32','darwin'),'case folding is for Windows and macOS')
     def test_mixed_case_windows_paths(self):
         r=self.cap('Ten','--file',SLASH(self.project/'HIVE'/'Src'/'A.py').swapcase());self.assertEqual(self.tagged(r),['project/hive'])
     def test_archived_paused_and_unregistered_ignored(self):

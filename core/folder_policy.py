@@ -221,11 +221,12 @@ def _canonical_folder(root,path):
     if not folder.is_absolute():raise ValueError('The folder must be an absolute path')
     folder=folder.resolve()
     if not folder.is_dir():raise ValueError(f'not a folder: {folder}')
+    from .paths import is_within
     store=Path(root).resolve()
-    if folder==store or store in folder.parents:raise ValueError('A folder notebook cannot be inside the memory store; Living Memory notebooks live there')
+    if is_within(folder,store):raise ValueError('A folder notebook cannot be inside the memory store; Living Memory notebooks live there')
     for vault in managed_vaults(root):   # the vault's notes and its Notebooks mirror are copies of memory, not notebooks
         vault=Path(real(vault))
-        if folder==vault or vault in folder.parents or folder in vault.parents:
+        if is_within(folder,vault) or is_within(vault,folder):
             raise ValueError(f'A folder notebook cannot be, hold or lie inside the Obsidian vault Living Memory manages ({vault.as_posix()})')
     return folder.as_posix()
 

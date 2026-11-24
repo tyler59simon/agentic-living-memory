@@ -20,6 +20,7 @@ from collections import Counter
 from pathlib import Path
 from . import sources
 from .common import file_lock
+from .paths import is_os_junk
 from .folder_policy import SERVED
 
 VERSION=2   # 2: the task table has owner and priority; an index of another VERSION is replaced by _open_writable
@@ -96,7 +97,7 @@ def _walk_pages(folder,deadline=None,unread=None,inner=None):
                 if (inner is None and not rel and e.name in RESERVED) or _is_link(Path(e.path)):continue
                 if e.is_dir(follow_symlinks=False):
                     if inner is None or not (e.name.startswith('.') or key(e.path) in inner):stack.append(path)
-                elif e.is_file(follow_symlinks=False) and e.name.casefold().endswith(('.md','.markdown') if inner is not None else '.md'):
+                elif e.is_file(follow_symlinks=False) and not is_os_junk(e.name) and e.name.casefold().endswith(('.md','.markdown') if inner is not None else '.md'):
                     info=e.stat(follow_symlinks=False)
                     if inner is None or info.st_size<=sources.MAX_BYTES:found[path]=(info.st_size,info.st_mtime_ns)
             except OSError:continue

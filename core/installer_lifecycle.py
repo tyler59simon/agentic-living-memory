@@ -359,8 +359,9 @@ def _classify(target: Path, source_files: dict[str, dict[str, Any]], ownership: 
 
 def build_plan(target: str | Path, source: str | Path | None = None, uninstall: bool = False) -> dict[str, Any]:
     source_root = Path(source or Path(__file__).resolve().parents[1]).resolve(strict=True)
-    requested_target = Path(target).expanduser()
-    target_root = Path(os.path.abspath(requested_target))
+    requested_target = Path(os.path.abspath(Path(target).expanduser()))
+    # Ancestors resolved once (macOS /var and /tmp are links to /private/...); the target itself stays as named, so a link there is refused.
+    target_root = Path(os.path.realpath(requested_target.parent)) / requested_target.name
     source_abs = source_root.resolve()
     try:
         source_abs.relative_to(target_root)
@@ -374,7 +375,7 @@ def build_plan(target: str | Path, source: str | Path | None = None, uninstall: 
     if overlaps:
         raise PathSafetyError("Installation target overlaps the source tree")
     try:
-        live_store = Path(os.path.abspath(memory_root()))
+        live_store = Path(os.path.realpath(memory_root()))
     except ValueError:
         live_store = None  # No store configured yet: nothing the target could alias.
     if live_store is not None and (target_root == live_store or target_root in live_store.parents or live_store in target_root.parents):

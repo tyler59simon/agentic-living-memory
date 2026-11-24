@@ -2,25 +2,41 @@
 
 Windows (NTFS) and macOS (APFS, HFS+) ignore letter case by default, and macOS also treats the NFC and NFD Unicode spellings
 of a name as one file. os.path.normcase folds case only on Windows, and Path.is_relative_to never folds, so guards and
-lookups that compare paths must go through fold, path_key or is_within. Folding on a case-sensitive APFS volume only
-over-matches, which errs toward refusing in a guard. Standard library only: the fast read hook imports this module."""
+lookups that compare paths must go through fold, path_key or is_within.
+
+Limit: macOS folding assumes the default case-insensitive volume. On a case-sensitive APFS volume, two folders whose names
+differ only in case get one key, so a lookup can find the other folder's entry. Standard library only: the fast read hook
+imports this module."""
 from __future__ import annotations
 import os,sys,unicodedata
 
 JUNK_NAMES=frozenset({'.DS_Store','.localized'})
 
 
+def _caseless(text):
+    """Unicode canonical caseless form (NFD, casefold, NFD): equal for the NFC and NFD spellings of one name in any case."""
+    return unicodedata.normalize('NFD',unicodedata.normalize('NFD',text).casefold())
+
+
 def fold(text):
-    """Text in the form the disk compares names in: case-folded on Windows (normcase) and macOS (NFC, then casefold)."""
+    """Text in the form the disk compares names in: case-folded on Windows (normcase, then lower() as pathlib compares)
+    and on macOS (canonical caseless form); unchanged elsewhere."""
     text=os.path.normcase(str(text))
-    if sys.platform=='darwin':text=unicodedata.normalize('NFC',text).casefold()
+    if sys.platform=='darwin':return _caseless(text)
+    if os.name=='nt':return text.lower()
     return text
 
 
-def name_key(name):
-    """A file name with case and Unicode spelling folded on every system: for refusing names that would be one file on
-    some disk, and as a cheap test before os.path.samefile."""
-    return unicodedata.normalize('NFC',str(name)).casefold()
+def same_name(a,b):
+    """True when two file names differ only in case or Unicode spelling, so some disk would hold them as one file."""
+    a,b=str(a),str(b)
+    return a.casefold()==b.casefold() or _caseless(a)==_caseless(b)
+
+
+def name_within(child,parent):
+    """True when the /-separated name child is parent or lies under it, ignoring case and Unicode spelling."""
+    child,parent=str(child)+'/',str(parent)+'/'
+    return child.casefold().startswith(parent.casefold()) or _caseless(child).startswith(_caseless(parent))
 
 
 def _real(path):
@@ -47,3 +63,14 @@ def is_os_junk(name):
     never notes, pages or content, and never a reason to call a folder non-empty."""
     name=os.path.basename(str(name))
     return name in JUNK_NAMES or name.startswith('._')
+
+
+def remove_empty_dir(path):
+    """Remove a folder that holds nothing, or only macOS junk files (deleted first). False when it holds anything else or
+    cannot be removed."""
+    try:
+        names=os.listdir(path)
+        if not all(is_os_junk(n) for n in names):return False
+        for n in names:os.remove(os.path.join(path,n))
+        os.rmdir(path);return True
+    except OSError:return False

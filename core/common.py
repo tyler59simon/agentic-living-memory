@@ -57,9 +57,11 @@ def display_path(path: Path, prefixes: list[Path]) -> str|None:
     """A note's view of a file: relative to the bound project folder, else absolute; forward slashes."""
     from .paths import is_within
     for prefix in prefixes:
-        if is_within(path,prefix,resolve=False):
-            rel=Path(*Path(os.path.abspath(path)).parts[len(Path(os.path.abspath(prefix)).parts):]).as_posix()
+        if path.is_relative_to(prefix):
+            rel=path.relative_to(prefix).as_posix()
             return None if rel=='.' else rel
+        if is_within(path,prefix,resolve=False):   # the same folder spelled in another case (macOS)
+            return '/'.join(Path(os.path.abspath(path)).parts[len(Path(os.path.abspath(prefix)).parts):]) or None
     return path.as_posix()
 
 def git_root(cwd) -> Path|None:

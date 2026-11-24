@@ -8,6 +8,7 @@ import json,os,re,zipfile
 from datetime import datetime,timezone
 from pathlib import Path
 from .common import atomic_write,parse_iso,retry_sharing
+from .paths import is_os_junk
 from .repository import canonical_json,confined,parse_text,read_json,store_lock
 
 KEEP=7
@@ -46,7 +47,7 @@ def canonical_files(root):
         for folder in ('notes','archive'):
             base=domain/folder
             if base.is_dir() and not base.is_symlink():
-                found+=sorted(p.relative_to(root).as_posix() for p in base.rglob('*.md') if p.is_file() and not p.is_symlink())
+                found+=sorted(p.relative_to(root).as_posix() for p in base.rglob('*.md') if p.is_file() and not p.is_symlink() and not is_os_junk(p.name))
         found+=notebook_files(root,domain)
     return found
 

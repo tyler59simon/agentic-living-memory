@@ -17,6 +17,7 @@ indexed as a source (folder_policy treats it as hidden) and agents may not write
 from __future__ import annotations
 import hashlib,os,re,tempfile,time
 from pathlib import Path
+from .paths import is_os_junk,remove_empty_dir
 from .repository import canonical_json,now,read_json,store_lock,transaction
 from .safe_put import _sha,_bytes,_safe,_put
 
@@ -43,7 +44,7 @@ def _files(folder,unread=None):
             try:
                 if _is_link(Path(e.path)):continue
                 if e.is_dir(follow_symlinks=False):stack.append(path)
-                elif e.is_file(follow_symlinks=False):found[path]=Path(e.path)
+                elif e.is_file(follow_symlinks=False) and not is_os_junk(e.name):found[path]=Path(e.path)
             except OSError:continue
     return found
 
@@ -53,7 +54,7 @@ def _assets(folder):
     from .docs import _is_link
     base=Path(folder)/'assets'
     if not base.is_dir() or _is_link(base):return {}
-    return {p.name:p for p in sorted(base.iterdir()) if p.is_file() and not _is_link(p)}
+    return {p.name:p for p in sorted(base.iterdir()) if p.is_file() and not _is_link(p) and not is_os_junk(p.name)}
 
 
 def _prune_dirs(base):
@@ -66,9 +67,7 @@ def _prune_dirs(base):
         for e in entries:
             try:
                 if e.is_dir(follow_symlinks=False) and not _is_link(Path(e.path)):
-                    walk(e.path)
-                    try:os.rmdir(e.path)
-                    except OSError:pass
+                    walk(e.path);remove_empty_dir(e.path)
             except OSError:continue
     walk(base)
 

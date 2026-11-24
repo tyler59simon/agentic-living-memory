@@ -357,7 +357,7 @@ def sweep(root,domains=None,dry_run=False,seconds=None):
     """Assess every active note with a changed file; re-baseline the irrelevant files unless dry_run. Stops at the time budget (seconds, None for
     no limit) and says so. Returns {ok, notes: [{ref, title, files, rebaselined, operation}], rebaselined, still_stale, complete}."""
     from .repository import inventory
-    root=Path(root);bindings=load_bindings(root)
+    root=Path(root).resolve();bindings=load_bindings(root)   # find_note returns resolved paths; _write takes them relative to root
     deadline=time.monotonic()+seconds if seconds else None
     rows=[];done=0;stale=0;complete=True
     for domain in domains or _domains(root):
@@ -459,7 +459,7 @@ def before_review(root,cands,seconds):
     module can clear. `cands` are maintenance candidates ({note, domain}); at most `seconds`. Returns how many notes were written (the run
     then picks again). Off with auto_rebaseline false; never raises."""
     try:
-        root=Path(root);bindings=load_bindings(root)
+        root=Path(root).resolve();bindings=load_bindings(root)
         if bindings.get('auto_rebaseline',True) is False:return 0
         deadline=time.monotonic()+max(0.0,seconds);written=0
         for cand in cands:

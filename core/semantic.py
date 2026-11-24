@@ -268,8 +268,8 @@ def remove(root):
     if existed:
         for other in folder.iterdir():
             if other.is_dir():_retire(other)
-        try:folder.rmdir()
-        except OSError:pass
+        from .paths import remove_empty_dir
+        remove_empty_dir(folder)
     rebuilt=rebuild_all(root)
     result={**status(root),'removed':existed,'rebuilt':rebuilt}
     if folder.is_dir() and any(folder.iterdir()):result['leftover']=sorted(p.name for p in folder.iterdir())

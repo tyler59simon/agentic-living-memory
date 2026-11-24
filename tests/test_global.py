@@ -83,7 +83,7 @@ class Bindings(GlobalFixture):
         self.assertEqual(load_bindings(self.root)['domains']['moved']['prefixes'], [str((self.base / 'moved-here').resolve())])
 
     def test_unbind_prefix_matches_expanded_case_folded_and_legacy_folders(self):
-        import os
+        import os, sys
         (self.base / 'keep').mkdir();os.environ['ALM_TEST_BASE'] = str(self.base);self.addCleanup(os.environ.pop, 'ALM_TEST_BASE', None)
         config = load_bindings(self.root)
         config['domains']['legacy'] = {'prefixes': ['$ALM_TEST_BASE/old-a', str(self.base / 'keep')], 'root': str(self.base / 'old-b')}
@@ -91,7 +91,7 @@ class Bindings(GlobalFixture):
         warned = [w for w in doctor(self.root, str(self.base))['warnings'] if "domain 'legacy'" in w];self.assertEqual(len(warned), 2)
         for old in ('old-a', 'old-b'):
             folder = str((self.base / old).resolve())
-            spelled = folder.upper() if os.name == 'nt' else folder   # Windows paths are case-insensitive
+            spelled = folder.upper() if sys.platform in ('win32', 'darwin') else folder   # Windows and macOS paths are case-insensitive
             code, out = self.cli('unbind', 'legacy', '--prefix', spelled);self.assertEqual((code, out['status']), (0, 'prefix_removed'), out)
         entry = load_bindings(self.root)['domains']['legacy']
         self.assertEqual(entry, {'prefixes': [str(self.base / 'keep')]})   # the legacy root field is gone, not left behind

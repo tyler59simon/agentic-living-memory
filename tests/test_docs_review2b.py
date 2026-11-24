@@ -18,7 +18,13 @@ def own(cls):
 
 
 def junction(link,target,test):
+    """A Windows junction, or a directory symlink elsewhere (the code refuses both as links)."""
+    if os.name!='nt':os.symlink(target,link,target_is_directory=True);return
     if subprocess.run(['cmd','/c','mklink','/J',str(link),str(target)],capture_output=True).returncode:test.skipTest('no junction')
+
+
+def unjunction(link):
+    os.rmdir(link) if os.name=='nt' else os.unlink(link)
 
 
 def managed(root,vault,domain='demo'):
