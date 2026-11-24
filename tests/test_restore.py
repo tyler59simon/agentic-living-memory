@@ -426,9 +426,9 @@ class Rule(StoreFixture):
     def test_list_with_summary_and_version_report_rules(self):
         a = self.policy(rule=True)
         b = self.policy('Review policy', 'Every change gets a review.')
-        rows = {r['id']: r for r in self.ok('list', '--with-summary')['notes']}
+        rows = {r['id']: r for r in self.ok('search', '--with-summary')['notes']}
         self.assertEqual((rows[a['id']]['rule'], rows[b['id']]['rule']), (True, False))
-        self.assertNotIn('rule', self.ok('list')['notes'][0])
+        self.assertNotIn('rule', self.ok('search')['notes'][0])
         self.assertEqual(self.ok('version')['capabilities']['rule'], 1)
 
     def test_a_duplicate_capture_with_rule_says_the_existing_note_is_not_a_rule(self):
@@ -643,7 +643,7 @@ class LastRetirement(StoreFixture):
         a = self.note('Pinned fact', 'It stays.', pinned=True, review_by='2020-01-01')
         b = self.note('Retired fact', 'It went.', allow_similar=True)
         self.ok('archive', 'demo:' + b['id'])
-        rows = {r['id']: r for r in self.ok('list', '--status', 'any', '--with-summary')['notes']}
+        rows = {r['id']: r for r in self.ok('search', '--status', 'any', '--with-summary')['notes']}
         self.assertIs(rows[a['id']]['pinned'], True)
         self.assertEqual(set(rows[b['id']]['last_retirement']), {'action', 'at', 'actor', 'reason'})
         read = self.ok('read', 'demo:' + a['id'])

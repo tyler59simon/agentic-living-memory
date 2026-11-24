@@ -1,4 +1,4 @@
-"""Compaction: PreCompact steers the summary, SessionStart(compact) hands off, recall reaches the old transcript."""
+"""Compaction: PreCompact steers the summary, SessionStart(compact) hands off, recall reaches the old transcript (search --transcript)."""
 import contextlib,io,json,os
 from unittest.mock import patch
 
@@ -104,12 +104,12 @@ class Hooks(CompactionFixture):
         self.assertIn('Before this compaction',context)
         self.assertIn('Saved this session: demo:'+saved['id'][:8]+' Cache',context)
         self.assertIn('Surfaced earlier this session',context);self.assertIn('Upload pipeline',context)
-        self.assertIn("recall 'query' --session session",context)
+        self.assertIn("search 'query' --transcript --session session",context)
         self.assertLess(context.index('Before this compaction'),context.index('Living Memory context for domain'))
         self.assertNotIn('Before this compaction',self.start('startup')['context'])
         self.assertNotIn(runtime.UNCAPTURED,self.start(harness='codex')['context'])   # Codex summaries are not steered
         factory=self.start(harness='factory')['context']   # handoff via SessionStart(compact), but no recall: format unknown
-        self.assertIn('Saved this session',factory);self.assertNotIn('recall',factory)
+        self.assertIn('Saved this session',factory);self.assertNotIn('--transcript',factory)
 
     def rule(self,title,summary='Always do it this way.',domain='demo'):
         return capture(title,summary,['subject/project','concern/architecture'],domain,self.root,type='policy',rule=True,allow_similar=True)
@@ -167,21 +167,21 @@ class Command(CompactionFixture):
         with contextlib.redirect_stdout(out),contextlib.redirect_stderr(io.StringIO()):code=main(['--root',str(self.root),*args])
         return code,(json.loads(out.getvalue()) if out.getvalue() else None)
 
-    def test_recall_command_searches_the_session_transcript(self):
+    def test_search_transcript_searches_the_session_transcript(self):
         self.start()
-        code,result=self.cli('recall','boto moto','--session','session')
+        code,result=self.cli('search','boto moto','--transcript','--session','session')
         self.assertEqual(code,0);self.assertTrue(result['compacted'])
         self.assertEqual(result['results'][0]['role'],'user');self.assertIn('moto is slow',result['results'][0]['excerpt'])
-        code,result=self.cli('recall','after the compaction','--session','session','--all')
+        code,result=self.cli('search','after the compaction','--transcript','--session','session','--all')
         self.assertTrue(any('after the compaction' in h['excerpt'] for h in result['results']))
 
-    def test_recall_without_a_recorded_transcript_fails_cleanly(self):
-        self.assertEqual(self.cli('recall','upload','--session','nobody')[0],2)
+    def test_search_transcript_without_a_recorded_transcript_fails_cleanly(self):
+        self.assertEqual(self.cli('search','upload','--transcript','--session','nobody')[0],2)
 
-    def test_recall_is_auto_allowed_and_open_to_subagents(self):
-        self.assertIn('recall',runtime.ALLOWED_SUBCOMMANDS);self.assertNotIn('recall',runtime.MUTATING_SUBCOMMANDS)
+    def test_search_transcript_is_auto_allowed_and_open_to_subagents(self):
+        self.assertIn('search',runtime.ALLOWED_SUBCOMMANDS);self.assertNotIn('search',runtime.MUTATING_SUBCOMMANDS);self.assertNotIn('recall',runtime.ALLOWED_SUBCOMMANDS)
         self.start()
-        self.assertEqual(self.cli('--actor','subagent','recall','boto','--session','session')[0],0)
+        self.assertEqual(self.cli('--actor','subagent','search','boto','--transcript','--session','session')[0],0)
 
 
 class Setup(StoreFixture):

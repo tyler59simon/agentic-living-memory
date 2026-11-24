@@ -105,7 +105,7 @@ def _type_name(value):
     raise argparse.ArgumentTypeError(f'invalid note type {value!r}; built-in types: '+', '.join(NOTE_TYPES))
 
 # Commands whose --type is a note type (log has a --type of its own).
-NOTE_TYPE_ARGS={'capture','propose','update','timeline','export','list'}
+NOTE_TYPE_ARGS={'capture','propose','update','timeline','export','search'}
 
 def _check_type_args(args,root):
     """Unknown --type values name the store's types, built-in and custom (argparse cannot: custom types live in the store)."""
@@ -321,14 +321,14 @@ def _sectioned(args,body='',note_type=None,root=None):
 
 # source-sync writes only the derived knowledge-base index (as search --rebuild does the notes' one), so subagents and viewers may run it
 # (not for a remote source, which it would pull from the network: sources.sync refuses that for them).
-READ_ONLY={'help','config','status','search','read','query','doctor','validate','history','logs','open','stats','timeline','recall','list','domains','version','links','projects','systems','types','ask','sources','source-sync','ingest-scan','views','wiki','log','maintenance','rebaseline','recap','proposals','doc'}
+READ_ONLY={'help','config','status','search','read','query','doctor','validate','history','logs','open','stats','timeline','domains','version','projects','systems','types','ask','sources','source-sync','ingest-scan','views','wiki','log','maintenance','rebaseline','recap','proposals','doc'}
 # Viewer: a human-facing app browsing the store. Read-only, and its reads are not usage evidence for the diary.
 VIEWER=READ_ONLY|{'taxonomy','review','diff','inspect-plan'}
 # Direct journaled writes (no plan); `taxonomy add` is the same kind of write under a read command. Refused to subagents, viewers and Hivemind agents.
 DIRECT_WRITES={'archive','rewrite','remap','promote','source','project','system','type','domain'}
 # Notebook page writes (NS-2A): main actor only, and never from an agent inside a Hivemind terminal. `doc propose` stays open to agents.
 DOC_WRITES={'notebook','create','write','move','delete','attach','undo','folder'}   # runtime.DOC_WRITE_ACTIONS; runtime loads lazily here
-SERVE_API=2
+SERVE_API=3
 SERVE_LIMIT=2*1024*1024
 
 def _relative(root,path):
@@ -348,10 +348,10 @@ def list_notes(root,domains,status,types,tags,offset,limit,summary=False):
             if isinstance(n.get('last_retirement'),dict):rows[-1]['last_retirement']={k:n['last_retirement'].get(k) for k in ('action','at','actor','reason')}
             if summary:rows[-1].update(_summary_fields(n))
     rows.sort(key=lambda r:(r['updated'],r['id']),reverse=True)
-    return {'ok':True,'domains':domains,'total':len(rows),'offset':offset,'notes':rows[offset:offset+limit]}
+    return {'ok':True,'mode':'list','domains':domains,'total':len(rows),'offset':offset,'notes':rows[offset:offset+limit]}
 
 def _summary_fields(note):
-    """list --with-summary: the summary as plain text (300 characters at most), the files, and action item counts for plan, bug and risk notes."""
+    """search --with-summary: the summary as plain text (300 characters at most), the files, and action item counts for plan, bug and risk notes."""
     from .note_format import sections,plain,action_items,note_takes_actions
     body=note.get('body') or '';text=sections(body).get('summary') or ''
     out={'summary':plain(text)[:300],'files':list(note.get('files') or []),'pinned':note.get('pinned') is True,'rule':note.get('rule') is True}
@@ -423,6 +423,34 @@ def _search_scope(root,domain):
     config=load_bindings(root);scope=config.get('search_scope',{})
     globals_=[g for g in (canonical_domain(g,root) for g in scope.get('global_domains',['_global'])) if (root/'domains'/g).exists()]
     return config,globals_,list(dict.fromkeys([domain]+scope_domains(domain,config)+globals_)),scope.get('foreign_domains',[])
+
+# The forms of `search` and the flags each takes besides the query, --limit and --include-private. A mode flag (--sources, --pages, --transcript, --links) chooses a form; without one,
+# a query or --file is a notes search and nothing else lists notes. Default --limit: 5, pages 10, list 200.
+SEARCH_FLAGS={'notes':{'--file','--scope','--filter','--rebuild','--explain'},'sources':set(),'pages':{'--all-domains','--rebuild'},'transcript':{'--session','--all'},'links':{'--all-domains','--status'},
+              'list':{'--type','--tag','--status','--all-domains','--with-summary','--offset'}}
+SEARCH_LIMIT={'notes':5,'sources':5,'pages':10,'transcript':5,'list':200}
+SEARCH_FORM={'notes':'a notes search (a query)','sources':'search --sources','pages':'search --pages','transcript':'search --transcript','links':'search --links','list':'a list of notes (no query)'}
+SEARCH_ALT={'--type':'--filter type=T','--tag':'--filter tag=T','--status':'--filter status=S','--all-domains':'--scope all'}   # what a notes search uses in place
+
+def _search_form(args):
+    """The form of `search` the flags choose: notes, sources, pages, transcript, links or list. A flag that belongs to another form is refused with the right one named; --limit gets its default."""
+    modes=[m for m,on in (('sources',args.sources),('pages',args.pages),('transcript',args.transcript),('links',args.links)) if on]
+    if len(modes)>1:raise ValueError('--sources, --pages, --transcript and --links each choose a search; give one')
+    query=bool(args.query.strip())
+    form=modes[0] if modes else 'notes' if query or args.file else 'list'
+    given={'--file':args.file,'--scope':args.scope,'--filter':args.filter,'--rebuild':args.rebuild,'--explain':args.explain,'--type':args.type,'--tag':args.tag,'--status':args.status,
+           '--all-domains':args.all_domains,'--with-summary':args.with_summary,'--offset':args.offset,'--session':args.session,'--all':args.all}
+    for flag,value in given.items():
+        if (value is None or value is False or value==[]) or flag in SEARCH_FLAGS[form]:continue
+        raise ValueError(f"{flag} does not go with {SEARCH_FORM[form]}; it goes with {' or '.join(SEARCH_FORM[f] for f,flags in SEARCH_FLAGS.items() if flag in flags)}"+(f"; a notes search uses {SEARCH_ALT[flag]}" if flag in SEARCH_ALT else ''))
+    if form=='links':
+        if query:raise ValueError('search --links takes no query')
+        if args.status not in (None,'active','any'):raise ValueError('search --links takes --status active or any')
+    elif form=='transcript' and not args.session:raise ValueError('search --transcript needs --session SESSION')
+    if not query and form in {'sources','pages','transcript'}:raise ValueError('search needs a query'+(f' with --{form}' if form!='sources' else ''))
+    if form=='notes':args.scope=args.scope or 'fallback'
+    args.limit=args.limit if args.limit is not None else SEARCH_LIMIT.get(form)
+    return form
 
 def _each_question(query,limit,run):
     """[{question, ...run(question, per-question limit)}] for a query holding several questions (runtime.questions), else None.
@@ -613,7 +641,7 @@ def _maintenance_hint(root):
     except ValueError:on=False
     return 'Automatic maintenance is on for this store: within its policy it archives, resolves and supersedes notes without a plan and records why (maintenance history); restore REF undoes an archive. ' if on else ''
 
-HELP={'setup':'Choose or move the shared memory folder','bind':'Bind a domain to project folders','unbind':'Remove a domain binding','capture':'Save a note','propose':'Stage a draft note for the main agent (subagents)','proposals':'List, show, accept or reject staged notes and page edits','search':'Find notes','read':'Show one note',
+HELP={'setup':'Choose or move the shared memory folder','bind':'Bind a domain to project folders','unbind':'Remove a domain binding','capture':'Save a note','propose':'Stage a draft note for the main agent (subagents)','proposals':'List, show, accept or reject staged notes and page edits','search':'Find notes, pages, sources and links; list notes','read':'Show one note',
  'update':'Change a note','supersede':'Retire a note in favour of another','review':'Notes that are due, stale or duplicated','open':'Open plans, bugs, risks and action items','check':'Tick an action item',
  'timeline':'Notes around a date or note','ingest-plan':'Plan importing Claude auto-memory files','export':'Write notes to a zip file','import-plan':'Plan importing an exported zip','confirm':'Mark a note still true',
  'resolve':'Finish a plan, bug or risk','reopen':'Reopen a resolved note','restore':'Bring back an archived note','archive':'Retire a note without a replacement','stats':'Usage over the last days','logs':'Show the operational log','delete-plan':'Plan deleting one note',
@@ -624,12 +652,12 @@ HELP={'setup':'Choose or move the shared memory folder','bind':'Bind a domain to
  'project':'Create or change a project','projects':'List projects','system':'Create or change a system','systems':'List systems','type':'Create, change or retire a custom note type','types':'List note types, built-in and custom','source':'Add or remove a knowledge-base source','sources':'List knowledge-base sources',
  'source-sync':'Re-index knowledge-base sources','ingest-scan':'Scan for files to ingest','ingest-skip':'Skip an ingest candidate','ask':'Ask a question about the project',
  'views':'Saved views','wiki':'Domain wiki','batch':'Run several commands from a JSON file','retag-plan':'Plan retagging notes','remap':'Move notes between domains','promote':'Promote notes to the global domain',
- 'recall':'Search this session transcript','off':'Turn Living Memory off for this session','on':'Turn Living Memory back on for this session','status':'Whether Living Memory is on for this session','capture-finalize':'Record which notes a turn saved','list':'List notes','domains':'List domains','config':'Show or change store settings','links':'Links between notes',
+ 'off':'Turn Living Memory off for this session','on':'Turn Living Memory back on for this session','status':'Whether Living Memory is on for this session','capture-finalize':'Record which notes a turn saved','domains':'List domains','config':'Show or change store settings',
  'help':'Protocol details by topic','version':'Version and command list','doc':'Notebook pages: read them, and stage edits with doc propose','domain':'Create a notebook-only domain','serve':'JSON-lines server on stdin and stdout','sync':'Sync a domain with an Obsidian vault','overlay-build':'Build the Obsidian overlay','overlay-teardown-plan':'Plan removing the overlay','overlay-sync-all':'Sync every domain with the vault'}
 
 # The groups `alm --help` lists the commands under (CLI-2); every command is in exactly one.
 HELP_GROUPS=(
- ('Everyday',('help','capture','propose','proposals','search','read','update','supersede','open','check','confirm','resolve','reopen','ask','list','timeline','links','log','recap','recall','capture-finalize','status','off','on','doc')),
+ ('Everyday',('help','capture','propose','proposals','search','read','update','supersede','open','check','confirm','resolve','reopen','ask','timeline','log','recap','capture-finalize','status','off','on','doc')),
  ('Maintenance',('review','maintenance','rebaseline','stats','history','diff','undo','recover','restore','doctor','validate','rebuild','semantic','backup','housekeep','logs')),
  ('Direct writes (journaled, undo OPERATION)',('archive','rewrite','remap','promote','source','project','system','type')),
  ('Governance (plans)',('delete-plan','apply','inspect-plan','merge-plan','retag-plan','note-type-plan','migration-plan','baseline-plan','restore-plan',
@@ -671,8 +699,6 @@ def _doc_parsers(p,common):
     q=dsub('set','Add or change a folder notebook',fs);q.add_argument('path');q.add_argument('--visibility',choices=visibility,help='Left out: the folder keeps what Living Memory holds for it (a new one is searchable)')
     pv=q.add_mutually_exclusive_group();pv.add_argument('--private',dest='private',action='store_const',const=True);pv.add_argument('--no-private',dest='private',action='store_const',const=False)
     q=dsub('unset','Remove a folder notebook (a hidden or private one stays excluded unless --forget)',fs);q.add_argument('path');q.add_argument('--forget',action='store_true')
-    q=dsub('search','Search notebook pages (agents may run it)');q.add_argument('query',nargs='+');q.add_argument('--all-domains',action='store_true')
-    q.add_argument('--notebook',help='Only this notebook (a hidden one is searched only when named)');q.add_argument('--limit',type=int,default=10);q.add_argument('--rebuild',action='store_true',help='Rebuild the page index first')
     q=dsub('tasks','Task lines of notebook pages');q.add_argument('--all-domains',action='store_true');q.add_argument('--notebook');q.add_argument('--open',action='store_true',help='Only tasks not done')
     q=dsub('query','Pages by frontmatter properties');q.add_argument('--payload-file',type=Path,required=True,help='{"where": [{"key", "op", "value"}], "sort": [{"key", "order"}], "limit": N, "notebook": NB}');q.add_argument('--all-domains',action='store_true')
     # Writes to an existing private notebook need --include-private too (Hivemind passes it; the hook denies it to agents).
@@ -806,20 +832,10 @@ def _doc(args,root,domain,cwd=None):
         if args.folder_action=='unset':return folder_policy.unset_folder(root,args.path,args.forget)
         if not domain:raise ValueError(UNBOUND)
         return folder_policy.set_folder(root,args.path,domain,args.visibility,args.private)
-    if action in ('search','tasks','query'):
+    if action in ('tasks','query'):
         from . import docs_index
         names=every() if args.all_domains else [domain] if domain else None
         if names is None:raise ValueError(UNBOUND)
-        if action=='search':
-            text=' '.join(args.query)
-            if not text.strip():raise ValueError('doc search needs a query')
-            if args.notebook:docs._slug(args.notebook)
-            if args.rebuild:
-                for name in names:
-                    done=docs_index.refresh(root,name,rebuild=True,lock_timeout=30)
-                    if done.get('error'):raise ValueError(f"The page index of {name} was not rebuilt: {done['error']}")
-            pages,stale=docs_index.search(root,names,text,max(1,min(50,args.limit)),private,args.notebook)
-            return {'ok':True,'query':text,'domains':names,'pages':pages,**({'pages_stale':True} if stale else {})}
         if action=='tasks':
             rows,stale=docs_index.task_rows(root,names,args.notebook,args.open,private)
             return {'ok':True,'domains':names,'tasks':rows,**({'pages_stale':True} if stale else {})}
@@ -870,7 +886,10 @@ def build_parser():
     p.add_argument('--expected-revision',help='accept a page edit: the page must be at this revision');p.add_argument('--body-file',type=Path)
     p.add_argument('--edited',action='store_true',help='accept a page edit: write your merge of it (from --body-file or stdin) instead, against --expected-revision (left out: the page must not exist)')
     p.add_argument('--include-private',action='store_true',help='Hivemind only: include private notebooks')
-    p=sub('search');p.add_argument('query',nargs='?',default='');p.add_argument('--file',help='Notes about this file or folder: listed in their files property, or named in the body');p.add_argument('--scope',choices=['active','fallback','all'],default='fallback');p.add_argument('--limit',type=int,default=5);p.add_argument('--filter',action='append',default=[]);p.add_argument('--rebuild',action='store_true');p.add_argument('--sources',action='store_true',help='Source excerpts from the project knowledge base only');p.add_argument('--explain',action='store_true',help='Add why each note was found: backend, scores, gate and the section the prompt hook would deliver')
+    p=sub('search');p.add_argument('query',nargs='?',default='');p.add_argument('--file',help='Notes about this file or folder: listed in their files property, or named in the body');p.add_argument('--scope',choices=['active','fallback','all'],help='Notes: which domains (default fallback)');p.add_argument('--limit',type=int,help='Most results. Default 5 (notes, sources, transcript), 10 (pages), 200 (list); at most 20, 50, 20, 1000');p.add_argument('--filter',action='append',default=[]);p.add_argument('--rebuild',action='store_true',help='Rebuild the search index first (--pages: the page index)');p.add_argument('--sources',action='store_true',help='Source excerpts from the project knowledge base only');p.add_argument('--explain',action='store_true',help='Add why each note was found: backend, scores, gate and the section the prompt hook would deliver')
+    p.add_argument('--pages',action='store_true',help='Notebook pages only: hosted notebooks and registered folders (with --all-domains: every domain)');p.add_argument('--transcript',action='store_true',help="This session's own transcript, for detail a compaction summarized away; needs --session");p.add_argument('--session',help='--transcript: the session ID');p.add_argument('--all',action='store_true',help='--transcript: search the whole transcript, not only what precedes the latest compaction')
+    p.add_argument('--links',action='store_true',help='The [[Title]] link graph between notes (no query)');p.add_argument('--status',choices=['active','resolved','archived','superseded','any'],help='--links: active or any. A list (no query): default active')
+    p.add_argument('--type',type=_type_name,action='append',help='A list (no query): only this note type (repeatable)');p.add_argument('--tag',action='append',default=[],help='A list (no query): only notes with this tag (repeatable: all must match)');p.add_argument('--all-domains',action='store_true',help='--pages, --links or a list: every domain folder, not only --domain');p.add_argument('--with-summary',action='store_true',help='A list: add summary, files and actions {open, done} to each row');p.add_argument('--offset',type=int,help='A list: skip this many rows')
     p.add_argument('--include-private',action='store_true',help='Hivemind only: include pages of private notebooks')
     p=sub('read');p.add_argument('reference');p.add_argument('--max-chars',type=int,default=16000);p.add_argument('--metadata-only',action='store_true');p.add_argument('--section',help='Only this section, by heading (as search evidence and prompt lines name it)')
     p=sub('update');p.add_argument('reference');p.add_argument('--title');p.add_argument('--body');p.add_argument('--body-file',type=Path);p.add_argument('--tag',action='append');p.add_argument('--type',type=_type_name);p.add_argument('--context');p.add_argument('--review-by');p.add_argument('--expected-revision');p.add_argument('--payload-file',type=Path);p.add_argument('--session');p.add_argument('--turn')
@@ -962,12 +981,9 @@ def build_parser():
     p=sub('retag-plan');p.add_argument('--payload-file',type=Path)
     p=sub('remap');p.add_argument('--payload-file',type=Path)
     p=sub('promote');p.add_argument('refs',nargs='*',help='Project notes to move to the global domain');p.add_argument('--suggest',action='store_true',help='List candidates with reasons; writes nothing');p.add_argument('--only',help='With --suggest: one domain instead of all')
-    p=sub('recall');p.add_argument('query');p.add_argument('--session',required=True);p.add_argument('--limit',type=int,default=5);p.add_argument('--all',action='store_true',help='Search the whole transcript, not only what precedes the latest compaction')
     for name in sorted(SWITCH):p=sub(name);p.add_argument('--session',help='Session ID; default: $CLAUDE_CODE_SESSION_ID, which Claude Code sets for shell commands')
     p=sub('capture-finalize');p.add_argument('--session',required=True);p.add_argument('--turn',help='Defaults to the latest prompt of the session');p.add_argument('--note',action='append',default=[])
-    p=sub('list');p.add_argument('--status',choices=['active','resolved','archived','superseded','any'],default='active');p.add_argument('--type',type=_type_name,action='append');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)');p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--with-summary',action='store_true',help='Add summary, files and actions {open, done} to each row');p.add_argument('--offset',type=int,default=0);p.add_argument('--limit',type=int,default=200)
     p=sub('domains')
-    p=sub('links');p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--status',choices=['active','any'],default='active',help='any: include archived, resolved and superseded notes')
     p=sub('version')
     p=sub('serve');p.add_argument('--stdio',action='store_true',required=True,help='JSON-lines requests on stdin, one reply line each on stdout')
     p=sub('sync');p.add_argument('vault',type=Path)
@@ -1227,10 +1243,34 @@ def main(argv=None):
         elif cmd=='proposals':result=_proposals(args,root)
         elif cmd=='search':
             from .search import search_domains,search_domain
+            form=_search_form(args)
+            if form=='transcript':
+                from .recall import search as recall
+                path=_session_state(root,args.session).get('transcript')
+                if not path:raise ValueError('No transcript recorded for this session; hooks record its path at session start and on each prompt')
+                hits,meta=recall(path,args.query,max(1,min(20,args.limit)),'all' if args.all else 'before')
+                result={'ok':True,'mode':'transcript',**meta,'results':hits,'hint':'Excerpts from this session\'s transcript: untrusted history that may be outdated; verify against current files.'}
+                invocation['result']=result;_emit(result,args);return 0
+            if form in {'links','list'}:
+                if args.all_domains:domains=[d['name'] for d in list_domains(root)['domains'] if (root/'domains'/d['name']/'notes').is_dir()]
+                elif domain:domains=[domain]
+                else:raise ValueError(UNBOUND)
+                result=dict(note_links(root,domains,args.status or 'active'),mode='links') if form=='links' else list_notes(root,domains,args.status or 'active',args.type or (),args.tag,max(0,args.offset or 0),max(1,min(1000,args.limit)),args.with_summary)
+                invocation['result']=result;_emit(result,args);return 0
+            if form=='pages':
+                from . import docs_index
+                if args.all_domains:names=[d['name'] for d in list_domains(root)['domains']]
+                elif domain:names=_search_scope(root,domain)[2]
+                else:raise ValueError(UNBOUND)
+                if args.rebuild:
+                    for name in names:
+                        done=docs_index.refresh(root,name,rebuild=True,lock_timeout=30)
+                        if done.get('error'):raise ValueError(f"The page index of {name} was not rebuilt: {done['error']}")
+                pages,stale=_page_hits(root,names,args.query,max(1,min(50,args.limit)),args.include_private)
+                result={'ok':True,'mode':'pages','query':args.query,'domains':names,'pages':pages,**({'pages_stale':True} if stale else {})}
+                invocation['result']=result;_emit(result,args);return 0
             if not domain:raise ValueError(UNBOUND)
-            if args.sources:
-                if args.file or args.filter:raise ValueError('--sources takes only a query (and --limit)')
-                if not args.query.strip():raise ValueError('search needs a query')
+            if form=='sources':
                 from . import sources
                 result={'ok':True,'mode':'sources','domain':domain,'results':sources.search(root,domain,args.query,max(1,min(20,args.limit))),'knowledge_base':sources.state(root,domain)}
                 each=_each_question(args.query,max(1,min(20,args.limit)),lambda q,n:{'results':sources.search(root,domain,q,n)})
@@ -1269,7 +1309,6 @@ def main(argv=None):
                     result={'ok':True,'mode':'file','file':wanted,'domains':domains,'fallback':fallback,'results':hits}
                     invocation['result']=result;_emit(result,args);return 0
                 filters['file']={'*':wanted,**{k:child_path(wanted,domain,k,config) for k in kids_of}} if kids_of else wanted
-            if not args.query.strip():raise ValueError('search needs a query, or --file PATH')
             result=_note_hits(root,domain,args.query,args.scope,args.limit,args.rebuild,filters,config,globals_,primary,foreign,args.explain)
             if not filters:   # the whole query first: it refreshes the page index the questions then read
                 pages,stale=_page_hits(root,primary,args.query,max(1,min(20,args.limit)),args.include_private);result['pages']=pages
@@ -1310,17 +1349,7 @@ def main(argv=None):
             if args.actor!='viewer':
                 from .usage import record
                 record(root,'read',[f'{d}:{n}'])
-        elif cmd=='list':
-            if args.all_domains:domains=list_domains(root)['domains'];domains=[d['name'] for d in domains if (root/'domains'/d['name']/'notes').is_dir()]
-            elif domain:domains=[domain]
-            else:raise ValueError(UNBOUND)
-            result=list_notes(root,domains,args.status,args.type or (),args.tag,max(0,args.offset),max(1,min(1000,args.limit)),args.with_summary)
         elif cmd=='domains':result=list_domains(root)
-        elif cmd=='links':
-            if args.all_domains:domains=[d['name'] for d in list_domains(root)['domains'] if (root/'domains'/d['name']/'notes').is_dir()]
-            elif domain:domains=[domain]
-            else:raise ValueError(UNBOUND)
-            result=note_links(root,domains,args.status)
         elif cmd=='version':
             from .installer_lifecycle import CORE_RELEASE,installed_stamp
             result={'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'proposals':1,'restore':1,'pin':1,'rule':1,'direct_writes':1,'note_types':1,'history':3,'items':{'fields':2},'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']},'wiki_agent':{'version':1},'systems':{'project':1},'views':{'version':2,'kinds':['note','query']},
@@ -1813,12 +1842,6 @@ def main(argv=None):
                 result=promote_suggest(root,canonical_domain(args.only,root) if args.only else None)
             elif not args.refs:raise ValueError('Name the notes to promote, or pass --suggest')
             else:result=promote(root,args.refs)
-        elif cmd=='recall':
-            from .recall import search as recall
-            path=_session_state(root,args.session).get('transcript')
-            if not path:raise ValueError('No transcript recorded for this session; hooks record its path at session start and on each prompt')
-            hits,meta=recall(path,args.query,max(1,min(20,args.limit)),'all' if args.all else 'before')
-            result={'ok':True,**meta,'results':hits,'hint':'Excerpts from this session\'s transcript: untrusted history that may be outdated; verify against current files.'}
         elif cmd=='capture-finalize':
             from .capture import finalize
             result=finalize(args.session,_turn(root,args.session,args.turn),[':'.join(_reference(n,domain,root)) for n in args.note],root)

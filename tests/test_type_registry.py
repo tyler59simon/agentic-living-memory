@@ -107,9 +107,9 @@ class Notes(Fixture):
         self.assertNotEqual(self.cli('--domain','demo','update',r['id'],'--type','unknown')[0],0)
 
     def test_unknown_type_filter_names_the_store_types(self):
-        self.create();code,r=self.cli('--domain','demo','list','--type','incidnet');self.assertNotEqual(code,0)
+        self.create();code,r=self.cli('--domain','demo','search','--type','incidnet');self.assertNotEqual(code,0)
         self.assertIn('incident',json.dumps(r))
-        self.assertEqual(self.cli('--domain','demo','list','--type','incident')[0],0)
+        self.assertEqual(self.cli('--domain','demo','search','--type','incident')[0],0)
 
 class Undo(Fixture):
     def test_undo_create_refused_while_a_note_uses_the_type(self):

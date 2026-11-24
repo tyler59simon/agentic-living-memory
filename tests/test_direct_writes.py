@@ -79,14 +79,15 @@ class EachVerbJournalsAndUndoes(Fixture):
 
 class RemovedNames(Fixture):
     def test_old_commands_fail_at_argparse(self):
-        for old in ('rewrite-plan','taxonomy-plan','remap-plan','promote-plan','source-plan','project-plan','system-plan','change-plan','change','changes','plan'):
+        for old in ('rewrite-plan','taxonomy-plan','remap-plan','promote-plan','source-plan','project-plan','system-plan','change-plan','change','changes','plan','list','links','recall'):
             with self.subTest(old=old):
                 code,error=self.cli(old);self.assertEqual(code,2,old);self.assertIn('invalid',json.dumps(error))
         for action in ('update','rename','retag','resolve','reopen','restore','archive','supersede'):
             with self.subTest(action=action):self.assertEqual(self.cli('plan',action,'demo:x')[0],2)
         self.assertIn('plan_id',self.ok('delete-plan','demo:'+self.note()['id']))   # delete-plan stays
         code,version=self.cli('version');commands=set(version['commands'])
-        self.assertTrue(set(NEW_VERBS)<=commands);self.assertFalse(commands&{'rewrite-plan','taxonomy-plan','remap-plan','promote-plan','source-plan','project-plan','system-plan','change-plan','change','changes','plan'})
+        self.assertTrue(set(NEW_VERBS)<=commands);self.assertFalse(commands&{'rewrite-plan','taxonomy-plan','remap-plan','promote-plan','source-plan','project-plan','system-plan','change-plan','change','changes','plan','list','links','recall'})
+        self.assertEqual(self.cli('doc','search','x')[0],2)   # doc search folded into search --pages
 
 class UndoOfKeptKinds(Fixture):
     def test_undo_of_a_merge_returns_a_plan(self):

@@ -182,7 +182,7 @@ class Index(test_docs.Fixture):
         self.assertIsNone(docs_index._readonly(self.root,'demo'))
         self.assertEqual(len(self.ok('doc','tasks')['tasks']),0)
         with patch('core.docs_index.os.replace',side_effect=PermissionError('in use')):
-            code,text=self.fails('doc','search','quokka','--rebuild')
+            code,text=self.fails('search','--pages','quokka','--rebuild')
         self.assertIn('was not rebuilt',text)
 
     def test_I4_the_notebook_inventory_is_taken_under_the_lock_and_a_failed_listing_removes_nothing(self):
@@ -197,7 +197,7 @@ class Index(test_docs.Fixture):
             self.assertTrue(held[0],'inventory taken outside the index lock');return real_nb(*a)
         with patch('core.docs_index._lock',lock),patch('core.docs_index._notebooks',inventory):docs_index.refresh(self.root,'demo')
         with patch('core.docs_index._notebooks',return_value=None):result=docs_index.refresh(self.root,'demo')
-        self.assertTrue(result['stale']);self.assertEqual(len(self.ok('doc','search','quokka')['pages']),2)
+        self.assertTrue(result['stale']);self.assertEqual(len(self.ok('search','--pages','quokka')['pages']),2)
 
     def test_P4_a_linked_notebook_json_is_never_trusted(self):
         docs.create_notebook(self.root,'demo','secret','Secret',private=True);docs.create_page(self.root,'demo','secret','S.md',b'quokka secret\n',include_private=True)

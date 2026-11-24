@@ -75,11 +75,11 @@ def spec(name,store,project,run):
     if name=='semantic-rebuild':return cli('semantic','rebuild'),b''
     if name=='serve-soak':
         rng=random.Random(3);words='cache deploy rollback session token queue index schema migration retry timeout webhook parser lexer renderer export import vault ledger invoice tenant shard replica gateway proxy cluster build release artifact pipeline lint format logger metric tracer alert budget quota limit policy audit secret rotate backup restore snapshot journal'.split()
-        return cli('serve','--stdio'),[['list','--domain','scale','--actor','viewer']]+[['search',' '.join(rng.sample(words,3)),'--domain','scale'] if i%10 else ['read','@FIRST','--domain','scale'] for i in range(SOAK)]
+        return cli('serve','--stdio'),[['search','--domain','scale','--actor','viewer']]+[['search',' '.join(rng.sample(words,3)),'--domain','scale'] if i%10 else ['read','@FIRST','--domain','scale'] for i in range(SOAK)]
     if name=='serve':
         # What an app front end sends: handshake, listings, a few searches, one read of the first listed note.
         return cli('serve','--stdio'),[
-            ['version'],['domains'],['list','--domain','scale','--actor','viewer'],['search',SEARCH,'--domain','scale'],['search','session token expiry','--domain','scale'],
+            ['version'],['domains'],['search','--domain','scale','--actor','viewer'],['search',SEARCH,'--domain','scale'],['search','session token expiry','--domain','scale'],
             ['search','backup restore snapshot','--domain','scale'],['read','@FIRST','--domain','scale'],['search',SEARCH,'--domain','scale']]
     raise SystemExit('unknown entry '+name)
 
@@ -103,7 +103,7 @@ def run_once(name,out,traced,diary=None):
                 line=proc.stdout.readline();elapsed=time.perf_counter()-t
                 if not line:steps.append({'request':request[0],'error':'no reply'});break
                 reply=json.loads(line)
-                if request[0]=='list':
+                if request[0]=='search' and (reply.get('result') or {}).get('mode')=='list':
                     items=(reply.get('result') or {}).get('notes') or (reply.get('result') or {}).get('items') or []
                     ref=items[0].get('ref') or items[0].get('id') if items else None
                 steps.append({'request':request[0],'exit_code':reply['exit_code'],'ms':round(elapsed*1000,1),'peak_ws':peaks(proc._handle)[0]})

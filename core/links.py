@@ -1,4 +1,4 @@
-"""The [[Title]] link graph between notes, shared by the `links` command and the wiki."""
+"""The [[Title]] link graph between notes, shared by `search --links` and the wiki."""
 from __future__ import annotations
 from .common import load_bindings
 from .repository import inventory

@@ -1,6 +1,6 @@
 {
  "name": "compaction-recall",
- "description": "Around a compaction: PreCompact steering (Claude), the handoff naming the notes saved this session, auto-recall from the transcript before the boundary, and the recall command.",
+ "description": "Around a compaction: PreCompact steering (Claude), the handoff naming the notes saved this session, auto-recall from the transcript before the boundary, and the transcript search command.",
  "harnesses": ["claude", "codex"],
  "notes": [
   {"key": "cache", "title": "Cache eviction policy", "body": "LRU eviction."}
@@ -20,6 +20,6 @@
   {"hook": "session-start", "payload": {"transcript_path": "{transcript}", "source": "compact"}, "expect": {"context_contains": ["{short:@baseline}"]}},
   {"hook": "user-prompt", "payload": {"prompt": "why did the flux capacitor calibration drift", "transcript_path": "{transcript}"}, "expect": {"recall": 2, "context_contains": ["From before compaction", "gigawatt sensor"]}},
   {"hook": "user-prompt", "payload": {"prompt": "why did the flux capacitor calibration drift", "transcript_path": "{transcript}"}, "expect": {"recall": 0}},
-  {"cli": ["recall", "baseline read", "--session", "{session}"], "expect": {"exit": 0}}
+  {"cli": ["search", "baseline read", "--transcript", "--session", "{session}"], "expect": {"exit": 0}}
  ]
 }

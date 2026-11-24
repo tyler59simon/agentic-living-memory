@@ -48,7 +48,7 @@ Read each of these {count} files (the location after "read:"), then write ONE di
 - Run each LM command as its own Bash call that starts with the quoted interpreter path: no shell functions, variables, `&&` chains or multi-line scripts (the permission rule only matches that form).
 Files:
 {files}
-After the files: if this batch changed what the project brief or the codebase map should say, update them (find them with {cmd} list --type brief and {cmd} list --type map, then {cmd} update REF --set-detail '**Label:** ...'); otherwise leave them alone.
+After the files: if this batch changed what the project brief or the codebase map should say, update them (find them with {cmd} search --type brief and {cmd} search --type map, then {cmd} update REF --set-detail '**Label:** ...'); otherwise leave them alone.
 Finish with exactly one JSON object as the last thing you print: {{"digested": ["path", ...], "skipped": [{{"path": "...", "reason": "..."}}], "failed": [{{"path": "...", "reason": "..."}}]}}"""
 
 

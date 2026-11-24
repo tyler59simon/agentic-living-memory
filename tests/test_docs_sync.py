@@ -38,7 +38,7 @@ class Mirror(Fixture):
         self.build();self.copy('Plan.md').write_bytes(b'# Plan\r\n\r\nEdited in Obsidian.\r\n');self.age(self.copy('Plan.md'))
         result=self.build();self.assertEqual(result['saved'],1)
         self.assertEqual(self.file('Plan.md').read_bytes(),b'# Plan\r\n\r\nEdited in Obsidian.\r\n')
-        self.assertEqual(self.ok('doc','search','edited obsidian')['pages'][0]['path'],'Plan.md')
+        self.assertEqual(self.ok('search','--pages','edited obsidian')['pages'][0]['path'],'Plan.md')
         self.assertIn('Saved: nb1/Plan.md',self.status())
 
     def test_a_fresh_vault_edit_waits_for_the_quiet_period(self):

@@ -2,8 +2,8 @@
 
 Pages are chunked and searched like sources (core/sources.py: same tables, chunker, ranking and vectors), one `source` row
 per notebook, plus the task lines and frontmatter properties of each page. The index is never canonical and never backed up;
-`doc search --rebuild` recreates it. Freshness does not hang on any write path: `doc search`, `doc tasks`, `doc query`,
-`search` and `ask` first stat-walk the domain's notebooks for at most WALK_SECONDS, resuming from a cursor, then reindex
+`search --pages --rebuild` recreates it. Freshness does not hang on any write path: `search`, `ask`, `doc tasks`
+and `doc query` first stat-walk the domain's notebooks for at most WALK_SECONDS, resuming from a cursor, then reindex
 changed pages for at most INDEX_SECONDS, and report `pages_stale` when work is left. The prompt hook never reindexes.
 Each call walks at least one notebook and indexes at least one page, even past those budgets, so it always makes progress;
 of several domains, only the one that had that allowance longest ago gets it. A page that cannot be read is retried after the

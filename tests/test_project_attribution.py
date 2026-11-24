@@ -92,13 +92,13 @@ class Reads(Fixture):
     def test_list_with_summary(self):
         p=capture('Roadmap',render('Ship the **thing** soon.',['Detail'],actions=['A','B'],done=['C']),BASE,'demo',self.root,type='plan',files=['hive/a.py'])
         k=self.note('Fact','A plain fact.')
-        code,r=self.cli('list','--with-summary');self.assertEqual(code,0,r)
+        code,r=self.cli('search','--with-summary');self.assertEqual(code,0,r)
         rows={n['id']:n for n in r['notes']}
         self.assertEqual((rows[p['id']]['summary'],rows[p['id']]['files'],rows[p['id']]['actions']),('Ship the thing soon.',['hive/a.py'],{'open':2,'done':1}))
         self.assertEqual((rows[k['id']]['summary'],rows[k['id']]['files']),('A plain fact.',[]));self.assertNotIn('actions',rows[k['id']])
-        self.assertNotIn('summary',self.cli('list')[1]['notes'][0])
+        self.assertNotIn('summary',self.cli('search')[1]['notes'][0])
         long=capture('Long','x'*500,BASE,'demo',self.root)
-        self.assertEqual(len(next(n for n in self.cli('list','--with-summary')[1]['notes'] if n['id']==long['id'])['summary']),300)
+        self.assertEqual(len(next(n for n in self.cli('search','--with-summary')[1]['notes'] if n['id']==long['id'])['summary']),300)
 
 class Updated(Fixture):
     def test_metadata_only_updates_keep_updated(self):
@@ -107,7 +107,7 @@ class Updated(Fixture):
         for kw in ({'tags':['subject/project','concern/decision']},{'files':['a.py']}):
             change(n['id'],'demo','update',self.root,**kw);self.assertEqual(find_note(n['id'],'demo',self.root)[1]['updated'],before['updated'],kw)
         change(n['id'],'demo','retag',self.root,tags=BASE);self.assertEqual(find_note(n['id'],'demo',self.root)[1]['updated'],before['updated'])
-        self.assertEqual(self.cli('list')[1]['notes'][0]['updated'],before['updated'])
+        self.assertEqual(self.cli('search')[1]['notes'][0]['updated'],before['updated'])
         self.assertEqual(self.cli('review')[1]['notes'],[dict(first[0],revision=self.cli('review')[1]['notes'][0]['revision'])])
         change(n['id'],'demo','update',self.root,review_by='2099-01-01');self.assertEqual(find_note(n['id'],'demo',self.root)[1]['updated'],before['updated'])
         self.assertEqual(self.cli('review')[1]['due'],0)
@@ -153,6 +153,6 @@ class SessionContext(Fixture):
     def test_tag_summary_lists_project_facet(self):self.assertIn('project/{',_tag_summary(self.root))
 
 class Version(Fixture):
-    def test_api(self):self.assertEqual(self.cli('version')[1]['api'],2)
+    def test_api(self):self.assertEqual(self.cli('version')[1]['api'],3)
 
 if __name__=='__main__':unittest.main()

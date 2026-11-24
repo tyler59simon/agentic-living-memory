@@ -1,4 +1,4 @@
-"""Notebook page search (NS-2B): the derived page index, `doc search`, `doc tasks`, `doc query`, and the `pages` array of
+"""Notebook page search (NS-2B): the derived page index, `search --pages`, `doc tasks`, `doc query`, and the `pages` array of
 search and ask. Design: docs/notebooks-design.md sections 8.1 and 12b."""
 import json,sqlite3,sys,time
 from unittest.mock import patch
@@ -33,11 +33,10 @@ class Search(Fixture):
         self.notebook('quiet',visibility='hidden');self.page('q.md',b'backoff in a hidden notebook\n','quiet')
         self.notebook('secret',private=True);docs.create_page(self.root,'demo','secret','s.md',b'backoff in a private notebook\n',include_private=True)
         paths=lambda r:sorted(p['path'] for p in r['pages'])
-        self.assertEqual(paths(self.ok('doc','search','backoff')),['Retry policy.md'])
+        self.assertEqual(paths(self.ok('search','--pages','backoff')),['Retry policy.md'])
         self.assertEqual(paths(self.ok('search','backoff')),['Retry policy.md']);self.assertEqual(paths(self.ok('ask','backoff')),['Retry policy.md'])
-        self.assertEqual(paths(self.ok('doc','search','backoff','--notebook','quiet')),['q.md'])
-        self.assertEqual(paths(self.ok('doc','search','backoff','--notebook','secret')),[])
-        self.assertEqual(paths(self.ok('doc','search','backoff','--include-private')),['Retry policy.md','s.md'])
+        self.assertEqual(self.cli('search','--pages','backoff','--notebook','quiet')[0],2)   # doc search --notebook is gone: a hidden notebook is never searched
+        self.assertEqual(paths(self.ok('search','--pages','backoff','--include-private')),['Retry policy.md','s.md'])
         self.assertEqual(paths(self.ok('search','backoff','--include-private')),['Retry policy.md','s.md'])
         code,text=self.fails('search','backoff','--include-private',env={'HIVEMIND_SESSION':'x'});self.assertNotIn('private notebook',text.replace('private notebooks are',''))
         docs.update_notebook(self.root,'demo','secret',private=False,include_private=True)   # private now decides, not ever-private
@@ -45,28 +44,28 @@ class Search(Fixture):
 
     def test_agents_may_search_but_not_reach_private_pages(self):
         command=lambda rest:f'"{sys.executable}" "{runtime.SCRIPT}" --root "{self.root}" {rest}'
-        for rest,writes in (('doc search backoff',False),('doc tasks --open',False),('doc query --payload-file q.json',False),('doc write demo nb1 a.md --expected-revision x',True)):
+        for rest,writes in (('search backoff --pages',False),('doc tasks --open',False),('doc query --payload-file q.json',False),('doc write demo nb1 a.md --expected-revision x',True)):
             with self.subTest(rest=rest):self.assertEqual(runtime.doc_write(command(rest),None),writes)
         self.assertTrue(runtime.include_private(command('search backoff --include-private'),None))
-        self.ok('doc','search','backoff',actor='subagent');self.ok('doc','tasks',actor='viewer')
+        self.ok('search','--pages','backoff',actor='subagent');self.ok('doc','tasks',actor='viewer')
 
     def test_a_write_is_searchable_at_once_and_undo_and_restore_follow(self):
         written=docs.write_page(self.root,'demo','nb1','Retry policy.md',b'# Retry policy\n\nQuokka marmalade.\n',digest(PAGE))
         db=docs_index._readonly(self.root,'demo')
         try:self.assertEqual(db.execute("SELECT sha256 FROM file WHERE path='Retry policy.md'").fetchone()[0],written['revision'])   # reindexed by the write itself
         finally:db.close()
-        self.assertEqual(len(self.ok('doc','search','quokka marmalade')['pages']),1)
+        self.assertEqual(len(self.ok('search','--pages','quokka marmalade')['pages']),1)
         self.ok('doc','undo',written['operation_id'])
-        self.assertEqual(self.ok('doc','search','quokka marmalade')['pages'],[]);self.assertEqual(len(self.ok('doc','search','backoff ceiling')['pages']),1)
+        self.assertEqual(self.ok('search','--pages','quokka marmalade')['pages'],[]);self.assertEqual(len(self.ok('search','--pages','backoff ceiling')['pages']),1)
         snapshot=backup.backup(self.root)['backup']
         docs.delete_page(self.root,'demo','nb1','Retry policy.md',digest(PAGE))
-        self.assertEqual(self.ok('doc','search','backoff ceiling')['pages'],[])
+        self.assertEqual(self.ok('search','--pages','backoff ceiling')['pages'],[])
         plan=backup.restore_plan(self.root,snapshot);governance.apply(self.root,plan['plan_id'],plan['digest'])
-        self.assertEqual(len(self.ok('doc','search','backoff ceiling')['pages']),1)   # no hook on restore: the walk found it
+        self.assertEqual(len(self.ok('search','--pages','backoff ceiling')['pages']),1)   # no hook on restore: the walk found it
 
     def test_removed_notebooks_leave_the_index(self):
         planned=docs.delete_notebook(self.root,'demo','nb1',with_pages=True);governance.apply(self.root,planned['plan_id'],planned['digest'])
-        self.assertEqual(self.ok('doc','search','backoff')['pages'],[])
+        self.assertEqual(self.ok('search','--pages','backoff')['pages'],[])
         db=docs_index._readonly(self.root,'demo')
         try:self.assertEqual(db.execute('SELECT count(*) FROM file').fetchone()[0],0)
         finally:db.close()
@@ -90,26 +89,26 @@ class Search(Fixture):
         for n in range(6):self.notebook(f'nb{n+2}');self.page('p.md',f'# P\n\nzephyr {n}\n'.encode(),f'nb{n+2}')
         docs_index.db_path(self.root,'demo').unlink()
         with patch('core.docs_index.WALK_SECONDS',0),patch('core.docs_index.INDEX_SECONDS',0):
-            first=self.ok('doc','search','zephyr')
+            first=self.ok('search','--pages','zephyr')
             self.assertTrue(first.get('pages_stale'))
             for _ in range(30):
-                if not self.ok('doc','search','zephyr').get('pages_stale'):break
-        self.assertEqual(len(self.ok('doc','search','zephyr','--limit','20')['pages']),6)
+                if not self.ok('search','--pages','zephyr').get('pages_stale'):break
+        self.assertEqual(len(self.ok('search','--pages','zephyr','--limit','20')['pages']),6)
 
     def test_a_damaged_index_is_rebuilt(self):
         docs_index.db_path(self.root,'demo').write_bytes(b'not a database')
-        self.assertEqual(len(self.ok('doc','search','backoff')['pages']),1)
-        self.assertEqual(len(self.ok('doc','search','backoff','--rebuild')['pages']),1)
+        self.assertEqual(len(self.ok('search','--pages','backoff')['pages']),1)
+        self.assertEqual(len(self.ok('search','--pages','backoff','--rebuild')['pages']),1)
 
     def test_credentials_are_redacted_in_snippets(self):
         self.page('Keys.md',b'# Keys\n\nThe deploy key is AKIAIOSFODNN7EXAMPLE for the zephyr bucket.\n')
-        snippet=self.ok('doc','search','zephyr bucket')['pages'][0]['snippet']
+        snippet=self.ok('search','--pages','zephyr bucket')['pages'][0]['snippet']
         self.assertNotIn('AKIAIOSFODNN7EXAMPLE',snippet);self.assertIn('<redacted',snippet)
 
     def test_a_linked_notebook_folder_is_not_indexed(self):
         outside=self.base/'outside';outside.mkdir();(outside/'notebook.json').write_text('{"title":"x"}');(outside/'x.md').write_text('zephyr outside\n')
         if not junction(self.root/'domains/demo/notebooks/linked',outside):self.skipTest('no symlink or junction')
-        self.assertEqual(self.ok('doc','search','zephyr')['pages'],[])
+        self.assertEqual(self.ok('search','--pages','zephyr')['pages'],[])
 
     def test_terminal_output_lists_pages(self):
         text=render.render(self.ok('search','backoff ceiling'))

@@ -49,7 +49,7 @@ TOPICS={
  'history':('Operation history',"History: CMD log [--project P] [--since DATE]."),
  'pages':('Notebook pages (doc commands)',
   "Notebook pages are not notes: read them with CMD doc read, and change them only with CMD doc propose, which the user reviews. Pages of folder notebooks too: `doc read --file`, `doc propose --file`."
-  "\nFind: CMD doc search 'words' (search and ask list pages too, under pages). Read: CMD doc notebooks; CMD doc list DOMAIN NOTEBOOK; CMD doc read DOMAIN NOTEBOOK PATH (the reply carries the page's revision)."
+  "\nFind: CMD search 'words' --pages (search and ask list pages too, under pages). Read: CMD doc notebooks; CMD doc list DOMAIN NOTEBOOK; CMD doc read DOMAIN NOTEBOOK PATH (the reply carries the page's revision)."
   "\nPropose: CMD doc propose DOMAIN NOTEBOOK PATH --base-revision REV --note 'Why' with the whole new text on stdin or in --body-file FILE;"
   " leave out --base-revision for a new page. CMD proposals --kind page lists the pending ones."
   "\nFolder notebooks (a registered folder of Markdown outside the store): CMD doc read --file PATH, then CMD doc propose --file PATH --base-revision REV --body-file FILE; an Edit or Write on one of their .md or .markdown files is refused. The user settles each proposal in Hivemind's Inbox. Private notebooks are never shown to agents."),

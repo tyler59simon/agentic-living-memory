@@ -100,7 +100,7 @@ class Pages(Fixture):
 
     def test_pages_are_not_notes(self):
         self.notebook();self.page('Cache.md',b'The local cache is rebuildable.\n')
-        self.assertEqual(self.ok('list')['notes'],[])
+        self.assertEqual(self.ok('search')['notes'],[])
         self.assertEqual(self.ok('validate','demo').get('issues',[]),[])
 
 
@@ -399,7 +399,7 @@ class NotebookOnlyDomains(Fixture):
         self.assertEqual(self.ok('validate','journal').get('issues',[]),[])
         docs.create_notebook(self.root,'journal','days','Days');docs.create_page(self.root,'journal','days','today.md',b'x')
         code,text=self.fails('unbind','journal');self.assertIn('notebook pages',text)
-        self.ok('list','--all-domains')
+        self.ok('search','--all-domains')
         self.ok('bind','journal',str(self.base/'journal-folder'))
         entry=read_json(self.root/'bindings.json')['domains']['journal'];self.assertNotIn('notebook_only',entry)
         self.assertTrue((self.root/'domains'/'journal'/'notes').is_dir())
@@ -409,7 +409,7 @@ class NotebookOnlyDomains(Fixture):
         self.note();self.ok('domain','create','journal','--notebook-only')
         docs.create_notebook(self.root,'journal','days','Days');docs.create_page(self.root,'journal','days','Cache.md',b'The local cache is rebuildable. PAGE-ONLY-WORD\n')
         docs.create_notebook(self.root,'demo','nb1','Notebook');docs.create_page(self.root,'demo','nb1','Cache.md',b'PAGE-ONLY-WORD\n')
-        for argv in (('list','--all-domains'),('links','--all-domains'),('review','--all-domains'),('open','--all-domains'),('recap','--all-domains'),('search','PAGE-ONLY-WORD')):
+        for argv in (('search','--all-domains'),('search','--links','--all-domains'),('review','--all-domains'),('open','--all-domains'),('recap','--all-domains'),('search','PAGE-ONLY-WORD')):
             # NS-2B: search lists pages in their own `pages` array, never among notes
             with self.subTest(argv=argv):self.assertNotIn('PAGE-ONLY-WORD',json.dumps({k:v for k,v in self.ok(*argv).items() if k!='pages'}))
 
