@@ -44,7 +44,7 @@ def _files(folder,unread=None):
             try:
                 if _is_link(Path(e.path)):continue
                 if e.is_dir(follow_symlinks=False):stack.append(path)
-                elif e.is_file(follow_symlinks=False) and not is_os_junk(e.name):found[path]=Path(e.path)
+                elif e.is_file(follow_symlinks=False) and not is_os_junk(e.path):found[path]=Path(e.path)
             except OSError:continue
     return found
 
@@ -54,7 +54,7 @@ def _assets(folder):
     from .docs import _is_link
     base=Path(folder)/'assets'
     if not base.is_dir() or _is_link(base):return {}
-    return {p.name:p for p in sorted(base.iterdir()) if p.is_file() and not _is_link(p) and not is_os_junk(p.name)}
+    return {p.name:p for p in sorted(base.iterdir()) if p.is_file() and not _is_link(p) and not is_os_junk(p)}
 
 
 def _prune_dirs(base):

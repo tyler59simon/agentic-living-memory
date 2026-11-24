@@ -438,7 +438,7 @@ def _note_files(root, directory):
                     raise ValueError("Symbolic links are not allowed in the store")
                 if entry.is_dir(follow_symlinks=False):
                     pending.append(Path(entry.path))
-                elif os.path.normcase(entry.name).endswith(".md") and not is_os_junk(entry.name):
+                elif os.path.normcase(entry.name).endswith(".md") and not is_os_junk(entry.path):
                     found.append((Path(entry.path), entry.stat(follow_symlinks=False)))
     return sorted(found, key=lambda item: item[0])
 
@@ -695,6 +695,19 @@ def _move_blob(root, operation_id, effect, desired):
     _copy_into((folder / want).read_bytes(), folder, path)
 
 
+def _distinct_entries(root, old, new):
+    """True when the two paths differ in a part their folder lists under both spellings: two real entries (Linux hard
+    links), not one name spelled two ways, so a rename between them would do nothing."""
+    base = Path(root)
+    for a, b in zip(Path(old).parts, Path(new).parts):
+        if a != b:
+            listed = set(os.listdir(base))
+            if a in listed and b in listed:
+                return True
+        base = base / b
+    return False
+
+
 def _fold_case_renames(root, changes, expected):
     """(changes, expected, renames) with each "delete Note.md + write note.md" pair that names ONE file reduced
     to the write. On a case-insensitive filesystem the two spellings are the same file, so writing the new text
@@ -708,10 +721,7 @@ def _fold_case_renames(root, changes, expected):
             if str(old) == str(new) or not same_name(old, new):
                 continue
             try:
-                # Two hard links (Linux allows both spellings as separate entries) are two names, not one: only collapse
-                # when the folder lists a single entry for them.
-                names = {Path(old).name, Path(new).name}
-                same = os.path.samefile(root / old, root / new) and not (len(names) == 2 and names <= set(os.listdir((root / new).parent)))
+                same = os.path.samefile(root / old, root / new) and not _distinct_entries(root, old, new)
             except OSError:
                 same = False
             if same:

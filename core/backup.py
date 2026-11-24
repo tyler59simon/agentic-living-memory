@@ -47,7 +47,7 @@ def canonical_files(root):
         for folder in ('notes','archive'):
             base=domain/folder
             if base.is_dir() and not base.is_symlink():
-                found+=sorted(p.relative_to(root).as_posix() for p in base.rglob('*.md') if p.is_file() and not p.is_symlink() and not is_os_junk(p.name))
+                found+=sorted(p.relative_to(root).as_posix() for p in base.rglob('*.md') if p.is_file() and not p.is_symlink() and not is_os_junk(p))
         found+=notebook_files(root,domain)
     return found
 

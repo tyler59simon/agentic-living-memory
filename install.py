@@ -194,7 +194,7 @@ def _launcher_state(path: Path):
 
 
 def _norm_dir(text):
-    return os.path.normcase(os.path.normpath(os.path.expanduser(os.path.expandvars(text))))
+    return os.path.normcase(os.path.normpath(os.path.expandvars(text)))
 
 
 def _on_path(folder, path_value, sep):
@@ -239,7 +239,8 @@ def _registry_path():
 def _profile():
     shell = os.path.basename(os.environ.get('SHELL', ''))
     home = Path.home()
-    return Path(os.environ.get('ZDOTDIR') or home) / '.zprofile' if shell == 'zsh' else home / '.bash_profile' if shell == 'bash' and (home / '.bash_profile').exists() else home / '.profile'
+    zdot = os.environ.get('ZDOTDIR', '')
+    return Path(zdot if os.path.isabs(zdot) else home) / '.zprofile' if shell == 'zsh' else home / '.bash_profile' if shell == 'bash' and (home / '.bash_profile').exists() else home / '.profile'
 
 
 def _path_plan():

@@ -167,6 +167,15 @@ def _env():
     return dict(os.environ, LIVING_MEMORY_MAINTENANCE_CHILD='1', LIVING_MEMORY_NO_BACKGROUND='1')
 
 
+def _install_folders():
+    """Where claude is installed off Windows when PATH lacks it (a hook or a macOS app may run with a short PATH). Home
+    folders only when the home directory is known and absolute."""
+    try:home = Path.home()
+    except (RuntimeError, KeyError):home = None
+    found = [home / '.local/bin/claude', home / '.claude/local/claude'] if home is not None and home.is_absolute() else []
+    return found + [Path('/opt/homebrew/bin/claude'), Path('/usr/local/bin/claude')]
+
+
 def provider(cfg=None, executable=None):
     """{ok, argv} for the installed claude, or {ok: False, reason_code}. `executable` (an argv prefix) is for tests; otherwise
     LIVING_MEMORY_CLAUDE (the absolute path of the native claude executable) is tried, then PATH, then the usual install folders
@@ -181,8 +190,7 @@ def provider(cfg=None, executable=None):
         executable = [chosen]
     if executable is None:
         found = shutil.which('claude') or (None if os.name == 'nt' else next(
-            (str(p) for p in (Path.home() / '.claude/local/claude', Path.home() / '.local/bin/claude', Path('/opt/homebrew/bin/claude'),
-                              Path('/usr/local/bin/claude')) if p.is_file() and os.access(p, os.X_OK)), None))
+            (str(p) for p in _install_folders() if p.is_file() and os.access(p, os.X_OK)), None))
         if not found:
             return {'ok': False, 'reason_code': 'provider_unavailable'}
         if found.lower().endswith(('.cmd', '.bat')):

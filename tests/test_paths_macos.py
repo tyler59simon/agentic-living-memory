@@ -52,9 +52,23 @@ class FoldTest(unittest.TestCase):
             self.assertTrue(paths.is_within(base/'a',base/'a'))
             self.assertFalse(paths.is_within(base/'ab',base/'a'))
 
-    def test_os_junk(self):
-        self.assertTrue(paths.is_os_junk('.DS_Store'));self.assertTrue(paths.is_os_junk('/x/._Note.md'))
-        self.assertFalse(paths.is_os_junk('Note.md'))
+    def test_os_junk_is_known_by_name_and_content(self):
+        """Codex F1 (215742f): a page named ._draft.md is a page, not an AppleDouble file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp)
+            (base/'.DS_Store').write_bytes(paths.DS_STORE+b'\x00');(base/'._Note.md').write_bytes(paths.APPLEDOUBLE+b'\x00\x02')
+            (base/'._draft.md').write_text('# Draft',encoding='utf-8');(base/'Note.md').write_bytes(paths.APPLEDOUBLE)
+            self.assertTrue(paths.is_os_junk(base/'.DS_Store'));self.assertTrue(paths.is_os_junk(base/'._Note.md'))
+            self.assertFalse(paths.is_os_junk(base/'._draft.md'));self.assertFalse(paths.is_os_junk(base/'Note.md'))
+            self.assertFalse(paths.remove_empty_dir(base));self.assertTrue((base/'._draft.md').exists())
+
+    def test_cleanup_never_follows_a_link(self):
+        """Codex F2 (215742f): a linked folder's Finder files were deleted before rmdir refused the link."""
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);outside=base/'outside';outside.mkdir();(outside/'.DS_Store').write_bytes(paths.DS_STORE)
+            try:os.symlink(outside,base/'link',target_is_directory=True)
+            except (OSError,NotImplementedError):self.skipTest('cannot create a directory symlink here')
+            self.assertFalse(paths.remove_empty_dir(base/'link'));self.assertTrue((outside/'.DS_Store').exists())
 
 
 class RenameTest(unittest.TestCase):
@@ -64,6 +78,14 @@ class RenameTest(unittest.TestCase):
         with patch('core.repository.os.path.samefile',return_value=True),patch('core.repository.os.listdir',return_value=[NFC]):
             left,_,renames=repository._fold_case_renames(Path('/store'),changes,None)
         self.assertEqual(list(left),[Path('notes')/NFD]);self.assertEqual(renames,[(Path('notes')/NFC,Path('notes')/NFD)])
+
+    def test_hard_links_under_two_folder_spellings_are_two_names(self):
+        """Codex F4 (215742f): the folders differ in Unicode spelling, the file names are equal."""
+        a,b='\u0391\u0345\u0301','\u03b1\u03b9\u0301'
+        changes={Path(a)/'x.md':None,Path(b)/'x.md':'text'}
+        with patch('core.repository.os.path.samefile',return_value=True),patch('core.repository.os.listdir',return_value=[a,b]):
+            left,_,renames=repository._fold_case_renames(Path('/store'),changes,None)
+        self.assertEqual((len(left),renames),(2,[]))
 
     def test_two_hard_links_are_two_names(self):
         """Codex F6: on Linux both spellings can be hard links to one file; renaming one onto the other does nothing."""
@@ -105,9 +127,9 @@ class MacRuntimeTest(StoreFixture):
         """A ._ file on an exFAT or SMB vault is binary: sync crashed on it, then would have tried to capture it."""
         from core.sync import sync
         a=self.note();vault=self.base/'vault';folder=vault/'Domains'/'demo';folder.mkdir(parents=True)
-        (folder/Path(a['path']).name).write_text(Path(a['path']).read_text(encoding='utf-8'),encoding='utf-8')
+        (folder/Path(a['path']).name).write_bytes(Path(a['path']).read_bytes())
         (folder/('._'+Path(a['path']).name)).write_bytes(b'\x00\x05\x16\x07\xff\xfe\x80 Mac OS X')
-        (folder/'.DS_Store').write_bytes(b'\x00\x00\x00\x01Bud1\xff')
+        (folder/'.DS_Store').write_bytes(paths.DS_STORE+b'\xff')
         result=sync('demo',vault,self.root)
         self.assertEqual((result['staged'],result['copied']),(0,0),result)
 
@@ -139,10 +161,17 @@ class MacRuntimeTest(StoreFixture):
         validate_store(self.root)   # raised "Unreadable frontmatter" for the ._ file
 
     def test_a_folder_holding_only_finder_files_counts_as_empty(self):
-        folder=self.base/'section';folder.mkdir();(folder/'.DS_Store').write_bytes(b'\x00')
+        folder=self.base/'section';folder.mkdir();(folder/'.DS_Store').write_bytes(paths.DS_STORE)
         self.assertTrue(paths.remove_empty_dir(folder));self.assertFalse(folder.exists())
         kept=self.base/'kept';kept.mkdir();(kept/'page.md').write_text('x')
         self.assertFalse(paths.remove_empty_dir(kept));self.assertTrue((kept/'page.md').exists())
+
+    def test_maintenance_install_folders_without_a_home(self):
+        """Codex F7 (215742f): Path.home() raised when HOME was unset and the user had no passwd entry."""
+        from core import maintenance_agent
+        with patch('core.maintenance_agent.Path.home',side_effect=RuntimeError('no home')):
+            found=maintenance_agent._install_folders()
+        self.assertEqual([p.as_posix() for p in found],['/opt/homebrew/bin/claude','/usr/local/bin/claude'])
 
     def test_maintenance_provider_reads_LIVING_MEMORY_CLAUDE(self):
         from core import maintenance_agent
@@ -163,6 +192,26 @@ class InstallerTest(unittest.TestCase):
             self.assertFalse(install._path_stale(change))
             install._add_to_path_posix(change)
             self.assertTrue(profile.read_bytes().startswith(b'export A=1\r\nexport B=2\r\n'));self.assertTrue(install._path_done(change))
+
+    def test_a_relative_zdotdir_is_ignored(self):
+        """Codex F5 (215742f): a relative ZDOTDIR made the planned profile depend on the working folder."""
+        import install
+        with patch.dict(os.environ,{'SHELL':'/bin/zsh','ZDOTDIR':'rel/zsh'}):
+            self.assertEqual(install._profile(),Path.home()/'.zprofile')
+        with tempfile.TemporaryDirectory() as tmp,patch.dict(os.environ,{'SHELL':'/bin/zsh','ZDOTDIR':tmp}):
+            self.assertEqual(install._profile(),Path(tmp)/'.zprofile')
+
+    @unittest.skipUnless(os.name=='nt','junctions are Windows links')
+    def test_install_target_that_is_a_junction_is_refused(self):
+        """Codex F3 (215742f): a junction leaf was not refused, so it could alias the live store."""
+        import subprocess
+        from core import installer_lifecycle
+        with tempfile.TemporaryDirectory() as tmp:
+            real=Path(tmp)/'real';real.mkdir();link=Path(tmp)/'link'
+            if subprocess.run(['cmd','/c','mklink','/J',str(link),str(real)],capture_output=True).returncode:self.skipTest('no junction')
+            try:
+                with self.assertRaises(installer_lifecycle.PathSafetyError):installer_lifecycle.build_plan(link)
+            finally:os.rmdir(link)
 
     def test_install_target_under_a_linked_folder(self):
         """macOS /tmp and /var are links into /private; the installer refused any linked ancestor."""

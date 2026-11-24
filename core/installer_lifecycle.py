@@ -362,13 +362,17 @@ def build_plan(target: str | Path, source: str | Path | None = None, uninstall: 
     requested_target = Path(os.path.abspath(Path(target).expanduser()))
     # Ancestors resolved once (macOS /var and /tmp are links to /private/...); the target itself stays as named, so a link there is refused.
     target_root = Path(os.path.realpath(requested_target.parent)) / requested_target.name
+    if os.path.islink(target_root) or getattr(os.path, "isjunction", lambda p: False)(target_root):
+        raise PathSafetyError("Installation target is a symbolic link")
+    # Overlap checks use the target's real path: an existing leaf may be a short (8.3) or other alias of the store.
+    target_real = Path(os.path.realpath(target_root))
     source_abs = source_root.resolve()
     try:
-        source_abs.relative_to(target_root)
+        source_abs.relative_to(target_real)
         overlaps = True
     except ValueError:
         try:
-            target_root.relative_to(source_abs)
+            target_real.relative_to(source_abs)
             overlaps = True
         except ValueError:
             overlaps = False
@@ -378,7 +382,7 @@ def build_plan(target: str | Path, source: str | Path | None = None, uninstall: 
         live_store = Path(os.path.realpath(memory_root()))
     except ValueError:
         live_store = None  # No store configured yet: nothing the target could alias.
-    if live_store is not None and (target_root == live_store or target_root in live_store.parents or live_store in target_root.parents):
+    if live_store is not None and (target_real == live_store or target_real in live_store.parents or live_store in target_real.parents):
         raise PathSafetyError("Installation target aliases or overlaps the live memory store")
     if target_root.exists() and target_root.is_symlink():
         raise PathSafetyError("Installation target is a symbolic link")

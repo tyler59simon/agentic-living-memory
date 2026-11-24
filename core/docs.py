@@ -285,7 +285,7 @@ def _files(folder):
         dirs[:] = [d for d in dirs if not _is_link(Path(current) / d)]
         for name in names:
             full = Path(current) / name
-            if not _is_link(full) and not is_os_junk(name):
+            if not _is_link(full) and not is_os_junk(full):
                 out.append(full.relative_to(folder).as_posix())
     return sorted(out)
 

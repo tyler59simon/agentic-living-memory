@@ -211,7 +211,7 @@ def sync(domain,vault,root=None,trigger=None):
         moved={}
         for path in sorted((vault/NOTES/domain).rglob('*.md')) if (vault/NOTES/domain).is_dir() else []:
             rel=path.relative_to(vault).as_posix()
-            if rel in overlays or is_os_junk(path.name):continue
+            if rel in overlays or is_os_junk(path):continue
             try:found=parse_text(_text(path) or '',path)
             except UnicodeDecodeError:continue   # not a note; the capture scan below reports it
             note_id=found.get('id') if found else None
@@ -363,7 +363,7 @@ def sync(domain,vault,root=None,trigger=None):
         # New drafts: (path_rel, hash read, note id, title, managed copy rel, canonical write or None for a replay).
         # Canonical captures are committed after the drafts are re-checked, just before the vault write.
         drafts=[];captured_ids=set()
-        for path in (p for d in scan_dirs if d.is_dir() for p in sorted(d.rglob('*.md')) if not is_os_junk(p.name)):
+        for path in (p for d in scan_dirs if d.is_dir() for p in sorted(d.rglob('*.md')) if not is_os_junk(p)):
             confined(vault,path.relative_to(vault));path_rel=path.relative_to(vault).as_posix()
             if path_rel in known_paths or path_rel in view_changes:continue
             if _recent(path):deferred+=1;continue
