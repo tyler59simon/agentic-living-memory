@@ -19,8 +19,8 @@
   {"hook": "user-prompt", "payload": {"prompt": "what are the deploy steps for the hook setup"}, "expect": {"inject": ["@deploy"], "gates": {"@db": null}}},
   {"hook": "user-prompt", "payload": {"prompt": "banana orchard harvest schedule"}, "expect": {"inject": [], "path": "overview_done"}},
   {"session": "s2"},
-  {"hook": "user-prompt", "payload": {"prompt": "banana orchard harvest schedule"}, "expect": {"inject": [], "path": "overview", "context_contains": ["Recent titles in this domain", "{short:@db}"]}},
+  {"hook": "user-prompt", "not_for": ["antigravity"], "payload": {"prompt": "banana orchard harvest schedule"}, "expect": {"inject": [], "path": "overview", "context_contains": ["Recent titles in this domain", "{short:@db}"]}},
   {"session": "s3"},
-  {"hook": "user-prompt", "payload": {"prompt": "banana"}, "expect": {"inject": [], "path": "too_short"}}
+  {"hook": "user-prompt", "not_for": ["antigravity"], "payload": {"prompt": "banana"}, "expect": {"inject": [], "path": "too_short"}}
  ]
 }

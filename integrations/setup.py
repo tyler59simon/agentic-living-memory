@@ -222,8 +222,8 @@ def _reader(home):
     return read,read_config,read_set
 
 def _antigravity_plan(home,uninstall,adopt):
-    """Own one named hook group in Antigravity's shared config file."""
-    _,read_config,read_set=_reader(home)
+    """Own one named hook group in Antigravity's shared config file and the managed block in its global GEMINI.md."""
+    read,read_config,read_set=_reader(home)
     name=CONFIG['antigravity']
     current=read_config(name,{})
     state=read_config(ANTIGRAVITY_OWNERSHIP,{})
@@ -231,16 +231,31 @@ def _antigravity_plan(home,uninstall,adopt):
         raise ValueError(f'Invalid Antigravity hook configuration or ownership record preserved under {home}')
     previous=managed_handlers(current,'antigravity')
     wanted={} if uninstall else hooks('antigravity')
-    summary={'harness':'antigravity','hooks':not uninstall,'package':str(ROOT),'interpreter':sys.executable,'sandbox':'unchanged'}
+    summary={'harness':'antigravity','hooks':not uninstall,'package':str(ROOT),'interpreter':sys.executable,'sandbox':'unchanged','trust':'native user review required',
+             'note':'Antigravity: wire format verified live with agy 1.5.15 on Windows; the CLI and App read GEMINI.md from this folder, the IDE does not.'}
+    adopted={}
     if (previous or state) and digest(canonical_json(previous).encode())!=state.get('hooks_hash'):
         if not adopt:
             _refuse('Unknown or modified managed hook group',home/name,'antigravity',uninstall)
-        summary['adopt']={name:_diff(name,pretty(previous),pretty(wanted))}
+        adopted[name]=(pretty(previous),pretty(wanted))
+    instruction=INSTRUCTION_FILE['antigravity'];data=read(instruction)
+    original=data.decode('utf-8').replace('\r\n','\n').replace('\r','\n') if data is not None else ''
+    block=instruction_block('antigravity',True)
+    owned_hash=state.get('instruction_hash')
+    found=BLOCK.findall(original)
+    if len(found)==1 and digest(found[0].encode())!=owned_hash:
+        if not adopt:_refuse('Unknown or modified managed instructions',home/instruction,'antigravity',uninstall)
+        adopted[instruction]=(found[0],'' if uninstall else block);owned_hash=digest(found[0].encode())
+    text=merge_block(original,block,owned_hash,digest,uninstall)
+    if adopted:summary['adopt']={path:_diff(path,*texts) for path,texts in adopted.items()}
     updated={k:v for k,v in current.items() if k!=ANTIGRAVITY_GROUP}
     updated.update(wanted)
-    changes={ANTIGRAVITY_OWNERSHIP:None if uninstall else canonical_json({'hooks_hash':digest(canonical_json(wanted).encode())})}
+    changes={ANTIGRAVITY_OWNERSHIP:None if uninstall else canonical_json({'hooks_hash':digest(canonical_json(wanted).encode()),'instruction_hash':digest(block.encode())})}
     if wanted or previous:
         changes[name]=pretty(updated)
+    if data is not None or not uninstall:
+        # A GEMINI.md that held only the block is removed with it.
+        changes[instruction]=None if uninstall and not text.strip() else text
     return plan(home,changes,'antigravity_uninstall' if uninstall else 'antigravity_setup',summary=summary,guards={'read_set':read_set})
 
 def setup_plan(harness,home=None,enable_hooks=False,uninstall=False,adopt=False):

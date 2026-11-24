@@ -875,7 +875,7 @@ def touched_paths(args,payload,cwd,root,domain,bindings,shell=False):
         swallowed('runtime.touched_paths',exc,root);return []
 
 # Hosts whose PreToolUse output documents additionalContext (Claude Code; Codex since openai/codex#20692).
-# Copilot CLI and Factory document no PreToolUse context, so they get no hints.
+# Copilot CLI, Factory and Antigravity CLI document no PreToolUse context, so they get no hints.
 FILE_HINT_HARNESSES={'claude','codex'}
 MAX_FILE_HINTS=200
 HINT_FILES_PER_CALL=3
@@ -1319,9 +1319,11 @@ HANDOFF_BUDGET=1200
 HANDOFF_NOTES=5
 MAX_SURFACED=30
 MAX_DELIVERED=50   # notes whose delivered sections and levels a session remembers (injection.novel)
-# Hosts that hand PreCompact stdout to the summarizer as instructions (Codex ignores it; Factory only shows it).
+# Hosts that hand PreCompact stdout to the summarizer as instructions (Codex ignores it; Factory only shows it;
+# Antigravity has no compaction event).
 STEERED={'claude'}
-# Hosts whose transcript format core/recall.py reads (Factory's is undocumented).
+# Hosts whose transcript format core/recall.py reads (Factory's is undocumented; Antigravity's trajectory log is read
+# only for turn identity, in hooks/antigravity_hooks.py).
 RECALL_HARNESSES={'claude','codex'}
 UNCAPTURED='Uncaptured for Living Memory'
 

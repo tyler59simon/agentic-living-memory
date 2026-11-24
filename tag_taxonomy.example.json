@@ -19,6 +19,7 @@
     "platform/claude",
     "platform/copilot",
     "platform/factory",
+    "platform/antigravity",
     "technology/python",
     "technology/sqlite"
   ]

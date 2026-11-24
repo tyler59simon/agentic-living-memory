@@ -1,7 +1,7 @@
 """The one canonical static protocol, and the managed instruction-file block that carries it.
 
 Installers write the block into each harness's global instruction file (CLAUDE.md, Codex AGENTS.md,
-copilot-instructions.md, Factory AGENTS.md). SessionStart then injects only per-session data, unless the
+copilot-instructions.md, Factory AGENTS.md, Antigravity GEMINI.md). SessionStart then injects only per-session data, unless the
 installed block is missing or stale, in which case it injects the shorter fallback protocol so the agent
 always sees exactly one current copy of the rules."""
 from __future__ import annotations
@@ -17,7 +17,7 @@ FALLBACK_PROTOCOL='''Living Memory: use the Living Memory script (CMD) for all m
 
 BEGIN='<!-- agentic-living-memory:begin -->';END='<!-- agentic-living-memory:end -->'
 BLOCK=re.compile(re.escape(BEGIN)+r'.*?'+re.escape(END),re.S)
-INSTRUCTION_FILE={'claude':'CLAUDE.md','codex':'AGENTS.md','copilot':'copilot-instructions.md','factory':'AGENTS.md'}
+INSTRUCTION_FILE={'claude':'CLAUDE.md','codex':'AGENTS.md','copilot':'copilot-instructions.md','factory':'AGENTS.md','antigravity':'GEMINI.md'}
 GATE=('Living Memory applies only when this session\'s context contains a "Living Memory session=" line with a domain '
       '(hooks inject it at session start in bound projects); otherwise ignore this section. That hook context also gives '
       'CMD, the exact script command for the session\'s pinned domain, and the tag list; never work out the domain yourself.')

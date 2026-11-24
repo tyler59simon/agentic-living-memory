@@ -9,6 +9,7 @@ from unittest.mock import patch
 from core import runtime, wiring
 from core.capture import finalize, status
 from core.governance import apply
+from core.instructions import BEGIN, installed
 from core.init_domain import init_domain
 from core.notes import capture
 from core.repository import read_json
@@ -132,6 +133,15 @@ class AntigravityLifecycle(unittest.TestCase):
             result = self.hook('PreToolUse', toolCall={'name': 'run_command', 'args': args})
             self.assertEqual(result, {'decision': 'allow'})
 
+    def test_memory_commands_are_auto_approved(self):
+        self.hook('SessionStart', lastUserInput='hello')
+        command = f'"{sys.executable}" "{runtime.SCRIPT}" --json search quartz'
+        result = self.hook('PreToolUse', toolCall={'name': 'run_command', 'args': {'CommandLine': command, 'Cwd': str(self.cwd)}})
+        self.assertEqual(result['decision'], 'auto_approve')
+        self.assertTrue(result['reason'])
+        other = self.hook('PreToolUse', toolCall={'name': 'run_command', 'args': {'CommandLine': 'git status', 'Cwd': str(self.cwd)}})
+        self.assertEqual(other, {'decision': 'allow'})
+
     def test_observed_child_start_only_gets_subagent_context(self):
         self.assertEqual(self.hook('SessionStart', lastUserInput=''), {})
         result = self.hook('PreInvocation', invocationNum=0, initialNumSteps=0, lastUserInput='')
@@ -190,6 +200,49 @@ class AntigravitySetup(unittest.TestCase):
             setup.setup_plan('antigravity', home, uninstall=True)
         apply_setup(uninstall=True, adopt=True)
         self.assertEqual(read_json(path), {**unrelated, 'added-later': document['added-later']})
+        self.assertFalse((home / 'GEMINI.md').exists())
+
+    def test_gemini_instruction_block(self):
+        folder = tempfile.TemporaryDirectory(prefix='antigravity config ')
+        self.addCleanup(folder.cleanup)
+        home = Path(folder.name)
+        env = patch.dict(os.environ, {'ANTIGRAVITY_HOME': str(home)})
+        env.start()
+        self.addCleanup(env.stop)
+        rules = home / 'GEMINI.md'
+
+        def apply_setup(**kwargs):
+            plan = setup.setup_plan('antigravity', home, **kwargs)
+            return apply(home, plan['plan_id'], plan['digest'])
+
+        # An ownership record from the hooks-only build, with no block yet, upgrades without --adopt.
+        apply_setup()
+        ownership = home / setup.ANTIGRAVITY_OWNERSHIP
+        record = read_json(ownership)
+        ownership.write_text(json.dumps({'hooks_hash': record['hooks_hash']}), encoding='utf-8')
+        rules.write_text('# My rules\n\nUse tabs.\n', encoding='utf-8')
+        apply_setup()
+        text = rules.read_text(encoding='utf-8')
+        self.assertTrue(text.startswith('# My rules\n\nUse tabs.\n'))
+        self.assertEqual(text.count(BEGIN), 1)
+        self.assertTrue(installed('antigravity'))
+        self.assertEqual(wiring.check('antigravity', setup)['instructions'], 'current')
+        apply_setup()
+        self.assertEqual(rules.read_text(encoding='utf-8'), text)
+
+        rules.write_text(text.replace('Living Memory', 'Living  Memory', 1), encoding='utf-8')
+        self.assertFalse(installed('antigravity'))
+        self.assertEqual(wiring.check('antigravity', setup)['instructions'], 'stale_or_missing')
+        with self.assertRaisesRegex(ValueError, 'modified managed instructions'):
+            setup.setup_plan('antigravity', home)
+        plan = setup.setup_plan('antigravity', home, adopt=True)
+        self.assertIn('GEMINI.md', plan['summary']['adopt'])
+        apply(home, plan['plan_id'], plan['digest'])
+        self.assertEqual(rules.read_text(encoding='utf-8'), text)
+
+        apply_setup(uninstall=True)
+        self.assertEqual(rules.read_text(encoding='utf-8').strip(), '# My rules\n\nUse tabs.')
+        self.assertNotIn(setup.ANTIGRAVITY_GROUP, read_json(home / 'hooks.json'))
 
 
 if __name__ == '__main__':

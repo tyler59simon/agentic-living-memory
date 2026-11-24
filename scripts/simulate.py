@@ -9,7 +9,7 @@ decision detail (core/logs.py). Invariants run after every step: one log line pe
 injected refs that match the delivered text and the usage diary, no scenario secret in logs, diary or session
 state, and no error line without an injected fault. Each scenario ends with validate and doctor.
 
-    py -3.15 scripts/simulate.py [--scenario NAME|all] [--harness claude|codex|copilot|factory|all]
+    py -3.15 scripts/simulate.py [--scenario NAME|all] [--harness claude|codex|copilot|factory|antigravity|all]
                                  [--subprocess] [--package DIR] [--content] [--keep] [--out FILE] [--json]
 
 In-process (the default) calls each adapter's main() with patched argv/stdin/stdout. --subprocess runs the hook
@@ -25,11 +25,19 @@ from unittest.mock import patch
 
 REPO=Path(__file__).resolve().parents[1]
 SCENARIOS=REPO/'tests'/'scenarios'
-HARNESSES=('claude','codex','copilot','factory')
+HARNESSES=('claude','codex','copilot','factory','antigravity')
 DEFAULT_TAGS=['subject/project','concern/decision']
 DEFAULT_TAXONOMY=['subject/project','subject/user','concern/decision','concern/knowledge','concern/preference','concern/architecture','concern/workflow']
 # Copilot's native event names (hooks/copilot_hooks.py EVENTS, reversed).
 COPILOT={'session-start':'sessionStart','user-prompt':'userPromptTransformed','subagent-start':'subagentStart','pre-tool-use':'preToolUse','stop':'agentStop'}
+# Antigravity's native event names (hooks/antigravity_hooks.py EVENTS). A user turn arrives as the first PreInvocation of the turn.
+ANTIGRAVITY={'session-start':'SessionStart','user-prompt':'PreInvocation','pre-tool-use':'PreToolUse','stop':'Stop'}
+# Claude tool names -> (Antigravity tool, its argument names for the Claude tool_input keys). Agent/Task have no Antigravity hook tool.
+ANTIGRAVITY_TOOLS={'Bash':('run_command',{'command':'CommandLine'}),'PowerShell':('run_command',{'command':'CommandLine'}),
+                   'Write':('write_to_file',{'file_path':'TargetFile'}),'Edit':('replace_file_content',{'file_path':'TargetFile'}),
+                   'MultiEdit':('multi_replace_file_content',{'file_path':'TargetFile'}),'NotebookEdit':('notebook_edit',{'notebook_path':'NotebookPath'}),
+                   'Read':('view_file',{'file_path':'AbsolutePath'}),'Glob':('find_by_name',{'path':'SearchDirectory','pattern':'Pattern'}),
+                   'Grep':('grep_search',{'path':'SearchPath'})}
 FAULTS={'OSError':OSError,'ValueError':ValueError,'RuntimeError':RuntimeError,'TimeoutError':TimeoutError}
 
 class Sim:
@@ -37,7 +45,7 @@ class Sim:
     def __init__(self,scenario,harness,package,subprocess_mode,content,base):
         self.scenario=scenario;self.harness=harness;self.package=package;self.sub=subprocess_mode;self.content=content
         self.base=base;self.root=base/'store';self.project=base/'project';self.vars={};self.keys={}
-        self.session='s1';self.turns=0;self.fault=None;self.fault_skipped=False;self.results=[];self.extra={}
+        self.session='s1';self.turns=0;self.steps={};self.executions=0;self.fault=None;self.fault_skipped=False;self.results=[];self.extra={}
 
     # ---- environment and store ----
     def env(self):
@@ -155,6 +163,7 @@ class Sim:
             from integrations import setup
             groups=setup.hooks(self.harness)
             if self.harness=='copilot':self._wired={e for e,n in COPILOT.items() if n in groups['hooks']}
+            elif self.harness=='antigravity':self._wired={e for e,n in ANTIGRAVITY.items() if n in groups[setup.ANTIGRAVITY_GROUP]}
             else:self._wired={{**setup.EVENTS,'SessionEnd':'session-end'}[e] for e in groups}
             self._matcher=re.compile(f'(?:{setup.PRE_TOOL_MATCHER})\\Z') if self.harness in {'claude','factory'} else None
         return self._wired
@@ -171,7 +180,33 @@ class Sim:
             if 'tool_input' in p:p['toolArgs']=json.dumps(p.pop('tool_input'))
             if 'prompt' in p:p['transformedPrompt']=p['prompt']
             p['timestamp']=int(time.time()*1000)
+        if self.harness=='antigravity':p=self.antigravity_payload(event,p)
         return p
+
+    def antigravity_payload(self,event,p):
+        """The CLI's wire format: the conversation is identified by its artifact folder, a user turn by the trajectory step count
+        and a USER_INPUT row at the step before it in transcript_full.jsonl (hooks/antigravity_hooks.py reads only step types)."""
+        artifact=self.base/'agy'/'antigravity-cli'/'brain'/self.session
+        transcript=artifact/'.system_generated'/'logs'/'transcript_full.jsonl'
+        transcript.parent.mkdir(parents=True,exist_ok=True)
+        wire={'hookEventName':ANTIGRAVITY[event],'conversationId':self.session,'cwd':p['cwd'],
+              'artifactDirectoryPath':str(artifact),'transcriptPath':str(transcript)}
+        if p.get('permission_mode'):wire['permissionMode']=p['permission_mode']
+        if p.get('agent_id'):wire['agentId']=p['agent_id']
+        if event=='session-start':
+            wire['lastUserInput']='Start the session.'   # the CLI fires SessionStart with the first prompt
+        elif event=='user-prompt':
+            steps=self.steps.get(self.session,0)
+            with transcript.open('a',encoding='utf-8') as fd:fd.write(json.dumps({'step_index':steps,'type':'USER_INPUT'})+'\n')
+            self.steps[self.session]=steps+4   # the prompt plus model and tool steps before the next turn
+            wire.update(invocationNum=0,initialNumSteps=steps+1,lastUserInput=p.get('prompt',''))
+        elif event=='pre-tool-use':
+            native,names=ANTIGRAVITY_TOOLS[p['tool_name']];given=p.get('tool_input') or {}
+            wire['toolCall']={'name':native,'args':{names[k]:v for k,v in given.items() if k in names}}
+        elif event=='stop':
+            self.executions+=1
+            wire.update(fullyIdle=True,terminationReason='NO_TOOL_CALL',executionNum=self.executions,continuationActive=bool(p.get('stop_hook_active')))
+        return wire
 
     def call_hook(self,native,wire):
         raw=json.dumps(wire)
@@ -199,6 +234,10 @@ class Sim:
                 prefix=str(wire.get('transformedPrompt',wire.get('prompt','')))+'\n\n';m=out['modifiedTransformedPrompt']
                 n['context']=m[len(prefix):] if m.startswith(prefix) else m
             decision=out.get('permissionDecision');reason=out.get('permissionDecisionReason')
+        elif self.harness=='antigravity':
+            n['context']='\n'.join(s['systemMessage']['systemMessage'] for s in out.get('injectSteps',[])) or None
+            decision={'auto_approve':'allow','deny':'deny'}.get(out.get('decision'));reason=out.get('reason')
+            if out.get('decision')=='continue':n['reminder']=reason
         else:
             body=out.get('hookSpecificOutput') or {}
             if body.get('hookEventName')=='Stop':n['reminder']=body.get('additionalContext')
@@ -226,6 +265,7 @@ class Sim:
         record={'i':i,'kind':'hook' if 'hook' in step else 'cli' if 'cli' in step else 'fault' if 'fault' in step else 'session','harness':self.harness,'ok':True,'failures':[]}
         fail=record['failures'].append
         if step.get('only') and self.harness not in step['only']:record.update(skipped='not for this harness');return record
+        if self.harness in step.get('not_for',[]):record.update(skipped='not for this harness');return record
         if 'session' in step and len(step)==1:self.session=step['session'];record['event']='session';return record
         if 'git_commit' in step:record['event']='git_commit';self.git_commit(step['git_commit']);return record
         if 'fault' in step:
@@ -255,8 +295,10 @@ class Sim:
         if 'session' in step:self.session=step['session']
         if event=='pre-tool-use' and self._matcher and not self._matcher.match(str(given.get('tool_name',''))):
             record.update(skipped=f"{self.harness} does not send {given.get('tool_name')} to the hook");return
+        if event=='pre-tool-use' and self.harness=='antigravity' and given.get('tool_name') not in ANTIGRAVITY_TOOLS:
+            record.update(skipped=f"antigravity has no hooked tool for {given.get('tool_name')}");return
         wire=self.payload(event,given)
-        native=COPILOT.get(event,event) if self.harness=='copilot' else event
+        native=COPILOT.get(event,event) if self.harness=='copilot' else ANTIGRAVITY[event] if self.harness=='antigravity' else event
         stdout,stderr=self.call_hook(native,wire)
         try:reply=self.parse(event,stdout,wire)
         except AssertionError as error:fail(str(error));return
@@ -283,6 +325,9 @@ class Sim:
     def invariants(self,step,expect,record,new,diary,faulted,fail):
         kind='hook' if 'hook' in step else 'command'
         mine=[r for r in new if r.get('kind')==kind]
+        if kind=='hook' and self.harness=='antigravity' and record['event']=='user-prompt':
+            # The first PreInvocation of a turn also closes a turn left open (a quiet stop) and briefs a session that had no SessionStart.
+            mine=[r for r in mine if r.get('event')=='user-prompt']
         detail={}
         if kind=='hook':
             event=record['event']

@@ -15,7 +15,7 @@
   {"hook": "stop", "expect": {"stop_reason": "files_only", "reminder": null}},
   {"fault": "core.sync.sync_all", "raise": "OSError", "only": ["claude"]},
   {"hook": "session-end", "only": ["claude"], "expect": {"internal": ["runtime.sync_vaults"], "level": "info"}},
-  {"fault": "core.session_start.build_context", "raise": "RuntimeError"},
-  {"hook": "session-start", "expect": {"level": "error", "system_message": true}, "expect_by_harness": {"copilot": {"level": "error", "system_message": false}}}
+  {"not_for": ["antigravity"], "fault": "core.session_start.build_context", "raise": "RuntimeError"},
+  {"hook": "session-start", "not_for": ["antigravity"], "expect": {"level": "error", "system_message": true}, "expect_by_harness": {"copilot": {"level": "error", "system_message": false}}}
  ]
 }

@@ -10,6 +10,6 @@
   {"hook": "user-prompt", "payload": {"cwd": "{base}/elsewhere", "prompt": "what is our cache eviction policy"}, "expect": {"inject": [], "context_excludes": ["{short:@cache}"]}},
   {"hook": "pre-tool-use", "payload": {"cwd": "{base}/elsewhere", "tool_name": "Edit", "tool_input": {"file_path": "{base}/elsewhere/app.py"}}, "expect": {"deny": false}},
   {"hook": "stop", "payload": {"cwd": "{base}/elsewhere"}, "expect": {"stop_reason": "unbound", "reminder": null}},
-  {"hook": "session-start", "payload": {"cwd": "{base}/elsewhere"}, "expect": {"detail": {"bind_hint": false}}}
+  {"hook": "session-start", "not_for": ["antigravity"], "payload": {"cwd": "{base}/elsewhere"}, "expect": {"detail": {"bind_hint": false}}}
  ]
 }

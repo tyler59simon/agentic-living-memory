@@ -12,7 +12,7 @@ from .common import domain_prefixes,git_root,resolve_domain,memory_root,repo_ide
 MAP_BUDGET=3000  # the body, marker included; the header line is extra
 MAX_MAPS=2
 # Repo-name words that say nothing alone ("add a plugin", "the memory of it"); two of them in a row still match.
-COMMON=set('''agentic architecture plugin plugins memory living suite claude codex copilot factory app apps core lib libs
+COMMON=set('''agentic architecture plugin plugins memory living suite claude codex copilot factory antigravity gemini app apps core lib libs
 src test tests tool tools util utils service services server client web api cli docs doc demo example examples sample samples
 project projects repo repos main master dev development config data model models script scripts module modules package packages
 '''.split())

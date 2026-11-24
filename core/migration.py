@@ -5,7 +5,7 @@ from .note_types import keep_baseline
 from .repository import read_json,canonical_json,inventory,FACETS
 from .governance import plan
 
-DEFAULT_TAGS=['subject/project','subject/user','concern/architecture','concern/decision','concern/correction','concern/workflow','concern/preference','concern/knowledge','platform/codex','platform/claude','platform/copilot','platform/factory','technology/python','technology/sqlite']
+DEFAULT_TAGS=['subject/project','subject/user','concern/architecture','concern/decision','concern/correction','concern/workflow','concern/preference','concern/knowledge','platform/codex','platform/claude','platform/copilot','platform/factory','platform/antigravity','technology/python','technology/sqlite']
 
 def migration_plan(root=None):
     root=Path(root or memory_root()).resolve();changes={};warnings=[]

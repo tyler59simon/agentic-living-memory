@@ -132,7 +132,7 @@ def turn_tools(path):
     """[{name, input, ok, text, id}] for the tool calls of the current turn (after the last real user prompt), each paired with its
     result by id: Claude `tool_use_id`, Codex `call_id`. ok is False for an error result (Claude `is_error`, a nonzero Codex exit
     code), True otherwise, and None when a Codex result reports no exit code or a call has no result yet. text is the result's
-    text; id is the call id ('' when the harness gives none). Only the last TURN_TAIL bytes are read. Harnesses without a reader (Copilot, Factory) give []. Never raises."""
+    text; id is the call id ('' when the harness gives none). Only the last TURN_TAIL bytes are read. Harnesses without a reader (Copilot, Factory, Antigravity) give []. Never raises."""
     try:
         with Path(path).open('rb') as handle:
             handle.seek(0,2);size=handle.tell();handle.seek(max(0,size-TURN_TAIL));data=handle.read()

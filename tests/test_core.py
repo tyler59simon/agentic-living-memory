@@ -17,7 +17,7 @@ class StoreFixture(unittest.TestCase):
         quiet=patch('core.sync.QUIET_SECONDS',0);quiet.start();self.addCleanup(quiet.stop)
         # SessionStart checks the harness's real instruction file; point every harness home at an empty folder.
         # ...and a test run from inside a headless `claude -p` must not make every Stop reminder end with the headless sentence.
-        homes=patch.dict('os.environ',{**{h.upper()+'_HOME':str(self.base/('home-'+h)) for h in ('claude','codex','copilot','factory')},
+        homes=patch.dict('os.environ',{**{h.upper()+'_HOME':str(self.base/('home-'+h)) for h in ('claude','codex','copilot','factory','antigravity')},
                                        'LIVING_MEMORY_HEADLESS':'','CLAUDE_CODE_SESSION_ATTENDED':'1','CLAUDE_CODE_ENTRYPOINT':'cli',
                                        'LIVING_MEMORY_OFF':''})   # a suite run from a session started with memory off must still test memory
         homes.start();self.addCleanup(homes.stop)

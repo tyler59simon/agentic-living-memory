@@ -127,6 +127,9 @@ def _tool(payload, base, root):
     result = process('antigravity', 'pre-tool-use', data, root)
     if result.get('deny'):
         return {'decision': 'deny', 'reason': result['deny']}
+    if result.get('allow'):
+        # auto_approve skips the prompt the default policy would show but still honors rules the user configured.
+        return {'decision': 'auto_approve', 'reason': result['allow']}
     return {'decision': 'allow'}
 
 
@@ -214,8 +217,9 @@ def handle(event, payload):
     from core.storage import resolve_root
 
     base = {'session_id': session, 'cwd': str(cwd)}
-    if payload.get('permissionMode') == 'plan':
-        base['permission_mode'] = 'plan'
+    # Pass every mode, not only plan, so the runtime sees a prompt that leaves plan mode.
+    if isinstance(payload.get('permissionMode'), str) and payload['permissionMode']:
+        base['permission_mode'] = payload['permissionMode']
     root = resolve_root()[0]
     if env_off():
         return _tool(payload, base, root) if event == 'PreToolUse' else neutral

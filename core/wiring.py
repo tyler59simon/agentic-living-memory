@@ -146,8 +146,7 @@ def check(harness,setup):
         # Only this copy can say what its own handlers and instruction block should look like.
         try:result['handlers_current']=_current(harness,config,setup)
         except Exception:result['handlers_current']=None
-        if harness!='antigravity':
-            result['instructions']='current' if installed(harness) else 'stale_or_missing'
+        result['instructions']='current' if installed(harness) else 'stale_or_missing'
         if result['handlers_current'] is False and not result['problems']:
             result['problems'].append(f"the hook handlers differ from what this copy and interpreter would write (events, matcher or timeouts changed); {fix}")
         if result.get('instructions')=='stale_or_missing':
