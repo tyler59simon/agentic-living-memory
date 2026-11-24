@@ -10,7 +10,7 @@ from core.notes import find_note
 from core.repository import read_json
 from core.init_domain import init_domain
 
-NEW_VERBS=('archive','rewrite','remap','promote','source','project','system','type','domain')
+NEW_VERBS=('archive','rewrite','remap','promote','source','project','system','type')
 CHARTER='A project.\n\n## Key Details\n\n- Direct writes.\n'
 
 class Fixture(StoreFixture):

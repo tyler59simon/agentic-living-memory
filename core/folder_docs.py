@@ -2,7 +2,7 @@
 outside the store (notebook-folders.json, folder_policy).
 
 Agents never write such a page. They stage the whole new text as a proposal under `domains/D/folder-proposals/<nb>/<id>.json`
-(journaled and undoable like a page proposal) and the user settles it in Hivemind. An accept writes the page with
+(journaled and undoable) and the user settles it in Hivemind. An accept writes the page with
 safe_put._put, which keeps its bytes (CRLF, BOM) and never overwrites a save made meanwhile; an undo puts the old bytes back
 while the page still holds what the accept wrote. Folder proposals are bookkeeping for history: docs.BOOKKEEPING hides them
 unless --include-private."""
@@ -75,7 +75,7 @@ def resolve(root,file,cwd=None,include_private=False):
     full=_safe(folder,rel)
     if full is None:raise ValueError('Links and junctions are not allowed inside a notebook')
     if not full.exists():
-        for part in rel.split('/'):docs._check_part(part)   # a new page's name is checked as a hosted page's is
+        for part in rel.split('/'):docs._check_part(part)   # a new page's name must be one every system can hold
     return {'domain':entry['domain'],'folder':entry['path'],'nb':notebook_id(folder),'rel':rel,'full':full,'base':folder}
 
 
@@ -94,7 +94,7 @@ def _b64(data):return base64.b64encode(data).decode('ascii') if data is not None
 
 
 def propose_file(root,file,body,cwd=None,base_revision=None,note=None,session=None,include_private=False):
-    """Stage an edit of a folder notebook page for the user (agents may run it): the rules of docs.propose, and the page as it
+    """Stage an edit of a folder notebook page for the user (agents may run it): the base revision must match, a page is at most 4 MiB, and the page as it
     was read is kept with the proposal so Hivemind can merge against it."""
     root=Path(root).resolve()
     warnings=docs._check_body(body)
@@ -196,7 +196,7 @@ def rows(root,domains,nb=None,include_private=False,status='pending',session=Non
                 try:safe=_safe(folder,_page(value,strict=False))
                 except ValueError:safe=None
             row={k:value.get(k) for k in ('id','domain','notebook','path','base_revision','note','created','status','reason','settled','edited','folder')}
-            row.update(size=len(str(value.get('body') or '').encode()),orphaned=entry is None,
+            row.update(domain=domain,notebook=file.parts[-2],size=len(str(value.get('body') or '').encode()),orphaned=entry is None,
                        file=safe.as_posix() if safe is not None else None,applied=False)
             if value.get('status')=='accepted':
                 try:current=_sha(_bytes(safe)) if safe is not None else None
@@ -222,7 +222,7 @@ def accept(root,pid,file,value,expected=None,include_private=False,body=None):
     if path is None:raise ValueError('Links and junctions are not allowed inside a notebook')
     if not path.exists():
         for part in rel.split('/'):docs._check_part(part)
-    domain,nb=value['domain'],value['notebook'];prel=_rel(domain,nb,pid)
+    domain,nb=file.parts[-4],file.parts[-2];prel=_rel(domain,nb,pid)   # where _find_proposal found it, not what the record says
     data=_bytes(path);current=_sha(data)
     if status=='accepted':
         old,_=_old_state(value)
@@ -240,7 +240,7 @@ def accept(root,pid,file,value,expected=None,include_private=False,body=None):
     elif current!=value.get('base_revision'):raise ValueError(f'stale_revision: {rel} changed since the proposal was made; read both and write the merge')
     elif expected is not None and current!=expected:raise ValueError(f'stale_revision: {rel} is not at revision {expected[:12]}')
     text=body if edited else str(value.get('body') or '').encode('utf-8')
-    settled=dict(value,status='accepted',settled=now(),revision=digest(text),**({'edited':True,'previous_revision':current,'previous':_b64(data)} if edited else {}))
+    settled=dict(value,domain=domain,notebook=nb,status='accepted',settled=now(),revision=digest(text),**({'edited':True,'previous_revision':current,'previous':_b64(data)} if edited else {}))
     receipt=docs._commit(root,{prel:docs._proposal_text(settled)},'doc_accept',_meta(domain,nb,proposal=pid),{'domain':domain,'notebook':nb,'path':rel,'proposal':pid,**({'edited':True} if edited else {})},
                          {prel:digest(file.read_bytes())})
     try:written=_put(folder,rel,text,current)
@@ -257,10 +257,10 @@ def accept(root,pid,file,value,expected=None,include_private=False,body=None):
 def reject(root,pid,file,value,reason=None,include_private=False):
     check_visible(root,value,include_private)
     if value.get('status')!='pending':raise ValueError(f"Proposal {pid} is {value.get('status')}")
-    prel=_rel(value['domain'],value['notebook'],pid)
-    settled=dict(value,status='rejected',settled=now(),reason=(reason or '')[:200] or None)
-    return docs._commit(root,{prel:docs._proposal_text(settled)},'doc_reject',_meta(value['domain'],value['notebook']),
-                        {'domain':value['domain'],'notebook':value['notebook'],'proposal':pid},{prel:digest(file.read_bytes())})
+    domain,nb=file.parts[-4],file.parts[-2];prel=_rel(domain,nb,pid)   # where _find_proposal found it, not what the record says
+    settled=dict(value,domain=domain,notebook=nb,status='rejected',settled=now(),reason=(reason or '')[:200] or None)
+    return docs._commit(root,{prel:docs._proposal_text(settled)},'doc_reject',_meta(domain,nb),
+                        {'domain':domain,'notebook':nb,'proposal':pid},{prel:digest(file.read_bytes())})
 
 
 def revert_accept(root,journal,include_private=False):

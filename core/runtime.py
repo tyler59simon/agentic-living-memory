@@ -17,7 +17,7 @@ SHELL_TOOLS={'bash','powershell','shell','run_shell_command','exec_command','loc
 ALLOWED_SUBCOMMANDS={'ask','types','sources','source-sync','ingest-scan','search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','archive','rewrite','promote','projects','systems','views','wiki','resolve','reopen','restore','log','maintenance','rebaseline','recap','status','help','propose','proposals','doc'}
 # Subagents are read-only: these are denied for them even though the main agent gets them auto-allowed. Their one write is
 # propose, a draft in .turns/ that only the main agent turns into a note (proposals accept, or capture --from-proposal with an edited note) or rejects.
-MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm','resolve','reopen','restore','off','on','undo','archive','rewrite','remap','promote','source','project','system','type','domain'}   # `taxonomy add` is the same kind of write: taxonomy_write
+MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm','resolve','reopen','restore','off','on','undo','archive','rewrite','remap','promote','source','project','system','type'}   # `taxonomy add` is the same kind of write: taxonomy_write
 GLOBAL_OPTIONS={'--root','--domain','--cwd','--actor'}
 HOOK_LOCK_TIMEOUT=5
 # Codex has no SessionEnd, so its session start picks up Obsidian edits, at most this often.
@@ -125,7 +125,7 @@ def protected_rule(path,cwd,root):
         if is_within(p,root/'domains'):return 'domains'
         if is_within(p,root/'ledger') or is_within(p,root/'.views') or is_within(p,root/'maintenance'):return 'config'
         if path_key(p) in {path_key(x) for x in (root/'bindings.json',root/'tag_taxonomy.json',root/'projects.json',root/'systems.json',root/'sources.json',root/'note_types.json',root/'maintenance.json',root/'views.json',root/'.relocated.json',
-                 root/'notebook-privacy.json',root/'notebook-folders.json',config_path())}:return 'config'
+                 root/'notebook-folders.json',config_path())}:return 'config'
         # Vault edits are auto-applied and vault checkboxes approve plans, so agents must not write there either.
         return 'vault' if any(is_within(p,v/folder) for v in vault_roots(root) for folder in ('Domains','Archive','Dashboards','Notebooks')) else None
     except (ValueError,OSError):return None
@@ -255,31 +255,15 @@ def memory_subcommand(text,grammar=None):
     return found.pop() if len(found)==1 else None
 
 # Hivemind sets HIVEMIND_SESSION for every program it starts in a terminal. Agents there write plans (delete, merge-plan, ...); only the user applies or undoes them, and the direct writes are the user's too.
-HIVEMIND_GOVERNED={'apply','undo','recover','archive','rewrite','remap','promote','source','project','system','type','domain'}   # `setup --apply-plan`, `taxonomy add` and `doc` writes are governed too (below)
-HIVEMIND_DENY=('Applying or undoing a plan, the direct writes (archive, rewrite, remap, promote, taxonomy add, source, project, system, type, domain create) '
-               'and notebook page writes (settling a page proposal included) are for the user to do in Hivemind, not for an agent. Write a plan for a delete or merge, and stage a page edit with doc propose; '
+HIVEMIND_GOVERNED={'apply','undo','recover','archive','rewrite','remap','promote','source','project','system','type'}   # `setup --apply-plan`, `taxonomy add` and `doc` writes are governed too (below)
+HIVEMIND_DENY=('Applying or undoing a plan, the direct writes (archive, rewrite, remap, promote, taxonomy add, source, project, system, type) '
+               'and folder notebook writes (settling a page proposal included) are for the user to do in Hivemind, not for an agent. Write a plan for a delete or merge, and stage a page edit with doc propose; '
                'for the rest, tell the user what to change.')
-# `doc` actions that write (NS-2A). `doc propose` is missing on purpose: it only stages an edit for the user, so agents may run it.
-DOC_WRITE_ACTIONS={'notebook','create','write','move','delete','attach','undo','folder'}
+# `doc` actions that write. `doc propose` is missing on purpose: it only stages an edit for the user, so agents may run it.
+DOC_WRITE_ACTIONS={'undo','folder'}
 # What agents may run. Anything else after `doc`, an unknown word included, counts as a write.
-DOC_AGENT_ACTIONS={'notebooks','list','read','history','propose','tasks','query'}
+DOC_AGENT_ACTIONS={'read','propose'}
 PRIVATE_DENY='Living Memory: private notebooks are for Hivemind itself; agents do not see them, so --include-private is not available here.'
-PRIVATE_READ_DENY='Living Memory: that path holds a private notebook, which agents do not read. Ask the user if you need its content.'
-# File-reading tools checked against private notebooks; the search tools also may not walk a folder that holds one.
-PRIVATE_READ_TOOLS={'read','read_file','view','view_image','glob','grep','search','ls','list'}
-PRIVATE_SEARCH_TOOLS={'glob','grep','search','ls','list'}
-
-def _read_paths(name,args,cwd):
-    """The paths a file-reading tool reads: its path arguments, the fixed part of an absolute Glob pattern, and for a search
-    tool with no path, the working directory."""
-    found=raw_paths(args)
-    pattern=args.get('pattern') if isinstance(args,dict) and name=='glob' else None
-    if isinstance(pattern,str):
-        fixed=re.split(r'[*?\[{]',pattern,maxsplit=1)[0]
-        if fixed and (Path(fixed).is_absolute() or fixed.startswith(('/','\\'))):found.append(fixed)
-    if name in PRIVATE_SEARCH_TOOLS and not found:found.append(str(cwd))
-    return found
-
 def _names_memory(tokens):
     return any(t.lower().endswith(('living_memory.py','living_memory')) or re.split(r'[\\/]',t)[-1].lower() in ('alm','alm.exe','alm.cmd') for t in tokens)
 
@@ -320,15 +304,112 @@ def serve_command(text,grammar):
     return False
 SERVE_DENY='Living Memory: serve is the request server for apps such as Hivemind, not for agents; run the command itself.'
 
+SHELL_WRAPPERS=frozenset({'bash','sh','zsh','dash','pwsh','powershell','cmd','eval'})   # their arguments are command text
+PREFIX_COMMANDS=frozenset({'env','sudo','nohup','exec','time','command','xargs','nice','start','call'})   # they run the command that follows
+INTERPRETER=re.compile(r'(?:python[\d.]*|py)(?:\.exe)?',re.I)
+ASSIGNMENT=re.compile(r'[A-Za-z_]\w*=')
+
+def _command_words(text,ps):
+    """([[(word, quoted)]], [command text run inside $( ) or backticks]) for a shell command line, or None when a quote is left open. The
+    words of each simple command are split at ; | & ( ) { } and line ends, with quoting read as _words reads it; `quoted` says a word held
+    quoted text, which is a value, never an option."""
+    commands=[[]];nested=[];word=None;quoted=False;state=None;i=0;n=len(text)
+    def finish():
+        nonlocal word,quoted
+        if word is not None:commands[-1].append((word,quoted))
+        word=None;quoted=False
+    def substitution(at):
+        depth=0
+        for j in range(at+1,n):
+            if text[j]=='(':depth+=1
+            elif text[j]==')':
+                depth-=1
+                if depth==0:return text[at+2:j],j
+        return text[at+2:],n-1
+    def backticks(at):
+        end=text.find('`',at+1);end=n-1 if end<0 else end
+        return text[at+1:end],end
+    while i<n:
+        ch=text[i];nxt=text[i+1:i+2]
+        if state=="'":
+            if ch!="'":word+=ch
+            elif ps and nxt=="'":word+="'";i+=1
+            else:state=None
+        elif state=='"':
+            if ch=='"':
+                if ps and nxt=='"':word+='"';i+=1
+                else:state=None
+            elif ch=='$' and nxt=='(':inner,end=substitution(i);nested.append(inner);word+=text[i:end+1];i=end
+            elif ch=='`' and not ps:inner,end=backticks(i);nested.append(inner);word+=text[i:end+1];i=end
+            elif ch=='\\' and not ps and nxt in ('$','`','"','\\','\n','\r'):word+=nxt;i+=1   # as bash reads it: any other backslash, as in a Windows path, is literal
+            else:word+=ch
+        elif ch in "'\"":state=ch;word=word or '';quoted=True
+        elif ch=='\\' and not ps and nxt and nxt in ' \t\'"$`\\;&|<>(){}\n\r':word=(word or '')+nxt;i+=1   # an escaped character; before any other the backslash stays, as in a Windows path
+        elif ch=='`' and ps:   # PowerShell's escape character; before a line end it continues the command
+            if nxt in ('\n','\r'):finish()
+            elif nxt:word=(word or '')+nxt
+            i+=1
+        elif ch=='`':inner,end=backticks(i);nested.append(inner);word=(word or '')+text[i:end+1];i=end
+        elif ch=='$' and nxt=='(':inner,end=substitution(i);nested.append(inner);word=(word or '')+text[i:end+1];i=end
+        elif ch in ';|&(){}\n\r':finish();commands.append([])
+        elif ch.isspace() or ch in '<>':finish()
+        else:word=(word or '')+ch
+        i+=1
+    if state is not None:return None
+    finish()
+    return [c for c in commands if c],nested
+
+def _memory_option_words(text,ps,depth=0):
+    """The option words (unquoted, starting with --) of every living_memory.py or alm command in a shell command line, also those run inside
+    $( ), backticks and the text a shell is given (bash -c "..."). Words in quotes are values; other programs' options (grep --include) are
+    not asked about. None when the text cannot be read (a quote left open, nesting too deep)."""
+    if depth>4:return None
+    scanned=_command_words(text,ps)
+    if scanned is None:return None
+    work,nested=scanned;found=[]
+    for inner in nested:
+        words=_memory_option_words(inner,ps,depth+1)
+        if words is None:return None
+        found+=words
+    while work:
+        words=work.pop()
+        i=0
+        while i<len(words) and (words[i][0].lower() in PREFIX_COMMANDS or ASSIGNMENT.match(words[i][0]) or words[i][0].startswith('-') or re.fullmatch(r'/[A-Za-z]',words[i][0])):i+=1   # `cmd /c`
+        head=words[i:]
+        if not head:continue
+        first=re.split(r'[\\/]',head[0][0])[-1].lower()
+        if first.removesuffix('.exe') in SHELL_WRAPPERS:
+            for word,quoted in head[1:]:
+                if quoted:
+                    inner=_memory_option_words(word,ps,depth+1)
+                    if inner is None:return None
+                    found+=inner
+            work.append([w for w in head[1:] if not w[1]])   # `cmd /c alm ...`: the unquoted words are a command too
+            continue
+        rest=None
+        if _names_memory([head[0][0]]):rest=head[1:]
+        elif INTERPRETER.fullmatch(first):
+            for k,(word,_) in enumerate(head[1:],1):
+                if word.startswith('-'):continue
+                if _names_memory([word]):rest=head[k+1:]
+                break
+        if rest is not None:found+=[w for w,quoted in rest if not quoted and w.startswith('--')]
+    return found
+
 def include_private(text,grammar):
-    """True when a memory command asks for private notebooks: --include-private or an argparse abbreviation of it. Text that cannot be
-    parsed counts when it names living_memory or a standalone `alm` together with such a token."""
+    """True when a memory command asks for private notebooks: --include-private or an argparse abbreviation of it (3 characters or more),
+    given as an option word of a living_memory.py or alm command. Quoted values (a summary that mentions the flag) and other programs'
+    options (grep --include=*.py) do not count. Text that cannot be read counts when it names living_memory or a standalone `alm`
+    together with such a token."""
     def flag(word):
         name=word.partition('=')[0];return len(name)>=3 and name.startswith('--') and '--include-private'.startswith(name)
-    parsed=_parsed(text,grammar)
-    if parsed:return any(flag(word) for words in parsed for word in words)
-    tokens=[t for t in re.split(r'''[\s;&|()"'`{}<>,]+''',text) if t]
-    return _names_memory(tokens) and any(flag(t) for t in tokens)
+    for g in (grammar,) if grammar in SHELL_GRAMMARS else SHELL_GRAMMARS:
+        words=_memory_option_words(text,g=='powershell')
+        if words is None:
+            tokens=[t for t in re.split(r'''[\s;&|()"'`{}<>,]+''',text) if t]
+            if _names_memory(tokens) and any(flag(t) for t in tokens):return True
+        elif any(flag(w) for w in words):return True
+    return False
 
 PAGE_ID=re.compile(r'[a-f0-9]{12}')
 
@@ -1201,31 +1282,22 @@ def prompt_sources(prompt,root,domain,state,trace=None):
     be carried by the chunk: SOURCE_GATE of their weight and at least two terms (three for a long prompt). With a semantic model the chunk's
     vector must also be at least the model's threshold from the query (a test file that merely shares the words fails it). An excerpt shown
     earlier this session is not shown again. Reads the index without refreshing it.
-    Injectable notebooks (NS-2B) share the channel and its rules: folder notebook pages from the same index, and Living Memory
-    pages of the session's domain and its parent and child domains from their page indexes, each labelled [notebook TITLE].
-    Searchable, hidden and private notebooks never reach it. A long prompt's queries are picked with the vocabulary of every
-    index the channel reads, and no further query starts after SOURCE_SECONDS."""
-    from . import sources,docs_index
+    Injectable folder notebooks (NS-2B) share the channel and its rules: their pages come from the same index, each labelled
+    [notebook TITLE]. Searchable, hidden and private notebooks never reach it. No further query starts after SOURCE_SECONDS."""
+    from . import sources
     from .folder_policy import Policy
     trace=trace if isinstance(trace,dict) else {};started=time.monotonic()
-    page_domains=[d for d in dict.fromkeys([domain]+scope_domains(domain,load_bindings(root))) if docs_index.db_path(root,d).is_file()]
-    allowed={d:{n:v for n,v in docs_index.visible(root,d).items() if v[1]=='injectable'} for d in page_domains}   # read once per prompt
-    page_domains=[d for d in page_domains if allowed[d]]
-    have_sources=sources.db_path(root,domain).is_file()
-    if not have_sources and not page_domains:trace['index']=False;return None,[]
+    if not sources.db_path(root,domain).is_file():trace['index']=False;return None,[]
     from .search import terms
     text=sources.split_camel(prompt);words=terms(text)
-    vocab=sources.vocabulary(root,domain,words) if have_sources else (0,{})
-    pages_vocab=docs_index.vocabulary(root,page_domains,words)
-    every=(vocab[0]+pages_vocab[0],{w:vocab[1].get(w,0)+pages_vocab[1].get(w,0) for w in set(vocab[1])|set(pages_vocab[1])})   # a word only pages carry still makes a query
-    if not every[0]:trace['index']=False;return None,[]
+    vocab=sources.vocabulary(root,domain,words)
+    if not vocab[0]:trace['index']=False;return None,[]
     long=len(prompt)>LONG_PROMPT;queries=[(text,True)]
-    if long:   # the sources index's own picks first (as before notebooks), then those the merged vocabulary adds
+    if long:
         queries=[]
-        for v in ([vocab] if vocab[0] else [])+[every]:
-            for q in long_queries(text,v)+[(q,True) for q in item_queries(text,v)]:   # list items are asked on their own (at most LIST_QUERIES)
-                if q[0] not in dict(queries):queries.append(q)
-    policy=Policy(root) if vocab[0] else None   # one registry read for every query
+        for q in long_queries(text,vocab)+[(q,True) for q in item_queries(text,vocab)]:   # list items are asked on their own (at most LIST_QUERIES)
+            if q[0] not in dict(queries):queries.append(q)
+    policy=Policy(root)   # one registry read for every query
     width=max(120,(SOURCE_BUDGET-110-len(hint_command(root,state,domain)))//SOURCE_EXCERPTS-70)   # snippet room, so the excerpt is cut around the matches
     best={};dropped=[];from .semantic import threshold;near=threshold(root)   # the notes' meaning bar; a chunk without a vector keeps the word test alone
     least=LONG_LEAST if long else 2
@@ -1234,19 +1306,15 @@ def prompt_sources(prompt,root,domain,state,trace=None):
     def late():
         if time.monotonic()-started>SOURCE_SECONDS:trace['cut_by_time']=True;return True
         return False
-    # Every query asks the sources index first (as before notebooks), then folder notebook pages, then Living Memory pages;
-    # the time is checked before every index search, so pages never take the sources' time.
-    searches=[(q,'source',None) for q,_ in queries if vocab[0]]+[(q,'folder',None) for q,_ in queries if vocab[0]]+[(q,'lm',d) for q,_ in queries for d in page_domains]
-    for query,kind,d in searches:
+    # Every query asks the sources index first, then folder notebook pages; the time is checked before every search, so pages never take the sources' time.
+    searches=[(q,'source') for q,_ in queries]+[(q,'folder') for q,_ in queries]
+    for query,kind in searches:
         if late():break
         if kind=='source':
             for hit in sources.search(root,domain,query,3,vocab,True,SOURCE_GATE,least,width,near,dropped,policy=policy):offer(hit,f"{hit['source']}:{hit['path']}:{hit['line_start']}")
-        elif kind=='folder':
+        else:
             for hit in sources.search(root,domain,query,3,vocab,True,SOURCE_GATE,least,width,near,dropped,pages=True,inject=True,policy=policy):
                 offer(hit,f"{hit['source']}:{hit['path']}:{hit['line_start']}")
-        else:
-            for hit in docs_index.prompt_hits(root,d,query,3,SOURCE_GATE,least,width,near,dropped,allowed=allowed[d]):
-                offer(dict(hit,path=f"{d}/{hit['notebook']}/{hit['path']}"),f"doc:{d}/{hit['notebook']}/{hit['path']}:{hit['line_start']}")
     shown=set(state.get('sources_shown',[]))
     ranked=sorted(best.values(),key=lambda h:(-h['relevance'],h['rank']));fresh=[h for h in ranked if h['key'] not in shown][:SOURCE_EXCERPTS]
     trace.update(index=True,queries=len(queries),candidates=len(ranked),injected=[h['key'] for h in fresh],**({'off_meaning':dropped[:6]} if dropped else {}))
@@ -2072,7 +2140,7 @@ def _process(harness,event,payload,root=None,info=None):
             result['deny']=HIVEMIND_DENY
             return result
     if event=='pre-tool-use':
-        # Before the unbound-project return as well: private notebooks are never shown to an agent, wherever it runs (NS-2A).
+        # Before the unbound-project return as well: private notebooks are never shown to an agent, wherever it runs.
         args=payload.get('tool_input',payload.get('toolArgs',payload.get('toolArguments',{})))
         if isinstance(args,str):
             try:args=json.loads(args)
@@ -2090,11 +2158,6 @@ def _process(harness,event,payload,root=None,info=None):
                 if entry:
                     detail.update(tool=name,decision='deny:folder');result['deny']=folder_deny(raw,entry,hint_command(root,state,domain))
                     return result
-        if name in PRIVATE_READ_TOOLS:
-            from .docs import private_read
-            if private_read(_read_paths(name,args,cwd),cwd,root,name in PRIVATE_SEARCH_TOOLS):
-                detail.update(tool=name,decision='deny:private');result['deny']=PRIVATE_READ_DENY
-                return result
     if event=='pre-tool-use' and not domain and _subagent(payload):
         # Before the unbound-project return too: from an unbound folder a subagent could still capture --global or settle a proposal.
         args=payload.get('tool_input',payload.get('toolArgs',payload.get('toolArguments',{})))

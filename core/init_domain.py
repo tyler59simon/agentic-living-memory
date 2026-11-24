@@ -24,9 +24,7 @@ def init_domain(name,prefixes,root=None):
         selected=sorted(set(existing.get('prefixes',[])+legacy+[str(Path(p).expanduser().resolve()) for p in prefixes]))
         for other,entry in domains.items():
             if other!=name and set(selected)&set(entry.get('prefixes',[])):raise ValueError('Prefix is already registered to another domain')
-        # Binding a folder to a notebook-only domain makes it a memory domain (NS-2A): the flag goes in the same transaction, and the
-        # folders below are created after it, so running bind again finishes a conversion that stopped half way.
-        domains[name]={**{k:v for k,v in existing.items() if k!='notebook_only'},'prefixes':selected};settings['version']=2
+        domains[name]={**existing,'prefixes':selected};settings['version']=2
         scope=settings.setdefault('search_scope',{});scope.setdefault('global_domains',['_global']);scope.setdefault('foreign_domains',[])
         transaction(root,{'bindings.json':canonical_json(settings)},'bind_domain',expected={'bindings.json':read})
         directory=root/'domains'/name;(directory/'notes').mkdir(parents=True,exist_ok=True);(directory/'archive').mkdir(exist_ok=True)

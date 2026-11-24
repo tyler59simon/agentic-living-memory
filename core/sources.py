@@ -977,7 +977,7 @@ def search(root,domain,query,limit=5,vocab=None,informative=False,gate=None,leas
     return hits
 
 def search_db(db,root,query,limit=5,vocab=None,informative=False,gate=None,least=2,width=SNIPPET,near=None,dropped=None,keep=None):
-    """search over an open index with this schema (the sources index, or the notebook page index of core/docs_index.py).
+    """search over an open index with the sources schema.
     keep(source root, source, path), when given, decides per chunk whether it may be served, before ranking cuts the list."""
     from .search import terms,stem,df_of,idf_terms
     try:
@@ -1047,7 +1047,9 @@ CANDIDATE_SCAN=600   # rows search_db reads per query form when keep() refuses s
 def _semantic_rows(db,root,query,limit=SEMANTIC_TOP):
     """The chunks nearest the query in meaning, independent of shared words, shaped like the FTS rows (score 0). Ranked
     natively with sqlite-vec's vec_distance_cosine over the stored vectors when the extension loads, else in Python:
-    same vectors, same order. Only this domain's registered sources are in the index, so scope is unchanged."""
+    same vectors, same order. Only this domain's registered sources are in the index, so scope is unchanged. A chunk whose cosine with the
+    query is below the model's min_similarity (semantic.threshold) is no match in meaning and is left out: without that floor the nearest
+    SEMANTIC_TOP chunks always fill a result, however far, and show with score 0 and relevance 0.0."""
     try:
         import heapq
         from . import semantic,vectors
@@ -1056,11 +1058,15 @@ def _semantic_rows(db,root,query,limit=SEMANTIC_TOP):
         if not model or not _has_vectors(db) or _meta(db,'vectors')!=_vector_identity(root):return []
         wanted=_query_vector(model,query)
         if wanted is None:return []
-        size=model.dim*4;native=vectors.enabled(root) and vectors.load(db)[0]
+        size=model.dim*4;native=vectors.enabled(root) and vectors.load(db)[0];floor=semantic.threshold(root)
         if native:
             near=[r for (r,) in db.execute('SELECT rowid FROM vec WHERE length(vec)=? ORDER BY vec_distance_cosine(vec,?),rowid LIMIT ?',(size,vectors._blob(wanted),limit))]
+            if floor is not None and near:
+                blobs=dict(db.execute(f"SELECT rowid,vec FROM vec WHERE rowid IN ({','.join('?'*len(near))})",near).fetchall())
+                near=[r for r in near if blobs.get(r) and semantic.cosine(wanted,semantic.from_blob(blobs[r]))>=floor]
         else:
-            near=[r for _,r in heapq.nsmallest(limit,((-semantic.cosine(wanted,semantic.from_blob(b)),r) for r,b in db.execute('SELECT rowid,vec FROM vec WHERE length(vec)=?',(size,))))]
+            scored=((-semantic.cosine(wanted,semantic.from_blob(b)),r) for r,b in db.execute('SELECT rowid,vec FROM vec WHERE length(vec)=?',(size,)))
+            near=[r for _,r in heapq.nsmallest(limit,(x for x in scored if floor is None or -x[0]>=floor))]
         if not near:return []
         found={r[0]:r for r in db.execute(f"SELECT c.id,c.source,c.path,c.kind,c.symbol,c.line_start,c.line_end,f.text,0.0,fl.url,fl.title FROM chunk_fts f JOIN chunk c ON c.id=f.rowid JOIN file fl ON fl.id=c.file_id WHERE c.id IN ({','.join('?'*len(near))})",near)}
         return [found[r] for r in near if r in found]

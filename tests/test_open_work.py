@@ -1,12 +1,20 @@
-import contextlib,io,json,os,sqlite3,unittest
+import contextlib,io,json,os,sqlite3,subprocess,unittest
 from test_core import StoreFixture
-from test_docs_review import junction
-from core import docs,docs_index,runtime
+from core import docs_index,runtime
 from core.cli import main
 from core.capture import finalize,status
 from core.notes import find_note,open_work,check_action,unresolved_bugs
 from core.note_format import action_items,set_action,render,item_fields,set_item_fields
 from core.session_start import build_context
+
+def junction(link,target):
+    """A directory junction (or symbolic link) at `link`; None when this system can make neither."""
+    try:
+        os.symlink(target,link,target_is_directory=True);return link
+    except OSError:
+        if os.name=='nt' and not subprocess.run(['cmd','/c','mklink','/J',str(link),str(target)],capture_output=True).returncode:return link
+    return None
+
 
 class OpenWork(StoreFixture):
     def plan(self,title,actions,done=(),kind='plan',**kw):
@@ -412,11 +420,6 @@ class OpenWork(StoreFixture):
         self.assertEqual(tasks('--tag','subject/project'),['Ship it','Write docs'])   # page tasks have no tags
         code,result=self.cli('open','--sort','due','--limit','2');self.assertEqual((result['count'],[r['task'] for r in result['items']]),(5,['Pay invoice','Ship it']))
         self.assertEqual(tasks(),['Ship it','Write docs','Pay invoice','Call Sam','Order cake'])   # newest note first, then the pages in path order
-    def test_hosted_notebooks_follow_the_same_levels(self):
-        for nb,level in (('inj','injectable'),('sea','searchable')):
-            docs.create_notebook(self.root,'demo',nb,nb.title(),visibility=level);docs.create_page(self.root,'demo',nb,'Plan.md',f'- [ ] Task in {nb} (due: 2020-01-01)\n'.encode())
-        self.assertEqual([r['task'] for r in self.pages()],['Task in inj']);self.assertEqual(sorted(r['task'] for r in self.pages('--pages','searchable')),['Task in inj','Task in sea'])
-        row=self.pages()[0];self.assertEqual((row['notebook'],row['path'],row['line'],row['due'],row['overdue']),('inj','Plan.md',1,'2020-01-01',True))
     def test_open_reports_pages_stale_when_the_index_was_left_unfinished(self):
         from unittest.mock import patch
         self.folder_nb('injectable')
@@ -447,31 +450,26 @@ class OpenWork(StoreFixture):
     def test_an_index_of_another_version_is_rebuilt_with_the_new_columns(self):
         self.folder_nb('injectable');self.assertEqual(len(self.pages()),3)
         path=docs_index.db_path(self.root,'demo');db=sqlite3.connect(path);db.execute("UPDATE meta SET value='1' WHERE key='version'");db.commit();db.close()
-        self.assertEqual(docs_index.task_rows(self.root,['demo'],refresh=False,folders=True)[0],[])   # read as it is: an older index serves nothing
+        self.assertEqual(docs_index.task_rows(self.root,['demo'],refresh=False)[0],[])   # read as it is: an older index serves nothing
         self.assertEqual(len(self.pages()),3)   # a refresh replaces it
         db=sqlite3.connect(path)
         try:self.assertEqual((db.execute("SELECT value FROM meta WHERE key='version'").fetchone()[0],[r[1] for r in db.execute('PRAGMA table_info(task)')][-2:]),(str(docs_index.VERSION),['owner','priority']))
         finally:db.close()
-    def test_a_folder_notebook_page_leaves_no_chunks_search_text_vocabulary_or_vectors(self):
-        docs.create_notebook(self.root,'demo','nb1','Notebook');docs.create_page(self.root,'demo','nb1','a.md',b'# Hosted\n\nQuokka marmalade.\n- [ ] Hosted task\n')
+    def test_the_page_index_keeps_only_file_and_task_rows(self):
+        self.folder_nb('injectable',pages='# Folder\n\nWombat cluster sizing.\n- [ ] Folder task \U0001F4C5 2020-01-01\n---\nowner: me\n');self.assertEqual(len(self.pages()),1)
         def query(sql):
             db=docs_index._readonly(self.root,'demo')
             try:return db.execute(sql).fetchall()
             finally:db.close()
-        before=query('SELECT stem,df FROM vocab ORDER BY stem');chunks=query('SELECT count(*) FROM chunk')[0][0]
-        self.folder_nb('injectable',pages='# Folder\n\nWombat cluster sizing.\n- [ ] Folder task \U0001F4C5 2020-01-01\n---\nowner: me\n');self.assertEqual(len(self.pages()),1)
-        self.assertEqual(query('SELECT stem,df FROM vocab ORDER BY stem'),before);self.assertEqual(query('SELECT count(*) FROM chunk')[0][0],chunks)
-        self.assertEqual(query("SELECT chunks FROM file WHERE source LIKE 'nb-%'"),[(0,)]);self.assertEqual(query("SELECT count(*) FROM chunk WHERE source LIKE 'nb-%'"),[(0,)])
-        self.assertEqual(query("SELECT count(*) FROM chunk_fts WHERE text LIKE '%Wombat%'"),[(0,)]);self.assertEqual(query("SELECT count(*) FROM task t JOIN file f ON f.id=t.file_id WHERE f.source LIKE 'nb-%'"),[(1,)])
-        self.assertEqual(query("SELECT count(*) FROM chunk_fts WHERE text LIKE '%Quokka%'"),[(1,)])   # a hosted page is chunked as before
+        self.assertEqual({n for (n,) in query("SELECT name FROM sqlite_master WHERE type IN ('table','view')")},{'meta','source','file','task'})
+        self.assertEqual(query("SELECT count(*) FROM task t JOIN file f ON f.id=t.file_id WHERE f.source LIKE 'nb-%'"),[(1,)])
+        self.assertEqual(query("SELECT value FROM meta WHERE key='version'"),[(str(docs_index.VERSION),)]);self.assertEqual(docs_index.VERSION,3)
         # Unregistering drops the rows of a page that never had chunks.
         self.cli('--json','doc','folder','unset',str(self.base/'vault'));self.pages()
         self.assertEqual(query("SELECT count(*) FROM file WHERE source LIKE 'nb-%'"),[(0,)])
-    def test_doc_tasks_carries_the_new_fields_for_hosted_notebooks_only(self):
-        docs.create_notebook(self.root,'demo','nb1','Notebook');docs.create_page(self.root,'demo','nb1','a.md',b'- [ ] Ship it \xe2\x8f\xab (owner: me)\n')
-        self.folder_nb('injectable')
-        code,result=self.cli('--json','doc','tasks','--open');self.assertEqual(code,0,result)
-        self.assertEqual([(t['notebook'],t['task'],t['owner'],t['priority']) for t in result['tasks']],[('nb1','Ship it','me','high')])
+    def test_open_carries_owner_and_priority_of_a_folder_page_task(self):
+        self.folder_nb('injectable',pages='- [ ] Ship it \u23EB (owner: me)\n')
+        self.assertEqual([(t['task'],t['owner'],t['priority']) for t in self.pages()],[('Ship it','me','high')])
 
     def test_nested_cross_domain_and_hidden_folder_notebooks_do_not_leak_and_markdown_suffix_indexes(self):
         self.cli('--json','bind','other',str(self.base/'other-proj'))

@@ -5,9 +5,7 @@ from .repository import inventory,validate,problems,reconcile as refresh
 
 def validate_domain(domain,root=None):
     root=Path(root or memory_root()).resolve();issues=[]
-    if not (root/'domains'/domain/'notes').is_dir():
-        from .docs import is_notebook_only
-        return [] if is_notebook_only(root,domain) else ['Domain notes directory is missing: '+domain]   # a notebook-only domain has no notes (NS-2A)
+    if not (root/'domains'/domain/'notes').is_dir():return ['Domain notes directory is missing: '+domain]
     try:
         for note in inventory(domain,root,retired=True):
             try:

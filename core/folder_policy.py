@@ -16,7 +16,7 @@ SIDECAR_DIR='.hivemind'
 LEVELS=('hidden','searchable','injectable')
 STRICT={None:-1,'injectable':0,'searchable':1,'hidden':2,'private':3}
 SERVED=('searchable','injectable')
-MIRROR='Notebooks'   # notebook_sync.MIRROR: <vault>/Notebooks
+MIRROR='Notebooks'   # <vault>/Notebooks: the retired page mirror (CON-18) put copies there; they stay hidden from agents
 _VAULTS={}   # store root -> (sync-state stamps, vault folders)
 _SIDECARS={}   # sidecar path -> ((mtime_ns, size), (level, title)): re-read only when the file changes
 

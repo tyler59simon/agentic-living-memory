@@ -42,8 +42,7 @@ def quick(payload):
                 path=Path(os.path.expandvars(value.strip())).expanduser()
                 found.append(_git_root(path if path.is_absolute() else Path(cwd)/path))
         if not found:found.append(_git_root(cwd))
-        # Reads inside the store, and searches over it, go to the full hook, which checks private notebooks (NS-2A). This does not
-        # depend on notebook-privacy.json: a damaged notebook.json counts as private there too.
+        # Reads inside the store, and searches over it, go to the full hook.
         for key in PATH_KEYS+('pattern',):
             value=args.get(key)
             if key=='pattern':value=value.split('*')[0].split('?')[0].split('[')[0].split('{')[0] if name=='glob' and isinstance(value,str) else None

@@ -4,24 +4,21 @@ import hashlib,json,uuid
 from pathlib import Path
 from .common import atomic_write,memory_root
 from .note_types import keep_baseline
-from .repository import roll_forward_pending,canonical_json,confined,digest,read_json,transaction,recover,store_lock,reconcile,now,_stage_blob
+from .repository import roll_forward_pending,canonical_json,confined,digest,read_json,transaction,recover,store_lock,reconcile,now
 
 
 def reconciled_domains(paths):
-    """The domains whose notes a change to `paths` can affect: every `domains/D/...` path except a notebook's (NS-2A). A notebook-only
-    domain has no notes, and reconcile rejects a domain without notes/."""
+    """The domains whose notes a change to `paths` can affect: every `domains/D/...` path except a folder notebook proposal's."""
     out=set()
     for p in paths:
         parts=Path(p).parts
-        if len(parts)>2 and parts[0]=='domains' and parts[2] not in ('notebooks','folder-proposals'):out.add(parts[1])
+        if len(parts)>2 and parts[0]=='domains' and parts[2]!='folder-proposals':out.add(parts[1])
     return out
 
 
-def plan(root, changes, kind, domains=(), summary=None, guards=None, extra=None):
+def plan(root, changes, kind, domains=(), summary=None, guards=None):
     """guards: store-wide conditions that per-file hashes cannot express, re-checked at apply:
-    absent_ids (no note in the plan's domains has these IDs) and unused_tags (no note outside the plan carries them).
-    A change given as bytes (a notebook attachment) is staged under .plans/<id>/blobs/<sha256> and recorded as {"blob": sha256},
-    since the plan itself is JSON text. extra: more fields for the plan (covered by its digest), such as a teardown's `mirror`."""
+    absent_ids (no note in the plan's domains has these IDs) and unused_tags (no note outside the plan carries them)."""
     root=Path(root).resolve()
     with store_lock(root):
         expected={}
@@ -29,29 +26,13 @@ def plan(root, changes, kind, domains=(), summary=None, guards=None, extra=None)
             p=confined(root,rel)
             expected[rel]=digest(p.read_bytes()) if p.exists() else None
         plan_id=uuid.uuid4().hex
-        staged={rel:v for rel,v in changes.items() if isinstance(v,(bytes,bytearray))}
-        for data in staged.values():_stage_blob(root/'.plans'/plan_id/'blobs',bytes(data))
-        changes={rel:({'blob':digest(bytes(v))} if rel in staged else v) for rel,v in changes.items()}
         value={'schema':2,'id':plan_id,'kind':kind,'domains':sorted(set(domains)),
                'created':now(),'changes':changes,'expected':expected,'summary':summary or {'files':len(changes)}}
-        if guards:value['guards']={k:(v if k in ('read_set','inventory') else sorted(set(v))) for k,v in guards.items() if v}
-        if extra:value.update({k:v for k,v in extra.items() if k not in value})
+        if guards:value['guards']={k:(v if k=='read_set' else sorted(set(v))) for k,v in guards.items() if v}
         value['digest']=hashlib.sha256(canonical_json(value).encode()).hexdigest()
         path=root/'.plans'/(value['id']+'.json');atomic_write(path,canonical_json(value))
         return {'ok':True,'plan_id':value['id'],'digest':value['digest'],'kind':kind,'summary':value['summary']}
 
-
-def _plan_changes(root,value):
-    """A plan's changes with staged attachments read back as bytes (checked against their hash)."""
-    out={}
-    for rel,v in value['changes'].items():
-        if isinstance(v,dict) and isinstance(v.get('blob'),str):
-            path=root/'.plans'/value['id']/'blobs'/v['blob']
-            data=path.read_bytes() if path.exists() else None
-            if data is None or digest(data)!=v['blob']:raise ValueError(f'stale plan: the attachment bytes staged for {rel} are missing; make a new plan')
-            out[rel]=data
-        else:out[rel]=v
-    return out
 
 def commit(root,changes,kind,domains=(),summary=None,guards=None,sync_overlay=True,operation_id=None,meta=None):
     """A direct write: what plan() then apply() do, in one call under one lock, with no plan to approve. The journal is the receipt:
@@ -65,7 +46,7 @@ def commit(root,changes,kind,domains=(),summary=None,guards=None,sync_overlay=Tr
         domains=sorted(set(domains))
         if guards:
             roll_forward_pending(root)
-            _check_guards(root,{'guards':{k:(v if k in ('read_set','inventory') else sorted(set(v))) for k,v in guards.items() if v},'domains':domains,'changes':changes})
+            _check_guards(root,{'guards':{k:(v if k=='read_set' else sorted(set(v))) for k,v in guards.items() if v},'domains':domains,'changes':changes})
         operation_id=operation_id or 'd-'+uuid.uuid4().hex
         receipt=transaction(root,changes,kind,expected,operation_id,meta=meta)
         for domain in domains:
@@ -83,14 +64,13 @@ def apply(root,plan_id,expected_digest,sync_overlay=True,include_private=False):
     with store_lock(root):
         value=read_json(root/'.plans'/(plan_id+'.json'))
         if not value:raise ValueError('Plan unavailable')
+        if any(isinstance(v,dict) for v in value['changes'].values()):raise ValueError('This plan stages a notebook attachment; hosted notebooks were retired (CON-18), so it cannot be applied')
         unsigned={k:v for k,v in value.items() if k!='digest'}
         actual=hashlib.sha256(canonical_json(unsigned).encode()).hexdigest()
         if value['digest']!=actual or actual!=expected_digest:raise ValueError('Plan digest mismatch')
         if not include_private:
-            from .docs import private_scope,guarded_path,PRIVACY
-            scope=private_scope(root,value['changes'])
             from .folder_policy import REGISTRY,loosens
-            if any(rel!=PRIVACY and guarded_path(rel,scope) for rel in value['changes']) or (REGISTRY in value['changes'] and loosens(root,value['changes'][REGISTRY])):
+            if REGISTRY in value['changes'] and loosens(root,value['changes'][REGISTRY]):
                 raise ValueError(f'not_found: plan {plan_id} changes a private notebook; only Hivemind applies it (--include-private)')
         if not (root/'.operations'/plan_id/'journal.json').exists():
             roll_forward_pending(root)   # a write a crash left half-done is finished first, so the guards see it
@@ -103,24 +83,7 @@ def apply(root,plan_id,expected_digest,sync_overlay=True,include_private=False):
         from .docs import is_notebook_journal,record_index
         if is_notebook_journal([{'path':p} for p in value['changes']]) and not (root/'.operations'/value['id']/'doc.json').exists():
             record_index(root,value['id'],value['changes'])   # before the operation, so a stop after it still leaves the index
-        kept=[]
-        if value.get('kind')=='overlay_teardown' and isinstance(value.get('mirror'),dict):
-            # The notebook mirror's copies leave the vault one by one, each only while it holds the bytes the plan listed, and
-            # never through the vault's journal, which would keep a copy of every page (core/notebook_sync.py). The rest of the
-            # plan is checked first, so a stale plan removes nothing.
-            from .notebook_sync import _put,_prune_dirs,_safe,_bytes as raw,_sha,MIRROR
-            if not (root/'.operations'/value['id']/'journal.json').exists():
-                for rel,want in sorted(value['expected'].items()):
-                    if digest(confined(root,rel).read_bytes() if confined(root,rel).exists() else None)!=want:raise ValueError(f'Stale revision: {rel}')
-            for rel,sha in sorted(value['mirror'].items()):
-                try:
-                    if not _put(root,rel,None,sha):
-                        path=_safe(root,rel)
-                        if path is not None and path.exists():kept.append(rel)
-                except OSError:kept.append(rel)
-            _prune_dirs(_safe(root,MIRROR))
-        receipt=transaction(root,_plan_changes(root,value),value['kind'],value['expected'],value['id'])
-        if kept:receipt.setdefault('warnings',[]).append(f'{len(kept)} notebook copies were left in the vault (changed or in use): '+', '.join(kept[:5])+(' and more' if len(kept)>5 else ''))
+        receipt=transaction(root,value['changes'],value['kind'],value['expected'],value['id'])
         for domain in value['domains']:
             try:reconcile(domain,root,sync_overlay=sync_overlay)
             except Exception as exc:
@@ -138,16 +101,6 @@ def _check_guards(root,value):
         path=confined(root,rel)
         if (digest(path.read_bytes()) if path.exists() else None)!=expected:
             raise ValueError('stale plan: a file this plan depends on changed: '+rel)
-    for name in guards.get('no_notes',[]):
-        from .backup import canonical_files_of
-        if canonical_files_of(root,name):
-            raise ValueError('stale plan: domain '+name+' now holds notes, and this plan would make it notebook-only; make a new plan')
-    # inventory: a folder must still hold exactly these files (deleting a notebook must not strand a page added since; NS-2A).
-    for rel,expected in guards.get('inventory',{}).items():
-        from .docs import _files
-        folder=confined(root,rel)
-        if (_files(folder) if folder.is_dir() else [])!=sorted(expected):
-            raise ValueError('stale plan: files were added to or removed from '+rel+' since the plan was made; make a new plan')
     absent=set(guards.get('absent_ids',[]));unused=set(guards.get('unused_tags',[]))
     if not (absent or unused):return   # file guards only (setup plans in a harness home): no notes to scan
     folders=sorted(p.name for p in (root/'domains').iterdir() if p.is_dir()) if (root/'domains').is_dir() else []
@@ -166,23 +119,22 @@ def history(root,note_id=None,limit=20,include_private=False):
         from .activity import note_history   # only operations that changed the note itself, from the activity cache
         rows=note_history(root,note_id,limit)
         if not include_private:
-            from .docs import private_scope,is_private_path
-            scope=private_scope(root)
+            from .docs import is_private_path
             for row in rows:
-                kept=[f for f in row.get('files') or [] if not is_private_path(f,scope)]
+                kept=[f for f in row.get('files') or [] if not is_private_path(f)]
                 if len(kept)!=len(row.get('files') or []):row.update(files=kept,redacted=len(row['files'])-len(kept))
         return rows
     from .activity import _entries,operation_label
-    from .docs import private_scope,journal_private,is_private_path
-    entries=_entries(root);scope=None if include_private else private_scope(root)
+    from .docs import journal_private,is_private_path
+    entries=_entries(root)
     for path in (root/'.operations').glob('*/journal.json'):
         try:
             value=read_json(path)
             summary,actor=operation_label(entries.get(value['id']),value['id'],str(value['kind']))
             row={'operation_id':value['id'],'kind':value['kind'],'state':value['state'],'created':value['created'],'files':[e['path'] for e in value['effects']],'summary':summary,'actor':actor,**({'user':value['os_user']} if isinstance(value.get('os_user'),str) and value['os_user'] else {})}
-            # Operations on a private notebook show no paths and no summary unless the caller passes --include-private (NS-2A).
-            if scope and journal_private(root,value,scope):
-                kept=[f for f in row['files'] if not is_private_path(f,scope) and not (value.get('meta') or {}).get('uid') in scope[1]]
+            # Operations on folder notebook bookkeeping show no paths and no summary unless the caller passes --include-private.
+            if not include_private and journal_private(root,value):
+                kept=[f for f in row['files'] if not is_private_path(f)]
                 row.update(files=kept,redacted=len(row['files'])-len(kept),summary=None)
         except (ValueError,KeyError,TypeError):continue  # doctor reports unreadable journals by ID
         rows.append(row)
@@ -190,31 +142,27 @@ def history(root,note_id=None,limit=20,include_private=False):
 
 def inspect_plan(root,identity,full=False,include_private=False):
     """Each change a plan would make, as a unified diff (cut at 16000 characters unless `full`). An attachment shows as its hash and size,
-    and a change inside a private notebook is left out unless `include_private` (NS-2A)."""
+    and a change to folder notebook bookkeeping is left out unless `include_private`."""
     import re,difflib
-    from .docs import private_scope,is_private_path
-    from .repository import is_blob
+    from .docs import is_private_path
     cut=None if full else 16000
     if not re.fullmatch('[a-f0-9]{32}',identity):raise ValueError('Invalid plan identity')
     root=Path(root);value=read_json(root/'.plans'/(identity+'.json'))
     if not value:raise ValueError('Plan unavailable')
-    effects=[];scope=None if include_private else private_scope(root,value['changes']);redacted=0
+    effects=[];redacted=0
     for rel,after in value['changes'].items():
-        if scope and is_private_path(rel,scope):redacted+=1;continue
+        if not include_private and is_private_path(rel):redacted+=1;continue
         path=confined(root,rel)
-        if isinstance(after,dict) or is_blob(rel):
-            blob=(after or {}).get('blob') if isinstance(after,dict) else None
-            effects.append({'path':rel,'expected_revision':value['expected'][rel],'action':'delete' if after is None else 'write','binary':True,'sha256':blob,'diff':''})
+        if isinstance(after,dict):   # a plan from before CON-18 may stage a notebook attachment as {"blob": sha256}
+            effects.append({'path':rel,'expected_revision':value['expected'][rel],'action':'delete' if after is None else 'write','binary':True,'sha256':after.get('blob'),'diff':''})
             continue
         before=path.read_bytes().decode('utf-8',errors='replace') if path.exists() else ''   # a damaged file being repaired still shows
         delta=''.join(difflib.unified_diff(before.splitlines(True),(after or '').splitlines(True),fromfile=rel,tofile=rel))
         effects.append({'path':rel,'expected_revision':value['expected'][rel],'action':'delete' if after is None else 'write','diff':delta[:cut],'truncated':cut is not None and len(delta)>cut})
-    for rel,sha in sorted((value.get('mirror') or {}).items()):   # a teardown's notebook copies, removed at apply only while unchanged
-        effects.append({'path':rel,'expected_revision':sha,'action':'delete','binary':True,'sha256':None,'diff':'','mirror':True})
     summary=value['summary']
-    if scope:
+    if not include_private:
         from .docs import redact_summary
-        summary=redact_summary(summary,scope)
+        summary=redact_summary(summary)
     result={'ok':True,'plan_id':identity,'digest':value['digest'],'kind':value['kind'],'summary':summary,'effects':effects}
     if redacted:result['redacted']=redacted
     return result
@@ -285,20 +233,12 @@ def undo(root,operation_id,include_private=False,revert_files=True):
     # The derived-state marker is rewritten by every reconcile; it is not part of what is being undone.
     raw_effects=value['effects'];value['effects']=[e for e in value['effects'] if Path(e['path']).name!='.derived-dirty']
     def before(e):
-        if not e.get('blob'):
-            if e['before'] is None:return None
-            raw=base64.b64decode(e['before'])
-            # A notebook page is bytes: one an editor left as something other than UTF-8 comes back exactly (NS-2C re-review, R2-D6).
-            try:return raw.decode()
-            except UnicodeDecodeError:
-                if '/notebooks/' in e['path'].replace('\\','/'):return raw
-                raise
-        # An attachment's bytes were moved aside into the operation's blobs folder when it removed them (NS-2A).
-        if e['before_hash'] is None:return None
-        kept=root/'.operations'/operation_id/'blobs'/e['before_hash']
-        if not kept.exists() or digest(kept.read_bytes())!=e['before_hash']:raise ValueError(f"The attachment {e['path']} this operation removed is no longer kept, so it cannot be undone")
-        return kept.read_bytes()
-    from .docs import is_notebook_journal,PRIVACY,merge_privacy,DOC_OP_PREFIX,record_index,journal_private
+        # An operation of the retired hosted notebooks (CON-18) may have moved an attachment's bytes aside or left a page in another encoding.
+        if e.get('blob'):raise ValueError(f"{operation_id} moved the notebook attachment {e['path']}; hosted notebooks were retired (CON-18), so it cannot be undone")
+        if e['before'] is None:return None
+        try:return base64.b64decode(e['before']).decode()
+        except UnicodeDecodeError:raise ValueError(f"{operation_id} changed {e['path']}, which was not UTF-8 text; hosted notebooks were retired (CON-18), so it cannot be undone") from None
+    from .docs import is_notebook_journal,DOC_OP_PREFIX,record_index,journal_private
     changes={e['path']:before(e) for e in value['effects']}
     domains=reconciled_domains(changes)
     notebook_op=is_notebook_journal(value['effects'])
@@ -307,14 +247,6 @@ def undo(root,operation_id,include_private=False,revert_files=True):
         from .folder_policy import REGISTRY,loosens
         if not include_private and (journal_private(root,value,authorize=True) or (REGISTRY in changes and loosens(root,changes[REGISTRY]))):
             raise ValueError(f'not_found: operation {operation_id} changed a private notebook; only Hivemind undoes it (--include-private)')
-        if PRIVACY in changes:
-            # Every notebook that was ever private stays listed, so undoing a privacy change never exposes what was written
-            # meanwhile. Merged under the lock, so a notebook made private by another writer is never dropped.
-            current=(root/PRIVACY).read_text(encoding='utf-8') if (root/PRIVACY).exists() else None
-            merged=merge_privacy(root,changes[PRIVACY] or '')
-            value['effects']=[e for e in value['effects'] if e['path']!=PRIVACY]   # the registry may have grown since: no precondition on it
-            if merged==current:changes.pop(PRIVACY)
-            else:changes[PRIVACY]=merged
         for effect in value['effects']:
             p=confined(root,effect['path']);current=digest(p.read_bytes()) if p.exists() else None
             if current!=effect['after_hash']:raise ValueError('Undo conflicts with later edits')
@@ -326,13 +258,6 @@ def undo(root,operation_id,include_private=False,revert_files=True):
             guards={'unused_tags':dropped}
             try:_check_guards(root,{'guards':{'unused_tags':sorted(dropped)},'domains':sorted(domains),'changes':changes})
             except ValueError as exc:raise ValueError('Undo would remove tags that notes still use; retag those notes first ('+str(exc).split(': ',1)[-1]+')') from None
-        if changes.get('bindings.json'):
-            try:restored=json.loads(changes['bindings.json']).get('domains') or {}
-            except (ValueError,AttributeError):restored={}
-            only=sorted(n for n,e in restored.items() if isinstance(e,dict) and e.get('notebook_only'))
-            if only:
-                guards=dict(guards or {},no_notes=only)
-                _check_guards(root,{'guards':{'no_notes':only},'domains':sorted(domains),'changes':changes})
         # Restoring an older type registry can drop a custom type, or its action items, that notes written since depend on; restoring an
         # older note can bring back action items its custom type no longer takes. Judged on the store as the undo leaves it.
         from .type_registry import check_undo
@@ -379,8 +304,6 @@ def remap(root,mappings):
             from .common import global_domains
             if after['domain'] not in read_json(root/'bindings.json',{}).get('domains',{}) and after['domain'] not in global_domains(root):
                 raise ValueError('Target domain is unregistered')
-            from .docs import refuse_notes_in
-            refuse_notes_in(root,after['domain'])
             target=confined(root,Path('domains')/after['domain']/('notes' if note['status']=='active' else 'archive')/path.name)
             if target.exists():raise ValueError('Remap filename collision')
             keep_baseline(note);note['domain']=after['domain'];note['updated']=now()   # a move vouches for nothing

@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 from test_sources import Kb
 from test_semantic import write_model
-from core import digests,docs,folder_policy,governance,runtime,semantic,sources
+from core import digests,folder_policy,governance,runtime,semantic,sources
 
 
 class Notebooks(Kb):
@@ -69,6 +69,20 @@ class Notebooks(Kb):
         self.set(self.nb,'searchable','--no-private')
         self.assertTrue(sources.stale(self.root,'demo'));self.sync();self.assertIn('notes/Runbook.md',self.indexed())
 
+    def test_with_a_model_a_page_found_only_by_meaning_must_reach_the_models_threshold(self):
+        # Without a floor the nearest SEMANTIC_TOP chunks filled every result: each page came back with score -0.0 and relevance 0.0.
+        source=self.base/'tiny';hashes=write_model(source)
+        models=patch.dict(semantic.MODELS,{'tiny':{'repo':'none/tiny','revision':'0','min_similarity':0.45,'files':hashes}},clear=True);models.start();self.addCleanup(models.stop)
+        self.addCleanup(semantic._unload);semantic.install(self.root,'tiny',source)
+        (self.nb/'Nightly.md').write_text('# Nightly\n\nThe cache rebuild runs every night.\n');(self.nb/'Weather.md').write_text('# Weather\n\nWeather tomorrow, weather tomorrow.\n')
+        (self.nb/'Rebuild.md').write_text('# Rebuild\n\nRebuild rebuild.\n')   # no word of the query, but the same direction in the model
+        self.set(self.nb,'searchable');self.sync()
+        hits=sources.search(self.root,'demo','cache',10,pages=True);found={h['path']:h for h in hits}
+        self.assertEqual(sorted(found),['notes/Nightly.md','notes/Rebuild.md'])   # Weather.md and Runbook.md are no match in meaning
+        self.assertGreater(found['notes/Nightly.md']['relevance'],0);self.assertEqual(found['notes/Rebuild.md']['relevance'],0.0)   # still found by meaning alone
+        code,result=self.cli('--json','search','cache','--pages');self.assertEqual(sorted(p['path'] for p in result['pages']),['Nightly.md','Rebuild.md'])
+        with patch('core.semantic.threshold',lambda root:None):self.assertGreater(len(sources.search(self.root,'demo','cache',10,pages=True)),len(hits))   # the old padding, to show the test bites
+
     def test_a_sidecar_edit_makes_the_index_stale(self):
         self.sidecar(self.nb,visibility='searchable');self.sync();self.assertFalse(sources.stale(self.root,'demo'))
         time.sleep(0.05);self.sidecar(self.nb,visibility='hidden')
@@ -125,7 +139,7 @@ class Notebooks(Kb):
         (self.root/'notebook-folders.json').write_text('{broken')
         self.assertEqual(self.plain(),[]);self.assertEqual(self.pages(),[])
         with self.assertRaisesRegex(ValueError,'damaged'):digests.scan(self.root,'demo')
-        self.assertTrue(any('notebook-folders.json is damaged' in w for w in docs.health(self.root)))
+        code,result=self.cli('--json','doctor');self.assertTrue(any('notebook-folders.json is damaged' in w for w in result['warnings']))
 
     def test_ingest_scan_skips_notebook_pages(self):
         self.set(self.nb,'injectable');self.sync()

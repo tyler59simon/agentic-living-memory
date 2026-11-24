@@ -8,7 +8,6 @@ import json
 import os
 import re
 import stat
-import tempfile
 import threading
 import uuid
 from contextlib import contextmanager
@@ -179,14 +178,6 @@ def confined(root, relative):
         if cursor.is_symlink():
             raise ValueError("Symbolic links are not allowed in the store")
         cursor = cursor.parent
-    # Notebook paths (NS-2A): a junction resolves inside the store, so the check above and resolve() miss one that points
-    # at another notebook. Every part from domains/ down is checked.
-    if len(rel.parts) > 3 and rel.parts[0] == "domains" and rel.parts[2] == "notebooks":
-        cursor = root
-        for part in rel.parts:
-            cursor = cursor / part
-            if is_link_or_junction(cursor):
-                raise ValueError("Links and junctions are not allowed inside a notebook")
     path.resolve().relative_to(root)
     return path
 
@@ -611,88 +602,8 @@ def _write(path, data):
     else:
         # Canonical/configuration files are UTF-8. Atomic write fsyncs first.
         mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
-        try:
-            text = data.decode("utf-8")
-        except UnicodeDecodeError:
-            # Only a notebook page's before-image can be other bytes (an editor saved it in another encoding): it comes
-            # back exactly on undo or recovery (NS-2C re-review, R2-D6).
-            _copy_into(data, path.parent, path)
-        else:
-            atomic_write(path, text)
+        atomic_write(path, data.decode("utf-8"))
         os.chmod(path, mode)
-
-
-# Notebook attachments (NS-2A): binary and up to 25 MiB, so their bytes never go into a journal as base64. A blob effect
-# moves the bytes between `.operations/<op>/blobs/<sha256>` and the asset path; the journal keeps only the hashes.
-BLOB_PATH = re.compile(r"domains/[^/]+/notebooks/[^/]+/assets/[^/]+")
-
-
-def is_blob(rel):
-    return bool(BLOB_PATH.fullmatch(str(Path(rel).as_posix())))
-
-
-def blob_store(root, operation_id):
-    return Path(root) / ".operations" / operation_id / "blobs"
-
-
-def _stage_blob(folder, data):
-    """Write `data` to folder/<sha256> and fsync it, unless it is already there."""
-    sha = digest(data)
-    target = folder / sha
-    if target.exists() and digest(target.read_bytes()) == sha:
-        return
-    folder.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix="." + sha[:8] + ".", dir=folder)
-    try:
-        with os.fdopen(fd, "wb") as out:
-            out.write(data)
-            out.flush()
-            os.fsync(out.fileno())
-        retry_sharing(lambda: os.replace(tmp, target))
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-
-
-def _copy_into(data, folder, target):
-    """Write `data` to a temporary file in `folder`, fsync it, and replace `target` with it in one step."""
-    folder.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=".place.", dir=folder)
-    try:
-        with os.fdopen(fd, "wb") as out:
-            out.write(data)
-            out.flush()
-            os.fsync(out.fileno())
-        retry_sharing(lambda: os.replace(tmp, target))
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-
-
-def _move_blob(root, operation_id, effect, desired):
-    """Make the asset path hold the side `desired` of a blob effect. The bytes there are first copied into the operation's
-    blobs folder (unless already kept), then the wanted bytes are copied in and replace the file in one step, so the path
-    always holds one side and the operation keeps both for as long as its journal exists."""
-    path = confined(root, effect["path"])
-    folder = blob_store(root, operation_id)
-    want = effect[desired + "_hash"]
-    current_bytes = _bytes(path)
-    current = digest(current_bytes)
-    if current == want:
-        return
-    if current is not None:
-        _stage_blob(folder, current_bytes)
-    if want is None:
-        retry_sharing(path.unlink)
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _copy_into((folder / want).read_bytes(), folder, path)
 
 
 def _distinct_entries(root, old, new):
@@ -746,9 +657,7 @@ def transaction(root, changes, kind, expected=None, operation_id=None, skip_unch
 
     skip_unchanged (derived files only): leave out files that already hold these exact bytes, and
     write no journal at all when nothing is left, so a sync that changed nothing leaves no trace.
-    meta: a small JSON object kept in the journal (notebook operations record their domain, notebook and uid).
-    A notebook attachment path (`is_blob`) takes bytes or None and becomes a blob effect: its bytes are staged in the
-    operation's `blobs/` folder before the journal is written, and moved into place by recovery."""
+    meta: a small JSON object kept in the journal (notebook operations record their domain and notebook)."""
     root = Path(root).resolve()
     operation_id = operation_id or uuid.uuid4().hex
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", operation_id):
@@ -765,10 +674,7 @@ def transaction(root, changes, kind, expected=None, operation_id=None, skip_unch
                 raise ValueError("Idempotency payload differs")
             return recover(root, operation_id, "forward")
         rolled = roll_forward_pending(root)
-        from .docs import check_notebook_metadata
-        check_notebook_metadata(root, changes)
         effects = []
-        blobs = []
         for rel, content in sorted(changes.items()):
             path = confined(root, rel)
             before = _bytes(path)
@@ -776,12 +682,6 @@ def transaction(root, changes, kind, expected=None, operation_id=None, skip_unch
                 raise ValueError(f"Stale revision: {rel}")
             after = content.encode() if isinstance(content, str) else content
             if skip_unchanged and before == after:
-                continue
-            if is_blob(rel):
-                if after is not None:
-                    blobs.append(after)
-                effects.append({"path": str(Path(rel).as_posix()), "blob": True, "before": None, "after": None,
-                                "before_hash": digest(before), "after_hash": digest(after)})
                 continue
             effects.append({"path": str(Path(rel).as_posix()), "before": _encode(before), "after": _encode(after),
                             "before_hash": digest(before), "after_hash": digest(after)})
@@ -794,9 +694,6 @@ def transaction(root, changes, kind, expected=None, operation_id=None, skip_unch
         user = os_user()
         if user:
             journal["os_user"] = user
-        # Attachment bytes are durable before the intent that names them, so recovery always finds them.
-        for data in blobs:
-            _stage_blob(blob_store(root, operation_id), data)
         # Marker first: a crash between the two writes leaves a marker with no journal, which roll_forward_pending clears.
         atomic_write(journal_path.with_name(PENDING), "pending\n")
         atomic_write(journal_path, canonical_json(journal))
@@ -892,12 +789,6 @@ def _waiting_plans(root):
             waiting |= {e["pending_plan"] for e in entries.values() if isinstance(e, dict) and e.get("pending_plan")}
         except (ValueError, AttributeError, TypeError):
             return None
-    for state_path in Path(root).glob("domains/*/notebook-sync.json"):   # a page deletion waiting for its tick (NS-2B)
-        try:
-            pending = (read_json(state_path, {}) or {}).get("pending") or {}
-            waiting |= {p["plan_id"] for p in pending.values() if isinstance(p, dict) and p.get("plan_id")}
-        except (ValueError, AttributeError, TypeError):
-            return None
     return waiting
 
 
@@ -940,7 +831,7 @@ def _pruneable_plan(root, plan_path, waiting, now_utc, applied_days, unapplied_d
 def prune_plans(root, applied_days=1, unapplied_days=30, require_plan=False):
     """Delete plan files: applied ones (committed journal) older than `applied_days`, never-applied ones older
     than `unapplied_days`. A plan whose journal is in any other state, or unreadable, stays, and so does one an
-    Obsidian approval still waits on (`pending_plan` in a domain's sync-state.json, `pending` in its notebook-sync.json). Returns the count removed.
+    Obsidian approval still waits on (`pending_plan` in a domain's sync-state.json). Returns the count removed.
     require_plan: for a folder this store does not own (a harness home), touch only files shaped like governance.plan() output."""
     import shutil
     root = Path(root).resolve()
@@ -960,7 +851,7 @@ def prune_plans(root, applied_days=1, unapplied_days=30, require_plan=False):
             if not _pruneable_plan(root, plan_path, live_waiting, now_utc, applied_days, unapplied_days, require_plan):
                 continue
             plan_path.unlink(missing_ok=True)
-            shutil.rmtree(plan_path.with_suffix(""), ignore_errors=True)   # attachment bytes a plan staged (NS-2A)
+            shutil.rmtree(plan_path.with_suffix(""), ignore_errors=True)   # attachment bytes an older plan staged
             removed += 1
     return removed
 
@@ -975,13 +866,13 @@ def roll_forward_pending(root):
         operation_id = marker.parent.name
         try:
             if not marker.with_name("journal.json").exists():
-                # No journal: nothing was applied. The folder holds only the marker and any attachment bytes staged for it.
+                # No journal: nothing was applied. The folder holds only the marker.
                 import shutil
                 shutil.rmtree(marker.parent, ignore_errors=True)
                 continue
             journal = read_json(marker.with_name("journal.json"))  # a damaged journal is reported below, not raised: it must not block every write
             if not isinstance(journal, dict) or not isinstance(journal.get("effects"), list):
-                # A journal that is there but damaged keeps its folder: its blobs may be the only copy of an attachment.
+                # A journal that is there but damaged keeps its folder.
                 results.append({"ok": False, "operation_id": operation_id, "error": f"corrupt_journal {operation_id}: see RECOVERY.md"})
                 continue
             if journal.get("state") in {"rolled_back", "abandoned"}:
@@ -1044,11 +935,7 @@ def recover(root, operation_id, direction="forward"):
             if current not in {effect["before_hash"], effect["after_hash"]}:
                 raise ValueError(f"Recovery conflicts with a user edit: {effect['path']}")
             if effect.get("blob"):
-                want = effect[desired + "_hash"]
-                kept = blob_store(root, operation_id) / str(want)
-                if want is not None and current != want and not (kept.exists() and digest(kept.read_bytes()) == want):
-                    raise ValueError(f"Attachment bytes are missing for {effect['path']}; run recover {operation_id} --abandon")
-                continue
+                raise ValueError(f"{operation_id} moves the notebook attachment {effect['path']}; hosted notebooks were retired (CON-18): run recover {operation_id} --abandon")
             for side in ("before", "after"):
                 if digest(_decode(effect[side])) != effect[side + "_hash"]:
                     raise ValueError("Journal content failed integrity validation")
@@ -1057,11 +944,8 @@ def recover(root, operation_id, direction="forward"):
         effects = journal["effects"] if direction == "forward" else list(reversed(journal["effects"]))
         # Write new files before removing old ones: an interrupted rename then leaves a
         # duplicate (reported, recoverable) rather than a note that has vanished.
-        effects = sorted(effects, key=lambda effect: effect[desired + "_hash"] is None)   # the hash: a blob effect keeps no content
+        effects = sorted(effects, key=lambda effect: effect[desired + "_hash"] is None)
         for effect in effects:
-            if effect.get("blob"):
-                _move_blob(root, operation_id, effect, desired)
-                continue
             path = confined(root, effect["path"])
             if digest(_bytes(path)) != effect[desired + "_hash"]:
                 _write(path, _decode(effect[desired]))

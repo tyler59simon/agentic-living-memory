@@ -4,8 +4,7 @@ notes and page edits. Design: docs/notebooks-design.md, NOTEBOOKS.md."""
 import base64,json,os,unittest
 from pathlib import Path
 from unittest.mock import patch
-from test_docs import Fixture,PAGE
-from test_docs_review2b import junction
+from docfixture import Fixture,PAGE,junction
 from core import docs,folder_docs,governance
 from core.repository import digest,read_json
 
@@ -250,13 +249,62 @@ class Settle(Folder):
         self.assertIn('folder-proposals',json.dumps(self.ok('history','--include-private')))
         self.ok('doc','undo',done['operation_id']);self.ok('doc','undo',self.propose('a.md',b'three')['operation_id'])   # doc undo handles these operations
 
-    def test_the_other_page_proposals_are_untouched(self):
-        self.ok('doc','notebook','create','demo','nb1','--title','Notebook');docs.create_page(self.root,'demo','nb1','p.md',b'one')
-        pid=docs.propose(self.root,'demo','nb1','p.md',b'two',digest(b'one'))['id']
+    def test_a_leftover_hosted_proposal_is_not_served(self):
+        old=self.root/'domains'/'demo'/'notebooks'/'nb1'/'.proposals';old.mkdir(parents=True)
+        (old/'0123456789ab.json').write_text(json.dumps({'id':'0123456789ab','domain':'demo','notebook':'nb1','path':'p.md','body':'two','status':'pending','created':'2026-11-01T00:00:00Z'}))
         self.put('a.md',b'x');other=self.propose('a.md',b'y')['id']
-        rows=self.ok('proposals','--kind','page')['proposals'];self.assertEqual({r['id'] for r in rows},{pid,other})
-        self.assertFalse(next(r for r in rows if r['id']==pid).get('folder'))   # a store notebook's row has no folder
-        self.ok('proposals','accept',pid);self.assertEqual(docs.read_page(self.root,'demo','nb1','p.md')['text'],'two')
+        self.assertEqual([r['id'] for r in self.listing()],[other])
+        code,text=self.fails('proposals','accept','0123456789ab');self.assertIn('not_found',text)
+
+    def test_accept_and_reject_write_where_the_proposal_was_found_not_where_its_json_says(self):
+        self.put('a.md',b'one');self.put('b.md',b'one')
+        accepted=self.propose('a.md',b'two')['id'];rejected=self.propose('b.md',b'two')['id']
+        for pid in (accepted,rejected):
+            path=self.root/'domains'/'demo'/'folder-proposals'/self.nid/f'{pid}.json';value=json.loads(path.read_text())
+            value.update(domain='evil',notebook='nb-0000000000');path.write_text(json.dumps(value))
+        done=self.ok('proposals','accept',accepted);self.ok('proposals','reject',rejected)
+        self.assertFalse((self.root/'domains'/'evil').exists());self.assertFalse((self.root/'domains'/'demo'/'folder-proposals'/'nb-0000000000').exists())
+        for pid,status in ((accepted,'accepted'),(rejected,'rejected')):
+            record=self.record(pid);self.assertEqual((record['status'],record['domain'],record['notebook']),(status,'demo',self.nid))
+        self.assertEqual(self.nb.joinpath('a.md').read_bytes(),b'two')
+        effects=[e['path'] for e in self.journal(done['operation_id'])['effects']]
+        self.assertEqual(effects,[f'domains/demo/folder-proposals/{self.nid}/{accepted}.json'])
+
+
+class Retention(Folder):
+    """Journals of folder notebook operations hold page text, so finished ones are pruned (docs.prune_journals, with the daily housekeeping)."""
+    def ops(self):
+        self.put('a.md',b'one');made=self.propose('a.md',b'two');done=self.ok('proposals','accept',made['id'])
+        return made['operation_id'],done['operation_id']
+    def kept(self):return sorted(p.name for p in (self.root/'.operations').glob('doc-*'))
+
+    def test_the_newest_operations_per_file_are_kept(self):
+        first,second=self.ops();other=self.propose('a.md',b'three')['operation_id']
+        self.assertEqual(docs.prune_journals(self.root,keep=1),1)   # the propose of the first proposal: its file has a newer operation
+        self.assertEqual(self.kept(),sorted([second,other]))
+        self.ok('doc','undo',second);self.assertEqual(self.nb.joinpath('a.md').read_bytes(),b'one')
+
+    def test_old_operations_go_even_when_few(self):
+        self.ops();self.assertEqual(docs.prune_journals(self.root,keep=100,days=-1),2);self.assertEqual(self.kept(),[])   # every operation is older than a cutoff in the future
+
+    def test_unfinished_operations_and_missing_index_files(self):
+        first,second=self.ops();third=self.propose('a.md',b'four')['operation_id']
+        (self.root/'.operations'/first/'doc.json').unlink()   # read from the journal instead
+        (self.root/'.operations'/third/'pending').write_text('pending\n')
+        docs.prune_journals(self.root,keep=1,days=-1)
+        self.assertEqual(self.kept(),[third])   # unfinished: left alone
+
+    def test_the_scan_takes_no_lock_and_each_candidate_is_rechecked_under_it(self):
+        from contextlib import contextmanager
+        first,second=self.ops()
+        with patch.object(docs,'store_lock',side_effect=AssertionError('locked during scan')):self.assertEqual(docs.prune_journals(self.root,keep=100),0)
+        real_lock=docs.store_lock;calls=[]
+        @contextmanager
+        def racing_lock(root,*a,**kw):
+            calls.append(root);(self.root/'.operations'/first/'pending').write_text('pending\n')
+            with real_lock(root,*a,**kw):yield
+        with patch.object(docs,'store_lock',side_effect=racing_lock):docs.prune_journals(self.root,keep=1)
+        self.assertGreaterEqual(len(calls),1);self.assertIn(first,self.kept())
 
 
 class OneCommand(Folder):

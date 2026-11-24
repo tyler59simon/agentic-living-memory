@@ -153,6 +153,6 @@ class SessionContext(Fixture):
     def test_tag_summary_lists_project_facet(self):self.assertIn('project/{',_tag_summary(self.root))
 
 class Version(Fixture):
-    def test_api(self):self.assertEqual(self.cli('version')[1]['api'],3)
+    def test_api(self):self.assertEqual(self.cli('version')[1]['api'],4)
 
 if __name__=='__main__':unittest.main()

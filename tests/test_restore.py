@@ -171,7 +171,7 @@ class Restore(StoreFixture):
         self.assertIn('restore', version['commands'])
         self.assertEqual(version['capabilities'], {'proposals': 1, 'restore': 1, 'pin': 1, 'rule': 1, 'direct_writes': 1, 'note_types': 1, 'history': 3, 'items': {'fields': 2},
                                                    'maintenance': {'version': 1, 'actions': ['status', 'preview', 'run', 'enable', 'disable', 'history']}, 'wiki_agent': {'version': 1}, 'systems': {'project': 1}, 'views': {'version': 2, 'kinds': ['note', 'query']},
-                                                   'docs': {'version': 1, 'max_page_bytes': 4194304, 'max_asset_bytes': 26214400, 'notebook_only_domains': True, 'search': True, 'folder_policy': 2, 'accept_edited': True, 'folder_proposals': 1}})
+                                                   'docs': {'version': 1, 'max_page_bytes': 4194304, 'folder_policy': 2, 'accept_edited': True, 'folder_proposals': 1}})
 
     def test_the_log_shows_restored_and_the_archive_row(self):
         a = self.note('Cache policy', 'The cache is rebuildable.')

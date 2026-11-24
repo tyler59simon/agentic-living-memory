@@ -209,17 +209,12 @@ def inspect_relocation(identity):
     with store_lock(source, allow_retired=True):
         current = _manifest(source)
     previous = plan['files']
-    from .docs import private_scope, is_private_path
-    scope = private_scope(source)
     lists = {'added': sorted(set(current) - set(previous)), 'removed': sorted(set(previous) - set(current)),
              'changed': sorted(p for p in set(previous) & set(current) if previous[p] != current[p])}
-    withheld = sum(1 for paths in lists.values() for p in paths if is_private_path(p, scope))
     result = {'ok': True, 'plan_id': identity, 'digest': plan['digest'],
               'source': plan['source'], 'destination': plan['destination'],
               'config_changed': _hash(config_path()) != plan['config_revision'],
-              **{k: [p for p in v if not is_private_path(p, scope)] for k, v in lists.items()}}
-    if withheld:
-        result['private_withheld'] = withheld   # paths inside private notebooks, counted but not named
+              **lists}
     return result
 
 
@@ -316,9 +311,8 @@ def apply_relocation(identity, expected):
                     temp = dest.with_name('.' + dest.name + '.relocation-copy')
                     shutil.copyfile(source / rel, temp)
                     os.replace(temp, dest)
-                from .docs import is_notebook_only
                 for domain in (source / 'domains').iterdir() if (source / 'domains').exists() else []:
-                    if domain.is_dir() and not is_notebook_only(source, domain.name):   # a notebook-only domain has no notes/
+                    if domain.is_dir():
                         for name in ('notes', 'archive'):
                             (destination / 'domains' / domain.name / name).mkdir(parents=True, exist_ok=True)
                 _disable_maintenance(destination)
@@ -335,9 +329,8 @@ def apply_relocation(identity, expected):
                 journal['state'] = 'verified'
                 _write(journal_path, journal)
             if journal['state'] == 'verified':
-                from .docs import is_notebook_only
                 for domain in (destination / 'domains').iterdir() if (destination / 'domains').exists() else []:
-                    if domain.is_dir() and not is_notebook_only(destination, domain.name):
+                    if domain.is_dir():
                         reconcile(domain.name, destination, sync_overlay=False)
                 journal['state'] = 'ready'
                 _write(journal_path, journal)

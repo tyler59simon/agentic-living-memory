@@ -2,7 +2,7 @@
 from __future__ import annotations
 import json,textwrap
 WIDTH=88
-LISTS=('results','notes','items','sources','pages','tasks')
+LISTS=('results','notes','items','sources','pages')
 TRAILER=('hint','warnings','quality_warnings','rule_warning','pin_warning')
 
 def _s(v):return v if isinstance(v,str) else json.dumps(v,ensure_ascii=False)
@@ -16,14 +16,11 @@ def _row(row,n):
     head=f'{n}. ' if n else '- '
     name=row.get('title') or row.get('path') or row.get('file') or row.get('source') or _ref(row)
     if row.get('label')=='notebook page':name=f"{name}  ({row.get('domain')}/{row.get('notebook')}/{row.get('path')}:{row.get('line_start')})"
-    task='line' in row and 'done' in row and isinstance(row.get('text'),str)   # doc tasks: the task itself, where it is, and when it is due
-    if task:name=('[x] ' if row['done'] else '[ ] ')+row['text']
     meta=', '.join(str(row[k])[:10] if k in ('updated','date') else str(row[k]) for k in ('type','updated','date','status') if row.get(k))
     lines=[head+str(name or json.dumps(row,ensure_ascii=False))+(f'  [{meta}]' if meta else '')+(f'  {_ref(row)}' if row.get('title') and _ref(row) else '')]
     if row.get('item'):lines+=_wrap(f"#{row['index']} {row['item']}" if 'index' in row else row['item'])   # open: the action item itself
-    if task:lines+=_wrap(f"{row.get('domain')}/{row.get('notebook')}/{row.get('path')}:{row['line']}"+(f"  due {row['due']}" if row.get('due') else ''))
     for key in ('summary','snippet','excerpt','text','reason','action'):
-        if row.get(key) and not (task and key=='text'):lines+=_wrap(row[key])
+        if row.get(key):lines+=_wrap(row[key])
     if isinstance(row.get('files'),list) and row['files']:lines+=_wrap('files: '+', '.join(map(str,row['files'])))
     if isinstance(row.get('actions'),dict):lines.append(f"   actions: {row['actions'].get('open',0)} open, {row['actions'].get('done',0)} done")
     return lines

@@ -73,8 +73,6 @@ def import_plan(root,source,domain=None):
     target=canonical_domain(domain or str(manifest.get('domain') or ''),root)
     from .common import global_domains
     if target not in read_json(root/'bindings.json',{}).get('domains',{}) and target not in global_domains(root):raise ValueError(f"Domain '{target}' is not bound here; bind it or pass --domain")
-    from .docs import is_notebook_only
-    if is_notebook_only(root,target):raise ValueError(f'{target} holds notebooks only; import the notes into another domain (pass --domain)')
     parsed={};seen={}
     for name,data in sorted(members.items()):
         try:note=parse_text(data.decode('utf-8'),name)

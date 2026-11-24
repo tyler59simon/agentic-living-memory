@@ -212,11 +212,11 @@ def _user_brief(root):
         swallowed('session_start.user_brief',exc,root);return None
 
 def _page_overdue(root,domains,today):
-    """[(due, task, 'path:line')] of the open page tasks of injectable notebooks (hosted and folder) that are past due, from the page
+    """[(due, task, 'path:line')] of the open page tasks of injectable folder notebooks that are past due, from the page
     index as it is: SessionStart never reindexes, and any error means no page tasks."""
     try:
         from . import docs_index
-        rows,_=docs_index.task_rows(root,domains,open_only=True,refresh=False,levels=('injectable',),folders=True)
+        rows,_=docs_index.task_rows(root,domains,open_only=True,refresh=False,levels=('injectable',))
         return [(t['due'],t['task'],f"{t['path']}:{t['line']}") for t in rows if t['due'] and t['due']<today]
     except Exception as exc:
         from .logs import swallowed

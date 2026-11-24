@@ -36,7 +36,7 @@ The vault is your own editing surface, so routine edits need no approval:
 
 ## Notebooks
 
-Searchable and injectable notebooks of the domain are mirrored to `Notebooks/<domain>/<notebook>/`. Edits there come back as page writes, or as proposals when the page changed in memory too; a new `.md` file becomes a page; a deleted copy becomes a "Delete page" line to tick on the Sync Status page. Hidden and private notebooks are never mirrored, and every file of a notebook's mirror leaves the vault when it turns hidden or private (edits are kept in Hivemind first). See [NOTEBOOKS.md](NOTEBOOKS.md#obsidian).
+Living Memory no longer mirrors notebook pages into the vault (hosted notebooks were retired in CON-18). Copies an earlier version left in `Notebooks/<domain>/<notebook>/` are plain files now: they stay, agents may not write them, and they are never indexed as a source. A leftover `domains/<domain>/notebook-sync.json` is ignored and removed by the next sync. Folder notebooks are folders you keep yourself, outside the vault. See [NOTEBOOKS.md](NOTEBOOKS.md#obsidian).
 
 ## Conflicts and recovery
 

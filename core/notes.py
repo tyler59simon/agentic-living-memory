@@ -720,8 +720,6 @@ def capture(title,body,tags,domain,root=None,**metadata):
         registered=read_json(root/'bindings.json',{}).get('domains',{})
         if domain==global_domains(root)[0]:ensure_global(root)
         elif domain not in registered and domain not in {'global','_global'}:raise ValueError('Domain is not registered; run bind first')
-        from .docs import refuse_notes_in
-        refuse_notes_in(root,domain)   # NS-2A: whatever chose the domain
         body=format_body(body)
         key=metadata.pop('idempotency_key',None);allow_similar=bool(metadata.pop('allow_similar',False))
         supersedes=metadata.pop('supersedes',None) or [];drop_links=bool(metadata.pop('drop_links',False))

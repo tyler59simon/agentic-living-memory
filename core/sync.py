@@ -481,13 +481,7 @@ def _status_page(domain,root,notes,view_conflicts=(),failure=None):
             +section('Waiting for approval',waiting,'Nothing waiting.')+'\n'
             +section("Couldn't save",errors,'No problems.')+'\n'
             +section('Conflicts',conflicts,'No conflicts.')+'\n'
-            +section('Recently applied',recent,'Nothing yet.')+_notebook_section(root,domain))
-
-def _notebook_section(root,domain):
-    from .notebook_sync import status_section
-    try:text=status_section(root,domain)
-    except Exception:text=''
-    return '\n'+text if text else ''
+            +section('Recently applied',recent,'Nothing yet.'))
 
 GENERIC_PROMPT='The note, in one or two plain sentences.'
 
@@ -542,15 +536,15 @@ def _recap_page(domain,root):
     except OSError:pass   # derived: a cache that cannot be written only costs a recompute
     return text
 
-def mirror_notebooks(domain,vault,root):
-    """The notebook mirror (core/notebook_sync.py) after a note sync: its counts, or {'error': ...}. Notes are synced already, so a
-    notebook failure is reported, not raised."""
+def forget_page_mirror(domain,root):
+    """Remove the state file of the retired page mirror (CON-18) from the store. The copies the mirror left in the vault are
+    plain files now and stay where they are. A failure is logged, not raised: notes are synced already."""
+    rel=f'domains/{domain}/notebook-sync.json'
     try:
-        from .notebook_sync import sync_notebooks
-        return sync_notebooks(domain,vault,root)
-    except Exception as exc:
+        if (Path(root)/rel).is_file():transaction(root,{rel:None},'overlay_state')
+    except (OSError,ValueError,TimeoutError) as exc:
         from .logs import swallowed
-        swallowed('sync.notebooks',exc,root);return {'error':str(exc)[:500]}
+        swallowed('sync.forget_page_mirror',exc,root)
 
 def write_status(domain,vault,root):
     """Rewrite the vault's Sync Status page from the state as it is now (after `sync`, which builds no overlay), recording
@@ -570,7 +564,7 @@ def build_overlay(domain,vault,root=None,trigger=None):
     try:sync_result=sync(domain,vault,root,trigger)
     except Exception as exc:
         _report_failure(domain,vault,root,exc);raise
-    sync_result['notebooks']=mirror_notebooks(domain,vault,root)
+    forget_page_mirror(domain,root)
     notes=inventory(domain,root,retired=True);active=[n for n in notes if n.get('status')=='active'];changes={}
     def link(n):
         target=note_rel(domain,Path(n['path']).name,n.get('status')=='active')[:-3]
@@ -667,35 +661,19 @@ def sync_all(root=None,trigger='manual',primary=None):
     except OSError:pass
     return summary
 
-def teardown_plan(vault,root=None):
-    """A plan that removes what Living Memory put in the vault: the files its manifests list and, with the store root, the
-    notebook copies each domain mirrored there (notebook-sync.json of the same vault id). An edited file is never removed."""
+def teardown_plan(vault):
+    """A plan that removes what Living Memory put in the vault: the files its manifests list. An edited file is never removed."""
     vault=Path(vault).resolve();manifest={'files':{}};semantic={};changes={}
-    identity=vault_id(vault,create=False)
     for rel in (GENERATED,COPIES,LEGACY_GENERATED,LEGACY_COPIES,VAULT_ID):
         if (vault/rel).exists():
             data=read_json(vault/rel,{'files':{}});manifest['files'].update(data.get('files',{}));semantic.update(data.get('semantic',{}));changes[rel]=None
-    mirror={}
-    if root is not None and identity:   # the notebook mirror: removed at apply without the vault journal (governance.apply)
-        from .notebook_sync import MIRROR,STATE,_safe
-        for state_path in sorted(Path(root).glob(f'domains/*/{STATE}')):
-            state=read_json(state_path,None)
-            if not isinstance(state,dict) or state.get('vault_id')!=identity:continue
-            domain=state_path.parent.name
-            for key,value in list((state.get('pages') or {}).items())+[(k,{'vault':v}) for k,v in (state.get('assets') or {}).items()]:
-                rel=f'{MIRROR}/{domain}/{key}';path=_safe(vault,rel)
-                if not isinstance(value,dict) or not value.get('vault') or path is None:continue   # behind a link or junction: never touched
-                current=_hash(path)
-                if current is None:continue
-                if current!=value['vault']:raise ValueError('Modified managed file preserved: '+rel)
-                mirror[rel]=current
     for rel,expected in manifest['files'].items():
         current=_hash(vault/rel)
         if current is None:continue
         if current!=expected and not (rel in semantic and _canvas_key(_read(vault/rel))==semantic[rel]):
             raise ValueError('Modified managed file preserved: '+rel)
         changes[rel]=None
-    return plan(vault,changes,'overlay_teardown',summary={'files':len(changes)+len(mirror)},extra={'mirror':mirror} if mirror else None)
+    return plan(vault,changes,'overlay_teardown',summary={'files':len(changes)})
 def main(argv=None):
     import argparse
     p=argparse.ArgumentParser();p.add_argument('domain');p.add_argument('vault',type=Path);p.add_argument('--root',type=Path,default=memory_root());a=p.parse_args(argv);print(json.dumps(sync(a.domain,a.vault,a.root)));return 0

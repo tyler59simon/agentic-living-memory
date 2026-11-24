@@ -2,7 +2,7 @@
 Each form, its default limit, and the refusals when a flag belongs to another form."""
 import contextlib,io,json,unittest
 from test_core import StoreFixture
-from core import docs
+from core import sources
 from core.cli import main
 
 class Fixture(StoreFixture):
@@ -29,19 +29,24 @@ class Forms(Fixture):
     def test_sources_form(self):
         found=self.ok('search','cache','--sources');self.assertEqual(found['mode'],'sources')
 
-    def test_pages_form_finds_hosted_pages_in_every_domain(self):
-        docs.create_notebook(self.root,'demo','nb1','Notebook');docs.create_page(self.root,'demo','nb1','Retry.md',b'# Retry\n\nBackoff doubles each attempt up to a ceiling.\n')
+    def folder(self,**pages):
+        """A registered folder notebook with these pages, indexed by the knowledge base."""
+        nb=self.base/'project'/'wiki';nb.mkdir(parents=True,exist_ok=True)
+        for name,text in pages.items():(nb/name).write_text(text,encoding='utf-8')
+        self.ok('doc','folder','set',str(nb),'--visibility','searchable');sources.sync(self.root,'demo');return nb
+
+    def test_pages_form_finds_folder_pages_in_every_domain(self):
+        self.folder(**{'Retry.md':'# Retry\n\nBackoff doubles each attempt up to a ceiling.\n'})
         found=self.ok('search','backoff ceiling','--pages')
         self.assertEqual((found['mode'],found['query'],found['domains'][0]),('pages','backoff ceiling','demo'));self.assertEqual([p['path'] for p in found['pages']],['Retry.md'])
+        self.assertEqual({p['origin'] for p in found['pages']},{'folder'});self.assertNotIn('pages_stale',found)
         self.assertEqual([p['path'] for p in self.ok('search','backoff','--pages','--all-domains')['pages']],['Retry.md'])
-        self.assertEqual(len(self.ok('search','backoff','--pages','--rebuild')['pages']),1)
         self.assertNotIn('pages',self.ok('search','backoff','--sources'))
+        code,error=self.cli('search','backoff','--pages','--rebuild');self.assertEqual(code,2)   # the page index it rebuilt is gone: --rebuild belongs to a notes search
+        self.assertIn('--rebuild',error['error']['message'])
 
     def test_pages_default_limit_is_10_and_the_cap_50(self):
-        docs.create_notebook(self.root,'demo','nb1','Notebook')
-        for n in range(12):docs.create_page(self.root,'demo','nb1',f'P{n}.md',f'# Page {n}\n\nZephyr gust number {n}.\n'.encode())
-        for _ in range(20):
-            if not self.ok('search','zephyr','--pages').get('pages_stale'):break
+        self.folder(**{f'P{n}.md':f'# Page {n}\n\nZephyr gust number {n}.\n' for n in range(12)})
         self.assertEqual(len(self.ok('search','zephyr','--pages')['pages']),10)
         self.assertEqual(len(self.ok('search','zephyr','--pages','--limit','20')['pages']),12)
 
@@ -74,7 +79,7 @@ class Refusals(Fixture):
                           (('search','--scope','all'),'notes search'),(('search','--explain'),'notes search'),(('search','--filter','type=decision'),'notes search'),
                           (('search','cache','--sources','--scope','all'),'search --sources'),(('search','cache','--sources','--file','a.py'),'search --sources'),
                           (('search','cache','--pages','--filter','type=decision'),'search --pages'),(('search','cache','--pages','--type','plan'),'search --pages'),
-                          (('search','--links','--tag','x'),'search --links'),(('search','--links','--scope','all'),'search --links'),(('search','cache','--transcript','--session','s','--rebuild'),'search --transcript'),
+                          (('search','--links','--tag','x'),'search --links'),(('search','--links','--scope','all'),'search --links'),(('search','cache','--transcript','--session','s','--rebuild'),'search --transcript'),(('search','cache','--pages','--rebuild'),'search --pages'),
                           (('search','cache','--links'),'takes no query'),(('search','--links','--status','resolved'),'active or any')):
             with self.subTest(argv=argv):
                 code,error=self.cli(*argv);self.assertEqual(code,2,error);self.assertIn(said,error['error']['message'])
