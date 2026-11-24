@@ -92,7 +92,7 @@ class HivemindGuard(StoreFixture):
         self.assertTrue(self.denied(self.memory('undo op-1'), agent_id='sub'))
 
     def test_reading_and_plan_writing_commands_are_allowed(self):
-        for rest in ('plan --list', 'plan delete demo:NOTE', 'inspect-plan plan-1', 'setup --inspect-plan p1', 'search apply', 'taxonomy', 'projects',
+        for rest in ('delete-plan --list', 'delete-plan demo:NOTE', 'inspect-plan plan-1', 'setup --inspect-plan p1', 'search apply', 'taxonomy', 'projects',
                      'read undo', 'show', 'diff op-1', 'history', 'retag-plan', 'merge-plan', 'restore-plan b.zip', 'import-plan x.zip',
                      'ingest-plan', 'doctor', "capture 'apply the plan' 'undo recover'"):
             with self.subTest(rest=rest):

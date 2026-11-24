@@ -79,14 +79,14 @@ class EachVerbJournalsAndUndoes(Fixture):
 
 class RemovedNames(Fixture):
     def test_old_commands_fail_at_argparse(self):
-        for old in ('rewrite-plan','taxonomy-plan','remap-plan','promote-plan','source-plan','project-plan','system-plan','change-plan','change','changes'):
+        for old in ('rewrite-plan','taxonomy-plan','remap-plan','promote-plan','source-plan','project-plan','system-plan','change-plan','change','changes','plan'):
             with self.subTest(old=old):
                 code,error=self.cli(old);self.assertEqual(code,2,old);self.assertIn('invalid',json.dumps(error))
         for action in ('update','rename','retag','resolve','reopen','restore','archive','supersede'):
             with self.subTest(action=action):self.assertEqual(self.cli('plan',action,'demo:x')[0],2)
-        self.assertIn('plan_id',self.ok('plan','delete','demo:'+self.note()['id']))   # plan delete stays
+        self.assertIn('plan_id',self.ok('delete-plan','demo:'+self.note()['id']))   # delete-plan stays
         code,version=self.cli('version');commands=set(version['commands'])
-        self.assertTrue(set(NEW_VERBS)<=commands);self.assertFalse(commands&{'rewrite-plan','taxonomy-plan','remap-plan','promote-plan','source-plan','project-plan','system-plan','change-plan','change','changes'})
+        self.assertTrue(set(NEW_VERBS)<=commands);self.assertFalse(commands&{'rewrite-plan','taxonomy-plan','remap-plan','promote-plan','source-plan','project-plan','system-plan','change-plan','change','changes','plan'})
 
 class UndoOfKeptKinds(Fixture):
     def test_undo_of_a_merge_returns_a_plan(self):
@@ -96,7 +96,7 @@ class UndoOfKeptKinds(Fixture):
         undo=self.ok('undo',applied['operation_id']);self.assertTrue(undo.get('plan_id') and undo.get('digest'));self.assertEqual(undo['kind'],'undo:'+applied['operation_id'])
         self.ok('apply',undo['plan_id'],'--expected-plan-sha256',undo['digest']);self.assertEqual(find_note(b['id'],'demo',self.root)[1]['status'],'active')
     def test_undo_of_a_plan_delete_returns_a_plan_and_of_an_archive_does_not(self):
-        a=self.note('One','Alpha body.');plan=self.ok('plan','delete','demo:'+a['id'])
+        a=self.note('One','Alpha body.');plan=self.ok('delete-plan','demo:'+a['id'])
         deleted=self.ok('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest']);undo=self.ok('undo',deleted['operation_id']);self.assertIn('plan_id',undo)
         self.ok('apply',undo['plan_id'],'--expected-plan-sha256',undo['digest'])
         archived=self.ok('archive','demo:'+a['id']);self.assertNotIn('plan_id',self.ok('undo',archived['operation_id']))
@@ -193,6 +193,6 @@ class Receipt(Fixture):
         self.assertIn(written['operation_id'],text);self.assertIn('alm undo '+written['operation_id'],text);self.assertNotIn('Apply it with',text)
         n=self.note();archived=self.ok('archive','demo:'+n['id']);text=render.render(archived);self.assertIn('alm undo '+archived['operation_id'],text)
     def test_a_plan_still_prints_as_a_plan(self):
-        n=self.note();plan=self.ok('plan','delete','demo:'+n['id']);self.assertIn('Apply it with',render.render(plan))
+        n=self.note();plan=self.ok('delete-plan','demo:'+n['id']);self.assertIn('Apply it with',render.render(plan))
 
 if __name__=='__main__':unittest.main()

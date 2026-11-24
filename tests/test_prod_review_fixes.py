@@ -1058,7 +1058,7 @@ class Cli3RefResolution(Cli):
 
     def test_history_of_a_deleted_note_by_full_id(self):
         a = self.note('Deleted subject')
-        plan = self.ok('plan', 'delete', a['id'])
+        plan = self.ok('delete-plan', a['id'])
         self.ok('apply', plan['plan_id'], '--expected-plan-sha256', plan['digest'])
         for ref in (a['id'], 'demo:' + a['id']):
             self.assertTrue(self.ok('history', '--note', ref), ref)

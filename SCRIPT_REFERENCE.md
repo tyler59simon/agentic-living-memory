@@ -21,7 +21,7 @@ Use `alm COMMAND --help` (or `python living_memory.py COMMAND --help`) for exact
 | Around a note | timeline [REF \| --date YYYY-MM-DD] [--before 5] [--after 5] [--type TYPE]... [--by updated\|created] [--all] |
 | Before compaction | recall QUERY --session SESSION [--limit 5] [--all]: excerpts from this session's own transcript, before the latest compaction (`--all`: the whole transcript) |
 | End-turn receipt | capture-finalize --session SESSION [--turn TURN] [--note DOMAIN:ID] |
-| Direct note retirement | archive REF [--expected-revision R] [--session S] [--turn T]: retires a note without a replacement (journaled, undoable; the result carries `operation_id` and `undo`). Delete is the one per-note change that is still a plan: plan delete REF |
+| Direct note retirement | archive REF [--expected-revision R] [--session S] [--turn T]: retires a note without a replacement (journaled, undoable; the result carries `operation_id` and `undo`). Delete is the one per-note change that is still a plan: delete-plan REF |
 | Review/apply | inspect-plan ID [--full] [--include-private] (`--full`: every diff whole, not cut at 16000 characters; an attachment shows as `binary` with its `sha256`; changes inside a private notebook are left out and counted in `redacted` unless `--include-private`); apply ID --expected-plan-sha256 HASH |
 | History/recovery | history [--note REF] [--limit 20] [--markdown] (a bare list of `{operation_id, kind, state, created, files, summary, actor}`, where `summary` and `actor` are those of the operation's first note or change row (a count prefixes the summary when it changed several; an operation with no row, such as one still unfinished, shows its kind and the actor its ID and kind imply); with `--note` only the operations that changed that note itself, newest first, each also with `event`, `title`, `summary` and `actor`; `--markdown` returns `{ok, rows, markdown}` instead of the bare list; an operation on a private notebook shows no summary and only its paths outside private notebooks, with `redacted` counting the rest, unless `--include-private`); diff OPERATION [--include-private] (attachments as hashes, private notebook changes as `{redacted: true}`); undo OPERATION; recover OPERATION --direction forward|backward (backward only for unfinished operations; committed ones use undo) |
 | Maintenance | rebaseline [--dry-run]; maintenance status; maintenance preview [--limit N]; maintenance run [--dry-run]; maintenance enable [--all-domains] [--model NAME] [--max-notes-per-day N] [--timeout-seconds N] [--daily-budget-usd D]; maintenance disable; maintenance history [--limit N] [--run ID] |
@@ -170,6 +170,7 @@ Generated from the argparse parser in `core/cli.py` by `py -3.15 scripts/gen_scr
 | `check` | `--index`, `--session`, `--turn`, `--undo` |
 | `config get/set` | none |
 | `confirm` | `--session`, `--turn` |
+| `delete-plan` | `--payload-file` |
 | `diff` | `--include-private` |
 | `doc` | none |
 | `doc attach` | `--from-file`, `--include-private`, `--name` |
@@ -219,7 +220,6 @@ Generated from the argparse parser in `core/cli.py` by `py -3.15 scripts/gen_scr
 | `overlay-build` | none |
 | `overlay-sync-all` | `--primary` |
 | `overlay-teardown-plan` | none |
-| `plan delete` | `--payload-file` |
 | `project create/update/archive` | `--payload-file` |
 | `projects` | `--status` |
 | `promote` | `--only`, `--suggest` |

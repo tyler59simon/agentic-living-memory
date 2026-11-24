@@ -70,7 +70,7 @@ class Notes(Log):
         self.assertEqual([(r['event'],r['title']) for r in self.rows()],[('undone','Cache policy'),('created','Cache policy')])
 
     def test_deleted_note_stays_in_its_history(self):
-        a=self.note('Cache policy','Body one.');code,plan=self.cli('--domain','demo','plan','delete','demo:'+a['id']);self.assertEqual(code,0,plan);self.cli('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest'])   # delete is still a plan
+        a=self.note('Cache policy','Body one.');code,plan=self.cli('--domain','demo','delete-plan','demo:'+a['id']);self.assertEqual(code,0,plan);self.cli('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest'])   # delete is still a plan
         self.assertEqual([r['event'] for r in self.rows('--note',a['id'])],['deleted','created'])
         self.assertEqual([r['event'] for r in self.rows('--note','demo:'+a['id'])],['deleted','created'])
 

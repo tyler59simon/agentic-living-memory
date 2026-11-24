@@ -616,7 +616,7 @@ def _maintenance_hint(root):
 HELP={'setup':'Choose or move the shared memory folder','bind':'Bind a domain to project folders','unbind':'Remove a domain binding','capture':'Save a note','propose':'Stage a draft note for the main agent (subagents)','proposals':'List, show, accept or reject staged notes and page edits','search':'Find notes','read':'Show one note',
  'update':'Change a note','supersede':'Retire a note in favour of another','review':'Notes that are due, stale or duplicated','open':'Open plans, bugs, risks and action items','check':'Tick an action item',
  'timeline':'Notes around a date or note','ingest-plan':'Plan importing Claude auto-memory files','export':'Write notes to a zip file','import-plan':'Plan importing an exported zip','confirm':'Mark a note still true',
- 'resolve':'Finish a plan, bug or risk','reopen':'Reopen a resolved note','restore':'Bring back an archived note','archive':'Retire a note without a replacement','stats':'Usage over the last days','logs':'Show the operational log','plan':'Plan deleting one note',
+ 'resolve':'Finish a plan, bug or risk','reopen':'Reopen a resolved note','restore':'Bring back an archived note','archive':'Retire a note without a replacement','stats':'Usage over the last days','logs':'Show the operational log','delete-plan':'Plan deleting one note',
  'apply':'Apply a plan','inspect-plan':'Show a plan in full','rewrite':'Rewrite several note bodies','merge-plan':'Plan merging notes','history':'Recent operations','recap':'Summary of recent activity','log':'Note history',
  'undo':'Undo an operation (merge, delete and bulk retag return a plan)','recover':'Finish or abandon an interrupted operation','diff':'Show what an operation changed','doctor':'Check the install and the store','backup':'Back up the store','housekeep':'Run daily backup and prune old journals, logs and plans',
  'restore-plan':'Plan restoring a backup','migration-plan':'Plan a store migration','note-type-plan':'Plan note type changes','baseline-plan':'Plan a verification baseline','rebuild':'Rebuild search indexes',
@@ -632,7 +632,7 @@ HELP_GROUPS=(
  ('Everyday',('help','capture','propose','proposals','search','read','update','supersede','open','check','confirm','resolve','reopen','ask','list','timeline','links','log','recap','recall','capture-finalize','status','off','on','doc')),
  ('Maintenance',('review','maintenance','rebaseline','stats','history','diff','undo','recover','restore','doctor','validate','rebuild','semantic','backup','housekeep','logs')),
  ('Direct writes (journaled, undo OPERATION)',('archive','rewrite','remap','promote','source','project','system','type')),
- ('Governance (plans)',('plan','apply','inspect-plan','merge-plan','retag-plan','note-type-plan','migration-plan','baseline-plan','restore-plan',
+ ('Governance (plans)',('delete-plan','apply','inspect-plan','merge-plan','retag-plan','note-type-plan','migration-plan','baseline-plan','restore-plan',
    'import-plan','ingest-plan','overlay-teardown-plan')),
  ('Admin',('setup','bind','unbind','config','domains','domain','projects','systems','types','sources','source-sync','ingest-scan','ingest-skip','taxonomy','views','wiki','export','query','batch','sync','overlay-build','overlay-sync-all','serve','version')))
 
@@ -895,7 +895,7 @@ def build_parser():
     p=sub('restore');p.add_argument('reference',help='An archived note: it returns to notes/, pinned, with its id, body and verification baseline kept (a resolved note uses reopen, a superseded one is read through its successor)');p.add_argument('--expected-revision');p.add_argument('--session');p.add_argument('--turn')
     p=sub('stats');p.add_argument('--days',type=int,default=30,help='Window, at most 30 (the diary keeps 30 days)');p.add_argument('--limit',type=int,default=10)
     p=sub('logs');p.add_argument('--level',choices=['debug','info','warning','error'],default='info',help='Lowest level shown');p.add_argument('--kind',choices=['hook','command','internal']);p.add_argument('--event',help='Hook event, command name or internal call site');p.add_argument('--days',type=int,default=1,help='Last N x 24 hours, at most 30 (logs keep 30 days)');p.add_argument('--limit',type=int,default=50)
-    p=sub('plan');p.add_argument('action',choices=['delete'],help='Only delete is planned; every other change to one note has its own command');p.add_argument('reference');p.add_argument('--payload-file',type=Path)
+    p=sub('delete-plan');p.add_argument('reference');p.add_argument('--payload-file',type=Path)
     p=sub('archive');p.add_argument('reference',help='A note to retire without a replacement (a plan, bug or risk that is finished uses resolve)');p.add_argument('--expected-revision');p.add_argument('--payload-file',type=Path);p.add_argument('--session');p.add_argument('--turn')
     p=sub('apply');p.add_argument('plan_id');p.add_argument('--expected-plan-sha256',required=True)
     p.add_argument('--include-private',action='store_true',help='Hivemind only: allow a plan that changes a private notebook')
@@ -1517,11 +1517,11 @@ def main(argv=None):
             if not domain:raise ValueError(UNBOUND)
             from .common import global_domains
             result=stats(root,list(dict.fromkeys([domain]+parent_domains(domain,load_bindings(root))+global_domains(root))),max(1,min(30,args.days)),max(1,min(100,args.limit)))
-        elif cmd=='plan':
+        elif cmd=='delete-plan':
             from .notes import change
             d,n=_reference(args.reference,domain,root);values=_payload(args) if args.payload_file else {}
             if 'actor' in values:raise ValueError('Cannot plan with an actor field: the controller records who acts')
-            result=change(n,d,args.action,root,plan_only=True,**values)
+            result=change(n,d,'delete',root,plan_only=True,**values)
         elif cmd=='archive':
             # Retiring a note without a replacement: one journaled, undoable step, like resolve.
             from .notes import change
