@@ -608,7 +608,7 @@ def remove(root,key):
     root=Path(root).resolve()
     with store_lock(root):
         entries=load(root)['views'];entry=next((v for v in entries if v.get('note')==key or v.get('id')==key),None)
-        if not entry:raise ValueError('That note has no view')
+        if not entry:raise ValueError(f'No query view {key}' if QUERY_ID.fullmatch(key) else 'That note has no view')
         rest=[v for v in entries if v is not entry]
         receipt=transaction(root,{'views.json':_registry(rest) if rest else None},'views_remove')
         if _kind(entry)=='query':return {'ok':True,'kind':'query','id':key,'status':'removed','operation_id':receipt.get('operation_id')}
