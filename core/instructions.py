@@ -17,6 +17,9 @@ FALLBACK_PROTOCOL='''Living Memory: use the Living Memory script (CMD) for all m
 
 BEGIN='<!-- agentic-living-memory:begin -->';END='<!-- agentic-living-memory:end -->'
 BLOCK=re.compile(re.escape(BEGIN)+r'.*?'+re.escape(END),re.S)
+# The starter templates leave this heading (and the placeholder under it) for setup to fill; without it the block goes last.
+PLACEHOLDER='<!-- integrations/setup.py adds the Living Memory block here -->'
+HEADING=re.compile(r'^## Agentic Living Memory[ \t]*$(?:\n'+re.escape(PLACEHOLDER)+r'[ \t]*$)?',re.M)
 INSTRUCTION_FILE={'claude':'CLAUDE.md','codex':'AGENTS.md','copilot':'copilot-instructions.md','factory':'AGENTS.md','antigravity':'GEMINI.md'}
 GATE=('Living Memory applies only when this session\'s context contains a "Living Memory session=" line with a domain '
       '(hooks inject it at session start in bound projects); otherwise ignore this section. That hook context also gives '
@@ -105,11 +108,13 @@ def instruction_block(harness,enable_hooks=True,script=None):
     return BEGIN+'\n'+body+'\n'+END
 
 def merge_block(original,block,owned_hash,digest,uninstall=False):
-    """Insert, replace or remove the managed block; refuse to touch a block the user edited."""
+    """Insert (under an empty `## Agentic Living Memory` heading when there is one, else at the end), replace or remove the managed block; refuse to touch a block the user edited."""
     existing=BLOCK.findall(original)
     if len(existing)>1:raise ValueError('Multiple managed instruction blocks; preserved')
     if existing and (not owned_hash or digest(existing[0].encode())!=owned_hash):raise ValueError('Unknown or modified managed instructions preserved')
     if existing:return BLOCK.sub('' if uninstall else lambda m:block,original)
+    heading=None if uninstall else HEADING.search(original)
+    if heading:return original[:heading.start()]+'## Agentic Living Memory\n'+block+(original[heading.end():] or '\n')
     return original if uninstall else original+('\n' if original and not original.endswith('\n') else '')+'\n'+block+'\n'
 
 def harness_home(harness):

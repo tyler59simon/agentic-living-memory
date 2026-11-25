@@ -1,5 +1,8 @@
 # AGENTS.md
 
+## Agentic Living Memory
+<!-- integrations/setup.py adds the Living Memory block here -->
+
 ## Behavior
 <!-- behavior:begin -->
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
@@ -67,5 +70,3 @@ These rules cover everything you write for people: replies, commit messages, PR 
 - No chat residue in written artifacts ("I hope this helps", "Let me know").
 - Keep code, commands, paths, errors and quotations exact.
 <!-- writing-style:end -->
-
-## Agentic Living Memory

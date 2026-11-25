@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from core.installer_lifecycle import ROOT_DOCUMENTS
-from core.instructions import BLOCK, instruction_block, merge_block
+from core.instructions import BLOCK, PLACEHOLDER, instruction_block, merge_block
 from core.repository import digest
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -24,15 +24,29 @@ class Templates(unittest.TestCase):
         for marker in ('behavior:begin', 'behavior:end', 'writing-style:begin', 'writing-style:end'):
             self.assertIn(f'<!-- {marker} -->', claude)
 
-    def test_setup_appends_the_block_under_the_last_heading(self):
+    def test_setup_puts_the_block_under_the_first_heading(self):
         for rel in TEMPLATES:
             with self.subTest(rel):
                 text = self.read(rel)
                 self.assertEqual(BLOCK.findall(text), [])
-                self.assertTrue(text.rstrip().endswith('## Agentic Living Memory'))
+                lines = text.splitlines()
+                self.assertEqual(lines[2:4], ['## Agentic Living Memory', PLACEHOLDER])
                 block = instruction_block('claude')
                 merged = merge_block(text, block, None, digest)
-                self.assertEqual(merged, text + '\n' + block + '\n')
+                self.assertEqual(merged, text.replace(PLACEHOLDER, block, 1))
+                self.assertNotIn(PLACEHOLDER, merged)
+                # Uninstall keeps the heading, and a later install goes back under it.
+                removed = merge_block(merged, block, digest(block.encode()), digest, uninstall=True)
+                self.assertEqual(BLOCK.findall(removed), [])
+                again = merge_block(removed, block, None, digest)
+                self.assertEqual(again.index(block), merged.index(block))
+
+    def test_without_the_heading_the_block_goes_last(self):
+        text = '# CLAUDE.md\n\n## Mine\nKeep this.\n'
+        block = instruction_block('claude')
+        self.assertEqual(merge_block(text, block, None, digest), text + '\n' + block + '\n')
+        heading_last = '# CLAUDE.md\n\n## Agentic Living Memory'
+        self.assertEqual(merge_block(heading_last, block, None, digest), heading_last + '\n' + block + '\n')
 
     def test_the_package_ships_the_templates_and_writing_guide(self):
         for rel in TEMPLATES + ('WRITING.md',):
