@@ -280,7 +280,7 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
         try:notes.extend(dict(n,domain=domain) for n in inventory(domain,root))
         except (OSError,ValueError):continue
     project,here=_project_context(cwd,active,root,bindings)
-    tail=_resolved_line(resolved)+_finished_line(notes)+_review_line(active,root,[n for n in notes if n['domain']==active])+_coverage_line(active,root,session)+_problem_line(active,root)+_backup_line(root)
+    tail=_resolved_line(resolved)+_finished_line(notes)+_review_line(active,root,[n for n in notes if n['domain']==active])+_coverage_line(active,root,session)+_problem_line(active,root)+_backup_line(root)+_install_line(root)
     last=_last_session_line(active,root,session,notes)
     notes=_collapse([n for n in notes if n.get('id') and n.get('title')])
     from . import usage
@@ -485,6 +485,23 @@ def _backup_line(root):
     try:warning=staleness_warning(root) if snapshots(root) else None
     except OSError:return []
     return [f'Living Memory backup: {warning} (CMD backup; CMD doctor if it fails).'] if warning else []
+
+def _install_line(root):
+    """One line when the installed copy was made from a checkout whose default branch has since moved (commits pulled or made
+    but not installed). It reads the .git files only: no git run and no network. A feature branch never shows it."""
+    from .common import default_branch,head_branch,head_oid
+    from .installer_lifecycle import installed_stamp
+    try:
+        stamp=installed_stamp() or {};source,commit=stamp.get('source'),stamp.get('commit')
+        if not source or not commit:return []
+        branch=head_branch(source)
+        if not branch or branch!=default_branch(source):return []
+        head=head_oid(source)
+        if not head or head==commit:return []
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('session_start.install_line',exc,root);return []
+    return [f'Living Memory install: the source checkout ({branch} at {head[:12]}) is not what is installed ({commit[:12]}); the user can update with alm upgrade.']
 
 def _problem_line(domain,root):
     from .repository import problems

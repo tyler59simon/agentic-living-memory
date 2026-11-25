@@ -255,7 +255,7 @@ def memory_subcommand(text,grammar=None):
     return found.pop() if len(found)==1 else None
 
 # Hivemind sets HIVEMIND_SESSION for every program it starts in a terminal. Agents there write plans (delete, merge-plan, ...); only the user applies or undoes them, and the direct writes are the user's too.
-HIVEMIND_GOVERNED={'apply','undo','recover','archive','rewrite','remap','promote','source','project','system','type'}   # `setup --apply-plan`, `taxonomy add` and `doc` writes are governed too (below)
+HIVEMIND_GOVERNED={'apply','undo','recover','upgrade','archive','rewrite','remap','promote','source','project','system','type'}   # `setup --apply-plan`, `taxonomy add` and `doc` writes are governed too (below)
 HIVEMIND_DENY=('Applying or undoing a plan, the direct writes (archive, rewrite, remap, promote, taxonomy add, source, project, system, type) '
                'and folder notebook writes (settling a page proposal included) are for the user to do in Hivemind, not for an agent. Write a plan for a delete or merge, and stage a page edit with doc propose; '
                'for the rest, tell the user what to change.')

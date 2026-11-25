@@ -1,6 +1,6 @@
 """Plain text for a person at a terminal. Agents, apps and pipes get the JSON result instead (cli._emit)."""
 from __future__ import annotations
-import json,textwrap
+import json,os,textwrap
 WIDTH=88
 LISTS=('results','notes','items','sources','pages')
 TRAILER=('hint','warnings','quality_warnings','rule_warning','pin_warning')
@@ -86,6 +86,20 @@ def _types(r):
         if any(shape):lines+=_wrap('; '.join(x for x in shape if x))
     return lines
 
+def _upgrade(r):
+    """`upgrade`: what moved, then the wiring commands to run (paste-ready) or that wiring is current."""
+    moved=f"{r['from']} to {r['to']}"+(f" ({r['commits']} commits)" if r.get('commits') else '')
+    head={'current':f"Already current: {r['source']} ({r['branch']}) is at the installed commit {r['to']}.",
+          'planned':f"Pulled {r['source']} ({r['branch']}), {moved}. Planned the install of {r.get('files')} files; nothing applied.",
+          'upgraded':f"Upgraded from {r['source']} ({r['branch']}), {moved}: installed {r.get('files')} files."}[r['status']]
+    lines=_wrap(head,indent='');lead='& ' if os.name=='nt' else ''   # PowerShell runs a quoted program only after &
+    if r['status']=='planned':lines+=['','Apply it with:','  '+lead+r['apply']]
+    if r.get('next_steps'):lines+=['','Rewire these harnesses, then review and apply each plan they print:']+['  '+lead+step for step in r['next_steps']]
+    elif r.get('wiring_current'):lines+=['',f"Harness wiring is current ({', '.join(r['wiring_current'])}); nothing to rerun."]
+    if r.get('notice'):lines+=['']+_wrap(r['notice'],indent='')
+    if r.get('restart'):lines+=['',r['restart']]
+    return lines
+
 def render(result):
     """One result as text: by shape (plan, note, receipt, rows), else indented key: value."""
     if isinstance(result,list):
@@ -96,6 +110,7 @@ def render(result):
         return '\n'.join(' '.join(f'{k}={_s(v)}' for k,v in x.items() if not isinstance(v,(dict,list))) if isinstance(x,dict) else _s(x) for x in result) or 'Nothing.'
     if not isinstance(result,dict):return _s(result)
     if isinstance(result.get('markdown'),str):lines=[result['markdown'].rstrip()]   # recap, history --markdown: already written for a person
+    elif result.get('status') in ('current','planned','upgraded') and 'branch' in result and 'source' in result:lines=_upgrade(result)
     elif result.get('plan_id') and result.get('digest') and result.get('status')!='approval_required':lines=_plan(result)
     elif result.get('operation_id') and result.get('undo') and isinstance(result.get('summary'),dict):lines=_direct(result)   # a direct write (governance.commit)
     elif 'title' in result and ('body' in result or 'type' in result):lines=_read(result)

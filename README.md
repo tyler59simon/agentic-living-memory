@@ -16,6 +16,8 @@ py -3.15 $env:LOCALAPPDATA/agentic-living-memory/app/integrations/setup.py claud
 # open a new terminal: install.py put the `alm` command on your PATH
 alm bind my-project C:/path/to/project
 alm doctor --cwd C:/path/to/project
+# later, to update: pull the checkout, install it, and list the harnesses to rewire
+alm upgrade
 ```
 
 Setup suggests `~/LivingMemory` and records your choice in `~/.config/agentic-living-memory/config.json`. All harness adapters read this same pointer. The Git checkout and harness packages contain software; the selected folder contains your memory. Existing-store relocation produces an exact-hash approval plan and retains the source backup. See [installation](INSTALLATION.md).

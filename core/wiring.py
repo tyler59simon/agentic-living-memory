@@ -88,9 +88,9 @@ def _same(a,b):
     try:return same_path(Path(a).resolve(),Path(b).resolve())
     except (OSError,ValueError):return False
 
-def _current(harness,config,setup):
-    """True when the managed handlers are exactly what this copy and this interpreter would write."""
-    generated=setup.hooks(harness)
+def _current(harness,config,setup,root=None):
+    """True when the managed handlers are exactly what this copy (or the copy at root) and this interpreter would write."""
+    generated=setup.hooks(harness,root)
     if harness=='copilot' and not setup._copilot_file(config):return False   # Copilot would not load it
     wanted={'hooks':generated} if harness in setup.NESTED else generated
     return setup.managed_handlers(config,harness)==setup.managed_handlers(wanted,harness)
@@ -155,6 +155,25 @@ def check(harness,setup):
     else:
         result['note']='the hooks run another copy of this package; run doctor from that copy to check its handlers and instruction block'
     return result
+
+def needs_rewire(harness,setup,package_root):
+    """Whether integrations/setup.py HARNESS, run from package_root with this interpreter, would change the harness's hook
+    handlers or managed instruction block: True or False, or None when the harness was never wired (no handlers of ours
+    and no managed block). Ownership and --adopt conflicts are not checked here; setup.py reports those itself."""
+    from .instructions import BEGIN,INSTRUCTION_FILE
+    from .repository import read_json
+    home=harness_home(harness)
+    path=home/setup.CONFIG[harness]
+    try:config=read_json(path,{}) if path.is_file() else {}
+    except ValueError:return True
+    if not isinstance(config,dict):return True
+    handlers=setup.managed_handlers(config,harness)
+    try:text=(home/INSTRUCTION_FILE[harness]).read_text(encoding='utf-8-sig').replace('\r\n','\n')
+    except (OSError,ValueError):text=''
+    if not handlers and BEGIN not in text:return None
+    hooked=bool(handlers) or harness!='factory'   # Factory without handlers of ours runs in instructions-only mode
+    if setup.instruction_block(harness,hooked,package_root) not in text:return True
+    return hooked and not _current(harness,config,setup,package_root)
 
 def wiring():
     """{harness: check} for every harness that has our hook handlers. Never raises."""

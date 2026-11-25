@@ -83,6 +83,16 @@ class Delivery(StoreFixture):
         with patch.object(setup.shutil,'which',return_value=r'C:\Windows\py.EXE'):
             proposed=setup.setup_plan('codex',home);apply(home,proposed['plan_id'],proposed['digest'])
         stops=read_json(home/'hooks.json')['hooks']['Stop'];self.assertEqual(len(stops),1);self.assertNotIn('EncodedCommand',json.dumps(stops))
+    def test_needs_rewire_covers_factory_instructions_only_and_antigravity(self):
+        from integrations import setup
+        from core.wiring import needs_rewire
+        package,moved=self.base/'pkg',self.base/'moved'
+        for name in ('factory','antigravity'):self.assertIsNone(needs_rewire(name,setup,package))   # never wired
+        for name in ('factory','antigravity'):
+            home=Path(os.environ[name.upper()+'_HOME'])
+            with patch.object(setup,'ROOT',package):wired=setup.setup_plan(name,home);apply(home,wired['plan_id'],wired['digest'])   # Factory: instructions only
+            self.assertIs(needs_rewire(name,setup,package),False,name)
+            self.assertIs(needs_rewire(name,setup,moved),True,name)   # the block or the handlers name the package path
     def test_package_install_rerun_and_uninstall(self):
         import install
         home=self.base/'local'/'agentic-living-memory'
@@ -394,7 +404,23 @@ class LauncherInstall(StoreFixture):
         self.assertIn('operation_id',json.loads(out));self.assertNotIn('Installed',out)   # stdout is still the one JSON result
         for step in steps:self.assertIn('  '+lead+step,err)
         self.assertIn(f'{lead}"{sys.executable}" "',err)
-        out,err=self.run_main();json.loads(out);self.assertIn('claude --hooks',err)   # plan and apply in one run
+        out,err=self.run_main();json.loads(out);self.assertNotIn('claude --hooks',err)   # plan and apply in one run; an update leaves out a harness never wired
+    def harness(self,name):return Path(os.environ[name.upper()+'_HOME'])
+    def wire(self,name,hooks=True):
+        from integrations import setup
+        from core.governance import apply
+        with patch.object(setup,'ROOT',self.home/'app'):wired=setup.setup_plan(name,self.harness(name),hooks);apply(self.harness(name),wired['plan_id'],wired['digest'])
+    def test_an_update_lists_only_harnesses_whose_wiring_would_change(self):
+        named=lambda steps:[step.rsplit(' ',2)[1] for step in steps]
+        for name in ('claude','codex','copilot'):self.harness(name).mkdir(parents=True,exist_ok=True)
+        first=self.plan()['summary'];self.assertEqual(named(first['next_steps']),['claude','codex','copilot']);self.assertEqual(first['wiring_current'],[])   # a first install lists every harness found
+        self.apply(self.plan());self.wire('claude');self.wire('codex')
+        summary=self.plan()['summary'];self.assertEqual(summary['next_steps'],[]);self.assertEqual(summary['wiring_current'],['claude','codex'])   # copilot was never wired: left out
+        out,err=self.run_main();self.assertIn('Harness wiring is current (claude, codex); nothing to rerun.',err)
+        rules=self.harness('claude')/'CLAUDE.md';rules.write_text(rules.read_text(encoding='utf-8').replace('never edit memory files yourself','never edit memory files',1),encoding='utf-8')   # an older block
+        hooks=self.harness('codex')/'hooks.json';config=read_json(hooks);config['hooks']['Stop'][0]['hooks'][0]['timeout']=99;hooks.write_text(json.dumps(config))   # an older handler
+        summary=self.plan()['summary'];self.assertEqual(named(summary['next_steps']),['claude','codex']);self.assertEqual(summary['wiring_current'],[])
+        out,err=self.run_main();self.assertIn('claude --hooks',err);self.assertIn('codex --hooks',err)
     def stamped_source(self):
         source=self.base/'src';(source/'core').mkdir(parents=True);(source/'core/a.py').write_text('a')
         def git(*a):return subprocess.run(['git','-c','user.name=t','-c','user.email=t@t','-c','commit.gpgsign=false','-C',str(source),*a],capture_output=True,text=True,check=True).stdout.strip()

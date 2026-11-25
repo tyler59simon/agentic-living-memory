@@ -150,6 +150,22 @@ def head_oid(repo) -> str|None:
     except OSError:pass
     return None
 
+def head_branch(repo) -> str|None:
+    """The branch HEAD is on, read from .git/HEAD without running git; None when HEAD is detached or repo is not a checkout."""
+    gd=git_dir(repo)
+    if gd is None:return None
+    try:head=(gd/'HEAD').read_text(encoding='utf-8',errors='replace').strip()
+    except OSError:return None
+    prefix='ref: refs/heads/'
+    return head[len(prefix):] or None if head.startswith(prefix) else None
+
+def default_branch(repo) -> str:
+    """The branch origin/HEAD names, read from the git files without running git; main when the clone does not record one."""
+    gd=git_dir(repo);prefix='ref: refs/remotes/origin/'
+    try:ref=(_common_dir(gd)/'refs'/'remotes'/'origin'/'HEAD').read_text(encoding='utf-8',errors='replace').strip() if gd else ''
+    except OSError:ref=''
+    return ref[len(prefix):] or 'main' if ref.startswith(prefix) else 'main'
+
 def safe_domain(name: str) -> str:
     if not isinstance(name,str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]*",name) or name in {".",".."}:
         raise ValueError("invalid domain")

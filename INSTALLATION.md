@@ -10,7 +10,7 @@ Then run `py -3.15 install.py`. It installs the package into a per-user folder t
 - Windows: `%LOCALAPPDATA%\agentic-living-memory\app`
 - elsewhere: `~/.local/lib/agentic-living-memory/app`
 
-Its plans, journals and ownership record sit beside `app/` in that folder. The plan's summary lists `next_steps`: one `integrations/setup.py HARNESS --hooks` command, run from the installed copy, for each harness found on the machine (Claude Code, Codex, Copilot, Factory, Antigravity CLI). Each generates a plan to review and apply (see INTEGRATION.md). The interpreter that runs setup is the one the hooks use. After an install is applied, `install.py` also prints those commands on stderr, ready to paste into PowerShell (a leading `&` and quoted paths; no `&` elsewhere), while stdout stays the same JSON result. Then:
+Its plans, journals and ownership record sit beside `app/` in that folder. The plan's summary lists `next_steps`: `integrations/setup.py HARNESS --hooks` commands, run from the installed copy. A first install lists one for each harness found on the machine (Claude Code, Codex, Copilot, Factory, Antigravity CLI). An update lists only harnesses wired before whose hook handlers or instruction block the new copy would change, and names the others under `wiring_current`; a harness you never wired is left out. A managed block or handler you edited by hand is listed too, and setup then asks for `--adopt` (see [Upgrading the instruction block](#upgrading-the-instruction-block)). Each command generates a plan to review and apply (see INTEGRATION.md). The interpreter that runs setup is the one the hooks use. After an install is applied, `install.py` also prints those commands on stderr, ready to paste into PowerShell (a leading `&` and quoted paths; no `&` elsewhere), while stdout stays the same JSON result. Then:
 1. Review native hook trust and restart the harness.
 2. Bind a project with `alm bind my-project C:/Projects/MyProject` (open a new terminal first; see [The `alm` command](#the-alm-command)).
 3. Run `alm doctor --cwd C:/Projects/MyProject`.
@@ -23,6 +23,16 @@ On macOS and Linux, use `python3` (3.10 or later) where this guide says `py -3.1
 - `alm bind my-project ~/Projects/MyProject` and `alm doctor --cwd ~/Projects/MyProject`
 
 On macOS, the Python from Xcode's Command Line Tools may be older than 3.10; install a current one from python.org or Homebrew. The python.org build needs its `Install Certificates.command` run once before `semantic` can download a model. Store paths are compared ignoring letter case and Unicode spelling, as APFS names files.
+
+## Updating
+
+Run `alm upgrade`. It works from the installed copy and the checkout it was installed from:
+1. It refuses while that checkout has uncommitted changes or is on another branch than the one `origin/HEAD` names (else `main`), so work on a feature branch is never installed.
+2. It runs `git pull --ff-only` in the checkout. Nothing pulled and the checkout already at the installed commit means `status: current`, and nothing is installed.
+3. It runs the checkout's `install.py --plan`, then applies that plan, with the Python recorded in the install. `alm upgrade --plan` stops after the plan and prints the command that applies it.
+4. It lists `next_steps`: the `integrations/setup.py HARNESS --hooks` commands for harnesses whose wiring the new copy changes, or says the wiring is current.
+
+Then restart running harness sessions. When you pull or commit on that branch without installing, each session start says so with a `Living Memory install:` line; it reads the `.git` files only, so it never fetches and never runs git. `doctor` reports the same drift as a warning. The manual route still works: `git pull`, then `install.py --plan` and `--apply-plan` from the checkout. A store schema change is still the separate `migration-plan` step.
 
 ## Starter instruction file
 
@@ -57,7 +67,7 @@ Hook handlers hold the absolute path of the Python that ran `setup.py`. After up
 
 ## Upgrading the instruction block
 
-When the managed block in `CLAUDE.md`, `AGENTS.md` or `copilot-instructions.md` changes in a release, SessionStart injects the shorter fallback protocol until the block is rewritten. Re-run `integrations/setup.py HARNESS --hooks` from the installed package for each harness and apply the plan. If you hand-edited the block, setup refuses the whole plan and names the file. Either delete the block between its `agentic-living-memory:begin` and `agentic-living-memory:end` markers, or run `integrations/setup.py HARNESS --hooks --adopt`: the plan then holds a unified diff from your edited block (and any edited hook handlers) to the managed text, shown in `summary.adopt` and on stderr, and your edit is replaced only when you apply that plan. The same applies to edited hook handlers and to `--uninstall-plan`.
+When the managed block in `CLAUDE.md`, `AGENTS.md` or `copilot-instructions.md` changes in a release, SessionStart injects the shorter fallback protocol until the block is rewritten. `alm upgrade` and `install.py` list exactly those harnesses under `next_steps`. Re-run `integrations/setup.py HARNESS --hooks` from the installed package for each harness and apply the plan. If you hand-edited the block, setup refuses the whole plan and names the file. Either delete the block between its `agentic-living-memory:begin` and `agentic-living-memory:end` markers, or run `integrations/setup.py HARNESS --hooks --adopt`: the plan then holds a unified diff from your edited block (and any edited hook handlers) to the managed text, shown in `summary.adopt` and on stderr, and your edit is replaced only when you apply that plan. The same applies to edited hook handlers and to `--uninstall-plan`.
 
 ## Relocating existing memory
 

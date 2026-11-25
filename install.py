@@ -99,19 +99,40 @@ def legacy_references(extra_homes=(), folder=None, unwire=False) -> list:
     return found
 
 
-def next_steps() -> list:
-    setup = INSTALL_DIR / "integrations" / "setup.py"
+def next_steps() -> tuple:
+    """(commands, current): the setup.py command for each harness to wire, and the harnesses whose wiring is already current.
+    A first install lists every harness found on this machine. An update lists only harnesses wired before whose handlers
+    or instruction block the installed copy would change, so a harness the user never wired is left out."""
+    from core.installer_lifecycle import installed_stamp
+    setup_path = INSTALL_DIR / "integrations" / "setup.py"
     homes = [h for h in HARNESSES if harness_home(h).is_dir()]
-    return [f'"{sys.executable}" "{setup}" {h} --hooks' for h in homes]
+    if installed_stamp(INSTALL_DIR) is None:
+        return [f'"{sys.executable}" "{setup_path}" {h} --hooks' for h in homes], []
+    from core.wiring import needs_rewire
+    from integrations import setup
+    steps, current = [], []
+    for h in homes:
+        try:
+            state = needs_rewire(h, setup, INSTALL_DIR)
+        except Exception:   # cannot tell: list it, as every update did before
+            state = True
+        if state:
+            steps.append(f'"{sys.executable}" "{setup_path}" {h} --hooks')
+        elif state is False:
+            current.append(h)
+    return steps, current
 
 
 def print_next_steps(root, plan_id) -> None:
     """After an install, the wiring commands from the applied plan, ready to paste into PowerShell, on stderr (stdout stays the JSON result)."""
     from core.repository import read_json
-    steps = ((read_json(Path(root) / '.plans' / f'{plan_id}.json') or {}).get('summary') or {}).get('next_steps') or []
+    summary = (read_json(Path(root) / '.plans' / f'{plan_id}.json') or {}).get('summary') or {}
+    steps = summary.get('next_steps') or []
     if steps:
         print('Installed. Next, wire each harness: run these, then review and apply each plan they print (--apply-plan ID --expected-plan-sha256 DIGEST).\n' +
               '\n'.join('  ' + _lead() + step for step in steps), file=sys.stderr)
+    elif summary.get('wiring_current'):
+        print(f'Installed. Harness wiring is current ({", ".join(summary["wiring_current"])}); nothing to rerun.', file=sys.stderr)
 
 
 def main() -> int:
@@ -175,7 +196,7 @@ def plan_install(uninstall=False, extra_homes=()):
             summary['before'] = 'Unwire each harness first: setup.py HARNESS --uninstall-plan from the installed copy.'
             summary['path'] = f'A PATH entry for {LAUNCHER_DIR} is left in place: other programs may live in that folder.'
         else:
-            summary['next_steps'] = next_steps()
+            summary['next_steps'], summary['wiring_current'] = next_steps()
             change = _path_plan() if summary['launcher']['action'] in ('create', 'replace', 'keep') else None
             if change:
                 summary['path_change'] = change

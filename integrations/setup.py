@@ -22,7 +22,7 @@ NESTED={'claude','codex'}
 # Claude Code's system folder for managed-settings.json and managed-settings.d/ (code.claude.com/docs/en/managed-settings).
 MANAGED_DIR=Path(r'C:\Program Files\ClaudeCode') if os.name=='nt' else Path('/Library/Application Support/ClaudeCode') if sys.platform=='darwin' else Path('/etc/claude-code')
 
-def _script(harness):return ROOT/'hooks'/(harness+'_hooks.py')
+def _script(harness,root=None):return Path(root or ROOT)/'hooks'/(harness+'_hooks.py')
 
 def _registry_policies():
     """(label, text) for the Claude Code policy JSON in the HKLM and HKCU registry, on Windows."""
@@ -152,8 +152,10 @@ def codex_groups(script):
             'Stop':[{'hooks':[handler('stop','Checking durable capture completion')]}],
             'PreCompact':[{'hooks':[handler('pre-compact','Recording the memory handoff')]}]}
 
-def hooks(harness):
-    script=_script(harness)
+def hooks(harness,root=None):
+    """The handlers setup writes for a harness. root is the package copy they run (default: this copy); install.py passes
+    the installed copy to tell which harnesses an update would rewire."""
+    script=_script(harness,root)
     if harness=='antigravity':
         from hooks.antigravity_hooks import EVENTS as ANTIGRAVITY_EVENTS, TOOLS
         if os.name=='nt':
@@ -192,9 +194,9 @@ def hooks(harness):
         groups['SessionEnd']=[{'hooks':[{'type':'command','command':sys.executable,'args':[str(script),'session-end'],'timeout':60}]}]
     return groups
 
-def instruction_block(harness,enable_hooks):
+def instruction_block(harness,enable_hooks,root=None):
     # Hooked harnesses get the machine-independent static protocol; instructions-only Factory needs the script path.
-    return _block(harness,enable_hooks,f'"{sys.executable}" "{ROOT/"living_memory.py"}"')
+    return _block(harness,enable_hooks,f'"{sys.executable}" "{Path(root or ROOT)/"living_memory.py"}"')
 
 def pretty(value):return json.dumps(value,indent=2,ensure_ascii=False)+'\n'
 

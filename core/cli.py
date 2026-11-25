@@ -629,7 +629,7 @@ def _maintenance_hint(root):
     except ValueError:on=False
     return 'Automatic maintenance is on for this store: within its policy it archives, resolves and supersedes notes without a plan and records why (maintenance history); restore REF undoes an archive. ' if on else ''
 
-HELP={'setup':'Choose or move the shared memory folder','bind':'Bind a domain to project folders','unbind':'Remove a domain binding','capture':'Save a note','propose':'Stage a draft note for the main agent (subagents)','proposals':'List, show, accept or reject staged notes and page edits','search':'Find notes, pages, sources and links; list notes','read':'Show one note',
+HELP={'setup':'Choose or move the shared memory folder','upgrade':'Pull the source checkout and install it','bind':'Bind a domain to project folders','unbind':'Remove a domain binding','capture':'Save a note','propose':'Stage a draft note for the main agent (subagents)','proposals':'List, show, accept or reject staged notes and page edits','search':'Find notes, pages, sources and links; list notes','read':'Show one note',
  'update':'Change a note','supersede':'Retire a note in favour of another','review':'Notes that are due, stale or duplicated','open':'Open plans, bugs, risks and action items','check':'Tick an action item',
  'timeline':'Notes around a date or note','ingest-plan':'Plan importing Claude auto-memory files','export':'Write notes to a zip file','import-plan':'Plan importing an exported zip','confirm':'Mark a note still true',
  'resolve':'Finish a plan, bug or risk','reopen':'Reopen a resolved note','restore':'Bring back an archived note','archive':'Retire a note without a replacement','stats':'Usage over the last days','logs':'Show the operational log','delete-plan':'Plan deleting one note',
@@ -650,7 +650,7 @@ HELP_GROUPS=(
  ('Direct writes (journaled, undo OPERATION)',('archive','rewrite','remap','promote','source','project','system','type')),
  ('Governance (plans)',('delete-plan','apply','inspect-plan','merge-plan','retag-plan','note-type-plan','migration-plan','baseline-plan','restore-plan',
    'import-plan','ingest-plan','overlay-teardown-plan')),
- ('Admin',('setup','bind','unbind','config','domains','projects','systems','types','sources','source-sync','ingest-scan','ingest-skip','taxonomy','views','wiki','export','query','batch','sync','overlay-build','overlay-sync-all','serve','version')))
+ ('Admin',('setup','upgrade','bind','unbind','config','domains','projects','systems','types','sources','source-sync','ingest-scan','ingest-skip','taxonomy','views','wiki','export','query','batch','sync','overlay-build','overlay-sync-all','serve','version')))
 
 def _grouped_commands():
     width=max(len(name) for _,names in HELP_GROUPS for name in names)+2
@@ -778,6 +778,7 @@ def build_parser():
     # No help= here, so argparse does not print its own flat list; the epilog lists them by group.
     def sub(name):p=subs.add_parser(name,description=HELP.get(name));common(p,True);return p
     p=sub('setup');p.add_argument('--location',type=Path);p.add_argument('--non-interactive',action='store_true');p.add_argument('--source',type=Path);p.add_argument('--apply-plan');p.add_argument('--inspect-plan');p.add_argument('--expected-plan-sha256')
+    p=sub('upgrade');p.add_argument('--plan',action='store_true',help='Pull and plan the install, but do not apply it')
     from .instructions import TOPICS
     p=sub('help');p.add_argument('topic',nargs='?',choices=list(TOPICS))
     p=sub('bind');p.add_argument('name');p.add_argument('prefix',nargs='+')
@@ -924,7 +925,7 @@ def main(argv=None):
     try:
         # Agents started inside a Hivemind terminal inherit HIVEMIND_SESSION; Hivemind's own backend does not. Every path (batch and serve
         # re-enter main) reaches this point before a governed command runs.
-        if os.environ.get('HIVEMIND_SESSION') and (args.command in {'apply','undo','recover'}|DIRECT_WRITES or (args.command=='setup' and args.apply_plan) or (args.command=='taxonomy' and args.action=='add') or (args.command=='doc' and args.doc_action in DOC_WRITES)
+        if os.environ.get('HIVEMIND_SESSION') and (args.command in {'apply','undo','recover','upgrade'}|DIRECT_WRITES or (args.command=='setup' and args.apply_plan) or (args.command=='taxonomy' and args.action=='add') or (args.command=='doc' and args.doc_action in DOC_WRITES)
                                                     or (args.command=='proposals' and args.action in {'accept','reject'} and _proposal_kind(args.id)=='page')):
             from .runtime import HIVEMIND_DENY
             raise ValueError('hivemind: '+HIVEMIND_DENY)
@@ -954,6 +955,10 @@ def main(argv=None):
                 if args.expected_plan_sha256:raise ValueError('--apply-plan is required')
                 result=setup(args.location,args.non_interactive,args.source)
             _emit(result,args);return 0
+        if args.command=='upgrade':
+            if args.actor in {'subagent','viewer'}:raise ValueError('Subagents are read-only' if args.actor=='subagent' else 'Viewers are read-only')
+            from .upgrade import run as upgrade
+            _emit(upgrade(args.plan),args);return 0
         from .storage import resolve_root
         root=resolve_root(args.root)[0]
         if args.root is not None:

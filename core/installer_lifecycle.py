@@ -109,7 +109,7 @@ def installed_stamp(root: str | Path | None = None) -> dict[str, Any] | None:
         return None
     if not isinstance(record, dict):
         return None
-    return {"release": record.get("installedRelease"), "commit": record.get("sourceCommit"), "dirty": record.get("sourceDirty"), "source": record.get("source")}
+    return {"release": record.get("installedRelease"), "commit": record.get("sourceCommit"), "dirty": record.get("sourceDirty"), "source": record.get("source"), "interpreter": record.get("interpreter")}
 
 
 def source_warning(stamp: dict[str, Any] | None) -> str | None:
@@ -119,7 +119,7 @@ def source_warning(stamp: dict[str, Any] | None) -> str | None:
     head = source_stamp(stamp["source"]).get("commit")
     if not head or head == stamp["commit"] or _git(stamp["source"], "merge-base", "--is-ancestor", stamp["commit"], head) is None:
         return None
-    return f"install: the source checkout {stamp['source']} is at {head[:12]}, newer than the installed copy ({stamp['commit'][:12]}); run install.py from it to update"
+    return f"install: the source checkout {stamp['source']} is at {head[:12]}, newer than the installed copy ({stamp['commit'][:12]}); run alm upgrade (or install.py from it) to update"
 
 
 def _digest(value: Any) -> str:
