@@ -7,18 +7,20 @@ from core.instructions import BLOCK, instruction_block, merge_block
 from core.repository import digest
 
 ROOT = Path(__file__).resolve().parent.parent
-TEMPLATES = ('templates/CLAUDE.md', 'templates/AGENTS.md')
+TEMPLATES = ('templates/CLAUDE.md', 'templates/AGENTS.md', 'templates/GEMINI.md')
 
 
 class Templates(unittest.TestCase):
     def read(self, rel):
         return (ROOT / rel).read_text(encoding='utf-8')
 
-    def test_both_templates_have_the_same_sections(self):
-        claude, agents = (self.read(rel) for rel in TEMPLATES)
+    def test_the_templates_have_the_same_sections(self):
+        claude, *others = (self.read(rel) for rel in TEMPLATES)
         self.assertEqual(claude.splitlines()[0], '# CLAUDE.md')
-        self.assertEqual(agents.splitlines()[0], '# AGENTS.md')
-        self.assertEqual(claude.splitlines()[1:], agents.splitlines()[1:])
+        for rel, text in zip(TEMPLATES[1:], others):
+            with self.subTest(rel):
+                self.assertEqual(text.splitlines()[0], '# ' + Path(rel).name)
+                self.assertEqual(claude.splitlines()[1:], text.splitlines()[1:])
         for marker in ('behavior:begin', 'behavior:end', 'writing-style:begin', 'writing-style:end'):
             self.assertIn(f'<!-- {marker} -->', claude)
 

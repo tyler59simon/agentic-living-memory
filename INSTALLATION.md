@@ -36,9 +36,9 @@ Then restart running harness sessions. When you pull or commit on that branch wi
 
 ## Starter instruction file
 
-[templates/CLAUDE.md](templates/CLAUDE.md) and [templates/AGENTS.md](templates/AGENTS.md) are a starting point for the harness's global instruction file. Both hold the same two sections: Behavior (coding guidelines) and Writing style (plain writing for replies, commits, docs and notes, matching [WRITING.md](WRITING.md)). Living Memory notes follow the Writing style rules too.
+[templates/CLAUDE.md](templates/CLAUDE.md), [templates/AGENTS.md](templates/AGENTS.md) and [templates/GEMINI.md](templates/GEMINI.md) are a starting point for the harness's global instruction file. All three hold the same two sections: Behavior (coding guidelines) and Writing style (plain writing for replies, commits, docs and notes, matching [WRITING.md](WRITING.md)). Living Memory notes follow the Writing style rules too.
 
-- With no instruction file yet, copy the template before running `integrations/setup.py HARNESS --hooks`: `templates/CLAUDE.md` to `~/.claude/CLAUDE.md`, and `templates/AGENTS.md` to `~/.codex/AGENTS.md`, `~/.factory/AGENTS.md` or `~/.gemini/config/GEMINI.md`. Setup appends the Living Memory block under the template's last heading, `## Agentic Living Memory`.
+- With no instruction file yet, copy the template before running `integrations/setup.py HARNESS --hooks`: `templates/CLAUDE.md` to `~/.claude/CLAUDE.md`, `templates/AGENTS.md` to `~/.codex/AGENTS.md` or `~/.factory/AGENTS.md`, and `templates/GEMINI.md` to `~/.gemini/config/GEMINI.md` (Antigravity CLI). Setup appends the Living Memory block under the template's last heading, `## Agentic Living Memory`.
 - With an existing file, paste the sections you want into it. Keep them outside the `agentic-living-memory:begin` and `:end` markers: setup owns the text between them.
 
 Edit the sections freely; setup changes only its own block. Credits: the Behavior section is from [forrestchang/andrej-karpathy-skills](https://github.com/forrestchang/andrej-karpathy-skills) (MIT), and the Writing style section adapts [humanizer](https://github.com/blader/humanizer) v4.0.0 (MIT) and Wikipedia's [Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing).
