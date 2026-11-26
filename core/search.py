@@ -271,6 +271,7 @@ def rebuild_index(domain,root=None,skipped=None):
                     swallowed('search.rebuild_index',exc,root);continue
                 db.execute('RELEASE note');df.update(words);indexed.append(n)
             db.executemany('INSERT INTO vocab VALUES(?,?)',df.items())
+            db.execute(f'PRAGMA user_version={INDEX_VERSION}')   # update_index changes only an index this code built
             fingerprint=_fingerprint(notes,_vector_identity(root))
             db.execute('INSERT INTO metadata VALUES(?,?)',(fingerprint,identity));db.commit();db.close();os.replace(name,directory/'search.sqlite3')
         finally:
@@ -280,6 +281,76 @@ def rebuild_index(domain,root=None,skipped=None):
         try:
             from . import vectors
             vectors.update(domain,root,indexed,model,identity,fingerprint,fresh)   # only notes with a row: search maps hits to rows
+        except Exception as exc:
+            from .logs import swallowed
+            swallowed('search.unit_index',exc,root)
+    return len(indexed)
+
+def update_index(domain,root=None,skipped=None):
+    """Bring the domain's search index in line with the notes by re-indexing only the notes whose file, revision or path
+    changed, and dropping rows for notes that are gone. A write changes one note, and rebuilding every row cost most of its
+    time (PERF-3). The change is made on a copy that then replaces the index, as rebuild_index does. An index built by
+    other code (user_version), with another model, or unreadable is rebuilt in full instead. Returns how many notes it holds."""
+    import shutil
+    from . import semantic
+    root=Path(root or memory_root()).resolve();directory=domain_dir(domain,root);path=directory/'search.sqlite3'
+    with store_lock(root):
+        if not path.exists():return rebuild_index(domain,root,skipped)
+        notes=inventory(domain,root,retired=True)
+        fingerprint=_fingerprint(notes,_vector_identity(root))
+        try:
+            db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)
+            try:
+                version=db.execute('PRAGMA user_version').fetchone()[0];stored,stored_identity=db.execute('SELECT fingerprint,vectors FROM metadata').fetchone()
+                rows={r[0]:r[1:] for r in db.execute('SELECT id,rowid,sha256,revision,path,status,title,body FROM notes')}
+            finally:db.close()
+        except (sqlite3.Error,TypeError,ValueError):return rebuild_index(domain,root,skipped)
+        if version!=INDEX_VERSION:return rebuild_index(domain,root,skipped)
+        current={n['id']:n for n in notes}
+        changed=[n for n in notes if n['id'] not in rows or rows[n['id']][1:4]!=(n['digest'],n['revision'],n['path'])]
+        moved={n['id'] for n in changed}
+        gone=[i for i in rows if i not in current or i in moved]
+        if stored==fingerprint and not changed and not gone:return len(rows)
+        model=semantic.load(root);identity=_vector_identity(root) if model else None
+        if identity!=stored_identity:return rebuild_index(domain,root,skipped)   # another model (or none): every stored vector is stale
+        from . import vectors
+        reuse=vectors.reuse(domain,root,identity);fresh={};kept={}
+        fd,name=tempfile.mkstemp(prefix='.search-',suffix='.sqlite3',dir=directory);os.close(fd)
+        db=None
+        try:
+            shutil.copyfile(path,name)
+            db=sqlite3.connect(name);df=Counter();db.execute('BEGIN')
+            for note_id in gone:
+                rowid,_,revision,_,status,title,body=rows[note_id]
+                if model:
+                    blob=db.execute('SELECT vec FROM vectors WHERE rowid=?',(rowid,)).fetchone()
+                    if blob:kept[(note_id,revision)]=blob[0]   # a moved note keeps its vector
+                    db.execute('DELETE FROM vectors WHERE rowid=?',(rowid,))
+                db.execute('DELETE FROM notes_fts WHERE rowid=?',(rowid,));db.execute('DELETE FROM notes WHERE rowid=?',(rowid,))
+                if status=='active':df.subtract(stems(title+' '+body))
+            for n in changed:
+                db.execute('SAVEPOINT note')
+                try:words=_index_note(db,domain,n,model,kept,reuse,fresh)
+                except (TypeError,AttributeError,ValueError,sqlite3.Error) as exc:
+                    db.execute('ROLLBACK TO note');db.execute('RELEASE note')
+                    if skipped is not None:skipped.append((n.get('path'),f'{type(exc).__name__}: {exc}'))
+                    from .logs import swallowed
+                    swallowed('search.update_index',exc,root);continue
+                db.execute('RELEASE note');df.update(words)
+            for stem_,delta in df.items():
+                if delta:db.execute('INSERT INTO vocab VALUES(?,?) ON CONFLICT(stem) DO UPDATE SET df=df+excluded.df',(stem_,delta))
+            db.execute('DELETE FROM vocab WHERE df<=0')
+            db.execute('UPDATE metadata SET fingerprint=?',(fingerprint,))
+            held={r[0] for r in db.execute('SELECT id FROM notes')}
+            db.commit();db.close();db=None
+            from .common import retry_sharing
+            retry_sharing(lambda:os.replace(name,path))
+        finally:
+            if db is not None:db.close()
+            reuse.close()   # before the unit index update, which may replace that file
+            if os.path.exists(name):os.unlink(name)
+        indexed=[n for n in notes if n['id'] in held]
+        try:vectors.update(domain,root,indexed,model,identity,fingerprint,fresh)   # the unit index already changes only what changed
         except Exception as exc:
             from .logs import swallowed
             swallowed('search.unit_index',exc,root)

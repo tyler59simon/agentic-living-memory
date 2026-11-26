@@ -472,19 +472,20 @@ def _scan(domain, root=None, retired=False):
             raise ValueError("Canonical directory cannot be a symbolic link")
         if not directory.is_dir():
             continue
+        # The store-relative path is built only for a problem: one command scans a domain several times (PERF-4).
+        rel = lambda p: p.relative_to(root).as_posix()
         for path, note in _remembered(directory, _note_files(root, directory)):
-            rel = path.relative_to(root).as_posix()
             if note is None:
-                found.append({"path": rel, "problem": "unreadable frontmatter"})
+                found.append({"path": rel(path), "problem": "unreadable frontmatter"})
                 continue
             note_id = note.get("id")
             if not isinstance(note_id, str) or not note_id:
-                found.append({"path": rel, "problem": "missing id"})
+                found.append({"path": rel(path), "problem": "missing id"})
                 continue
             if note_id in seen:
-                found.append({"path": rel, "problem": f"duplicate id {note_id} (also {seen[note_id]})"})
+                found.append({"path": rel(path), "problem": f"duplicate id {note_id} (also {rel(seen[note_id])})"})
                 continue
-            seen[note_id] = rel
+            seen[note_id] = path
             if retired or note.get("status", "active") == "active":
                 result.append(note)
     return result, found
@@ -936,8 +937,10 @@ def _tag_text(tags):
     return ', '.join(str(t) for t in tags) if isinstance(tags, list) else str(tags or '')
 
 
-def reconcile(domain, root=None, sync_overlay=True, skipped=None):
-    from .search import rebuild_index
+def reconcile(domain, root=None, sync_overlay=True, skipped=None, full=False):
+    """Rebuild a domain's derived state after a write: INDEX.md and ARCHIVE.md, the search index (only the changed notes'
+    rows unless full), the Obsidian overlay (in a background worker when background work is allowed) and note views."""
+    from .search import rebuild_index, update_index
     root = Path(root or memory_root()).resolve()
     with store_lock(root):
         all_notes = inventory(domain, root, retired=True)
@@ -947,12 +950,12 @@ def reconcile(domain, root=None, sync_overlay=True, skipped=None):
             text = f"# {'Retired' if retired else 'Active'} Memory\n\n"
             text += "\n".join(f"- [{n['title']}]({Path(n['path']).relative_to(directory).as_posix()}) — {_tag_text(n.get('tags'))}" for n in selected) + "\n"
             atomic_write(directory / name, text)
-        rebuild_index(domain, root, skipped)
+        (rebuild_index if full else update_index)(domain, root, skipped)
         atomic_write(directory / ".derived-dirty", "clean\n")
         state = read_json(directory / "sync-state.json", {})
         if sync_overlay and state.get("vault"):
-            from .sync import build_overlay, is_managed
-            if is_managed(state["vault"]):
+            from .sync import build_overlay, is_managed, schedule_overlay
+            if is_managed(state["vault"]) and not schedule_overlay(domain, root):
                 build_overlay(domain, Path(state["vault"]), root, trigger="memory change")
         # Note views (HTML dashboards): derived from the notes, so every write path that reconciles keeps them current.
         # refresh never raises, and costs one stat when the store has no views.

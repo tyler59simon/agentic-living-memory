@@ -660,6 +660,73 @@ def build_overlay(domain,vault,root=None,trigger=None):
     _prune_legacy_dirs(vault)
     return {**sync_result,'dashboards':7,'templates':len(templates),'canvas_nodes':len(nodes),'canvas_edges':len(edges),'legacy_conflicts':legacy_conflicts,'view_conflicts':view_conflicts}
 
+# The overlay refresh after a write runs in a detached worker (PERF-3): a full sync and overlay build took about 3 s of every
+# write. Two locks per domain coalesce a burst of writes: at most one worker runs and one waits. A waiting worker has not read
+# the store yet, so a write that finds one waiting needs no worker of its own; the one that runs reads every earlier commit.
+OVERLAY_WAIT=600
+# The sync holds the store lock, so the worker waits until writes pause (an agent often writes several times in a row);
+# a write landing during the sync waits for it instead.
+OVERLAY_QUIET=2.0
+OVERLAY_QUIET_MAX=30.0
+_WORKER=('import sys;sys.path.insert(0,sys.argv[1]);from pathlib import Path;from core.sync import refresh_overlay;'
+         'refresh_overlay(sys.argv[3],Path(sys.argv[2]))')
+
+def _overlay_lock(root,domain,kind):return Path(root)/'hooks'/f'overlay-{domain}.{kind}.lock'
+
+def _quiet(root,domain):
+    """Wait until no write has reconciled this domain for OVERLAY_QUIET seconds (reconcile rewrites .derived-dirty), at most OVERLAY_QUIET_MAX."""
+    marker=Path(root)/'domains'/domain/'.derived-dirty';deadline=time.monotonic()+OVERLAY_QUIET_MAX
+    while time.monotonic()<deadline:
+        try:idle=time.time()-marker.stat().st_mtime
+        except OSError:return
+        if idle>=OVERLAY_QUIET:return
+        time.sleep(min(OVERLAY_QUIET-idle,1.0)+0.05)
+
+def schedule_overlay(domain,root):
+    """Hand the overlay refresh after a write to a background worker. True when one will run it (started now, or already
+    waiting); False when background work is off or a worker cannot start, so the caller builds the overlay itself."""
+    import os,subprocess,tempfile
+    from .common import file_lock
+    if os.environ.get('LIVING_MEMORY_NO_BACKGROUND') or os.environ.get('LIVING_MEMORY_MAINTENANCE_CHILD'):return False
+    try:
+        with file_lock(_overlay_lock(root,domain,'queued'),timeout=0):pass
+    except TimeoutError:return True   # a worker is waiting and has not read the store yet
+    except OSError:return False
+    argv=[sys.executable,'-I','-X','utf8','-c',_WORKER,str(Path(__file__).resolve().parents[1]),str(root),domain]   # -I: the temp folder is not an import path
+    options={'stdin':subprocess.DEVNULL,'stdout':subprocess.DEVNULL,'stderr':subprocess.DEVNULL,'close_fds':True,'cwd':tempfile.gettempdir(),
+             'env':dict(os.environ,LIVING_MEMORY_NO_BACKGROUND='1')}
+    try:
+        if os.name=='nt':
+            flags=0x00000008|0x00000200   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, and CREATE_BREAKAWAY_FROM_JOB when allowed
+            try:subprocess.Popen(argv,creationflags=flags|0x01000000,**options)
+            except OSError:subprocess.Popen(argv,creationflags=flags,**options)
+        else:subprocess.Popen(argv,start_new_session=True,**options)
+    except OSError as exc:
+        from .logs import swallowed
+        swallowed('sync.schedule_overlay',exc,root);return False
+    return True
+
+def refresh_overlay(domain,root):
+    """The background worker: wait for a running refresh to finish, then build the domain's overlay from the store as it is
+    then. Returns what happened; never raises (a failed build is on the vault's Sync Status page, and the next sync retries)."""
+    from contextlib import ExitStack
+    from .common import file_lock
+    root=Path(root).resolve()
+    try:
+        with ExitStack() as running:
+            with ExitStack() as queued:
+                try:queued.enter_context(file_lock(_overlay_lock(root,domain,'queued'),timeout=0))
+                except TimeoutError:return 'queued'   # another worker waits and will read this write
+                try:running.enter_context(file_lock(_overlay_lock(root,domain,'running'),timeout=OVERLAY_WAIT))
+                except TimeoutError:return 'busy'   # the session-end sync catches up
+                _quiet(root,domain)   # still queued: a write during this wait needs no worker of its own
+            vault=read_json(root/'domains'/domain/'sync-state.json',{}).get('vault')
+            if not vault or not is_managed(vault):return 'unmanaged'
+            build_overlay(domain,Path(vault),root,trigger='memory change');return 'built'
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('sync.refresh_overlay',exc,root);return 'failed'
+
 def _report_failure(domain,vault,root,exc):
     """Best effort: a failed sync must still be visible where the user looks."""
     try:
