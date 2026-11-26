@@ -668,6 +668,7 @@ OVERLAY_WAIT=600
 # a write landing during the sync waits for it instead.
 OVERLAY_QUIET=2.0
 OVERLAY_QUIET_MAX=30.0
+OVERLAY_PROBE=1.0
 _WORKER=('import sys;sys.path.insert(0,sys.argv[1]);from pathlib import Path;from core.sync import refresh_overlay;'
          'refresh_overlay(sys.argv[3],Path(sys.argv[2]))')
 
@@ -693,9 +694,9 @@ def schedule_overlay(domain,root):
     except TimeoutError:return True   # a worker is waiting and has not read the store yet
     except OSError:return False
     argv=[sys.executable,'-I','-X','utf8','-c',_WORKER,str(Path(__file__).resolve().parents[1]),str(root),domain]   # -I: the temp folder is not an import path
-    options={'stdin':subprocess.DEVNULL,'stdout':subprocess.DEVNULL,'stderr':subprocess.DEVNULL,'close_fds':True,'cwd':tempfile.gettempdir(),
-             'env':dict(os.environ,LIVING_MEMORY_NO_BACKGROUND='1')}
     try:
+        options={'stdin':subprocess.DEVNULL,'stdout':subprocess.DEVNULL,'stderr':subprocess.DEVNULL,'close_fds':True,'cwd':tempfile.gettempdir(),
+                 'env':dict(os.environ,LIVING_MEMORY_NO_BACKGROUND='1')}
         if os.name=='nt':
             flags=0x00000008|0x00000200   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, and CREATE_BREAKAWAY_FROM_JOB when allowed
             try:subprocess.Popen(argv,creationflags=flags|0x01000000,**options)
@@ -715,7 +716,8 @@ def refresh_overlay(domain,root):
     try:
         with ExitStack() as running:
             with ExitStack() as queued:
-                try:queued.enter_context(file_lock(_overlay_lock(root,domain,'queued'),timeout=0))
+                # A write's probe holds the lock for an instant and a waiting worker for seconds: wait out the probe.
+                try:queued.enter_context(file_lock(_overlay_lock(root,domain,'queued'),timeout=OVERLAY_PROBE))
                 except TimeoutError:return 'queued'   # another worker waits and will read this write
                 try:running.enter_context(file_lock(_overlay_lock(root,domain,'running'),timeout=OVERLAY_WAIT))
                 except TimeoutError:return 'busy'   # the session-end sync catches up

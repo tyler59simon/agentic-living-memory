@@ -69,6 +69,17 @@ class IncrementalIndex(StoreFixture):
         rebuilt.assert_called_once()
         self.assertEqual(snapshot(self.root)['version'], search.INDEX_VERSION)
 
+    def test_a_damaged_index_is_rebuilt_not_left_failing(self):
+        # Codex review A1: a current-version index missing a table made every later write fail.
+        a = self.note('Cache policy', 'The local cache is rebuildable.')
+        db = sqlite3.connect(self.root / 'domains/demo/search.sqlite3')
+        db.execute('DROP TABLE vocab'); db.commit(); db.close()
+        receipt = change(a['id'], 'demo', 'update', self.root, body='The cache is rebuilt nightly.')
+        self.assertNotIn('warning', receipt)
+        incremental = snapshot(self.root)
+        rebuild_index('demo', self.root)
+        self.assertEqual(incremental, snapshot(self.root))
+
     def test_a_note_edited_outside_the_scripts_is_picked_up(self):
         a = self.note('Cache policy', 'The local cache is rebuildable.')
         path = Path(a['path'])
@@ -141,6 +152,31 @@ class BackgroundOverlay(StoreFixture):
         built.assert_not_called()
         with patch.object(sync, 'build_overlay') as built, patch.object(sync, 'OVERLAY_QUIET', 0):
             self.assertEqual(sync.refresh_overlay('demo', self.root), 'built')
+        built.assert_called_once()
+
+    def test_a_writes_lock_probe_does_not_send_the_worker_away(self):
+        # Codex review B1: a starting worker met another write's instant probe of the queued lock and exited.
+        import threading
+        self.managed_vault()
+        held, release = threading.Event(), threading.Event()
+        def probe():
+            with file_lock(sync._overlay_lock(self.root, 'demo', 'queued'), timeout=0):
+                held.set(); release.wait(5)
+        prober = threading.Thread(target=probe); prober.start()
+        held.wait(5)
+        threading.Timer(0.2, release.set).start()
+        with patch.object(sync, 'build_overlay') as built, patch.object(sync, 'OVERLAY_QUIET', 0):
+            self.assertEqual(sync.refresh_overlay('demo', self.root), 'built')
+        prober.join()
+        built.assert_called_once()
+
+    def test_no_temp_folder_falls_back_to_inline(self):
+        # Codex review C4: tempfile.gettempdir() raised outside the launch fallback.
+        self.managed_vault()
+        with self.background(), patch('tempfile.gettempdir', side_effect=FileNotFoundError('no temp')), \
+                patch.object(subprocess, 'Popen') as started, patch.object(sync, 'build_overlay') as built:
+            self.note('Queue limits', 'The ingest queue holds at most fifty jobs.')
+        started.assert_not_called()
         built.assert_called_once()
 
     def test_the_worker_waits_for_writes_to_pause(self):

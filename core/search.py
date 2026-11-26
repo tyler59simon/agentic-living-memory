@@ -303,9 +303,12 @@ def update_index(domain,root=None,skipped=None):
             try:
                 version=db.execute('PRAGMA user_version').fetchone()[0];stored,stored_identity=db.execute('SELECT fingerprint,vectors FROM metadata').fetchone()
                 rows={r[0]:r[1:] for r in db.execute('SELECT id,rowid,sha256,revision,path,status,title,body FROM notes')}
+                tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             finally:db.close()
         except (sqlite3.Error,TypeError,ValueError):return rebuild_index(domain,root,skipped)
-        if version!=INDEX_VERSION:return rebuild_index(domain,root,skipped)
+        # A damaged index (a table missing) is rebuilt, as every write did before update_index, rather than failing each write.
+        if version!=INDEX_VERSION or not {'notes','notes_fts','vocab','metadata'}<=tables or ('vectors' in tables)!=bool(stored_identity):
+            return rebuild_index(domain,root,skipped)
         current={n['id']:n for n in notes}
         changed=[n for n in notes if n['id'] not in rows or rows[n['id']][1:4]!=(n['digest'],n['revision'],n['path'])]
         moved={n['id'] for n in changed}
@@ -316,7 +319,7 @@ def update_index(domain,root=None,skipped=None):
         from . import vectors
         reuse=vectors.reuse(domain,root,identity);fresh={};kept={}
         fd,name=tempfile.mkstemp(prefix='.search-',suffix='.sqlite3',dir=directory);os.close(fd)
-        db=None
+        db=None;listed=len(skipped) if skipped is not None else 0
         try:
             shutil.copyfile(path,name)
             db=sqlite3.connect(name);df=Counter();db.execute('BEGIN')
@@ -345,9 +348,18 @@ def update_index(domain,root=None,skipped=None):
             db.commit();db.close();db=None
             from .common import retry_sharing
             retry_sharing(lambda:os.replace(name,path))
+        except sqlite3.DatabaseError as exc:
+            # Damage the checks above cannot see: the copy is dropped and the index rebuilt from the notes.
+            from .logs import swallowed
+            swallowed('search.update_index',exc,root)
+            if skipped is not None:del skipped[listed:]
+            if db is not None:db.close();db=None
+            reuse.close();reuse=None
+            if os.path.exists(name):os.unlink(name)
+            return rebuild_index(domain,root,skipped)
         finally:
             if db is not None:db.close()
-            reuse.close()   # before the unit index update, which may replace that file
+            if reuse is not None:reuse.close()   # before the unit index update, which may replace that file
             if os.path.exists(name):os.unlink(name)
         indexed=[n for n in notes if n['id'] in held]
         try:vectors.update(domain,root,indexed,model,identity,fingerprint,fresh)   # the unit index already changes only what changed
