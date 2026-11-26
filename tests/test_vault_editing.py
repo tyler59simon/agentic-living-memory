@@ -344,6 +344,34 @@ class VaultEditing(StoreFixture):
         self.assertFalse(Path(a['path']).exists())
         self.assertFalse(copy.exists())   # no ghost copy of the deleted note
         self.assertFalse(list((self.root / '.operations').glob('*/pending')))
+        self.assertNotIn('Cache', (self.root / 'domains/demo/INDEX.md').read_text(encoding='utf-8'))   # the recovered delete is indexed
+
+    def test_undo_after_an_interrupted_vault_edit_is_not_applied_again(self):
+        a = self.note()
+        copy, = self.built(a)
+        self.edit(copy, 'rebuildable', 'disposable')
+        stopper, done = self._interrupt_after('overlay_auto_update')
+        with stopper, self.assertRaises(KeyboardInterrupt):
+            build_overlay('demo', self.vault, self.root)
+        undo(self.root, done[0])
+        result = build_overlay('demo', self.vault, self.root)
+        self.assertEqual((result['applied'], result['conflicts']), ([], 0))
+        self.assertIn('rebuildable', self.body(a['id']))
+        self.assertIn('rebuildable', copy.read_text(encoding='utf-8'))   # the copy shows the memory version again
+
+    def test_a_stop_after_the_edit_of_a_body_and_status_save_still_archives(self):
+        a = self.note()
+        copy, = self.built(a)
+        self.edit(copy, 'rebuildable', 'disposable')
+        self.edit(copy, 'status: "active"', 'status: "archived"')
+        stopper, done = self._interrupt_after('overlay_auto_update')
+        with stopper, self.assertRaises(KeyboardInterrupt):
+            build_overlay('demo', self.vault, self.root)
+        result = build_overlay('demo', self.vault, self.root)
+        self.assertEqual(result['conflicts'], 0)
+        note = find_note(a['id'], 'demo', self.root)[1]
+        self.assertEqual(note['status'], 'archived')
+        self.assertIn('disposable', note['body'])
 
     def test_undo_after_an_archive_that_reached_the_vault_leaves_no_archive_copy(self):
         import core.sync as sync_module

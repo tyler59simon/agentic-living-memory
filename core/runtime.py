@@ -2201,7 +2201,8 @@ def _process(harness,event,payload,root=None,info=None):
         # The fallback protocol stands in for the instruction block, which BUDGET does not count either: without this the briefing got only
         # MIN_BUDGET whenever the fallback was injected (INST-9). HARD_CAP still bounds the whole context.
         rules_outside_budget=0 if installed(harness) else len(rules)
-        prefix=rules+marker
+        # Rules that still pass the limit after shrinking (a long explicit CMD path): the marker goes first, so it always arrives.
+        prefix=rules+marker if limit is None or len(rules)+len(marker)<=limit else marker.lstrip('\n')+rules+'\n'
         # After a compaction the handoff goes first; the title index gives up the room.
         if source=='compact' and session!='unknown':
             handed=handoff(root,domain,session,state,harness);prefix+=handed;detail['handoff_chars']=len(handed)

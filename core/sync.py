@@ -154,14 +154,16 @@ def sync(domain,vault,root=None,trigger=None):
     with store_lock(root),store_lock(vault):
         # Finish interrupted writes before anything is read: a canonical delete journaled but not applied would otherwise
         # still be in the inventory, and its copy would come back for one sync.
+        rolled={folder:roll_forward_pending(folder) for folder in (root,vault)}
         warnings=[f"operation {r['operation_id']} could not be rolled forward: {r['error']}; run recover {r['operation_id']}"
-                  for folder in (root,vault) for r in roll_forward_pending(folder) if not r['ok']]
+                  for results in rolled.values() for r in results if not r['ok']]
         state=read_json(state_path,{'version':3,'entries':{}})
         if state.get('version')!=3:state={'version':3,'entries':{}}
         state,new_vault=_session_ids(state,vault)
         state['vault']=str(vault);state['vault_id']=vault_id(vault)
         entries=state['entries'];applied_log=state.setdefault('applied',[]);capture_errors={}
-        copied=conflicts=staged=deferred=restored=renamed=0;applied=[];view_changes={};staging_changes={};wrote_canonical=False
+        copied=conflicts=staged=deferred=restored=renamed=0;applied=[];view_changes={};staging_changes={}
+        wrote_canonical=any(r['ok'] and not r.get('idempotent') for r in rolled[root])   # a recovered write still needs INDEX.md rebuilt
         owner={}
         def row(action,note_id,title,operation_id):
             return {'action':action,'id':note_id,'title':title,'operation_id':operation_id,'at':now()}
@@ -319,10 +321,14 @@ def sync(domain,vault,root=None,trigger=None):
                             if updated['body']!=note['body'] and updated.get('checked'):updated['checked']=updated['updated']   # a body edited in the vault is the author's word for the facts
                         if updated.get('type')!=note.get('type'):check_type(updated.get('type'),root)   # retyping in the vault needs an active type, as update --type does
                         canonical_target,changes,expected=_canonical_changes(note,updated,domain,root)
-                        done=row('Edited',note_id,updated['title'],uuid.uuid4().hex)
-                        transaction(root,carry(changes,done),'overlay_auto_update',expected,operation_id=done['operation_id']);wrote_canonical=True
-                        log(done)
                         new_text=changes[canonical_target.relative_to(root).as_posix()];new_hash=digest(new_text.encode())
+                        # The entry saved with the edit records it as taken, so after a stop and an undo the next sync copies the memory
+                        # version back instead of applying the edit again. A status change in the same save is still to do: no copy
+                        # hash then, so the next sync reads the copy again and finishes it.
+                        done=row('Edited',note_id,updated['title'],uuid.uuid4().hex)
+                        taken={'overlay':old_rel,'canonical_hash':new_hash,'overlay_hash':overlay_hash if wanted==note.get('status') else None,'status':note.get('status')}
+                        transaction(root,carry(changes,done,note_id,taken),'overlay_auto_update',expected,operation_id=done['operation_id']);wrote_canonical=True
+                        log(done)
                     else:
                         canonical_target,new_text,new_hash=src,source_text,source_hash
                     if wanted!=note.get('status'):
@@ -443,7 +449,10 @@ def sync(domain,vault,root=None,trigger=None):
                 continue
             rel,text=canonical
             done=row('Captured',note_id,title,uuid.uuid4().hex)
-            transaction(root,carry({rel:text,f'domains/{domain}/.derived-dirty':'dirty\n'},done),'overlay_capture',operation_id=done['operation_id']);wrote_canonical=True
+            # The capture-HASH entry saved with it marks this draft as taken: after a stop and an undo the draft is not captured
+            # again (an edited draft has another hash and is). Once the note exists the next sync drops the entry and replays.
+            transaction(root,carry({rel:text,f'domains/{domain}/.derived-dirty':'dirty\n'},done,'capture-'+seen,{'note_id':note_id}),
+                        'overlay_capture',operation_id=done['operation_id']);wrote_canonical=True
             log(done)
         state['capture_errors']=capture_errors;state['applied']=applied_log[-20:]
         copy_manifest=read_json(vault/COPIES,None)

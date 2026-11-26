@@ -175,6 +175,27 @@ class VaultCaptureReplay(StoreFixture):
         self.assertNotIn('undo None', page)
         self.assertEqual(page.count('Captured: Vault idea'), 1)   # the row saved with the capture, not a second one from the replay
 
+    def test_undo_after_an_interrupted_vault_capture_is_not_captured_again(self):
+        from core import sync
+        from core.governance import undo
+        self.note()
+        vault = self.base / 'vault'
+        sync.build_overlay('demo', vault, self.root)
+        draft = vault / 'Domains/demo/Vault idea.md'
+        draft.write_text('---\ntitle: "Vault idea"\ntype: "knowledge"\ntags: ["subject/project", "concern/architecture"]\n---\n\n'
+                         '## 📌 Executive Summary\nA note written in Obsidian.\n', encoding='utf-8')
+        real, ops = sync.transaction, []
+        def crash(root, changes, kind, *rest, **options):
+            if kind == 'overlay_sync':raise RuntimeError('interrupted after the canonical write')
+            receipt = real(root, changes, kind, *rest, **options)
+            if kind == 'overlay_capture':ops.append(receipt['operation_id'])
+            return receipt
+        with patch.object(sync, 'transaction', crash), self.assertRaises(RuntimeError):
+            sync.build_overlay('demo', vault, self.root)
+        undo(self.root, ops[0])
+        self.assertEqual(sync.build_overlay('demo', vault, self.root)['applied'], [])
+        self.assertNotIn('Vault idea', [n['title'] for n in inventory('demo', self.root)])   # the undo stands
+
 
 class Backups(StoreFixture):
     def test_same_second_snapshots_sort_newest_first(self):

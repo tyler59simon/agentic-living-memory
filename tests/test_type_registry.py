@@ -163,6 +163,17 @@ class Surfaces(Fixture):
                 context=runtime.process('codex','session-start',payload,self.root)['context']
         self.assertIn('Living Memory session=cx\n',context[:limit])
 
+    def test_codex_session_marker_comes_first_when_even_short_rules_do_not_fit(self):
+        from core import runtime
+        payload={'cwd':str(self.base/'project'),'session_id':'cx'}
+        long_cmd='C:\\Users\\someone\\AppData\\Local\\Programs\\Python\\Python315\\python.exe '+'C:\\a\\long\\path\\living_memory.py '*8+'--domain demo'
+        with patch('core.runtime.command',return_value=long_cmd):
+            shortest=protocol(self.root,'demo','codex',session='cx',room=0)   # custom types and tags already reduced
+            limit=len(shortest)+10
+            with patch.dict(runtime.SESSION_LIMITS,{'codex':limit}):
+                context=runtime.process('codex','session-start',payload,self.root)['context']
+        self.assertTrue(context.startswith('Living Memory session=cx\n'))
+
 class ReviewFixes(Fixture):
     """Regressions for the Codex review of the first custom types commit (2026-11-20)."""
     def test_headings_the_renderer_treats_as_equal_are_one_heading(self):
