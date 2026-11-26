@@ -151,6 +151,22 @@ class SharedStorage(StorageBase):
         self.assertEqual(storage.resolve_root()[0], self.root)
         self.assertFalse((self.root / '.relocated.json').exists())
 
+    def test_setup_does_not_publish_the_copy_of_an_abandoned_relocation(self):
+        dest = self.prepared()
+        real = storage._write
+        def fail(path, value):
+            if Path(path).name == '.relocated.json':
+                raise OSError('stopped before retiring the source')
+            return real(path, value)
+        with patch.object(storage, '_write', fail), self.assertRaises(OSError):
+            storage.setup(dest, True)   # the copy is complete and verified
+        self.note('Later', 'New knowledge after the copy finished')
+        with self.assertRaisesRegex(ValueError, 'source store changed'):
+            storage.setup(dest, True)   # abandoned
+        with self.assertRaisesRegex(ValueError, 'abandoned relocation'):
+            storage.setup(dest, True)   # the stale copy is not published as a store
+        self.assertEqual(storage.resolve_root()[0], self.root)
+
     def test_relocation_destination_conflict_is_preserved(self):
         dest = self.prepared()
         dest.mkdir()

@@ -294,7 +294,7 @@ class VaultEditing(StoreFixture):
         with stopper, self.assertRaises(KeyboardInterrupt):
             build_overlay('demo', self.vault, self.root)
         result = build_overlay('demo', self.vault, self.root)
-        self.assertEqual(result['applied'], [])
+        self.assertEqual((result['applied'], result['conflicts']), ([], 0))   # no spurious retired-note conflict
         self.assertEqual(find_note(a['id'], 'demo', self.root)[1]['status'], 'archived')
         self.assertTrue((self.vault / 'Archive/demo' / copy.name).exists())
 

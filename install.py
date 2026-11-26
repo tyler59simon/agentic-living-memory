@@ -141,8 +141,9 @@ def main() -> int:
     parser.add_argument('--retire-legacy', action='store_true', help=f'Remove the old copy in {LEGACY_DIR}')
     parser.add_argument('--home', action='append', default=[], metavar='HARNESS=PATH',
                         help='A harness home set up with setup.py --home PATH; uninstall and retirement check it too (repeatable)')
-    # The upgrader installed before 2026-11-26 runs `--plan`, then `--apply-plan ID --expected-plan-sha256 DIGEST`. For that one
-    # upgrade, --plan installs directly and --apply-plan confirms it; neither is offered otherwise.
+    # The upgrader installed before 2026-11-26 runs `--plan`, then `--apply-plan ID --expected-plan-sha256 DIGEST` (its
+    # `upgrade --plan` stops after the first). For that one upgrade --plan writes nothing and names a token, and --apply-plan
+    # with that token installs directly; neither is offered otherwise.
     parser.add_argument('--plan', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--apply-plan', help=argparse.SUPPRESS)
     parser.add_argument('--expected-plan-sha256', help=argparse.SUPPRESS)
@@ -157,11 +158,13 @@ def main() -> int:
         homes.append((harness, path))
     if args.uninstall and args.retire_legacy:
         parser.error('--uninstall and --retire-legacy are separate runs')
-    if args.apply_plan:
-        if not (args.apply_plan.startswith('i-') and (INSTALL_HOME / '.operations' / args.apply_plan / 'journal.json').is_file()):
-            parser.error('install plans were removed on 2026-11-26; run install.py with no options')
-        print(json.dumps({'ok': True, 'operation_id': args.apply_plan, 'undo': 'undo ' + args.apply_plan}, separators=(',', ':')))
+    if args.plan:
+        print(json.dumps({'ok': True, 'plan_id': LEGACY_TOKEN, 'digest': LEGACY_TOKEN, 'summary': {'next_steps': [], 'wiring_current': []},
+                          'note': 'Install plans were removed on 2026-11-26; nothing was written. Applying this token installs directly.'},
+                         separators=(',', ':')))
         return 0
+    if args.apply_plan and (args.apply_plan, args.expected_plan_sha256) != (LEGACY_TOKEN, LEGACY_TOKEN):
+        parser.error('install plans were removed on 2026-11-26; run install.py with no options')
     if not (args.uninstall or args.retire_legacy):
         from core.storage import ensure_setup
         ensure_setup(args.location)
@@ -169,12 +172,13 @@ def main() -> int:
         result = retire_legacy(homes)
     else:
         result = install(args.uninstall, homes)
-        if args.plan:
-            result = {**result, 'plan_id': result.get('operation_id'), 'digest': 'direct'}
         if not args.uninstall:
             print_next_steps(result.get('summary') or {})
     print(json.dumps(result, separators=(',', ':')))
     return 0
+
+
+LEGACY_TOKEN = 'direct-install'   # see the --plan transition in main()
 
 
 def _refuse_if_in_use(extra_homes=()):

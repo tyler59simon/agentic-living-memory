@@ -686,7 +686,7 @@ def transaction(root, changes, kind, expected=None, operation_id=None, skip_unch
             effect = {"path": str(Path(rel).as_posix()), "before": _encode(before), "after": _encode(after),
                       "before_hash": digest(before), "after_hash": digest(after)}
             if before is not None and os.name != "nt":   # undo recreates a removed file with this mode (the installer compares it)
-                effect["before_mode"] = path.stat().st_mode & 0o777
+                effect["before_mode"] = stat.S_IMODE(path.stat().st_mode)   # setgid and sticky too, as the installer records them
             effects.append(effect)
         if skip_unchanged and not effects:
             return {"ok": True, "operation_id": None, "state": "unchanged", "kind": kind}

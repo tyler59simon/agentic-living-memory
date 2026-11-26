@@ -174,10 +174,10 @@ class Relocation(StoreFixture):
     def test_setup_in_another_home_returns_an_undo_command_that_finds_it(self):
         import shlex
         from core.cli import main as cli
-        other=self.base/'elsewhere'
+        other=self.base/'else$team where'   # a $ that PowerShell and POSIX shells would expand inside double quotes
         done=setup.setup('claude',other,enable_hooks=True)
-        self.assertIn('--root',done['undo']);self.assertTrue((other/'settings.json').is_file())
-        argv=[w.strip('"') for w in shlex.split(done['undo'],posix=False)]
+        self.assertIn(f"--root '{other.resolve()}'",done['undo']);self.assertTrue((other/'settings.json').is_file())
+        argv=shlex.split(done['undo'])   # single quotes: everything inside is literal, backslashes included
         with contextlib.redirect_stdout(io.StringIO()):self.assertEqual(cli(['--json',*argv]),0)
         self.assertFalse((other/'settings.json').exists())
         self.assertNotIn('--root',setup.setup('claude',self.claude)['undo'])   # the configured home needs no --root

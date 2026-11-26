@@ -109,14 +109,14 @@ class InstallerEntryPoints(StoreFixture):
     def test_the_upgrader_from_before_plans_were_removed_still_installs(self):
         import install
         receipt={'ok':True,'operation_id':'i-'+'d'*32,'undo':'undo i-'+'d'*32,'summary':{'files':2,'next_steps':[]}}
-        home=self.base/'install home';(home/'.operations'/receipt['operation_id']).mkdir(parents=True)
-        (home/'.operations'/receipt['operation_id']/'journal.json').write_text('{}',encoding='utf-8')
-        with patch.object(install,'install',return_value=receipt) as direct,patch('core.storage.ensure_setup'),patch.object(install,'print_next_steps'),patch.object(install,'INSTALL_HOME',home):
-            code,out=self.install_main(['--plan'])   # the old upgrader's first call installs directly
-            plan=json.loads(out.splitlines()[-1]);self.assertEqual((code,plan['plan_id'],plan['digest']),(0,receipt['operation_id'],'direct'))
-            code,out=self.install_main(['--apply-plan',plan['plan_id'],'--expected-plan-sha256',plan['digest']])   # its second call confirms
-            self.assertEqual((code,json.loads(out)['operation_id']),(0,receipt['operation_id']));self.assertEqual(direct.call_count,1)
-            with contextlib.redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):self.install_main(['--apply-plan','p-old','--expected-plan-sha256','x'])
+        with patch.object(install,'install',return_value=receipt) as direct,patch('core.storage.ensure_setup') as setup,patch.object(install,'print_next_steps'):
+            code,out=self.install_main(['--plan'])   # the old upgrader's first call (all of its `upgrade --plan`) writes nothing
+            plan=json.loads(out.splitlines()[-1]);self.assertEqual(code,0);direct.assert_not_called();setup.assert_not_called()
+            code,out=self.install_main(['--apply-plan',plan['plan_id'],'--expected-plan-sha256',plan['digest']])   # its second call installs
+            self.assertEqual((code,json.loads(out.splitlines()[-1])['operation_id']),(0,receipt['operation_id']));self.assertEqual(direct.call_count,1)
+            for wrong in (['--apply-plan','p-old','--expected-plan-sha256','x'],['--apply-plan',plan['plan_id'],'--expected-plan-sha256','x']):
+                with contextlib.redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):self.install_main(wrong)
+            self.assertEqual(direct.call_count,1)
     def test_agents_cannot_run_the_installer_or_harness_setup_directly(self):
         import install
         from integrations import setup

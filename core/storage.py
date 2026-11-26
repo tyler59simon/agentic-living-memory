@@ -191,6 +191,17 @@ def _pending_relocation(source, destination):
     return None
 
 
+def _abandoned_relocation(destination):
+    """True when a relocation to destination was abandoned (its source or the configuration changed during the copy)."""
+    for path in sorted(_relocations().glob('*.relocation.json')) if _relocations().is_dir() else []:
+        record = _read(path)
+        if isinstance(record, dict) and record.get('destination') == str(destination):
+            journal = _read(path.with_name(record['id'] + '.journal.json'))
+            if journal and journal.get('state') == 'abandoned':
+                return True
+    return False
+
+
 def relocate(source, destination, config_revision=False):
     """Move the shared store from source to destination in one direct command: copy, verify, then point the configuration at the
     copy. The source is kept, marked as relocated. Rerunning the same command resumes an interrupted relocation.
@@ -382,6 +393,8 @@ def setup(location=None, non_interactive=False, source=None):
     pending = _pending_relocation(None, destination)
     if pending:
         return _relocate(pending)   # an interrupted relocation to this folder: finish it, never publish its partial copy
+    if _abandoned_relocation(destination) and destination.exists() and any(p.name != '.store.lock' and not is_os_junk(p) for p in destination.iterdir()):
+        raise ValueError(f'{destination} holds the partial copy of an abandoned relocation; delete its contents and run setup --location again')
     if destination.exists() and any(p.name != '.store.lock' and not is_os_junk(p) for p in destination.iterdir()):
         with store_lock(destination):
             validate_store(destination)

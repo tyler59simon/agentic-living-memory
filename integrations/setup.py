@@ -229,7 +229,9 @@ def _write(home,harness,changes,uninstall,summary,read_set):
                    operation_id=f's-{harness}-{uuid.uuid4().hex}')
     home=Path(home).resolve()
     if home!=Path(harness_home(harness)).expanduser().resolve():   # undo looks only in the configured home; name this one
-        receipt['undo']=f'--root "{home}" undo {receipt["operation_id"]}'
+        # Single quotes are literal in PowerShell and POSIX shells alike, so a $ or backtick in the path stays as it is.
+        quoted="'"+str(home).replace("'","''" if os.name=='nt' else "'\\''")+"'"
+        receipt['undo']=f'--root {quoted} undo {receipt["operation_id"]}'
     return receipt
 
 def _antigravity(home,uninstall,adopt):
