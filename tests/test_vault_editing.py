@@ -298,6 +298,121 @@ class VaultEditing(StoreFixture):
         self.assertEqual(find_note(a['id'], 'demo', self.root)[1]['status'], 'archived')
         self.assertTrue((self.vault / 'Archive/demo' / copy.name).exists())
 
+    def _interrupt_before(self, kind):
+        """Make sync stop right before its canonical write of this kind."""
+        import core.sync as sync_module
+        real = sync_module.transaction
+        def stop(root, changes, k, *args, **kwargs):
+            if k == kind:
+                raise KeyboardInterrupt
+            return real(root, changes, k, *args, **kwargs)
+        return patch.object(sync_module, 'transaction', stop)
+
+    def test_a_stop_before_the_canonical_delete_keeps_the_vault_request(self):
+        a = self.note()
+        copy, = self.built(a)
+        copy.unlink()
+        with self._interrupt_before('overlay_delete'), self.assertRaises(KeyboardInterrupt):
+            build_overlay('demo', self.vault, self.root)
+        self.assertEqual(len(build_overlay('demo', self.vault, self.root)['applied']), 1)   # the delete is applied, the copy not restored
+        self.assertFalse(Path(a['path']).exists())
+        self.assertFalse(copy.exists())
+
+    def test_a_stop_before_the_canonical_archive_keeps_the_vault_request(self):
+        a = self.note()
+        copy, = self.built(a)
+        self.edit(copy, 'status: "active"', 'status: "archived"')
+        with self._interrupt_before('archive'), self.assertRaises(KeyboardInterrupt):
+            build_overlay('demo', self.vault, self.root)
+        self.assertEqual(len(build_overlay('demo', self.vault, self.root)['applied']), 1)
+        self.assertEqual(find_note(a['id'], 'demo', self.root)[1]['status'], 'archived')
+
+    def test_a_pending_vault_delete_is_finished_before_sync_reads(self):
+        import core.repository as repo
+        a = self.note()
+        copy, = self.built(a)
+        copy.unlink()
+        real = repo._write
+        def crash(path, data):
+            if data is None and Path(path).name == Path(a['path']).name:
+                raise KeyboardInterrupt   # the delete is journaled; the process dies before it is applied
+            return real(path, data)
+        with patch.object(repo, '_write', crash), self.assertRaises(KeyboardInterrupt):
+            build_overlay('demo', self.vault, self.root)
+        self.assertTrue(Path(a['path']).exists())
+        build_overlay('demo', self.vault, self.root)
+        self.assertFalse(Path(a['path']).exists())
+        self.assertFalse(copy.exists())   # no ghost copy of the deleted note
+        self.assertFalse(list((self.root / '.operations').glob('*/pending')))
+
+    def test_undo_after_an_archive_that_reached_the_vault_leaves_no_archive_copy(self):
+        import core.sync as sync_module
+        a = self.note()
+        copy, = self.built(a)
+        self.edit(copy, 'status: "active"', 'status: "archived"')
+        real, archived_ops = sync_module.transaction, []
+        def stop(root, changes, k, *args, **kwargs):
+            receipt = real(root, changes, k, *args, **kwargs)
+            if k == 'archive':
+                archived_ops.append(receipt['operation_id'])
+            if k == 'overlay_sync':
+                raise KeyboardInterrupt   # the vault has the archive copy; the sync state was not saved
+            return receipt
+        archived = self.vault / 'Archive/demo' / copy.name
+        with patch.object(sync_module, 'transaction', stop), self.assertRaises(KeyboardInterrupt):
+            build_overlay('demo', self.vault, self.root)
+        self.assertTrue(archived.exists())
+        undo(self.root, archived_ops[0])
+        result = build_overlay('demo', self.vault, self.root)
+        self.assertEqual((result['applied'], result['conflicts']), ([], 0))
+        self.assertFalse(archived.exists())
+        self.assertIn('status: "active"', copy.read_text(encoding='utf-8'))
+        self.assertNotIn('Deleted in the vault', self.status_page().read_text(encoding='utf-8'))
+
+    def test_legacy_sync_state_is_not_applied_again_after_undo(self):
+        a = self.note()
+        copy, = self.built(a)
+        state_path = self.root / 'domains/demo/sync-state.json'
+        legacy = read_json(state_path)
+        legacy.pop('vault_id')   # written before vault_id existed
+        state_path.write_text(json.dumps(legacy), encoding='utf-8')
+        copy.unlink()
+        stopper, done = self._interrupt_after('overlay_delete')
+        with stopper, self.assertRaises(KeyboardInterrupt):
+            build_overlay('demo', self.vault, self.root)
+        undo(self.root, done[0])
+        self.assertEqual(build_overlay('demo', self.vault, self.root)['applied'], [])   # not deleted a second time
+        self.assertTrue(Path(a['path']).exists())
+        self.assertTrue(copy.exists())
+
+    def test_the_undo_line_survives_a_stop_after_the_canonical_write(self):
+        a = self.note()
+        copy, = self.built(a)
+        copy.unlink()
+        stopper, done = self._interrupt_after('overlay_delete')
+        with stopper, self.assertRaises(KeyboardInterrupt):
+            build_overlay('demo', self.vault, self.root)
+        build_overlay('demo', self.vault, self.root)
+        page = self.status_page().read_text(encoding='utf-8')
+        self.assertIn('Deleted: Cache', page)
+        self.assertIn('undo ' + done[0], page)
+
+    def test_a_copy_put_back_before_the_delete_keeps_the_note(self):
+        import core.notes as notes
+        a = self.note()
+        copy, = self.built(a)
+        text = copy.read_text(encoding='utf-8')
+        copy.unlink()
+        real = notes._change_set
+        def put_back(*args, **kwargs):
+            copy.write_text(text, encoding='utf-8')   # Ctrl+Z in Obsidian while the sync runs
+            return real(*args, **kwargs)
+        with patch.object(notes, '_change_set', put_back):
+            result = build_overlay('demo', self.vault, self.root)
+        self.assertEqual(result['applied'], [])
+        self.assertTrue(Path(a['path']).exists())
+        self.assertTrue(copy.exists())
+
     def test_new_vault_copies_instead_of_deleting(self):
         notes = [self.note(f'Note {i}', f'Body number {i}.', allow_similar=True) for i in range(6)]
         self.built(*notes)

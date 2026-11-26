@@ -169,6 +169,10 @@ def undo(root,operation_id,include_private=False,revert_files=True):
     import base64
     # The derived-state marker is rewritten by every reconcile; it is not part of what is being undone.
     value['effects']=[e for e in value['effects'] if Path(e['path']).name!='.derived-dirty']
+    # A vault sync saves its sync state with each canonical write (core/sync.py carry) and again at its end. Undo leaves it as it is:
+    # bringing the old entry back would make the next sync apply the vault change again.
+    if value.get('kind')!='overlay_state':
+        value['effects']=[e for e in value['effects'] if not (Path(e['path']).name=='sync-state.json' and Path(e['path']).parts[0]=='domains')]
     def before(e):
         # An operation of the retired hosted notebooks (CON-18) may have moved an attachment's bytes aside or left a page in another encoding.
         if e.get('blob'):raise ValueError(f"{operation_id} moved the notebook attachment {e['path']}; hosted notebooks were retired (CON-18), so it cannot be undone")

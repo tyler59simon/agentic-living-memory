@@ -16,7 +16,7 @@ from pathlib import Path
 from . import clock
 from .common import memory_root,atomic_write,load_bindings
 from .paths import is_os_junk,remove_empty_dir
-from .repository import inventory,parse,parse_text,validate,serialize,store_lock,read_json,canonical_json,transaction,digest,confined,now,reconcile,clean_files,clean_commands
+from .repository import inventory,parse,parse_text,validate,serialize,store_lock,read_json,canonical_json,transaction,digest,confined,now,reconcile,clean_files,clean_commands,roll_forward_pending
 from .note_types import normalize,STALE_DAYS,keep_baseline
 from .notes import slug
 
@@ -26,6 +26,7 @@ LEGACY='Living Memory';LEGACY_COPIES=f'{LEGACY}/.copies.json';LEGACY_GENERATED=f
 SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 # A file saved this recently may still be open in Obsidian; it is picked up at the next sync.
 QUIET_SECONDS=30
+KEEP=object()   # carry(): leave the note's sync-state entry as it is
 # Losing this many managed copies at once is a vault reset or move, not a request to delete notes.
 MASS_MISSING=(5,0.2)
 from .note_format import sections,HEADINGS,TITLE_MARK,CALLOUT
@@ -151,6 +152,10 @@ def sync(domain,vault,root=None,trigger=None):
     root=Path(root or memory_root()).resolve();vault=Path(vault).resolve();vault.mkdir(parents=True,exist_ok=True)
     state_path=root/'domains'/domain/'sync-state.json'
     with store_lock(root),store_lock(vault):
+        # Finish interrupted writes before anything is read: a canonical delete journaled but not applied would otherwise
+        # still be in the inventory, and its copy would come back for one sync.
+        warnings=[f"operation {r['operation_id']} could not be rolled forward: {r['error']}; run recover {r['operation_id']}"
+                  for folder in (root,vault) for r in roll_forward_pending(folder) if not r['ok']]
         state=read_json(state_path,{'version':3,'entries':{}})
         if state.get('version')!=3:state={'version':3,'entries':{}}
         state,new_vault=_session_ids(state,vault)
@@ -158,8 +163,10 @@ def sync(domain,vault,root=None,trigger=None):
         entries=state['entries'];applied_log=state.setdefault('applied',[]);capture_errors={}
         copied=conflicts=staged=deferred=restored=renamed=0;applied=[];view_changes={};staging_changes={};wrote_canonical=False
         owner={}
-        def log(action,note_id,title,operation_id):
-            applied.append(operation_id);applied_log.append({'action':action,'id':note_id,'title':title,'operation_id':operation_id,'at':now()})
+        def row(action,note_id,title,operation_id):
+            return {'action':action,'id':note_id,'title':title,'operation_id':operation_id,'at':now()}
+        def log(entry):
+            applied.append(entry['operation_id']);applied_log.append(entry)
         titles={n['id']:n['title'] for n in inventory(domain,root,retired=True)}
         notes=inventory(domain,root,retired=True);by_id={n['id']:n for n in notes}
         # A vault change that waited for an approval before 2026-11-26 (when the user removed plans) is applied directly below:
@@ -194,16 +201,18 @@ def sync(domain,vault,root=None,trigger=None):
         # Many copies gone at once, or the whole domain folder: a reset or a moved vault, never a deletion request.
         vault_reset=(len(missing)>=MASS_MISSING[0] and len(missing)>=MASS_MISSING[1]*max(1,managed)) or bool(missing and not (vault/NOTES/domain).is_dir())
         state_rel=state_path.relative_to(root).as_posix()
-        def prewrite(note_id,value):
-            """Save this note's sync-state entry (None removes it) before a canonical delete or retirement at sync, as its own write.
-            A sync that stops after the canonical write then does not apply the vault change again, and neither does the next sync
-            after an undo of it; a stop before the canonical write loses only the vault change (the copy comes back)."""
+        def carry(changes,applied_row,note_id=None,value=KEEP):
+            """The canonical changes plus the saved sync state with this note's entry set (None removes it; KEEP leaves it) and
+            the applied row added, so both land in the canonical write's transaction or neither does. A sync that stops after it
+            then neither applies the vault change again nor loses the status page's undo line; nor does the sync after an undo of
+            it (undo leaves the sync state as it is). Built on the state on disk, not this sync's unsaved progress."""
             disk=read_json(state_path,None)
-            if not isinstance(disk,dict) or disk.get('version')!=3 or disk.get('vault_id')!=state.get('vault_id'):return
-            kept=dict(disk.get('entries') or {})
+            base,_=_session_ids(disk if isinstance(disk,dict) and disk.get('version')==3 else {'version':3,'entries':{}},vault)
+            kept=dict(base.get('entries') or {})
             if value is None:kept.pop(note_id,None)
-            else:kept[note_id]=value
-            transaction(root,{state_rel:canonical_json({**disk,'entries':kept})},'overlay_state',skip_unchanged=True)
+            elif value is not KEEP:kept[note_id]=value
+            saved={**base,'vault':state['vault'],'vault_id':state['vault_id'],'entries':kept,'applied':(list(base.get('applied') or [])+[applied_row])[-20:]}
+            return {**changes,state_rel:canonical_json(saved)}
         known_paths=set()
         owned_copies=(read_json(vault/COPIES,None) or {}).get('files',{})
         blocked={}
@@ -225,7 +234,13 @@ def sync(domain,vault,root=None,trigger=None):
             note_id=note['id'];src=Path(note['path']);source_text=_text(src);source_hash=digest(source_text.encode())
             active=note.get('status')=='active'
             rel=note_rel(domain,src.name,active)
-            entry=dict(entries.get(note_id,{}));old_rel=entry.get('overlay',rel)
+            entry=dict(entries.get(note_id,{}))
+            left=entry.get('pending_overlay')
+            if left and active and left!=rel and owned_copies.get(left) and _hash(confined(vault,left))==owned_copies[left]:
+                # An archive applied from the vault reached the vault but not the saved sync state, then was undone: remove the
+                # copy it put in the archive and start this note's copy afresh, not as a vault delete.
+                view_changes[left]=None;known_paths.add(left);entry={}
+            old_rel=entry.get('overlay',rel)
             if note_id in moved:old_rel=moved[note_id];renamed+=1
             dst=confined(vault,old_rel);known_paths.add(old_rel);target=confined(vault,rel);known_paths.add(rel)
             if dst.is_symlink() or target.is_symlink():raise ValueError('Overlay symlinks are forbidden')
@@ -267,10 +282,10 @@ def sync(domain,vault,root=None,trigger=None):
                     # Deleted in the vault: the user's intent, applied directly and journaled, so undo brings the note back.
                     from .notes import _change_set
                     changes,expected,_=_change_set(note_id,domain,'delete',root,note['revision'],actor='vault')
-                    prewrite(note_id,None)
-                    receipt=transaction(root,changes,'overlay_delete',expected);wrote_canonical=True
-                    log(DONE['delete'],note_id,note['title'],receipt.get('operation_id'))
-                    entries.pop(note_id,None);continue
+                    if dst.exists():deferred+=1;continue   # put back in Obsidian since it was read: the next sync sees it
+                    done=row(DONE['delete'],note_id,note['title'],uuid.uuid4().hex)
+                    transaction(root,carry(changes,done,note_id,None),'overlay_delete',expected,operation_id=done['operation_id']);wrote_canonical=True
+                    log(done);entries.pop(note_id,None);continue
             elif overlay_hash!=old_overlay and (source_hash!=old_source or not entry) and note_id not in forced:
                 # Changed on both sides. Memory wins in the vault; the vault version is kept and can be restored.
                 conflicts+=1
@@ -304,8 +319,9 @@ def sync(domain,vault,root=None,trigger=None):
                             if updated['body']!=note['body'] and updated.get('checked'):updated['checked']=updated['updated']   # a body edited in the vault is the author's word for the facts
                         if updated.get('type')!=note.get('type'):check_type(updated.get('type'),root)   # retyping in the vault needs an active type, as update --type does
                         canonical_target,changes,expected=_canonical_changes(note,updated,domain,root)
-                        receipt=transaction(root,changes,'overlay_auto_update',expected);wrote_canonical=True
-                        log('Edited',note_id,updated['title'],receipt.get('operation_id'))
+                        done=row('Edited',note_id,updated['title'],uuid.uuid4().hex)
+                        transaction(root,carry(changes,done),'overlay_auto_update',expected,operation_id=done['operation_id']);wrote_canonical=True
+                        log(done)
                         new_text=changes[canonical_target.relative_to(root).as_posix()];new_hash=digest(new_text.encode())
                     else:
                         canonical_target,new_text,new_hash=src,source_text,source_hash
@@ -314,13 +330,20 @@ def sync(domain,vault,root=None,trigger=None):
                         from .notes import _change_set
                         action=LIFECYCLE[wanted]
                         changes,expected,canonical_target=_change_set(note_id,domain,action,root,actor='vault')
-                        # The vault edit counts as taken, and no memory hash is recorded: after an undo of the retirement the next
-                        # sync copies the memory version back instead of retiring the note again.
-                        prewrite(note_id,{'overlay':old_rel,'overlay_hash':overlay_hash,'status':wanted})
-                        receipt=transaction(root,changes,action,expected);wrote_canonical=True
-                        log(DONE[action],note_id,updated['title'],receipt.get('operation_id'))
-                        new_text=changes[canonical_target.relative_to(root).as_posix()];after_source=digest(new_text.encode())
+                        if _hash(dst)!=overlay_hash:
+                            # Saved again in Obsidian since it was read: the next sync applies the newer copy. Any body edit above
+                            # is in memory now, so the entry records it as taken.
+                            deferred+=1;entries[note_id]={'overlay':old_rel,'canonical_hash':new_hash,'overlay_hash':overlay_hash,'status':note.get('status')}
+                            continue
                         after_rel=note_rel(domain,canonical_target.name,False)
+                        # The vault edit counts as taken, and no memory hash is recorded: after an undo of the retirement the next
+                        # sync copies the memory version back instead of retiring the note again. pending_overlay names the
+                        # archive copy, which that sync removes if the vault got it but the saved state did not.
+                        done=row(DONE[action],note_id,updated['title'],uuid.uuid4().hex)
+                        transaction(root,carry(changes,done,note_id,{'overlay':old_rel,'overlay_hash':overlay_hash,'status':wanted,'pending_overlay':after_rel}),
+                                    action,expected,operation_id=done['operation_id']);wrote_canonical=True
+                        log(done)
+                        new_text=changes[canonical_target.relative_to(root).as_posix()];after_source=digest(new_text.encode())
                         after_hash=place(note_id,old_rel,after_rel,new_text,overlay_text,overlay_hash);copied+=1
                         conflict=None;note=dict(note,status=wanted)   # the sync state records the status the note has now
                     else:
@@ -415,11 +438,13 @@ def sync(domain,vault,root=None,trigger=None):
                 # Saved again in Obsidian while syncing: keep the draft; the next sync captures the newer text.
                 view_changes.pop(path_rel,None);view_changes.pop(new_rel,None);entries.pop(note_id,None);copied-=1;skipped+=1
                 continue
-            if canonical is None:
-                log('Captured',note_id,title,None);continue   # already saved by an interrupted sync
+            if canonical is None:   # already saved by an interrupted sync, whose write also saved its applied row
+                if not any(r.get('id')==note_id and r.get('action')=='Captured' for r in applied_log):log(row('Captured',note_id,title,None))
+                continue
             rel,text=canonical
-            receipt=transaction(root,{rel:text,f'domains/{domain}/.derived-dirty':'dirty\n'},'overlay_capture');wrote_canonical=True
-            log('Captured',note_id,title,receipt.get('operation_id'))
+            done=row('Captured',note_id,title,uuid.uuid4().hex)
+            transaction(root,carry({rel:text,f'domains/{domain}/.derived-dirty':'dirty\n'},done),'overlay_capture',operation_id=done['operation_id']);wrote_canonical=True
+            log(done)
         state['capture_errors']=capture_errors;state['applied']=applied_log[-20:]
         copy_manifest=read_json(vault/COPIES,None)
         if copy_manifest is None:copy_manifest=read_json(vault/LEGACY_COPIES,{'files':{}})
@@ -438,8 +463,10 @@ def sync(domain,vault,root=None,trigger=None):
         transaction(root,staging_changes,'overlay_state',skip_unchanged=True)
         if wrote_canonical:reconcile(domain,root,sync_overlay=False)
         _prune_legacy_dirs(vault)
-        return {'ok':True,'domain':domain,'copied':copied,'staged':staged,'conflicts':conflicts,'applied':applied,
+        result={'ok':True,'domain':domain,'copied':copied,'staged':staged,'conflicts':conflicts,'applied':applied,
                 'deferred':deferred+skipped,'restored':restored,'renamed':renamed,'new_vault':new_vault}
+        if warnings:result['warnings']=warnings
+        return result
 
 def _undo_command(domain,operation_id):
     import os,shlex

@@ -173,6 +173,7 @@ class VaultCaptureReplay(StoreFixture):
         page = (vault / 'Dashboards/Sync Status - demo.md').read_text(encoding='utf-8')
         self.assertNotIn('already saved', page)
         self.assertNotIn('undo None', page)
+        self.assertEqual(page.count('Captured: Vault idea'), 1)   # the row saved with the capture, not a second one from the replay
 
 
 class Backups(StoreFixture):
