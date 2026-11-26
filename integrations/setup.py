@@ -229,8 +229,11 @@ def _write(home,harness,changes,uninstall,summary,read_set):
                    operation_id=f's-{harness}-{uuid.uuid4().hex}')
     home=Path(home).resolve()
     if home!=Path(harness_home(harness)).expanduser().resolve():   # undo looks only in the configured home; name this one
-        # Single quotes are literal in PowerShell and POSIX shells alike, so a $ or backtick in the path stays as it is.
-        quoted="'"+str(home).replace("'","''" if os.name=='nt' else "'\\''")+"'"
+        # Double quotes as before; a path with $, a backtick or a double quote gets single quotes, which PowerShell and POSIX
+        # shells read literally (an apostrophe is then doubled for PowerShell or closed and escaped for POSIX shells).
+        text=str(home)
+        if not any(c in text for c in '$`"'):quoted=f'"{text}"'
+        else:quoted="'"+text.replace("'","''" if os.name=='nt' else "'\\''")+"'"
         receipt['undo']=f'--root {quoted} undo {receipt["operation_id"]}'
     return receipt
 

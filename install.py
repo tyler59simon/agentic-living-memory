@@ -159,7 +159,9 @@ def main() -> int:
     if args.uninstall and args.retire_legacy:
         parser.error('--uninstall and --retire-legacy are separate runs')
     if args.plan:
-        print(json.dumps({'ok': True, 'plan_id': LEGACY_TOKEN, 'digest': LEGACY_TOKEN, 'summary': {'next_steps': [], 'wiring_current': []},
+        steps, current = next_steps()   # read-only; the old upgrader shows these from this reply only
+        summary = {'files': len(_package_changes(INSTALL_DIR, False)), 'next_steps': steps, 'wiring_current': current}
+        print(json.dumps({'ok': True, 'plan_id': LEGACY_TOKEN, 'digest': LEGACY_TOKEN, 'summary': summary,
                           'note': 'Install plans were removed on 2026-11-26; nothing was written. Applying this token installs directly.'},
                          separators=(',', ':')))
         return 0

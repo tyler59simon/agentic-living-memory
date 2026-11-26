@@ -166,6 +166,14 @@ class SharedStorage(StorageBase):
         with self.assertRaisesRegex(ValueError, 'abandoned relocation'):
             storage.setup(dest, True)   # the stale copy is not published as a store
         self.assertEqual(storage.resolve_root()[0], self.root)
+        if os.name == 'nt':
+            with self.assertRaisesRegex(ValueError, 'abandoned relocation'):
+                storage.setup(Path(str(dest).upper()), True)   # the same folder spelled in other case
+        import shutil
+        shutil.rmtree(dest)
+        self.assertEqual(storage.setup(dest, True)['status'], 'committed')   # the user cleared it and moved again
+        self.assertEqual(storage.setup(dest, True)['status'], 'configured')   # the folder is the store now, not a stale copy
+        self.assertEqual(storage.resolve_root()[0], dest)
 
     def test_relocation_destination_conflict_is_preserved(self):
         dest = self.prepared()

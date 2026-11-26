@@ -180,6 +180,8 @@ class Relocation(StoreFixture):
         argv=shlex.split(done['undo'])   # single quotes: everything inside is literal, backslashes included
         with contextlib.redirect_stdout(io.StringIO()):self.assertEqual(cli(['--json',*argv]),0)
         self.assertFalse((other/'settings.json').exists())
+        plain=self.base/"o'brien home"   # no $ or backtick: double quotes, as before, which keep the apostrophe
+        self.assertIn(f'--root "{plain.resolve()}"',setup.setup('claude',plain)['undo'])
         self.assertNotIn('--root',setup.setup('claude',self.claude)['undo'])   # the configured home needs no --root
     def set_up_after_an_edit(self,name,text):
         """setup while someone appends text to name after setup read it and before commit() wrote."""

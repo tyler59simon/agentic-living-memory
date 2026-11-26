@@ -109,9 +109,11 @@ class InstallerEntryPoints(StoreFixture):
     def test_the_upgrader_from_before_plans_were_removed_still_installs(self):
         import install
         receipt={'ok':True,'operation_id':'i-'+'d'*32,'undo':'undo i-'+'d'*32,'summary':{'files':2,'next_steps':[]}}
-        with patch.object(install,'install',return_value=receipt) as direct,patch('core.storage.ensure_setup') as setup,patch.object(install,'print_next_steps'):
+        with patch.object(install,'install',return_value=receipt) as direct,patch('core.storage.ensure_setup') as setup,patch.object(install,'print_next_steps'),\
+             patch.object(install,'next_steps',return_value=(['setup.py claude --hooks'],['codex'])),patch.object(install,'_package_changes',return_value={'a':'x','b':'y'}):
             code,out=self.install_main(['--plan'])   # the old upgrader's first call (all of its `upgrade --plan`) writes nothing
             plan=json.loads(out.splitlines()[-1]);self.assertEqual(code,0);direct.assert_not_called();setup.assert_not_called()
+            self.assertEqual(plan['summary'],{'files':2,'next_steps':['setup.py claude --hooks'],'wiring_current':['codex']})   # what it shows the user
             code,out=self.install_main(['--apply-plan',plan['plan_id'],'--expected-plan-sha256',plan['digest']])   # its second call installs
             self.assertEqual((code,json.loads(out.splitlines()[-1])['operation_id']),(0,receipt['operation_id']));self.assertEqual(direct.call_count,1)
             for wrong in (['--apply-plan','p-old','--expected-plan-sha256','x'],['--apply-plan',plan['plan_id'],'--expected-plan-sha256','x']):

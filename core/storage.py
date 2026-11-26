@@ -183,7 +183,7 @@ def _pending_relocation(source, destination):
     """The ID of an interrupted relocation from source (None: any source) to destination, which a rerun resumes, or None."""
     for path in sorted(_relocations().glob('*.relocation.json')) if _relocations().is_dir() else []:
         record = _read(path)
-        if not isinstance(record, dict) or (source is not None and record.get('source') != str(source)) or record.get('destination') != str(destination):
+        if not isinstance(record, dict) or (source is not None and not _same(record.get('source'), source)) or not _same(record.get('destination'), destination):
             continue
         journal = _read(path.with_name(record['id'] + '.journal.json'))
         if journal and journal.get('state') not in ('committed', 'abandoned'):
@@ -191,15 +191,21 @@ def _pending_relocation(source, destination):
     return None
 
 
+def _same(recorded, path):
+    from .paths import same_path
+    return isinstance(recorded, str) and same_path(recorded, path, resolve=False)
+
+
 def _abandoned_relocation(destination):
-    """True when a relocation to destination was abandoned (its source or the configuration changed during the copy)."""
-    for path in sorted(_relocations().glob('*.relocation.json')) if _relocations().is_dir() else []:
+    """True when a relocation to destination was abandoned (its source or the configuration changed during the copy) and no
+    later relocation to it committed: a folder that became the store since is never called a stale copy."""
+    states = []
+    for path in _relocations().glob('*.relocation.json') if _relocations().is_dir() else []:
         record = _read(path)
-        if isinstance(record, dict) and record.get('destination') == str(destination):
+        if isinstance(record, dict) and _same(record.get('destination'), destination):
             journal = _read(path.with_name(record['id'] + '.journal.json'))
-            if journal and journal.get('state') == 'abandoned':
-                return True
-    return False
+            states.append(journal.get('state') if isinstance(journal, dict) else None)
+    return 'abandoned' in states and 'committed' not in states
 
 
 def relocate(source, destination, config_revision=False):
@@ -393,7 +399,7 @@ def setup(location=None, non_interactive=False, source=None):
     pending = _pending_relocation(None, destination)
     if pending:
         return _relocate(pending)   # an interrupted relocation to this folder: finish it, never publish its partial copy
-    if _abandoned_relocation(destination) and destination.exists() and any(p.name != '.store.lock' and not is_os_junk(p) for p in destination.iterdir()):
+    if (current is None or not _same(str(current), destination)) and _abandoned_relocation(destination) and destination.exists() and any(p.name != '.store.lock' and not is_os_junk(p) for p in destination.iterdir()):
         raise ValueError(f'{destination} holds the partial copy of an abandoned relocation; delete its contents and run setup --location again')
     if destination.exists() and any(p.name != '.store.lock' and not is_os_junk(p) for p in destination.iterdir()):
         with store_lock(destination):
