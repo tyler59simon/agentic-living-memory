@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from test_core import StoreFixture
 from core import runtime
-from core.cli import main as cli
+from revision_fill import main as cli
 from core.capture import status
 from core.init_domain import init_domain
 from core.notes import capture, find_note, resolve_ref, short_ref

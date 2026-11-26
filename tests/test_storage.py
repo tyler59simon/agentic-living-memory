@@ -181,7 +181,7 @@ class SharedStorage(StorageBase):
 
     def test_shared_adapters_capture_and_search(self):
         from hooks import claude_hooks, copilot_hooks, codex_hooks
-        from core.cli import main
+        from revision_fill import main
         from core.notes import capture
         from core.search import search_domain
         from core.runtime import process
@@ -205,7 +205,7 @@ class SharedStorage(StorageBase):
         self.assertEqual(json.loads(output.getvalue())['location']['selection_source'], 'shared_config')
 
     def test_subagent_cannot_setup(self):
-        from core.cli import main
+        from revision_fill import main
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(main(['setup', '--location', str(self.base / 'forbidden'), '--actor', 'subagent']), 2)
         self.assertFalse(self.config.exists())

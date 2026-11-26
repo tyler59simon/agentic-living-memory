@@ -417,7 +417,7 @@ class LauncherInstall(StoreFixture):
         self.apply(self.plan());self.wire('claude');self.wire('codex')
         summary=self.plan()['summary'];self.assertEqual(summary['next_steps'],[]);self.assertEqual(summary['wiring_current'],['claude','codex'])   # copilot was never wired: left out
         out,err=self.run_main();self.assertIn('Harness wiring is current (claude, codex); nothing to rerun.',err)
-        rules=self.harness('claude')/'CLAUDE.md';rules.write_text(rules.read_text(encoding='utf-8').replace('never edit memory files yourself','never edit memory files',1),encoding='utf-8')   # an older block
+        rules=self.harness('claude')/'CLAUDE.md';rules.write_text(rules.read_text(encoding='utf-8').replace('Change memory only through CMD','Change memory through CMD',1),encoding='utf-8')   # an older block
         hooks=self.harness('codex')/'hooks.json';config=read_json(hooks);config['hooks']['Stop'][0]['hooks'][0]['timeout']=99;hooks.write_text(json.dumps(config))   # an older handler
         summary=self.plan()['summary'];self.assertEqual(named(summary['next_steps']),['claude','codex']);self.assertEqual(summary['wiring_current'],[])
         out,err=self.run_main();self.assertIn('claude --hooks',err);self.assertIn('codex --hooks',err)
@@ -427,7 +427,7 @@ class LauncherInstall(StoreFixture):
         git('init','-q');git('add','.');git('commit','-qm','one');return source,git
     def doctor(self):
         import contextlib,io
-        from core.cli import main
+        from revision_fill import main
         out=io.StringIO()
         with contextlib.redirect_stdout(out):main(['--root',str(self.root),'doctor'])
         return json.loads(out.getvalue())
@@ -460,7 +460,7 @@ class LauncherInstall(StoreFixture):
         inside=source/'core';self.assertEqual(lifecycle.source_stamp(inside),{})   # a folder inside someone else's checkout is not a checkout of its own
     def test_version_names_the_release_and_the_install(self):
         import contextlib,io
-        from core.cli import main
+        from revision_fill import main
         from core import installer_lifecycle as lifecycle
         out=io.StringIO()
         with contextlib.redirect_stdout(out):main(['--root',str(self.root),'version'])

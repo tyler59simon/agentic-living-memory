@@ -4,7 +4,7 @@ import contextlib,io,json,unittest
 from datetime import date,timedelta
 from unittest.mock import patch
 from test_core import StoreFixture
-from core.cli import main
+from revision_fill import main
 from core.notes import find_note
 from core.repository import inventory
 from core import backup,clock

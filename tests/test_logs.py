@@ -3,7 +3,7 @@ import contextlib, io, json, os, sys, unittest
 from unittest.mock import patch
 from test_core import StoreFixture
 from core import logs, runtime
-from core.cli import main
+from revision_fill import main
 from core.notes import capture
 
 TAGS = ['subject/project', 'concern/decision']

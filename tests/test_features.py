@@ -161,7 +161,7 @@ class ClaudeIntegrationFixes(StoreFixture):
         self.assertIn('allow',self.run_hook('pre-tool-use',event))
     def cli(self,*argv):
         import contextlib
-        from core.cli import main
+        from revision_fill import main
         out,err=io.StringIO(),io.StringIO()
         with contextlib.redirect_stdout(out),contextlib.redirect_stderr(err):code=main(['--json','--root',str(self.root),'--domain','demo',*argv])
         return code,json.loads(out.getvalue() or err.getvalue())
@@ -216,7 +216,7 @@ class ClaudeIntegrationFixes(StoreFixture):
     def test_an_edited_proposal_keeps_its_domain_and_its_sources(self):
         from core import proposals
         import contextlib
-        from core.cli import main
+        from revision_fill import main
         row=proposals.write(self.root,'s1','_global',{'title':'Global fact','body':'Holds everywhere.','type':'decision'})
         out=io.StringIO()
         with contextlib.redirect_stdout(out),contextlib.redirect_stderr(io.StringIO()):   # no --domain: the bound project would be the default
@@ -351,7 +351,7 @@ class ClaudeIntegrationFixes(StoreFixture):
             with self.assertRaisesRegex(ValueError,'credential'):self.note('Secret '+secret[:4],'token '+secret)
         self.assertEqual(self.note('Password policy','Passwords require twelve characters.')['status'],'created')
     def test_cli_capture_session_flags_finalize(self):
-        from core.cli import main
+        from revision_fill import main
         from core.capture import status
         with patch('sys.stdout',new_callable=io.StringIO):
             code=main(['--root',str(self.root),'--domain','demo','capture','--subject','project','--concern','architecture','--session','s9','--turn','t9','Flag title','Flag body'])

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from test_core import StoreFixture
 from core import governance
-from core.cli import main as cli
+from revision_fill import main as cli
 from core.notes import capture, find_note, quality_warnings, rewrite
 from core.style import style_warnings
 

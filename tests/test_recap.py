@@ -3,7 +3,7 @@ import contextlib,io,json,unittest
 from datetime import datetime,timedelta
 from unittest.mock import patch
 from core import notes,runtime,sync,recap as recap_mod
-from core.cli import main
+from revision_fill import main
 from core.note_format import render
 from test_maintenance import Base,OLD,TAGS
 

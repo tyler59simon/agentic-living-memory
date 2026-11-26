@@ -3,7 +3,7 @@ import contextlib,io,json,os,subprocess,sys,unittest
 from pathlib import Path
 from unittest.mock import patch
 from test_core import StoreFixture
-from core.cli import main
+from revision_fill import main
 from core.notes import change,find_note
 
 SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'

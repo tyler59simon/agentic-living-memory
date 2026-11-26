@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 from test_core import StoreFixture
 from core import digests,runtime,sources
-from core.cli import main
+from revision_fill import main
 from core.notes import find_note
 from core.repository import clean_sources,inventory,validate
 

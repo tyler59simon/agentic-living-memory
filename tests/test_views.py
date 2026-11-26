@@ -3,7 +3,7 @@ import contextlib,io,json,re,unittest
 from pathlib import Path
 from unittest.mock import patch
 from test_core import StoreFixture
-from core.cli import main
+from revision_fill import main
 from core import backup,installer_lifecycle,runtime,storage,views
 from core.notes import find_note
 from core.repository import reconcile

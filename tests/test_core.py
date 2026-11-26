@@ -48,7 +48,7 @@ class StoreCase(StoreFixture):
         with self.assertRaises(ValueError):init_domain('another',[str(self.base)],self.root)
         self.assertEqual(p.read_text(),'{broken')
     def cli(self,*argv):
-        from core.cli import main
+        from revision_fill import main
         out,err=io.StringIO(),io.StringIO()
         with contextlib.redirect_stdout(out),contextlib.redirect_stderr(err):code=main(['--root',str(self.root),*argv])
         return code,json.loads(out.getvalue() or err.getvalue())

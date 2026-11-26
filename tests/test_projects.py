@@ -2,7 +2,7 @@
 import contextlib,io,json,os,unittest
 from unittest.mock import patch
 from test_core import StoreFixture
-from core.cli import main
+from revision_fill import main
 from core.note_format import render
 from core import projects,backup
 from core.runtime import protected_rule

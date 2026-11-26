@@ -24,6 +24,34 @@ ID_PREFIX=re.compile(r'[0-9a-f][0-9a-f-]{%d,}'%(SHORT_ID-1),re.I)
 
 def short_ref(domain,note_id):return f'{domain}:{str(note_id)[:SHORT_ID]}'
 
+# A revision is the sha256 of the note file's bytes (repository.parse). Callers pass the one they read, whole or as a prefix this long.
+REVISION_PREFIX=12
+REVISION=re.compile(r'[0-9a-f]{%d,64}'%REVISION_PREFIX)
+
+def check_revision(actual,expected,ref):
+    """Raise stale_revision unless `expected`, the revision the caller read, still names the note's current revision `actual`."""
+    given=str(expected or '').strip().lower()
+    if not REVISION.fullmatch(given):
+        raise ValueError(f'invalid revision {str(expected)[:70]!r}: pass the sha256 revision that read prints (at least {REVISION_PREFIX} hex characters)')
+    if not str(actual or '').startswith(given):raise ValueError(f'stale_revision: {ref} changed since revision {given[:REVISION_PREFIX]}; read it again and redo the change')
+
+def split_revision(value):
+    """(ref, revision or None) for 'REF@REVISION'; a value without a hex revision after its last @ is a plain ref."""
+    text=str(value)
+    head,sep,tail=text.rpartition('@')
+    return (head,tail.lower()) if sep and head and REVISION.fullmatch(tail.lower()) else (text,None)
+
+def note_revisions(changes):
+    """{domain:id: revision} for each note file a change set writes, from the exact text it writes."""
+    from .repository import parse_text
+    found={}
+    for rel,text in changes.items():
+        parts=str(rel).split('/')
+        if isinstance(text,str) and len(parts)==4 and parts[0]=='domains' and parts[2] in ('notes','archive') and parts[3].endswith('.md'):
+            meta=parse_text(text,rel)
+            if meta and meta.get('id'):found[f"{parts[1]}:{meta['id']}"]=digest(text.encode())
+    return found
+
 def _by_id(note_id,notes):
     exact=[n for n in notes if n.get('id')==note_id]
     if exact or not ID_PREFIX.fullmatch(note_id):return exact
@@ -91,6 +119,8 @@ def _commit_many(domains,changes,kind,root,expected=None,operation_id=None):
     changes=dict(changes);domains=list(dict.fromkeys([*domains,*touched_domains(changes)]))   # a link rewrite can reach into another domain
     for domain in domains:changes[f'domains/{domain}/.derived-dirty']='dirty\n'
     receipt=transaction(root,changes,kind,expected,operation_id)
+    revisions=note_revisions(changes)
+    if revisions:receipt['revisions']=revisions   # the caller's next write passes these without reading again
     for domain in domains:
         try:reconcile(domain,root)
         except Exception as exc:
@@ -487,14 +517,14 @@ def _promote_existing(note,source,root,origin_ref=None):
     ref=f"{source}:{note['id']}"
     blocker=promotion_blocker(note,root)
     if blocker:raise ValueError(f"possible_duplicate conflict: the same note is in project {source} ({ref}) but {blocker}, so it stays there; "
-                                f"capture a version without project-specific detail, or `update {ref}`")
+                                f"capture a version without project-specific detail, or read it and `update {ref} --expected-revision REV`")
     target=ensure_global(root)
     changes,expected=_move_set([{'note':note,'target':target,'clean':True}],root)
     receipt=_commit_many([source,target],changes,'promote',root,expected)
     ref=f"{target}:{note['id']}"
     receipt.update(id=note['id'],domain=target,ref=ref,status='promoted',promoted_from=f"{source}:{note['id']}",
                    hint=f'The same note was already in project {source}, so it now lives in the global domain, '
-                        f'where every project sees it; its project tags and files were dropped. If your version adds detail, run `update {ref}`.')
+                        f'where every project sees it; its project tags and files were dropped. If your version adds detail, read it and run `update {ref} --expected-revision REV`.')
     return receipt
 
 DIGEST_KEY='digest:'   # capture_key of a digest note: digest:<path>:<sha256 of that file's content>
@@ -725,8 +755,9 @@ def capture(title,body,tags,domain,root=None,**metadata):
         supersedes=metadata.pop('supersedes',None) or [];drop_links=bool(metadata.pop('drop_links',False))
         if isinstance(supersedes,str):supersedes=[supersedes]
         existing=inventory(domain,root,retired=True)
-        resolved=[]
-        for ref in supersedes:
+        resolved=[];superseded_revisions={}
+        for given in supersedes:
+            ref,revision=split_revision(given)
             try:other,ref_id=resolve_ref(ref,domain,root)
             except ValueError:
                 # Titles resolve to active notes only, but a retried capture already retired its predecessor.
@@ -735,6 +766,7 @@ def capture(title,body,tags,domain,root=None,**metadata):
                 other,ref_id=domain,retired[0]['id']
             if other!=domain:raise ValueError(f'--supersedes must name a note in {domain}: {ref} is in {other}')
             resolved.append(ref_id)
+            if revision:superseded_revisions[ref_id]=revision
         supersedes=resolved
         digesting=bool(metadata.get('sources'))
         if digesting:supersedes+=_redigested(existing,metadata['sources'],set(supersedes))
@@ -762,7 +794,7 @@ def capture(title,body,tags,domain,root=None,**metadata):
             if similar:
                 ref=f"{domain}:{similar['id']}"
                 raise ValueError(f"possible_duplicate conflict: similar to {ref} \"{similar['title']}\". If it is the same subject, "
-                                 f"run `update {ref}` (the fact moved on) or capture with `--supersedes {ref}` (it was replaced); "
+                                 f"read it, then run `update {ref} --expected-revision REV` (the fact moved on) or capture with `--supersedes {ref}@REV` (it was replaced); "
                                  "pass allow_similar only for a genuinely distinct note")
         # Other domains: global and parent/child notes are already visible here; an unrelated project's copy
         # of the same knowledge belongs in the global domain.
@@ -778,7 +810,7 @@ def capture(title,body,tags,domain,root=None,**metadata):
                 return matched(promoted,match,promoted['domain'])
             if action=='visible':
                 raise ValueError(f"possible_duplicate conflict: similar to {ref} \"{match['title']}\", which this domain already sees. "
-                                 f"If it is the same subject, run `update {ref}`; pass allow_similar only for a genuinely distinct note")
+                                 f"If it is the same subject, read it and run `update {ref} --expected-revision REV`; pass allow_similar only for a genuinely distinct note")
             if action=='promotable':
                 raise ValueError(f"possible_duplicate conflict: similar to {ref} \"{match['title']}\" in another project. If it holds for both "
                                  f"projects, run `promote {ref}` and then update it; pass allow_similar only for a genuinely distinct note")
@@ -798,7 +830,7 @@ def capture(title,body,tags,domain,root=None,**metadata):
         changes={path.relative_to(root).as_posix():text};expected={}
         for old in supersedes:
             # The new note and the retirement of what it replaces commit together.
-            old_changes,old_expected,_=_change_set(old,domain,'supersede',root,successor=note,pending=changes)
+            old_changes,old_expected,_=_change_set(old,domain,'supersede',root,superseded_revisions.get(old),successor=note,pending=changes)
             changes.update(old_changes)
             for rel,revision in old_expected.items():expected.setdefault(rel,revision)
         if absorbed:
@@ -813,13 +845,14 @@ def capture(title,body,tags,domain,root=None,**metadata):
         hint=None if domain in global_domains(root) else scope_hint(note)
         if hint:result['scope_hint']={'reason':hint,'next':f'If this holds beyond this project, run `promote {domain}:{note["id"]}`.'}
         near=near_titles(title,[n for n in existing if n.get('status','active')=='active' and n['id'] not in set(supersedes) and not other_map(n)],note_type=selected_type)
-        if near:result['similar']=[{'ref':f"{domain}:{n['id']}",'title':n['title']} for n in near]
+        if near:result['similar']=[{'ref':f"{domain}:{n['id']}",'title':n['title'],'revision':n.get('revision')} for n in near]
         hits=_related_hits(note,domain,root,{n['id'] for n in near}|set(supersedes))
         related=_related_listing(hits,domain)
         _queue_replaced(note,hits,domain,root)
         if related:
             result['related']=related
-            result['related_hint']=f"if this replaces one of them: supersede REF --by {domain}:{note['id']}; a different subject: nothing to do"
+            mine=(result.get('revisions') or {}).get(f"{domain}:{note['id']}") or 'REV'
+            result['related_hint']=f"if this replaces one of them: supersede REF --expected-revision ITS_REV --by {domain}:{note['id']}@{mine}; a different subject: nothing to do"
         warnings=quality_warnings(note)
         if warnings:result['quality_warnings']=warnings
         if supersedes:result['superseded']=[f'{domain}:{old}' for old in supersedes];result['carried_links']=carried;result['carried_files']=carried_files
@@ -829,17 +862,18 @@ def capture(title,body,tags,domain,root=None,**metadata):
         if rules:result['rule_warning']=rules
         return result
 
-def _change_set(note_id,domain,action,root,expected_revision=None,successor=None,pending=None,carried=None,rehash=True,actor='agent',retirement=None,**values):
+def _change_set(note_id,domain,action,root,expected_revision=None,successor=None,pending=None,carried=None,rehash=True,actor='agent',retirement=None,successor_revision=None,**values):
     """Files to write for one note action, with the revisions they must still have. `pending` holds the
     changes of earlier steps in the same transaction (rel path -> text, or None when removed); files are
     read through it, so steps build on each other instead of overwriting one another. A standalone supersede carries the replaced
     note's links and files into its successor (unless values has drop_links); `carried`, when a dict, receives what moved.
     `rehash=False` (check, rewrite) leaves the recorded file hashes alone: those edits do not re-read the files.
     `retirement` (maintenance only: rule, reason, evidence, run_id, operation_id) adds its fields to that record.
-    `actor` (agent, plan, vault, auto_resolve, maintenance) is recorded in the `last_retirement` of a retired note and as `restored_by` of a restored one."""
+    `actor` (agent, plan, vault, auto_resolve, maintenance) is recorded in the `last_retirement` of a retired note and as `restored_by` of a restored one.
+    `successor_revision`: a standalone supersede also checks the successor it rewrites against the revision the caller read."""
     pending=pending or {}
     path,note=find_note(note_id,domain,root)
-    if expected_revision and note['revision']!=expected_revision:raise ValueError('stale_revision')
+    if expected_revision:check_revision(note['revision'],expected_revision,f'{domain}:{note_id}')
     expected={path.relative_to(root).as_posix():note['revision']}
     if pending.get(path.relative_to(root).as_posix()):note=parse_changed(pending[path.relative_to(root).as_posix()],note)
     note=normalize(note)
@@ -959,6 +993,7 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
     if action!='delete':changes[target.relative_to(root).as_posix()]=serialize(note)
     if action=='supersede' and successor is None:
         successor_path,successor_note=find_note(note['superseded_by'],domain,root)
+        if successor_revision:check_revision(successor_note['revision'],successor_revision,f"{domain}:{successor_note['id']}")
         successor_note['supersedes']=sorted(set(successor_note.get('supersedes',[])+[note_id]))
         if not values.get('drop_links'):
             body,files,links,pointed=_carry_pointers(successor_note.get('body') or '',successor_note.get('files'),[note],Path(successor_note['path']))
@@ -1107,12 +1142,14 @@ def unresolved_bugs(domains,root=None):
 
 CONFIRM_KEEP=8
 
-def confirm(note_id,domain,root=None):
+def confirm(note_id,domain,root=None,expected_revision=None):
     """Record that an active note is still true today: a journaled, undoable change that appends the date to
-    `confirmed` (the last CONFIRM_KEEP kept) and moves a time-sensitive note's review date out."""
+    `confirmed` (the last CONFIRM_KEEP kept) and moves a time-sensitive note's review date out. `expected_revision`, the
+    revision the caller read, is checked first, so a note that changed since is not confirmed unread."""
     root=Path(root or memory_root()).resolve()
     with store_lock(root):
         _,note=find_note(note_id,domain,root)
+        if expected_revision:check_revision(note['revision'],expected_revision,f'{domain}:{note_id}')
         if clock.today().isoformat() in (note.get('confirmed') or []) and note.get('type') not in KEYED_TYPES and not stale_note(note,root) and not (note.get('checked') and note['checked']<=str(note.get('updated') or '')):   # a map or brief, a note whose file changed since, or one edited since its last confirmation, is confirmed again
             return {'ok':True,'id':note['id'],'status':'unchanged','confirmed':note['confirmed'],'review_by':note.get('review_by')}
         result=change(note['id'],domain,'confirm',root,note['revision'])
@@ -1134,13 +1171,15 @@ def pick_item(items,item=None,index=None):
     if not matches:raise ValueError('No Action Item matches '+repr(item)+'. Items: '+'; '.join(f'{i+1}. {t}' for i,(_,t) in enumerate(items[:10])))
     return matches[0]
 
-def check_action(note_id,domain,root=None,item=None,index=None,done=True):
+def check_action(note_id,domain,root=None,item=None,index=None,done=True,expected_revision=None):
     """Tick (or with done=False untick) one Action Item, chosen by its 1-based index or its text:
-    an exact match (case-insensitive) first, else a unique substring. A journaled, undoable update."""
+    an exact match (case-insensitive) first, else a unique substring. A journaled, undoable update.
+    `expected_revision`, the revision the caller read, is checked before the item is chosen."""
     from .note_format import action_items,set_action
     root=Path(root or memory_root()).resolve()
     with store_lock(root):
         _,note=find_note(note_id,domain,root)
+        if expected_revision:check_revision(note['revision'],expected_revision,f'{domain}:{note_id}')
         if not takes_actions(note.get('type'),root):raise ValueError('Only plan, bug and risk notes, and custom types that take them, have action items')
         items=action_items(note['body']);chosen=pick_item(items,item,index)
         if items[chosen][0]==done:
@@ -1149,7 +1188,8 @@ def check_action(note_id,domain,root=None,item=None,index=None,done=True):
         result.update(item=items[chosen][1],index=chosen+1,done=done,open=sum(1 for d,_ in action_items(find_note(note['id'],domain,root)[1]['body']) if not d))
         if done and not result['open']:
             ref=short_ref(domain,note['id'])
-            result['hint']=f'Every Action Item is done. If the work is finished, run `resolve {ref}` so the note leaves the active set; if not, add the next step with `update {ref} --add-action`.'
+            now=(result.get('revisions') or {}).get(f"{domain}:{note['id']}") or 'REV'
+            result['hint']=f'Every Action Item is done. If the work is finished, run `resolve {ref} --expected-revision {now}` so the note leaves the active set; if not, add the next step with `update {ref} --expected-revision {now} --add-action`.'
         return result
 
 def main(argv=None):

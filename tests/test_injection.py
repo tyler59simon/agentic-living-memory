@@ -182,7 +182,7 @@ class ReviewFindings(Base):
 
     def test_read_section_returns_that_section_of_the_served_body(self):
         import io,json,contextlib
-        from core.cli import main
+        from revision_fill import main
         out=io.StringIO()
         with contextlib.redirect_stdout(out):code=main(['--root',str(self.root),'--domain','demo','read',self.decision['id'],'--section','why'])
         result=json.loads(out.getvalue())
@@ -194,7 +194,7 @@ class ReviewFindings(Base):
     def test_read_section_gives_no_lines_when_the_served_body_differs_from_the_file(self):
         import io,json,contextlib
         from core import notes
-        from core.cli import main
+        from revision_fill import main
         real=notes.find_note
         def approved(note_id,domain,root=None,*a,**k):
             path,note=real(note_id,domain,root,*a,**k)

@@ -49,6 +49,9 @@ def commit(root,changes,kind,domains=(),summary=None,guards=None,sync_overlay=Tr
             _check_guards(root,{'guards':{k:(v if k=='read_set' else sorted(set(v))) for k,v in guards.items() if v},'domains':domains,'changes':changes})
         operation_id=operation_id or 'd-'+uuid.uuid4().hex
         receipt=transaction(root,changes,kind,expected,operation_id,meta=meta)
+        from .notes import note_revisions
+        revisions=note_revisions(changes)
+        if revisions:receipt['revisions']=revisions
         for domain in domains:
             try:reconcile(domain,root,sync_overlay=sync_overlay)
             except Exception as exc:
@@ -297,6 +300,9 @@ def remap(root,mappings):
         if sources&targets:raise ValueError('Remap cycles are not allowed')
         for mapping in mappings:
             before,after=mapping['before'],mapping['after'];path,note=find_note(before['id'],before['domain'],root)
+            if mapping.get('revision'):
+                from .notes import check_revision
+                check_revision(note['revision'],mapping['revision'],f"{before['domain']}:{before['id']}")
             if before['id']!=after['id']:raise ValueError('Stable IDs cannot change; remap changes domains only')
             try:find_note(after['id'],after['domain'],root)
             except ValueError:pass
@@ -351,16 +357,18 @@ def promote(root,refs):
     relative links follow. Two of the notes that are the same knowledge (same type, similar titles) become
     one: the newer supersedes the older inside the global domain."""
     from .common import global_domains
-    from .notes import resolve_ref,find_note,_move_set,ensure_global,TitleScorer,domain_folders,promotion_blocker
+    from .notes import resolve_ref,find_note,_move_set,ensure_global,TitleScorer,domain_folders,promotion_blocker,split_revision,check_revision
     root=Path(root).resolve()
     if not isinstance(refs,list) or not 1<=len(refs)<=20:raise ValueError('promote takes 1..20 note references')
     target=ensure_global(root);globals_=set(global_domains(root))
     with store_lock(root):
         notes=[]
-        for ref in refs:
+        for given in refs:
+            ref,revision=split_revision(given)   # REF@REVISION: the revision the caller read
             d,note_id=resolve_ref(ref,None,root,[f for f in domain_folders(root) if f not in globals_])
             if d in globals_:raise ValueError(f'{ref} is already in the global domain')
             note=find_note(note_id,d,root)[1]
+            if revision:check_revision(note['revision'],revision,f'{d}:{note_id}')
             if note.get('status','active')!='active':raise ValueError(f'{ref} is not active; only active notes are promoted')
             if any(n['id']==note['id'] for n in notes):raise ValueError(f'{ref} is listed twice')
             blocker=promotion_blocker(note,root)

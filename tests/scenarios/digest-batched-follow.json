@@ -32,7 +32,7 @@
     "{short:@ledger} (billing/src/ledger.py)", "{short:@retry} (billing/src/retry.py)", "{short:@export} (billing/src/export.py)", "{short:@plain} (billing/src/plain.py)",
     "CMD confirm REF --session {session}", "CMD update REF --session {session} --set-detail", "has no project brief"],
    "reminder_excludes": ["which note"]}},
-  {"cli": ["confirm", "@ledger", "--session", "{session}"], "expect": {"exit": 0, "status": "confirm"}},
+  {"cli": ["confirm", "@ledger", "--session", "{session}", "--expected-revision", "{rev:@ledger}"], "expect": {"exit": 0, "status": "confirm"}},
   {"hook": "user-prompt", "payload": {"prompt": "run the formatter"}},
   {"hook": "pre-tool-use", "payload": {"tool_name": "Bash", "tool_input": {"command": "make format"}}},
   {"hook": "stop", "expect": {"detail": {"pending": []}, "reminder_excludes": ["digests may be outdated", "You edited", "no project brief"]}}

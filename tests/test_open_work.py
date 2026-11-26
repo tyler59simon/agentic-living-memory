@@ -1,7 +1,7 @@
 import contextlib,io,json,os,sqlite3,subprocess,unittest
 from test_core import StoreFixture
 from core import docs_index,runtime
-from core.cli import main
+from revision_fill import main
 from core.capture import finalize,status
 from core.notes import find_note,open_work,check_action,unresolved_bugs
 from core.note_format import action_items,set_action,render,item_fields,set_item_fields
@@ -123,7 +123,7 @@ class OpenWork(StoreFixture):
         code,result=self.cli('open')
         self.assertEqual(code,0,result);self.assertEqual((result['count'],result['notes']),(3,2))
         self.assertEqual(result['items'][1],{'ref':'demo:'+b['id'],'short_ref':'demo:'+b['id'][:8],'title':'Newer bug fix','type':'bug',
-                                             'updated':result['items'][1]['updated'],'kind':'note','index':2,'item':'Add test','task':'Add test','due':None,'owner':None,'priority':None,'overdue':None})
+                                             'updated':result['items'][1]['updated'],'revision':find_note(b['id'],'demo',self.root)[1]['revision'],'kind':'note','index':2,'item':'Add test','task':'Add test','due':None,'owner':None,'priority':None,'overdue':None})
         self.assertEqual(self.cli('--actor','subagent','open')[0],0)
     def test_check_by_text_index_and_undo(self):
         p=self.plan('Release plan',['Write the changelog','Write the release notes','Tag v2'])

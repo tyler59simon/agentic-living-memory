@@ -2,7 +2,7 @@
 import contextlib,io,json,os,subprocess
 from unittest.mock import patch
 from test_core import StoreFixture
-from core.cli import main
+from revision_fill import main
 from core.repository import read_json,digest
 
 PAGE=b'\xef\xbb\xbf# Title\r\n\r\nLine with CRLF\r\nand a tab\there\r\n'

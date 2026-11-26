@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 import test_wiki as tw
 from core import maintenance_agent as agent,runtime,wiki,wiki_agent as wa
-from core.cli import main
+from revision_fill import main
 from core.common import file_lock
 from core.notes import change
 

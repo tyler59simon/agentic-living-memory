@@ -117,7 +117,7 @@ class Sim:
         return sorted(known.get(r,r) for r in refs or [])
 
     def fill(self,value):
-        """{project} {store} {base} {session} {transcript} {memory} {python} {var}, {path:@k} {short:@k} {id:@k}, and a whole '@k' -> ref."""
+        """{project} {store} {base} {session} {transcript} {memory} {python} {var}, {path:@k} {short:@k} {id:@k} {rev:@k} (its current revision), and a whole '@k' -> ref."""
         if isinstance(value,list):return [self.fill(v) for v in value]
         if isinstance(value,dict):return {k:self.fill(v) for k,v in value.items()}
         if not isinstance(value,str):return value
@@ -131,6 +131,11 @@ class Sim:
                 if kind=='short':return short_ref(self.keys[key]['domain'],self.keys[key]['id'])
                 if kind=='id':return self.keys[key]['id']
                 if kind=='ref':return self.ref(key)
+                if kind=='rev':
+                    # The revision an agent reads just before it writes the note (read REF prints it), taken from the file itself so
+                    # the step's own log lines and diary stay the write's.
+                    from core.notes import find_note
+                    return find_note(self.keys[key]['id'],self.keys[key]['domain'],self.root)[1]['revision']
                 return match[0]
             fixed={'project':str(self.project),'store':str(self.root),'base':str(self.base),'session':self.session,'python':sys.executable,
                    'memory':f'"{sys.executable}" "{self.package/"living_memory.py"}" --root "{self.root}" --domain demo'}

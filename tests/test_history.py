@@ -2,7 +2,7 @@
 import contextlib,io,json,unittest
 from unittest.mock import patch
 from core import activity,notes
-from core.cli import main
+from revision_fill import main
 from core.note_format import render
 from core.repository import canonical_json
 from test_maintenance import Base,OLD,TAGS

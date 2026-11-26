@@ -4,7 +4,7 @@ from datetime import date, timedelta
 from unittest.mock import patch
 from test_core import StoreFixture
 from core import runtime, usage, session_start
-from core.cli import main
+from revision_fill import main
 from core.notes import capture, confirm, find_note
 from core.note_types import review_due, review_order, effective_date
 

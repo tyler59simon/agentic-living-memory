@@ -59,7 +59,7 @@ class FileFollowThrough(StoreFixture):
     def stop(self,session='s1',**extra):return runtime.process('claude','stop',self.payload(session,**extra),self.root)
     def cli(self,*argv):
         import contextlib,io
-        from core.cli import main
+        from revision_fill import main
         out=io.StringIO()
         with contextlib.redirect_stdout(out):code=main(['--root',str(self.root),'--domain','demo',*argv])
         return code,json.loads(out.getvalue())

@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from test_core import StoreFixture
 from core import runtime, usage
-from core.cli import main
+from revision_fill import main
 from core.common import load_bindings
 from core.maps import _rows, find_map, repo_notes
 from core.notes import capture, short_ref

@@ -24,6 +24,15 @@ class Templates(unittest.TestCase):
         for marker in ('behavior:begin', 'behavior:end', 'writing-style:begin', 'writing-style:end'):
             self.assertIn(f'<!-- {marker} -->', claude)
 
+    def test_the_templates_carry_the_script_only_rule(self):
+        # The user asked on 2026-11-26 that a template copied without setup still says to change memory only through the script.
+        for rel in TEMPLATES:
+            with self.subTest(rel):
+                text = self.read(rel)
+                self.assertIn('Change memory only through the Living Memory script.', text)
+                self.assertIn('shell writes', text)
+        self.assertIn('Change memory only through CMD', instruction_block('claude'))
+
     def test_setup_puts_the_block_under_the_first_heading(self):
         for rel in TEMPLATES:
             with self.subTest(rel):

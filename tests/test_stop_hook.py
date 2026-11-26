@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from test_core import StoreFixture
 from core import runtime
-from core.cli import main
+from revision_fill import main
 
 
 class StopFixture(StoreFixture):
@@ -313,7 +313,7 @@ class ReminderSettlesTheTurn(StopFixture):
     def test_a_capture_answering_the_reminder_keeps_files_and_counts_as_signal_capture(self):
         import contextlib, io
         from core import usage
-        from core.cli import main
+        from revision_fill import main
         self.payload['prompt'] = 'remember that we use tabs'
         self.assertIn('continue_reason', self.turn(self.edit))
         out = io.StringIO()

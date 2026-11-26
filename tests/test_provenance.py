@@ -2,7 +2,7 @@ import contextlib,hashlib,io,json,sqlite3,unittest
 from pathlib import Path
 from test_core import StoreFixture
 from core import runtime
-from core.cli import main
+from revision_fill import main
 from core.notes import find_note
 from core.search import rebuild_index,file_notes,mentions_file
 from core.sync import build_overlay,sync

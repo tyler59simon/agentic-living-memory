@@ -1,7 +1,8 @@
 """links: the [[Title]] and supersedes graph an app draws, and error codes that note text cannot change."""
 import contextlib,io,json,unittest
 from test_core import StoreFixture
-from core.cli import main,error_code
+from core.cli import error_code
+from revision_fill import main
 from core.init_domain import init_domain
 from core.notes import capture,change
 

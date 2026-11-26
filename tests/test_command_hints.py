@@ -292,7 +292,7 @@ class Hints(StoreFixture):
 
 class ExplicitCommands(StoreFixture):
     def cli(self, *argv):
-        from core.cli import main
+        from revision_fill import main
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = main(['--root', str(self.root), '--domain', 'demo', *argv])
@@ -328,7 +328,7 @@ class ExplicitCommands(StoreFixture):
         code, made = self.cli('capture', '--payload-file', str(payload))
         self.assertEqual(code, 0)
         self.assertEqual(self.commands_of(made['id']), ['release-tool cut'])
-        from core.cli import main
+        from revision_fill import main
         err = io.StringIO()
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
             code = main(['--root', str(self.root), '--domain', 'demo', 'capture', '--payload-file', str(payload), '--command', 'x y'])

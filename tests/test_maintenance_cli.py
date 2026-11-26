@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 from test_core import StoreFixture
 from core import maintenance, maintenance_agent, maintenance_state as ms, notes, runtime, usage
-from core.cli import build_parser, main
+from core.cli import build_parser
+from revision_fill import main
 from core.init_domain import init_domain
 
 TAGS = ['subject/project', 'concern/architecture']

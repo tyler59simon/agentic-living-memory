@@ -342,7 +342,7 @@ def user_brief_conflict(root,replaced=()):
         except (OSError,ValueError):continue
         if hit:
             ref=short_ref(other,hit['id'])
-            return f"brief_exists conflict: {ref} \"{hit['title']}\" is the user brief; run `update {ref}` (or capture with `--supersedes {ref}`)"
+            return f"brief_exists conflict: {ref} \"{hit['title']}\" is the user brief; read it and run `update {ref} --expected-revision REV` (or capture with `--supersedes {ref}@REV`)"
     return None
 
 def capture_conflict(files,domain,root,bindings,replaced=(),kind='map'):
@@ -362,5 +362,5 @@ def capture_conflict(files,domain,root,bindings,replaced=(),kind='map'):
             ref=short_ref(other,hit['id']);identity=repo_identity(repo)
             same=f"{identity} (the same git remote as {repo.as_posix()})" if identity and _identity_of(hit,other,bindings)==identity and repo_of(hit,other,bindings)!=repo else repo.as_posix()
             return (f"{kind}_exists conflict: {ref} \"{hit['title']}\" is the {label} for {same}; "
-                    f"run `update {ref}` (or capture with `--supersedes {ref}`)")
+                    f"read it and run `update {ref} --expected-revision REV` (or capture with `--supersedes {ref}@REV`)")
     return None

@@ -3,7 +3,7 @@ once-per-session rules that keep them from nagging. See core/triggers.py and run
 import contextlib,io,json,os,shutil,subprocess,time,unittest
 from test_core import StoreFixture
 from core import runtime,usage
-from core.cli import main
+from revision_fill import main
 from core.common import resolve_domain,load_bindings
 from core.triggers import decision_docs,glob_regex,matches
 
@@ -355,8 +355,11 @@ class SupersedeKeepsPointers(DocFixture):
         again=self.capture(*args);self.assertEqual((again['status'],again['id']),('existing',first['id']))
 
     def test_a_capture_superseding_by_title_retried_with_its_idempotency_key_is_existing(self):
-        self.capture('--title','Money uses cents','--summary','Cents.')
-        args=('--title','Money uses BigDecimal','--summary','BigDecimal.','--supersedes','Money uses cents','--idempotency-key','money-2')
+        old=self.capture('--title','Money uses cents','--summary','Cents.')
+        from core.notes import find_note
+        # The retry passes the same REF@REVISION it read before the first try.
+        revision=find_note(old['id'],'demo',self.root)[1]['revision']
+        args=('--title','Money uses BigDecimal','--summary','BigDecimal.','--supersedes','Money uses cents@'+revision,'--idempotency-key','money-2')
         first=self.capture(*args)
         again=self.capture(*args);self.assertEqual((again['status'],again['id']),('existing',first['id']))
 

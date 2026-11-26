@@ -2,7 +2,7 @@
 import contextlib,io,json,unittest
 from unittest.mock import patch
 from test_core import StoreFixture
-from core.cli import main
+from revision_fill import main
 from core.note_format import render
 from core.notes import find_note
 from core.note_types import NOTE_TYPES,REVIEW_DAYS

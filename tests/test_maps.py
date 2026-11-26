@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 from test_core import StoreFixture
 from core import runtime
-from core.cli import main
+from revision_fill import main
 from core.common import load_bindings,head_oid
 from core.maps import named_repos,find_map,repo_of,candidate_repos,changed_since,cited_paths,currency,freshness
 from core.notes import find_note,change

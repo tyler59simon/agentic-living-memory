@@ -175,7 +175,7 @@ def _file_hits(paths,domains,root,limit,ensure_fresh,resolved=False):
                 if not ensure_fresh:
                     intact=_unchanged(note_path,revision) if intact is None else intact
                     if not intact:break
-                hit={'id':note_id,'domain':domain,'title':title,'type':kind or 'knowledge','updated':str(updated or '')[:10],
+                hit={'id':note_id,'domain':domain,'title':title,'type':kind or 'knowledge','updated':str(updated or '')[:10],'revision':revision,
                      'match':'files' if group==0 else 'body','snippet':snippet(body,terms(path))}
                 if digest_sources:hit['sources']=digest_sources
                 if file_hashes:hit['file_hashes']=file_hashes

@@ -2,7 +2,7 @@ import contextlib,io,json,unittest
 from pathlib import Path
 from test_core import StoreFixture
 from core import runtime
-from core.cli import main
+from revision_fill import main
 from core.notes import find_note
 from core.repository import find_secret,find_secrets,redact
 
@@ -31,7 +31,7 @@ class CaptureErgonomics(StoreFixture):
         new=self.note('Search index moves to one shared file','The search index moves from per-domain SQLite FTS5 files to one shared SQLite FTS5 file.',type='decision')
         self.assertEqual({r['ref'] for r in new['related']},{f"demo:{old['id']}",f"demo:{policy['id']}"})   # decision and policy are one group
         self.assertEqual({r['type'] for r in new['related']},{'decision','policy'})
-        self.assertIn(f"supersede REF --by demo:{new['id']}",new['related_hint']);self.assertNotIn(f"demo:{new['id']}",[r['ref'] for r in new['related']])
+        self.assertIn(f"supersede REF --expected-revision ITS_REV --by demo:{new['id']}@{new['revisions']['demo:'+new['id']]}",new['related_hint']);self.assertNotIn(f"demo:{new['id']}",[r['ref'] for r in new['related']])
         self.assertNotIn('related',self.note('Unrelated billing rounding','Invoices round half up to cents.',type='decision'))
     def test_related_hits_carry_the_signals_a_reminder_would_weigh(self):
         from core.notes import _related_hits,related_domains

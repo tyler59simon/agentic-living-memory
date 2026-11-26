@@ -32,7 +32,7 @@
   {"session": "s2"},
   {"hook": "session-start", "payload": {"cwd": "{project}/billing-ledger"}, "expect": {"context_contains": ["STALE: docs/adr/ADR-004-money.md, pom.xml changed since"]}},
   {"hook": "user-prompt", "payload": {"prompt": "fix the money rounding in the billing ledger"}},
-  {"cli": ["update", "@appmap", "--set-detail", "**Conventions:** Money is BigDecimal (ADR-004)."], "expect": {"exit": 0}},
+  {"cli": ["update", "@appmap", "--set-detail", "**Conventions:** Money is BigDecimal (ADR-004).", "--expected-revision", "{rev:@appmap}"], "expect": {"exit": 0}},
   {"hook": "pre-tool-use", "payload": {"tool_name": "Edit", "tool_input": {"file_path": "{project}/billing-ledger/src/Money.java"}}, "expect": {"mutation": "tracked"}},
   {"hook": "stop", "expect": {"stop_reason": "files_only", "reminder": null}},
   {"session": "s3"},

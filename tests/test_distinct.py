@@ -1,7 +1,7 @@
 """UX-C9: the `distinct_from` field, `update --distinct/--not-distinct`, and the duplicate scan skipping distinct pairs."""
 import contextlib,io,json,unittest,unittest.mock
 from test_core import StoreFixture
-from core.cli import main
+from revision_fill import main
 from core.governance import apply,undo
 from core.notes import capture,find_note,distinct
 from core.repository import validate

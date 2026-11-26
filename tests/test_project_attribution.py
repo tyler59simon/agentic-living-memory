@@ -3,7 +3,7 @@ import contextlib,io,json,os,sys,time,unittest
 from datetime import date,timedelta
 from unittest.mock import patch
 from test_core import StoreFixture
-from core.cli import main
+from revision_fill import main
 from core.init_domain import init_domain
 from core.notes import capture,change,find_note
 from core.note_format import render

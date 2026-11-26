@@ -6,7 +6,7 @@ from unittest.mock import patch
 from urllib.parse import parse_qs,urlsplit
 from test_core import StoreFixture
 from core import backup,connectors,runtime,sources,storage
-from core.cli import main
+from revision_fill import main
 
 TOKEN='wikitoken0123456789'
 SERVER_CAP=2   # the server returns at most this many items per request, whatever limit or page_size is asked for

@@ -6,7 +6,7 @@ from urllib.parse import quote
 
 from test_core import StoreFixture
 from core import backup as snap, runtime
-from core.cli import main
+from revision_fill import main
 from core.governance import apply, undo
 from core.init_domain import init_domain
 from core.notes import capture, change, find_note

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from test_core import StoreFixture
 from core import note_format as nf
-from core.cli import main as cli
+from revision_fill import main as cli
 from core.notes import capture, change, find_note, quality_warnings
 from core.repository import parse_text, serialize
 from core.search import snippet

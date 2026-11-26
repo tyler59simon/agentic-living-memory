@@ -6,7 +6,7 @@ from urllib.parse import quote, unquote
 
 from test_core import StoreFixture
 from core import runtime, sync
-from core.cli import main as cli
+from revision_fill import main as cli
 from core.governance import apply, merge_plan
 from core.notes import change, find_note
 from core.repository import inventory, read_json
@@ -82,23 +82,27 @@ class VaultSync(StoreFixture):
 
 
 class SectionUpdates(StoreFixture):
-    def test_concurrent_section_updates_both_survive(self):
+    def test_a_writer_that_read_before_a_concurrent_update_is_refused_as_stale(self):
+        # Since 2026-11-26 every write carries the revision its caller read: the second writer read the note before the
+        # first one wrote, so it is refused as stale instead of writing over (or beside) an edit it never saw.
         n = self.note()
         from core import cli as cli_module
         real = cli_module._sectioned
-        other = threading.Thread(target=cli, args=(['--root', str(self.root), '--domain', 'demo', 'update', n['id'],
-                                                    '--detail', '**Second:** from the other writer'],))
+        codes = []
+        other = threading.Thread(target=lambda: codes.append(cli(['--root', str(self.root), '--domain', 'demo', 'update', n['id'],
+                                                                   '--detail', '**Second:** from the other writer'])))
         def racing(args, base, *rest):
             if not other.ident:
                 # Another writer arrives after this update read the note and before it writes.
                 other.start();other.join(0.5)
             return real(args, base, *rest)
-        with patch.object(cli_module, '_sectioned', racing), contextlib.redirect_stdout(io.StringIO()):
-            cli(['--root', str(self.root), '--domain', 'demo', 'update', n['id'], '--summary', 'The cache is disposable.'])
+        with patch.object(cli_module, '_sectioned', racing), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            first = cli(['--root', str(self.root), '--domain', 'demo', 'update', n['id'], '--summary', 'The cache is disposable.'])
             other.join()
+        self.assertEqual((first, codes), (0, [6]))
         body = find_note(n['id'], 'demo', self.root)[1]['body']
         self.assertIn('The cache is disposable.', body)
-        self.assertIn('from the other writer', body)
+        self.assertNotIn('from the other writer', body)
 
 
 class Merge(StoreFixture):

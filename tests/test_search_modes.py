@@ -3,7 +3,7 @@ Each form, its default limit, and the refusals when a flag belongs to another fo
 import contextlib,io,json,unittest
 from test_core import StoreFixture
 from core import sources
-from core.cli import main
+from revision_fill import main
 
 class Fixture(StoreFixture):
     def cli(self,*argv):

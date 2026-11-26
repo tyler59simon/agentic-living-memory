@@ -249,7 +249,7 @@ class Schedule(Base):
 class Command(Base):
     def cli(self,*argv,actor=None):
         import contextlib,io
-        from core.cli import main
+        from revision_fill import main
         out,err=io.StringIO(),io.StringIO()
         with contextlib.redirect_stdout(out),contextlib.redirect_stderr(err):
             code=main(['--root',str(self.root),*(['--actor',actor] if actor else []),*argv])

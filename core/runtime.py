@@ -83,6 +83,10 @@ def protocol(root,domain=None,harness='',session='SESSION'):
     if harness=='claude':text+='\n'+AUTO_MEMORY
     return text
 
+# The same rule as the instruction block: the hook can refuse editor tools, but shell writes are only covered by that instruction.
+STORE_WRITE_DENY=('Change memory only through the Living Memory script (CMD): never create, edit, move or delete store files any other way, by editor tools or shell writes, '
+                  "because direct writes skip the revision check and can overwrite another agent's edit.")
+
 def protected(path,cwd,root):return protected_rule(path,cwd,root) is not None
 
 # Who may not edit a page of a folder notebook (a registered folder of Markdown outside the store) directly: 'all' agent sessions,
@@ -2054,7 +2058,7 @@ def _process(harness,event,payload,root=None,info=None):
             rule=next((r for r in (protected_rule(p,cwd,root) for p in raw_paths(args)) if r),None) if name not in READ_TOOLS and name not in SHELL_TOOLS else None
             if rule:
                 detail['decision']='deny:protected:'+rule
-                return {'deny':'Use Living Memory scripts for canonical mutations; direct file edits bypass revision checks and receipts.'}
+                return {'deny':STORE_WRITE_DENY}
             return {}
         if off=='switch' and session!='unknown' and not _subagent(payload):
             # The session saw the protocol before `alm off`: say once that it no longer applies (again after a compaction).
@@ -2455,7 +2459,7 @@ def _process(harness,event,payload,root=None,info=None):
         rule=next((r for r in (protected_rule(p,cwd,root) for p in raw_paths(args)) if r),None) if name not in READ_TOOLS and name not in SHELL_TOOLS else None
         if rule:
             detail['decision']='deny:protected:'+rule
-            result['deny']='Use Living Memory scripts for canonical mutations; direct file edits bypass revision checks and receipts.'
+            result['deny']=STORE_WRITE_DENY
             return result
         text=shell_command(args) if name in SHELL_TOOLS else '';grammar=shell_grammar(name)
         subcommand=memory_subcommand(text,grammar) if text else None;detail['subcommand']=subcommand

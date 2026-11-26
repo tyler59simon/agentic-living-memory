@@ -1,7 +1,7 @@
 """#13 export bundles and reviewed import."""
 import contextlib, io, json, unittest, zipfile
 from test_core import StoreFixture
-from core.cli import main
+from revision_fill import main
 from core.governance import apply
 from core.init_domain import init_domain
 from core.notes import capture, change, find_note

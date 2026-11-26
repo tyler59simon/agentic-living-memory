@@ -6,7 +6,7 @@ from unittest.mock import patch
 from test_core import StoreFixture
 from test_semantic import write_model
 from core import backup,runtime,semantic,sources,storage,vectors
-from core.cli import main
+from revision_fill import main
 from core.runtime import protected_rule
 
 FIXTURE=Path(__file__).parent/'fixtures'/'kb_repo'

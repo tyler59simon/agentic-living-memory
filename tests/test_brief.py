@@ -3,7 +3,7 @@ pointer, and the two Stop reminders that keep it current (core/briefs.py, runtim
 import contextlib,io,json,unittest
 from test_core import StoreFixture
 from core import runtime,usage,session_start
-from core.cli import main
+from revision_fill import main
 from core.common import load_bindings
 from core.maps import find_map
 from core.notes import find_note,capture

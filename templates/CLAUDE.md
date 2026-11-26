@@ -2,6 +2,7 @@
 
 ## Agentic Living Memory
 <!-- integrations/setup.py adds the Living Memory block here -->
+Change memory only through the Living Memory script. Never create, edit, move or delete files in the memory store directly, with editor tools or shell writes (Set-Content, Out-File, `>`, Move-Item, Remove-Item, cp, mv, rm, or a Python or Node one-liner): direct writes skip the revision check and can overwrite another agent's edit.
 
 ## Behavior
 <!-- behavior:begin -->

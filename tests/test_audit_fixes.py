@@ -252,7 +252,7 @@ class Pruning(StoreFixture):
     def test_housekeeping_scheduling_and_cli_gates(self):
         import io
         from contextlib import redirect_stdout, redirect_stderr
-        from core.cli import main as cli
+        from revision_fill import main as cli
         from core.common import file_lock
         self.note()
         self.assertEqual(runtime.schedule_housekeeping(self.root), 'background_disabled')

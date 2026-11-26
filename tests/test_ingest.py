@@ -2,7 +2,7 @@
 import contextlib, io, json, os, unittest
 from pathlib import Path
 from test_core import StoreFixture
-from core.cli import main
+from revision_fill import main
 from core.governance import apply, undo
 from core.ingest import default_source, parse
 from core.notes import capture, find_note

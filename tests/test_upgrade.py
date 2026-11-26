@@ -90,7 +90,7 @@ class Upgrade(Checkout):
 
 class UpgradeCommand(StoreFixture):
     def run_cli(self,*argv):
-        from core.cli import main
+        from revision_fill import main
         out,err=io.StringIO(),io.StringIO()
         with contextlib.redirect_stdout(out),contextlib.redirect_stderr(err):code=main(list(argv))
         return code,out.getvalue()+err.getvalue()

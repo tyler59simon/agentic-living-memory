@@ -27,7 +27,7 @@
   {"hook": "stop", "expect": {"reminder": "follow", "reminder_contains": ["You edited files whose digests may be outdated: ", "{short:@readme} (billing/README.md)", "{short:@ledger} (billing/src/ledger.py)", "CMD confirm REF --session {session}"]}},
   {"cli": ["review"], "expect": {"exit": 0, "result": {"stale_digests": 1}, "result_contains": ["STALE: billing/README.md changed since this digest", "{short:@readme}"], "result_excludes": ["STALE: billing/src/ledger.py"]}},
   {"cli": ["ask", "exponential backoff retry for failed payment captures"], "expect": {"exit": 0, "result_contains": ["\"stale\":\"STALE: billing/README.md changed since this digest\""]}},
-  {"cli": ["confirm", "@readme", "--session", "{session}"], "expect": {"exit": 0, "status": "confirm"}},
+  {"cli": ["confirm", "@readme", "--session", "{session}", "--expected-revision", "{rev:@readme}"], "expect": {"exit": 0, "status": "confirm"}},
   {"cli": ["review"], "expect": {"exit": 0, "result": {"stale_digests": 0}}},
   {"session": "s2"},
   {"hook": "session-start", "expect": {"context_excludes": ["STALE"]}},

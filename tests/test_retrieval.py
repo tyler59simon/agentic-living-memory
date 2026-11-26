@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from test_core import StoreFixture
 from core import runtime, session_start
-from core.cli import main as cli
+from revision_fill import main as cli
 from core.init_domain import init_domain
 from core.notes import capture, similar_title, title_similarity, find_note
 from core.repository import find_secret

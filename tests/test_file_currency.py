@@ -192,7 +192,7 @@ class Freshness(Base):
 
     def test_the_cli_read_has_a_currency_field(self):
         import contextlib,io,json
-        from core.cli import main
+        from revision_fill import main
         made=self.cap('Retry limit',['src/a.py']);out=io.StringIO()
         with contextlib.redirect_stdout(out):main(['--root',str(self.root),'--domain','demo','read',made['id']])
         self.assertEqual(json.loads(out.getvalue())['currency']['state'],'current')

@@ -10,7 +10,7 @@ from unittest.mock import patch
 from test_core import StoreFixture
 from core import backup as snap
 from core import runtime
-from core.cli import main as cli
+from revision_fill import main as cli
 from core.governance import apply, inspect_plan, undo
 from core.notes import find_note
 from core.repository import inventory

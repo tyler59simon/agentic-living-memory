@@ -2,7 +2,7 @@
 import contextlib,io,json,re,unittest
 from pathlib import Path
 from test_core import StoreFixture
-from core.cli import main
+from revision_fill import main
 from core.notes import capture,change
 from core import runtime,wiki
 

@@ -5,7 +5,7 @@ from pathlib import Path
 from test_core import StoreFixture
 from test_maps import git,commit,later,LONG_AGO,GIT
 from core import runtime,usage
-from core.cli import main
+from revision_fill import main
 from core.notes import capture,change,confirm,find_note
 from core.worklist import worklist,KINDS,INTERIM_DAYS
 

@@ -3,7 +3,7 @@ import contextlib,hashlib,importlib.util,io,json,struct
 from pathlib import Path
 from unittest.mock import patch
 from core import runtime,semantic
-from core.cli import main
+from revision_fill import main
 from core.search import search_domain,_fresh,_fingerprint,_fuse
 from core.repository import inventory
 from test_core import StoreFixture

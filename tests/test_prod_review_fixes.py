@@ -6,7 +6,7 @@ from test_core import StoreFixture
 from core import backup as snap
 from core import note_format, repository, runtime, semantic, usage
 from core.capture import status as receipt
-from core.cli import main as cli
+from revision_fill import main as cli
 from core.governance import apply, undo
 from core.notes import capture, change, find_note
 from core.repository import inventory
@@ -1023,7 +1023,8 @@ class Cli3RefResolution(Cli):
     def test_supersedes_payload_file_title(self):
         a = self.cap('Epsilon rule')
         payload = self.base / 'p.json'
-        payload.write_text(json.dumps({'title': 'Zeta rule', 'body': 'Zeta body.', 'tags': TAGS, 'supersedes': ['Epsilon rule']}))
+        revision = find_note(a['id'], 'demo', self.root)[1]['revision']
+        payload.write_text(json.dumps({'title': 'Zeta rule', 'body': 'Zeta body.', 'tags': TAGS, 'supersedes': ['Epsilon rule@' + revision]}))
         self.ok('capture', '--payload-file', str(payload))
         self.assertEqual(find_note(a['id'], 'demo', self.root)[1]['status'], 'superseded')
 

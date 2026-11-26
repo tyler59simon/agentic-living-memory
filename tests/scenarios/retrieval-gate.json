@@ -14,7 +14,7 @@
   {"hook": "user-prompt", "payload": {"prompt": "remind me about the cache eviction policy"}, "expect": {"inject": ["@cache"], "path": "injected"}},
   {"hook": "user-prompt", "payload": {"prompt": "lru"}, "expect": {"inject": [], "gates": {"@cache": "dropped:one_word_no_title"}, "path": "overview_done"}},
   {"hook": "user-prompt", "payload": {"prompt": "<task-notification>cache eviction policy finished</task-notification>"}, "expect": {"inject": [], "path": "machine_prompt"}},
-  {"cli": ["update", "@cache", "--summary", "LRU eviction, now with a ten minute TTL."], "expect": {"exit": 0, "status": "update"}},
+  {"cli": ["update", "@cache", "--summary", "LRU eviction, now with a ten minute TTL.", "--expected-revision", "{rev:@cache}"], "expect": {"exit": 0, "status": "update"}},
   {"hook": "user-prompt", "payload": {"prompt": "cache eviction policy details"}, "expect": {"inject": ["@cache"], "path": "injected"}},
   {"hook": "user-prompt", "payload": {"prompt": "what are the deploy steps for the hook setup"}, "expect": {"inject": ["@deploy"], "gates": {"@db": null}}},
   {"hook": "user-prompt", "payload": {"prompt": "banana orchard harvest schedule"}, "expect": {"inject": [], "path": "overview_done"}},

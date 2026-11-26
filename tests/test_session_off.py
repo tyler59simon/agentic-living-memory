@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from test_core import StoreFixture
 from core import runtime
-from core.cli import main
+from revision_fill import main
 
 
 class SessionOff(StoreFixture):

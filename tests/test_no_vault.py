@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from test_core import StoreFixture
 from core import logs, runtime
-from core.cli import main as cli
+from revision_fill import main as cli
 
 
 class NoVaultNoHivemind(StoreFixture):

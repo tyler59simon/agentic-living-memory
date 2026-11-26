@@ -16,7 +16,7 @@
   {"hook": "session-start", "expect": {"context_contains": ["User brief {short:@ubrief} User brief", "Short answers, asks before large refactors.", "Windows 11, PowerShell"], "detail": {"shown": ["@short", "@tabs", "@ubrief"]}}},
   {"cli": ["capture", "--global", "--title", "Run tests before committing", "--summary", "Run the suite before every commit.", "--type", "preference"],
    "expect": {"exit": 0, "status": "created", "result_contains": ["user brief {short:@ubrief}: update it if this changes how you work with the user"]}},
-  {"cli": ["update", "@short", "--body", "Lead with the answer, then the reasons."], "expect": {"exit": 0, "result_contains": ["user brief {short:@ubrief}: update it"]}},
-  {"cli": ["update", "@ubrief", "--set-detail", "**Current focus:** Living Memory user brief."], "expect": {"exit": 0, "result_excludes": ["user brief "]}}
+  {"cli": ["update", "@short", "--body", "Lead with the answer, then the reasons.", "--expected-revision", "{rev:@short}"], "expect": {"exit": 0, "result_contains": ["user brief {short:@ubrief}: update it"]}},
+  {"cli": ["update", "@ubrief", "--set-detail", "**Current focus:** Living Memory user brief.", "--expected-revision", "{rev:@ubrief}"], "expect": {"exit": 0, "result_excludes": ["user brief "]}}
  ]
 }

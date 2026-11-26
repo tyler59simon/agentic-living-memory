@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 from test_core import StoreFixture
 from core import logs, runtime
-from core.cli import main
+from revision_fill import main
 
 from core.runtime import HIVEMIND_DENY as REASON
 MODES = ('default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions')

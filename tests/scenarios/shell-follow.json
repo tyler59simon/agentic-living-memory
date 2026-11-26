@@ -98,6 +98,8 @@
    "cli": [
     "confirm",
     "@retry",
+    "--expected-revision",
+    "{rev:@retry}",
     "--session",
     "{session}"
    ],

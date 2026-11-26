@@ -19,6 +19,18 @@ def _reference(value,domain,root):
     parents=scope_domains(domain,load_bindings(root)) if domain else []   # parents and children: what search shows can be named back
     return resolve_ref(value,domain,root,parents)
 
+def _need_revision(revision,ref):
+    """The revision the caller read. Every write to an existing note needs it, so an edit made since that read is refused, not overwritten."""
+    if not revision:raise ValueError(f'revision_required: {ref} needs the revision you read; run read {ref} and pass --expected-revision REVISION')
+    return revision
+
+def _with_revision(value,flag):
+    """(ref, revision) for a REF@REVISION value that names a note the command writes; a plain REF is refused."""
+    from .notes import split_revision
+    ref,revision=split_revision(value)
+    if not revision:raise ValueError(f'revision_required: {flag} {ref} needs the revision you read, as {ref}@REVISION (read {ref} prints it)')
+    return ref,revision
+
 def _same_pair(entry,domain,note_id):
     return isinstance(entry,dict) and entry.get('ref')==f'{domain}:{note_id}'
 
@@ -142,6 +154,7 @@ def _redact(values):
     return found
 
 RULE_HELP='Mark a policy or preference note as a rule: every session start shows its title and summary in full, outside the guidance slots'
+REV_HELP='The revision of the note you read (read REF prints it): its sha256, whole or the first 12 or more characters; required'
 PIN_HELP='Protect the note from automatic retirement (archive, resolve, supersede by maintenance); it still allows manual archive, resolve and supersede, factual updates and review reminders'
 
 def _receipt(args,domain,note_id,root,event=None):
@@ -507,11 +520,13 @@ def error_code(message,exc=None):
     import re
     if isinstance(exc,TimeoutError) and message.startswith('timed out locking'):return 'busy'   # common.file_lock
     head=re.split(r''': |["']''',message,maxsplit=1)[0].lower()
-    return 'hivemind' if head=='hivemind' else 'stale' if 'stale' in head else 'conflict' if 'conflict' in head else 'invalid'
+    return 'hivemind' if head=='hivemind' else 'revision_required' if head=='revision_required' else 'stale' if 'stale' in head else 'conflict' if 'conflict' in head else 'invalid'
 
 def next_step(code,message,command=None):
     """One plain next step for an error an agent can act on, else None."""
     if code=='busy':return 'Another memory command holds the store lock; retry in a few seconds.'
+    if code=='revision_required':return 'Read the note first (read REF prints its revision), then pass it: --expected-revision REVISION, or REF@REVISION for the other notes a command names.'
+    if message.startswith('stale_revision'):return 'Someone changed the note after you read it: read it again, redo your change on what it holds now, and pass the new revision.'
     if message.startswith('unbound_project'):return 'Pass --domain DOMAIN (alm domains lists them), or bind this folder with: bind DOMAIN FOLDER'
     if message.startswith('no_store'):return 'Check the --root path. To start a store, create the folder, then run: bind DOMAIN PROJECT_FOLDER --root FOLDER'
     if message.startswith('bad_arguments'):return f"Run: {command or 'alm'} --help"
@@ -788,7 +803,7 @@ def build_parser():
     p.add_argument('--prefix',help='Remove only this folder from the binding and keep the domain and its notes (after a bound folder moved)')
     # Legacy forms keep working but are left out of help: --tags, --prefix and a third positional (tags).
     def capture_flags(p):
-     p.add_argument('items',nargs='*',metavar='TITLE BODY',help='Title and body; or use --title and --summary');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='',help=argparse.SUPPRESS);p.add_argument('--prefix',help=argparse.SUPPRESS);p.add_argument('--type',type=_type_name,help='Note type (default: knowledge)');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],help="REF of a note this one replaces; it is retired in the same transaction, and its links and files are carried over (see --drop-links)");p.add_argument('--drop-links',action='store_true',help='With --supersedes: do not carry the links and files of the replaced note over');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk/map/runbook/brief notes get a default');p.add_argument('--pin',action='store_true',help=PIN_HELP);p.add_argument('--rule',action='store_true',help=RULE_HELP)
+     p.add_argument('items',nargs='*',metavar='TITLE BODY',help='Title and body; or use --title and --summary');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='',help=argparse.SUPPRESS);p.add_argument('--prefix',help=argparse.SUPPRESS);p.add_argument('--type',type=_type_name,help='Note type (default: knowledge)');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],metavar='REF@REVISION',help="A note this one replaces, with the revision you read; it is retired in the same transaction, and its links and files are carried over (see --drop-links)");p.add_argument('--drop-links',action='store_true',help='With --supersedes: do not carry the links and files of the replaced note over');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk/map/runbook/brief notes get a default');p.add_argument('--pin',action='store_true',help=PIN_HELP);p.add_argument('--rule',action='store_true',help=RULE_HELP)
      for facet in CAPTURE_FACETS:p.add_argument('--'+facet,action='append',default=[])
      p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
      sections_args(p);_file_flags(p)
@@ -809,30 +824,30 @@ def build_parser():
     p.add_argument('--links',action='store_true',help='The [[Title]] link graph between notes (no query)');p.add_argument('--status',choices=['active','resolved','archived','superseded','any'],help='--links: active or any. A list (no query): default active')
     p.add_argument('--type',type=_type_name,action='append',help='A list (no query): only this note type (repeatable)');p.add_argument('--tag',action='append',default=[],help='A list (no query): only notes with this tag (repeatable: all must match)');p.add_argument('--all-domains',action='store_true',help='--pages, --links or a list: every domain folder, not only --domain');p.add_argument('--with-summary',action='store_true',help='A list: add summary, files and actions {open, done} to each row');p.add_argument('--offset',type=int,help='A list: skip this many rows')
     p=sub('read');p.add_argument('reference');p.add_argument('--max-chars',type=int,default=16000);p.add_argument('--metadata-only',action='store_true');p.add_argument('--section',help='Only this section, by heading (as search evidence and prompt lines name it)')
-    p=sub('update');p.add_argument('reference');p.add_argument('--title');p.add_argument('--body');p.add_argument('--body-file',type=Path);p.add_argument('--tag',action='append');p.add_argument('--type',type=_type_name);p.add_argument('--context');p.add_argument('--review-by');p.add_argument('--expected-revision');p.add_argument('--payload-file',type=Path);p.add_argument('--session');p.add_argument('--turn')
+    p=sub('update');p.add_argument('reference');p.add_argument('--title');p.add_argument('--body');p.add_argument('--body-file',type=Path);p.add_argument('--tag',action='append');p.add_argument('--type',type=_type_name);p.add_argument('--context');p.add_argument('--review-by');p.add_argument('--expected-revision',help=REV_HELP);p.add_argument('--payload-file',type=Path);p.add_argument('--session');p.add_argument('--turn')
     pins=p.add_mutually_exclusive_group();pins.add_argument('--pin',dest='pin',action='store_const',const=True,help=PIN_HELP);pins.add_argument('--unpin',dest='pin',action='store_const',const=False,help='Remove retirement protection (a pin change never counts as checking the note)')
     rules=p.add_mutually_exclusive_group();rules.add_argument('--rule',dest='rule',action='store_const',const=True,help=RULE_HELP);rules.add_argument('--no-rule',dest='rule',action='store_const',const=False,help='Stop showing the note in full at every session start (a rule change never counts as checking the note)')
-    p.add_argument('--distinct',metavar='REF',help='Record that this note and REF (same domain) are different subjects, so neither replaces the other; needs --why')
+    p.add_argument('--distinct',metavar='REF@REVISION',help='Record that this note and REF (same domain, with the revision you read) are different subjects, so neither replaces the other; needs --why')
     p.add_argument('--why',help='With --distinct: the reason, one line of 8 to 200 characters')
-    p.add_argument('--not-distinct',metavar='REF',dest='not_distinct',help='Remove the distinct record between this note and REF (kept on either note), so maintenance may review the pair again')
+    p.add_argument('--not-distinct',metavar='REF@REVISION',dest='not_distinct',help='Remove the distinct record between this note and REF (kept on either note; with the revision you read), so maintenance may review the pair again')
     for facet in FACET_FLAGS:p.add_argument('--'+facet,action='append')
     p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
     sections_args(p,update=True);_file_flags(p)
-    p=sub('supersede');p.add_argument('reference');p.add_argument('--by',required=True,help='REF of the note that replaces it; its links and files are carried over (see --drop-links)');p.add_argument('--drop-links',action='store_true',help='Do not carry the links and files of the replaced note over');p.add_argument('--session');p.add_argument('--turn')
+    p=sub('supersede');p.add_argument('reference');p.add_argument('--expected-revision',help=REV_HELP);p.add_argument('--by',required=True,metavar='REF@REVISION',help='The note that replaces it, with the revision you read; its links and files are carried over (see --drop-links)');p.add_argument('--drop-links',action='store_true',help='Do not carry the links and files of the replaced note over');p.add_argument('--session');p.add_argument('--turn')
     p=sub('review');p.add_argument('--kind',action='append',choices=['stale','due','interim','duplicate','warned','noisy'],help='Only this kind of row (repeatable): stale, due, interim, duplicate, warned, noisy');p.add_argument('--limit',type=int,default=20);p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)')
     p=sub('open');p.add_argument('--due-by',metavar='DATE',help='Only items with a due date on or before DATE (YYYY-MM-DD)');p.add_argument('--owner',help='Only items owned by this name (case-insensitive)');p.add_argument('--sort',choices=['updated','due'],default='updated',help='updated: newest note first (default); due: earliest due date first, undated items last');p.add_argument('--pages',choices=['injectable','searchable','none'],default='injectable',help='Which notebook page tasks join the list: injectable (default: injectable folder notebooks), searchable (searchable ones too) or none (notes only)');p.add_argument('--limit',type=int,default=50);p.add_argument('--all-domains',action='store_true',help='Every domain folder, not parents and global only');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match); page tasks have no tags, so none are listed then')
-    p=sub('check');p.add_argument('reference');p.add_argument('item',nargs='?',help='Text of the action item: exact, or a unique part of it');p.add_argument('--index',type=int,help="1-based position among the note's action items, as open lists it");p.add_argument('--undo',action='store_true',help='Untick instead');p.add_argument('--session');p.add_argument('--turn')
+    p=sub('check');p.add_argument('reference');p.add_argument('item',nargs='?',help='Text of the action item: exact, or a unique part of it');p.add_argument('--index',type=int,help="1-based position among the note's action items, as open lists it");p.add_argument('--undo',action='store_true',help='Untick instead');p.add_argument('--expected-revision',help=REV_HELP);p.add_argument('--session');p.add_argument('--turn')
     p=sub('timeline');p.add_argument('reference',nargs='?',help='Anchor note; default: the newest note');p.add_argument('--date',help='YYYY-MM-DD: anchor at the first note on or after this date');p.add_argument('--before',type=int,default=5);p.add_argument('--after',type=int,default=5);p.add_argument('--type',type=_type_name,action='append');p.add_argument('--by',choices=['updated','created'],default='updated');p.add_argument('--all',action='store_true',help='Include superseded, archived and resolved notes')
     p=sub('ingest-plan');p.add_argument('--source',type=Path,help="Auto-memory folder; default: Claude Code's folder for --cwd");p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of skipping the file");p.add_argument('--allow-similar',action='store_true')
     p=sub('export');p.add_argument('--out',type=Path,required=True,help='New .zip file, outside the store');p.add_argument('--type',type=_type_name,action='append');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)');p.add_argument('--all',action='store_true',help='Include superseded, archived and resolved notes')
     p=sub('import-plan');p.add_argument('file',type=Path)
-    p=sub('confirm');p.add_argument('reference');p.add_argument('--session');p.add_argument('--turn')
-    for name in ('resolve','reopen'):p=sub(name);p.add_argument('reference',help='A plan, bug or risk note');p.add_argument('--session');p.add_argument('--turn')
-    p=sub('restore');p.add_argument('reference',help='An archived note: it returns to notes/, pinned, with its id, body and verification baseline kept (a resolved note uses reopen, a superseded one is read through its successor)');p.add_argument('--expected-revision');p.add_argument('--session');p.add_argument('--turn')
+    p=sub('confirm');p.add_argument('reference');p.add_argument('--expected-revision',help=REV_HELP);p.add_argument('--session');p.add_argument('--turn')
+    for name in ('resolve','reopen'):p=sub(name);p.add_argument('reference',help='A plan, bug or risk note');p.add_argument('--expected-revision',help=REV_HELP);p.add_argument('--session');p.add_argument('--turn')
+    p=sub('restore');p.add_argument('reference',help='An archived note: it returns to notes/, pinned, with its id, body and verification baseline kept (a resolved note uses reopen, a superseded one is read through its successor)');p.add_argument('--expected-revision',help=REV_HELP);p.add_argument('--session');p.add_argument('--turn')
     p=sub('stats');p.add_argument('--days',type=int,default=30,help='Window, at most 30 (the diary keeps 30 days)');p.add_argument('--limit',type=int,default=10)
     p=sub('logs');p.add_argument('--level',choices=['debug','info','warning','error'],default='info',help='Lowest level shown');p.add_argument('--kind',choices=['hook','command','internal']);p.add_argument('--event',help='Hook event, command name or internal call site');p.add_argument('--days',type=int,default=1,help='Last N x 24 hours, at most 30 (logs keep 30 days)');p.add_argument('--limit',type=int,default=50)
     p=sub('delete-plan');p.add_argument('reference');p.add_argument('--payload-file',type=Path)
-    p=sub('archive');p.add_argument('reference',help='A note to retire without a replacement (a plan, bug or risk that is finished uses resolve)');p.add_argument('--expected-revision');p.add_argument('--payload-file',type=Path);p.add_argument('--session');p.add_argument('--turn')
+    p=sub('archive');p.add_argument('reference',help='A note to retire without a replacement (a plan, bug or risk that is finished uses resolve)');p.add_argument('--expected-revision',help=REV_HELP);p.add_argument('--payload-file',type=Path);p.add_argument('--session');p.add_argument('--turn')
     p=sub('apply');p.add_argument('plan_id');p.add_argument('--expected-plan-sha256',required=True)
     p.add_argument('--include-private',action='store_true',help='Hivemind only: allow a plan that changes a private notebook')
     p=sub('inspect-plan');p.add_argument('plan_id');p.add_argument('--full',action='store_true',help='Show every diff in full instead of cutting each at 16000 characters');p.add_argument('--include-private',action='store_true',help='Hivemind only: show changes inside private notebooks')
@@ -895,7 +910,7 @@ def build_parser():
     p=sub('batch');p.add_argument('--payload-file',type=Path)
     p=sub('retag-plan');p.add_argument('--payload-file',type=Path)
     p=sub('remap');p.add_argument('--payload-file',type=Path)
-    p=sub('promote');p.add_argument('refs',nargs='*',help='Project notes to move to the global domain');p.add_argument('--suggest',action='store_true',help='List candidates with reasons; writes nothing');p.add_argument('--only',help='With --suggest: one domain instead of all')
+    p=sub('promote');p.add_argument('refs',nargs='*',metavar='REF@REVISION',help='Project notes to move to the global domain, each with the revision you read');p.add_argument('--suggest',action='store_true',help='List candidates with reasons; writes nothing');p.add_argument('--only',help='With --suggest: one domain instead of all')
     for name in sorted(SWITCH):p=sub(name);p.add_argument('--session',help='Session ID; default: $CLAUDE_CODE_SESSION_ID, which Claude Code sets for shell commands')
     p=sub('capture-finalize');p.add_argument('--session',required=True);p.add_argument('--turn',help='Defaults to the latest prompt of the session');p.add_argument('--note',action='append',default=[])
     p=sub('domains')
@@ -1095,6 +1110,10 @@ def main(argv=None):
                         item['session_id']=args.session
                         if args.turn and not item.get('turn_id'):item['turn_id']=args.turn
             if proposal and isinstance(data,list):raise ValueError('--from-proposal settles one proposal with one note')
+            for item in data if isinstance(data,list) else [data]:
+                # Each note a capture retires is written too: it needs the revision the caller read (a staged proposal carries it from its author).
+                old=item.get('supersedes') if isinstance(item,dict) else None
+                for given in ([old] if isinstance(old,str) else old or []):_with_revision(given,'--supersedes')
             if cmd=='propose':
                 result=_propose(root,data,domain,session,getattr(args,'to_global',False),args.redact)
                 invocation['result']=result;_emit(result,args);return 0
@@ -1277,7 +1296,7 @@ def main(argv=None):
                     if getattr(args,key) is not None:values[key]=getattr(args,key)
                 if args.pin is not None:values['pinned']=args.pin
                 if args.rule is not None:values['rule']=args.rule
-                revision=values.pop('expected_revision',None) or args.expected_revision
+                revision=_need_revision(values.pop('expected_revision',None) or args.expected_revision,args.reference)
                 if args.shell_command:values['commands']=list(find_note(n,d,root)[1].get('commands') or [])+args.shell_command
                 redacted=_redact(values) if args.redact else []
                 if args.session:
@@ -1295,7 +1314,9 @@ def main(argv=None):
                     from .notes import distinct_with,distinct_without
                     if args.distinct and args.not_distinct:raise ValueError('Pass --distinct or --not-distinct, not both')
                     if args.why and not args.distinct:raise ValueError('--why goes with --distinct')
-                    od,on=_reference(args.distinct or args.not_distinct,domain,root)
+                    from .notes import split_revision
+                    other_ref,other_revision=split_revision(args.distinct or args.not_distinct)
+                    od,on=_reference(other_ref,domain,root)
                     if od!=d:raise ValueError('A distinct pair must be two notes in the same domain')
                     if on==n:raise ValueError('A note cannot be distinct from itself')
                     mine=find_note(n,d,root)[1]
@@ -1318,11 +1339,14 @@ def main(argv=None):
                 if other:
                     # Both notes change in one journaled transaction, after the expected revision is checked: one undo reverts the pair.
                     from .notes import _change_set,_commit
-                    if revision and current['revision']!=revision:raise ValueError('stale_revision')
+                    from .notes import check_revision
+                    check_revision(current['revision'],revision,f'{d}:{n}')
+                    # The other note is written too, so it needs the revision the caller read of it.
+                    if not other_revision:raise ValueError(f'revision_required: {d}:{other[0]} is changed too; pass it as REF@REVISION (read it first)')
                     changes,expected={},{}
                     if values:
                         changes,expected,_=_change_set(n,d,'update',root,revision,**values)
-                    more,more_expected,target=_change_set(other[0],d,'update',root,None,pending=changes,distinct_from=other[1])
+                    more,more_expected,target=_change_set(other[0],d,'update',root,other_revision,pending=changes,distinct_from=other[1])
                     changes.update(more)
                     for rel,rev in more_expected.items():expected.setdefault(rel,rev)
                     result=_commit(d,changes,'update',root,expected);result.update(id=n if values else other[0],path=str(find_note(n if values else other[0],d,root)[0]),status='update')
@@ -1333,9 +1357,10 @@ def main(argv=None):
             _receipt(args,d,n,root,'update')
         elif cmd=='supersede':
             from .notes import change
-            d,n=_reference(args.reference,domain,root);bd,bn=_reference(args.by,domain,root)
+            revision=_need_revision(args.expected_revision,args.reference);by,by_revision=_with_revision(args.by,'--by')
+            d,n=_reference(args.reference,domain,root);bd,bn=_reference(by,domain,root)
             if bd!=d:raise ValueError('A note can only be superseded by a note in the same domain')
-            result=change(n,d,'supersede',root,superseded_by=bn,drop_links=args.drop_links)
+            result=change(n,d,'supersede',root,revision,superseded_by=bn,drop_links=args.drop_links,successor_revision=by_revision)
             from .usage import record
             record(root,'supersede',[f'{d}:{n}'],args.session)
             _receipt(args,d,bn,root)
@@ -1367,7 +1392,7 @@ def main(argv=None):
                 for i,text in listed:
                     task,fields,_=item_fields(text);due=fields['due']
                     if not wanted(fields):continue
-                    items.append({'kind':'note','ref':f"{d}:{n['id']}",'short_ref':short_ref(d,n['id']),'title':n['title'],'type':n['type'],'updated':str(n.get('updated',''))[:10],'index':i,'item':text,'task':task,**fields,'overdue':due<today if due else None})
+                    items.append({'kind':'note','ref':f"{d}:{n['id']}",'short_ref':short_ref(d,n['id']),'title':n['title'],'type':n['type'],'updated':str(n.get('updated',''))[:10],'revision':n['revision'],'index':i,'item':text,'task':task,**fields,'overdue':due<today if due else None})
             stale=False
             if args.pages!='none' and not args.tag:
                 # Page tasks: registered folder notebooks of these domains, at the levels --pages names; no ref or index, a page is ticked by editing it.
@@ -1379,13 +1404,13 @@ def main(argv=None):
                     if wanted(fields):items.append({'kind':'page','domain':t['domain'],'notebook':t['notebook'],'path':t['path'],'title':t['title'],'line':t['line'],'item':t['text'],'task':t['task'],**fields,'overdue':t['due']<today if t['due'] else None})
             if args.sort=='due':items.sort(key=lambda row:(row['due'] is None,row['due'] or ''))   # stable: ties keep the newest note first, then the pages in path order
             result={'ok':True,'domain':None if args.all_domains else domain,'notes':len({row['ref'] for row in items if row['kind']=='note'}),'count':len(items),'items':items[:max(1,min(500,args.limit))],
-                    'hint':"Tick one when done: check REF 'item text' (or --index N); --undo unticks."+(' A page task (kind page) is ticked by editing its page.' if any(row['kind']=='page' for row in items) else '')}
+                    'hint':"Tick one when done: check REF 'item text' --expected-revision REVISION (or --index N; each row carries its note's revision); --undo unticks."+(' A page task (kind page) is ticked by editing its page.' if any(row['kind']=='page' for row in items) else '')}
             if stale:result['pages_stale']=True
         elif cmd=='check':
             from .notes import check_action
             d,n=_reference(args.reference,domain,root)
             if (args.item is None)==(args.index is None):raise ValueError('Name the item by its text or pass --index N (not both)')
-            result=check_action(n,d,root,args.item,args.index,not args.undo);result.pop('path',None)
+            result=check_action(n,d,root,args.item,args.index,not args.undo,_need_revision(args.expected_revision,args.reference));result.pop('path',None)
             if result.get('status')!='unchanged':_receipt(args,d,n,root,'check')
         elif cmd=='timeline':
             from .notes import short_ref
@@ -1407,7 +1432,7 @@ def main(argv=None):
                 at=next((i for i,n in enumerate(notes) if when(n)[:10]>=args.date),len(notes)-1)
             else:at=len(notes)-1
             before,after=max(0,min(50,args.before)),max(0,min(50,args.after))
-            rows=[{'ref':f"{domain}:{n['id']}",'short_ref':short_ref(domain,n['id']),'date':when(n)[:10],'type':n.get('type'),'title':n['title'],'status':n.get('status','active'),**({'anchor':True} if i==at else {})}
+            rows=[{'ref':f"{domain}:{n['id']}",'short_ref':short_ref(domain,n['id']),'date':when(n)[:10],'type':n.get('type'),'title':n['title'],'status':n.get('status','active'),'revision':n.get('revision'),**({'anchor':True} if i==at else {})}
                   for i,n in enumerate(notes) if at-before<=i<=at+after]
             result={'ok':True,'domain':domain,'by':args.by,'anchor':rows[min(at,before)]['ref'],'notes':rows}
         elif cmd=='ingest-plan':
@@ -1425,21 +1450,21 @@ def main(argv=None):
         elif cmd=='confirm':
             from .notes import confirm
             d,n=_reference(args.reference,domain,root)
-            result=confirm(n,d,root);result.pop('path',None)
+            result=confirm(n,d,root,_need_revision(args.expected_revision,args.reference));result.pop('path',None)
             # Confirming is a memory decision for the turn even when the note was already confirmed today.
             _receipt(args,d,n,root,'confirm' if result.get('status')!='unchanged' else None)
         elif cmd in {'resolve','reopen'}:
             # Finished work leaves the active set in one journaled, undoable step; reopen brings it back.
             from .notes import change,short_ref
             d,n=_reference(args.reference,domain,root)
-            result=change(n,d,cmd,root);result.pop('path',None)
+            result=change(n,d,cmd,root,_need_revision(args.expected_revision,args.reference));result.pop('path',None)
             if cmd=='resolve':result['hint']=f'Resolved notes leave session context and search. `reopen {short_ref(d,n)}` brings it back.'
             _receipt(args,d,n,root,cmd)
         elif cmd=='restore':
             # Forward restoration of an archived note: one journaled, undoable step, like reopen.
             from .notes import change
             d,n=_reference(args.reference,domain,root)
-            result=change(n,d,'restore',root,args.expected_revision);result.pop('path',None)
+            result=change(n,d,'restore',root,_need_revision(args.expected_revision,args.reference));result.pop('path',None)
             result['hint']='The note is active and pinned, so automatic maintenance will not retire it until `update REF --unpin`.'
             _receipt(args,d,n,root,'restore')
         elif cmd=='stats':
@@ -1458,7 +1483,7 @@ def main(argv=None):
             from .notes import change
             d,n=_reference(args.reference,domain,root);values=_payload(args) if args.payload_file else {}
             if 'actor' in values:raise ValueError('Cannot archive with an actor field: the controller records who acts')
-            result=change(n,d,'archive',root,args.expected_revision,**values);result.pop('path',None);result['undo']='undo '+result['operation_id']
+            result=change(n,d,'archive',root,_need_revision(values.pop('expected_revision',None) or args.expected_revision,args.reference),**values);result.pop('path',None);result['undo']='undo '+result['operation_id']
             _receipt(args,d,n,root)
         elif cmd=='apply':
             from .governance import apply
@@ -1734,14 +1759,19 @@ def main(argv=None):
             result=retag_plan(root,_payload(args))
         elif cmd=='remap':
             from .governance import remap
-            result=remap(root,_payload(args))
+            mappings=_payload(args)
+            for mapping in mappings if isinstance(mappings,list) else ():
+                if isinstance(mapping,dict) and not mapping.get('revision'):
+                    before=mapping.get('before') or {}
+                    raise ValueError(f"revision_required: each mapping needs the revision you read of {before.get('domain')}:{before.get('id')} as \"revision\"")
+            result=remap(root,mappings)
         elif cmd=='promote':
             from .governance import promote_suggest,promote
             if args.suggest:
                 if args.refs:raise ValueError('--suggest takes no references')
                 result=promote_suggest(root,canonical_domain(args.only,root) if args.only else None)
             elif not args.refs:raise ValueError('Name the notes to promote, or pass --suggest')
-            else:result=promote(root,args.refs)
+            else:result=promote(root,[ref+'@'+revision for ref,revision in (_with_revision(r,'promote') for r in args.refs)])
         elif cmd=='capture-finalize':
             from .capture import finalize
             result=finalize(args.session,_turn(root,args.session,args.turn),[':'.join(_reference(n,domain,root)) for n in args.note],root)

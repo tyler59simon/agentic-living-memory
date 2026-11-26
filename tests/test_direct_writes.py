@@ -5,7 +5,8 @@ from pathlib import Path
 from unittest.mock import patch
 from test_core import StoreFixture
 from core import runtime,governance,render
-from core.cli import main,DIRECT_WRITES
+from core.cli import DIRECT_WRITES
+from revision_fill import main
 from core.notes import find_note
 from core.repository import read_json
 from core.init_domain import init_domain
@@ -47,7 +48,7 @@ class EachVerbJournalsAndUndoes(Fixture):
         self.undo(written);self.assertIn('rebuildable',find_note(n['id'],'demo',self.root)[1]['body'])
     def test_remap(self):
         init_domain('other',[str(self.base/'other')],self.root);n=self.note()
-        written=self.ok('remap',stdin=json.dumps([{'before':{'domain':'demo','id':n['id']},'after':{'domain':'other','id':n['id']}}]))
+        written=self.ok('remap',stdin=json.dumps([{'before':{'domain':'demo','id':n['id']},'after':{'domain':'other','id':n['id']},'revision':find_note(n['id'],'demo',self.root)[1]['revision']}]))
         self.check(written,'reference_remap');self.assertEqual(find_note(n['id'],'other',self.root)[1]['domain'],'other')
         self.undo(written);self.assertEqual(find_note(n['id'],'demo',self.root)[1]['domain'],'demo')
     def test_promote(self):

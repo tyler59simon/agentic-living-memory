@@ -6,7 +6,7 @@ from pathlib import Path
 from test_core import StoreFixture
 from core import runtime
 from core.briefs import find_brief
-from core.cli import main
+from revision_fill import main
 from core.common import git_dir, head_oid, load_bindings, normalize_remote, repo_identity, repo_label
 from core.maps import find_map, repo_name
 from core.notes import change, find_note

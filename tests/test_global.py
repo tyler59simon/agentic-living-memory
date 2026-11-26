@@ -6,7 +6,8 @@ from pathlib import Path
 
 from test_core import StoreFixture
 from core import runtime, session_start
-from core.cli import main, doctor
+from core.cli import doctor
+from revision_fill import main
 from core.common import canonical_domain, load_bindings
 from core.governance import apply, undo, promote, promote_suggest
 from core.init_domain import init_domain
