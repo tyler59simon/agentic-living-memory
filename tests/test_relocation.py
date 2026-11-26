@@ -183,6 +183,12 @@ class Relocation(StoreFixture):
         plain=self.base/"o'brien home"   # no $ or backtick: double quotes, as before, which keep the apostrophe
         self.assertIn(f'--root "{plain.resolve()}"',setup.setup('claude',plain)['undo'])
         self.assertNotIn('--root',setup.setup('claude',self.claude)['undo'])   # the configured home needs no --root
+    def test_a_posix_undo_path_with_a_backslash_is_single_quoted(self):
+        import shlex
+        path='/home/a\\\\b'   # a doubled backslash, which a POSIX shell collapses inside double quotes
+        with patch.object(setup.os,'name','posix'):
+            self.assertEqual(shlex.split(setup._quote(path)),[path])
+            self.assertEqual(setup._quote('/home/plain'),'"/home/plain"')
     def set_up_after_an_edit(self,name,text):
         """setup while someone appends text to name after setup read it and before commit() wrote."""
         real=setup.commit

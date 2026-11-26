@@ -229,13 +229,15 @@ def _write(home,harness,changes,uninstall,summary,read_set):
                    operation_id=f's-{harness}-{uuid.uuid4().hex}')
     home=Path(home).resolve()
     if home!=Path(harness_home(harness)).expanduser().resolve():   # undo looks only in the configured home; name this one
-        # Double quotes as before; a path with $, a backtick or a double quote gets single quotes, which PowerShell and POSIX
-        # shells read literally (an apostrophe is then doubled for PowerShell or closed and escaped for POSIX shells).
-        text=str(home)
-        if not any(c in text for c in '$`"'):quoted=f'"{text}"'
-        else:quoted="'"+text.replace("'","''" if os.name=='nt' else "'\\''")+"'"
-        receipt['undo']=f'--root {quoted} undo {receipt["operation_id"]}'
+        receipt['undo']=f'--root {_quote(str(home))} undo {receipt["operation_id"]}'
     return receipt
+
+def _quote(text):
+    """Double quotes as before; a path with $, a backtick or a double quote, or on POSIX a backslash (double quotes collapse
+    a doubled one), gets single quotes, which PowerShell and POSIX shells read literally (an apostrophe is then doubled for
+    PowerShell or closed and escaped for POSIX shells)."""
+    if not any(c in text for c in '$`"'+('' if os.name=='nt' else '\\')):return f'"{text}"'
+    return "'"+text.replace("'","''" if os.name=='nt' else "'\\''")+"'"
 
 def _antigravity(home,uninstall,adopt):
     """Own one named hook group in Antigravity's shared config file and the managed block in its global GEMINI.md."""

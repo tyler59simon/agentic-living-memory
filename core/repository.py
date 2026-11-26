@@ -652,8 +652,11 @@ def os_user():
         return None
 
 
-def transaction(root, changes, kind, expected=None, operation_id=None, skip_unchanged=False, meta=None):
+def transaction(root, changes, kind, expected=None, operation_id=None, skip_unchanged=False, meta=None, modes=None):
     """Durable intent precedes every write. Recovery accepts only known states.
+
+    modes (POSIX): {path: mode} for files this write gives a mode other than the one _write keeps (undo restores a file's
+    earlier mode). Each written file's resulting mode is journaled as after_mode, so undo can see a later chmod.
 
     skip_unchanged (derived files only): leave out files that already hold these exact bytes, and
     write no journal at all when nothing is left, so a sync that changed nothing leaves no trace.
@@ -687,6 +690,9 @@ def transaction(root, changes, kind, expected=None, operation_id=None, skip_unch
                       "before_hash": digest(before), "after_hash": digest(after)}
             if before is not None and os.name != "nt":   # undo recreates a removed file with this mode (the installer compares it)
                 effect["before_mode"] = stat.S_IMODE(path.stat().st_mode)   # setgid and sticky too, as the installer records them
+            if after is not None and os.name != "nt":
+                wanted = (modes or {}).get(str(rel))
+                effect["after_mode"] = wanted if wanted is not None else (path.stat().st_mode & 0o777 if before is not None else 0o600)
             effects.append(effect)
         if skip_unchanged and not effects:
             return {"ok": True, "operation_id": None, "state": "unchanged", "kind": kind}
@@ -912,6 +918,10 @@ def recover(root, operation_id, direction="forward"):
             path = confined(root, effect["path"])
             if digest(_bytes(path)) != effect[desired + "_hash"]:
                 _write(path, _decode(effect[desired]))
+            # A journaled mode (undo restores a file's earlier one) is applied here too, so a rerun after a stop applies it.
+            mode = effect.get(desired + "_mode") if effect[desired] is not None else None
+            if mode is not None and stat.S_IMODE(path.stat().st_mode) != mode:
+                os.chmod(path, mode)
         journal["state"] = final_state
         journal["completed"] = now()
         atomic_write(journal_path, canonical_json(journal))

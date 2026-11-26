@@ -72,19 +72,28 @@ def _custom_types_line(root):
         from .logs import swallowed
         swallowed('runtime.custom_types_line',exc,root);return ''
 
-def protocol(root,domain=None,harness='',session='SESSION'):
+def protocol(root,domain=None,harness='',session='SESSION',room=None):
     """SessionStart context (re-fires after compaction). When the harness's instruction file carries the
     current static block, only per-session data is injected; otherwise the shorter fallback protocol (it fits Codex's
-    4,000-character hook limit), so the agent never sees zero copies or two differing copies of the rules."""
+    4,000-character hook limit), so the agent never sees zero copies or two differing copies of the rules.
+    room: the characters the rules may take (Codex's limit less the session marker that follows them). Past it, the custom
+    types line and then the tag summary give way to the command that lists them."""
     cmd=command(root,domain)
-    dynamic=(f'CMD = {cmd}'+('' if cmd.startswith('alm ') else '   (Bash: CMD as is; PowerShell: & CMD ...)')+
-             f"\nTags (pick the closest; --platform/--technology optional): {_tag_summary(root)}")
+    head=f'CMD = {cmd}'+('' if cmd.startswith('alm ') else '   (Bash: CMD as is; PowerShell: & CMD ...)')
+    tags=f"\nTags (pick the closest; --platform/--technology optional): {_tag_summary(root)}"
     custom=_custom_types_line(root)
-    if custom:dynamic+='\n'+custom
-    if installed(harness):
-        return f'Living Memory is active for domain {domain}; follow the Living Memory section of your instructions.\n'+dynamic
-    text=FALLBACK_PROTOCOL+'\n'+dynamic+'\n'+fallback_usage(session)
-    if harness=='claude':text+='\n'+AUTO_MEMORY
+    def build(tags,custom):
+        dynamic=head+tags+('\n'+custom if custom else '')
+        if installed(harness):
+            return f'Living Memory is active for domain {domain}; follow the Living Memory section of your instructions.\n'+dynamic
+        text=FALLBACK_PROTOCOL+'\n'+dynamic+'\n'+fallback_usage(session)
+        if harness=='claude':text+='\n'+AUTO_MEMORY
+        return text
+    text=build(tags,custom)
+    if room is not None and len(text)>room and custom:
+        custom='Custom note types: CMD types lists them.';text=build(tags,custom)
+    if room is not None and len(text)>room:
+        text=build('\nTags: CMD taxonomy lists them; new notes need existing subject/ and concern/ tags.',custom)
     return text
 
 # The same rule as the instruction block: the hook can refuse editor tools, but shell writes are only covered by that instruction.
@@ -2186,11 +2195,13 @@ def _process(harness,event,payload,root=None,info=None):
         # Codex has no SessionEnd: its session start schedules the end-of-session housekeeping in the background.
         if harness=='codex':_sync_vaults(root,'session start',SESSION_START_SYNC_SECONDS);detail['housekeeping']=schedule_housekeeping(root)
         from .session_start import build_context,BUDGET,MIN_BUDGET,HARD_CAP,_cap
-        rules=protocol(root,domain,harness,session)
+        # Codex keeps only the first 4,000 characters: the rules leave room for the session marker after them.
+        limit=SESSION_LIMITS.get(harness);marker=f'\nLiving Memory session={session}\n'
+        rules=protocol(root,domain,harness,session,room=None if limit is None else limit-len(marker))
         # The fallback protocol stands in for the instruction block, which BUDGET does not count either: without this the briefing got only
         # MIN_BUDGET whenever the fallback was injected (INST-9). HARD_CAP still bounds the whole context.
         rules_outside_budget=0 if installed(harness) else len(rules)
-        prefix=rules+f'\nLiving Memory session={session}'+'\n'
+        prefix=rules+marker
         # After a compaction the handoff goes first; the title index gives up the room.
         if source=='compact' and session!='unknown':
             handed=handoff(root,domain,session,state,harness);prefix+=handed;detail['handoff_chars']=len(handed)
@@ -2242,7 +2253,6 @@ def _process(harness,event,payload,root=None,info=None):
         from .briefs import brief_folder
         resolved=[] if _subagent(payload) else auto_resolve(root,domain,bindings,session);detail['auto_resolved']=len(resolved)
         # A harness that cuts the hook's whole context (Codex: additionalContextLimit) gets a Rules block that ends inside that limit.
-        limit=SESSION_LIMITS.get(harness)
         text,shown,indexed=build_context(cwd,root,max(MIN_BUDGET,BUDGET-(len(prefix)-rules_outside_budget)),session=session,trace=detail,resolved=resolved,
                                          limit=None if limit is None else max(0,limit-len(prefix)),
                                          currency=lambda hit:note_currency(hit,brief_folder(hit,cwd,bindings),root,bindings,state,session,'fresh_brief'))

@@ -213,17 +213,19 @@ def install(uninstall=False, extra_homes=()):
             change = _path_step() if record['action'] in ('create', 'replace', 'keep') else None
         receipt = commit(INSTALL_HOME, changes, 'package_uninstall' if uninstall else 'package_install', summary=summary,
                          operation_id=_operation_id(), meta={'launcher': record, 'path_change': change})
-    warning = _write_launcher(record)
-    receipt['launcher'] = {'path': record['path'], 'action': record['action'] if not warning else 'failed'}
-    if record.get('reason'):
-        receipt['launcher']['reason'] = record['reason']
-    if warning:
-        receipt.setdefault('warnings', []).append(warning)
-    elif change:
-        if not _path_done(change):
-            (_add_to_path_windows if change['kind'] == 'registry' else _add_to_path_posix)(change)
-        receipt['path_change'] = change['add']
-        receipt['notice'] = 'Open a new terminal (and restart running agent sessions) so `alm` is found.'
+        # Still under the install lock, so two installers never share the launcher's .new file or lose each other's PATH
+        # entry. Another program can still edit PATH between the read and the write; no lock covers that.
+        warning = _write_launcher(record)
+        receipt['launcher'] = {'path': record['path'], 'action': record['action'] if not warning else 'failed'}
+        if record.get('reason'):
+            receipt['launcher']['reason'] = record['reason']
+        if warning:
+            receipt.setdefault('warnings', []).append(warning)
+        elif change:
+            if not _path_done(change):
+                (_add_to_path_windows if change['kind'] == 'registry' else _add_to_path_posix)(change)
+            receipt['path_change'] = change['add']
+            receipt['notice'] = 'Open a new terminal (and restart running agent sessions) so `alm` is found.'
     return receipt
 
 

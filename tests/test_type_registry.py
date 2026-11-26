@@ -143,6 +143,26 @@ class Surfaces(Fixture):
         self.assertIn('Custom note types (--type NAME): incident (Timeline, Impact, Follow-up, action items): A production incident',text)
         self.write('retire',name='incident');self.assertNotIn('Custom note types',protocol(self.root,'demo','claude'))
 
+    def test_rules_give_up_custom_types_then_tags_to_fit_the_room(self):
+        self.create();full=protocol(self.root,'demo','codex')
+        self.assertIn('Custom note types (--type NAME)',full)
+        tight=protocol(self.root,'demo','codex',room=len(full)-1)
+        self.assertLess(len(tight),len(full));self.assertIn('Custom note types: CMD types lists them.',tight);self.assertIn('subject/{',tight)
+        tighter=protocol(self.root,'demo','codex',room=len(tight)-1)
+        self.assertIn('Tags: CMD taxonomy lists them',tighter);self.assertNotIn('subject/{',tighter)
+        self.assertEqual(protocol(self.root,'demo','codex',room=len(full)),full)
+
+    def test_codex_session_marker_stays_inside_the_hook_limit(self):
+        from core import runtime
+        self.create(description='A production incident: '+'what broke and who it hit, '*10)
+        payload={'cwd':str(self.base/'project'),'session_id':'cx'}
+        with patch('core.runtime.command',return_value='alm --domain demo'):
+            rules=protocol(self.root,'demo','codex',session='cx')
+            limit=len(rules)+len('\nLiving Memory session=cx\n')-10   # the full rules would push the marker past the limit
+            with patch.dict(runtime.SESSION_LIMITS,{'codex':limit}):
+                context=runtime.process('codex','session-start',payload,self.root)['context']
+        self.assertIn('Living Memory session=cx\n',context[:limit])
+
 class ReviewFixes(Fixture):
     """Regressions for the Codex review of the first custom types commit (2026-11-20)."""
     def test_headings_the_renderer_treats_as_equal_are_one_heading(self):

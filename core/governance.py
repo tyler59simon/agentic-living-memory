@@ -1,7 +1,7 @@
 """Direct journaled writes, receipts, history, undo and derived-state recovery. There are no plans to approve: every write is
 journaled with its before-bytes, so `undo OPERATION` reverses it (the user removed plans on 2026-11-26)."""
 from __future__ import annotations
-import json,os,uuid
+import json,os,stat,uuid
 from pathlib import Path
 from .common import memory_root
 from .note_types import keep_baseline
@@ -17,7 +17,7 @@ def reconciled_domains(paths):
     return out
 
 
-def commit(root,changes,kind,domains=(),summary=None,guards=None,sync_overlay=True,operation_id=None,meta=None):
+def commit(root,changes,kind,domains=(),summary=None,guards=None,sync_overlay=True,operation_id=None,meta=None,modes=None):
     """A direct write under one lock. The journal is the receipt: its operation ID (prefix `d-`; operations from before
     2026-11-26 may carry a plan ID) is what `undo` takes. guards: store-wide conditions that per-file hashes cannot express,
     checked under the lock: read_set ({path: sha256} of files the change was built from), absent_ids (no note in the
@@ -33,7 +33,7 @@ def commit(root,changes,kind,domains=(),summary=None,guards=None,sync_overlay=Tr
             roll_forward_pending(root)
             _check_guards(root,{'guards':{k:(v if k=='read_set' else sorted(set(v))) for k,v in guards.items() if v},'domains':domains,'changes':changes})
         operation_id=operation_id or 'd-'+uuid.uuid4().hex
-        receipt=transaction(root,changes,kind,expected,operation_id,meta=meta)
+        receipt=transaction(root,changes,kind,expected,operation_id,meta=meta,modes=modes)
         from .notes import note_revisions
         revisions=note_revisions(changes)
         if revisions:receipt['revisions']=revisions
@@ -187,6 +187,11 @@ def undo(root,operation_id,include_private=False,revert_files=True):
         for effect in value['effects']:
             p=confined(root,effect['path']);current=digest(p.read_bytes()) if p.exists() else None
             if current!=effect['after_hash']:raise ValueError('Undo conflicts with later edits')
+            # POSIX: a chmod made since is a later edit too (journals from before after_mode are not checked).
+            if current is not None and effect.get('after_mode') is not None and os.name!='nt' and p.stat().st_mode&0o777!=effect['after_mode']&0o777:   # setgid can be cleared by the system
+                raise ValueError(f"Undo conflicts with later edits: the mode of {effect['path']} changed")
+        # POSIX: a file undo brings back gets the mode it had, not the 0600 of a new file; journaled, so recover applies it too.
+        modes={e['path']:e['before_mode'] for e in value['effects'] if e.get('before_mode') is not None and e['before'] is not None}
         # Restoring an older taxonomy drops tags; notes tagged since (outside this undo) would then fail validation.
         guards=None
         if 'tag_taxonomy.json' in changes:
@@ -211,17 +216,13 @@ def undo(root,operation_id,include_private=False,revert_files=True):
             again=revert_accept(root,value,include_private) if folder and revert_files and str(value['kind'])=='doc_accept' else None
             # A `doc-` id and the journal's meta: notebook retention covers the undo, and doc undo still knows it after its parent is pruned.
             new_id=DOC_OP_PREFIX+uuid.uuid4().hex
-            try:receipt=commit(root,changes,'undo:'+operation_id,domains,guards=guards,operation_id=new_id,meta=value.get('meta'))
+            try:receipt=commit(root,changes,'undo:'+operation_id,domains,guards=guards,operation_id=new_id,meta=value.get('meta'),modes=modes)
             except BaseException:
                 if again:again()
                 raise
             record_index(root,new_id,changes)
             return receipt
-        receipt=commit(root,changes,'undo:'+operation_id,domains,guards=guards)
-        for effect in value['effects']:   # POSIX: a file undo brought back gets the mode it had, not the 0600 of a new file
-            if effect.get('before_mode') is not None and effect['before'] is not None:
-                os.chmod(confined(root,effect['path']),effect['before_mode'])
-        return receipt
+        return commit(root,changes,'undo:'+operation_id,domains,guards=guards,modes=modes)
 
 def _require_revision(actual,given,ref):
     """The caller's revision is required here too, not only in the CLI, so a Python caller cannot write from an old read."""

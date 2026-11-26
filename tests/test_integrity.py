@@ -111,6 +111,33 @@ class Integrity(StoreFixture):
         undo(self.root, removed['operation_id'])
         self.assertEqual((self.root / 'extra/tool.sh').stat().st_mode & 0o777, 0o755)
 
+    @__import__('unittest').skipIf(os.name == 'nt', 'POSIX file modes')
+    def test_undo_refuses_after_a_later_mode_change(self):
+        from core.governance import commit
+        done = commit(self.root, {'extra/tool.sh': 'echo hi\n'}, 'package_install')
+        (self.root / 'extra/tool.sh').chmod(0o755)   # a chmod made after the operation is a later edit
+        with self.assertRaisesRegex(ValueError, 'mode of extra/tool.sh changed'):
+            undo(self.root, done['operation_id'])
+        self.assertTrue((self.root / 'extra/tool.sh').exists())
+
+    @__import__('unittest').skipIf(os.name == 'nt', 'POSIX file modes')
+    def test_an_undo_stopped_before_its_chmod_gets_the_mode_on_recovery(self):
+        from core.governance import commit
+        commit(self.root, {'extra/tool.sh': 'echo hi\n'}, 'package_install')
+        path = self.root / 'extra/tool.sh'
+        path.chmod(0o755)
+        removed = commit(self.root, {'extra/tool.sh': None}, 'package_uninstall')
+        real = repo.os.chmod
+        def stop(target, mode, *rest, **kw):
+            if Path(target).name == 'tool.sh':
+                raise KeyboardInterrupt   # the process dies after the bytes are back, before the mode is
+            return real(target, mode, *rest, **kw)
+        with patch.object(repo.os, 'chmod', stop), self.assertRaises(KeyboardInterrupt):
+            undo(self.root, removed['operation_id'])
+        self.assertTrue(path.exists())
+        repo.roll_forward_pending(self.root)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o755)
+
     def test_retag_undo_with_a_bom_taxonomy(self):
         a = self.note()
         taxonomy = self.root / 'tag_taxonomy.json'

@@ -175,6 +175,50 @@ class SharedStorage(StorageBase):
         self.assertEqual(storage.setup(dest, True)['status'], 'configured')   # the folder is the store now, not a stale copy
         self.assertEqual(storage.resolve_root()[0], dest)
 
+    def abandon(self, source, dest):
+        """A relocation from source to dest stopped before retiring the source, then abandoned because the configuration changed."""
+        real = storage._write
+        def fail(path, value):
+            if Path(path).name == '.relocated.json':
+                raise OSError('stopped before retiring the source')
+            return real(path, value)
+        with patch.object(storage, '_write', fail), self.assertRaises(OSError):
+            storage.relocate(source, dest)
+        self.config.write_text(json.dumps({'version': 1, 'data_root': str(source), 'edited': True}), encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'configuration changed'):
+            storage.relocate(source, dest)
+
+    def test_a_newer_abandonment_is_not_hidden_by_an_older_commit(self):
+        dest = self.prepared()
+        self.relocate()   # committed: dest became the store
+        other = self.base / 'third store'
+        storage.relocate(dest, other)   # committed: other is the store, dest is retired
+        import shutil
+        shutil.rmtree(dest)
+        self.abandon(other, dest)   # a later relocation to dest, abandoned with its full copy left there
+        with self.assertRaisesRegex(ValueError, 'abandoned relocation'):
+            storage.setup(dest, True)
+        self.assertEqual(storage.resolve_root()[0], other)
+
+    def test_an_environment_override_does_not_exempt_an_abandoned_copy(self):
+        dest = self.prepared()
+        self.abandon(self.root, dest)
+        os.environ['LIVING_MEMORY_ROOT'] = str(dest)   # the override names the partial copy, but setup must not publish it
+        with self.assertRaisesRegex(ValueError, 'abandoned relocation'):
+            storage.setup(dest, True)
+        self.assertEqual(read_json(self.config)['data_root'], str(self.root))
+
+    def test_existing_folders_are_compared_by_identity(self):
+        a, b = self.base / 'Folder A', self.base / 'folder b'
+        a.mkdir()
+        import core.paths
+        with patch.object(core.paths, 'same_path', return_value=True):   # names a case-folding comparison would call one folder
+            self.assertFalse(storage._same(str(a), b))   # only one exists: on a case-sensitive volume they differ
+            b.mkdir()
+            self.assertFalse(storage._same(str(a), b))   # both exist and are different folders
+            self.assertTrue(storage._same(str(self.base / 'gone'), self.base / 'also gone'))   # neither exists: names decide
+        self.assertTrue(storage._same(str(a), a))
+
     def test_relocation_destination_conflict_is_preserved(self):
         dest = self.prepared()
         dest.mkdir()

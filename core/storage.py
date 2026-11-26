@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import sys
+import time
 import uuid
 from contextlib import ExitStack
 from pathlib import Path
@@ -192,20 +193,49 @@ def _pending_relocation(source, destination):
 
 
 def _same(recorded, path):
+    """True when the recorded folder is path. Folders that exist are compared by identity, so a case-sensitive APFS volume
+    keeps Store and store apart; when only one exists they differ; when neither does, the names are compared as the disk would."""
     from .paths import same_path
-    return isinstance(recorded, str) and same_path(recorded, path, resolve=False)
+    if not isinstance(recorded, str):
+        return False
+    try:
+        here, there = Path(recorded).exists(), Path(path).exists()
+        if here and there:
+            return os.path.samefile(recorded, path)
+        if here != there:
+            return False
+    except OSError:
+        pass
+    return same_path(recorded, path, resolve=False)
+
+
+def _finish(journal_path, journal, state):
+    """Write a terminal state (committed or abandoned) with the time it was reached, so the newest one wins."""
+    _write(journal_path, {**journal, 'state': state, 'completed_ns': time.time_ns()})
 
 
 def _abandoned_relocation(destination):
-    """True when a relocation to destination was abandoned (its source or the configuration changed during the copy) and no
-    later relocation to it committed: a folder that became the store since is never called a stale copy."""
-    states = []
+    """True when the newest finished relocation to destination was abandoned (its source or the configuration changed during
+    the copy): a folder that became the store since is never called a stale copy, and a later abandonment is not hidden by an
+    older commit. Journals written before completed_ns are ordered by their file time."""
+    latest = None
     for path in _relocations().glob('*.relocation.json') if _relocations().is_dir() else []:
         record = _read(path)
-        if isinstance(record, dict) and _same(record.get('destination'), destination):
-            journal = _read(path.with_name(record['id'] + '.journal.json'))
-            states.append(journal.get('state') if isinstance(journal, dict) else None)
-    return 'abandoned' in states and 'committed' not in states
+        if not isinstance(record, dict) or not _same(record.get('destination'), destination):
+            continue
+        journal_path = path.with_name(record['id'] + '.journal.json')
+        journal = _read(journal_path)
+        if not isinstance(journal, dict) or journal.get('state') not in ('committed', 'abandoned'):
+            continue
+        at = journal.get('completed_ns')
+        if not isinstance(at, int):
+            try:
+                at = journal_path.stat().st_mtime_ns
+            except OSError:
+                continue
+        if latest is None or at > latest[0]:
+            latest = (at, journal['state'])
+    return latest is not None and latest[1] == 'abandoned'
 
 
 def relocate(source, destination, config_revision=False):
@@ -302,10 +332,10 @@ def _relocate(identity):
             # A source or configuration that changed since the record was made: this relocation can never finish, so it is
             # abandoned and the next run to this destination starts a new one.
             if _hash(config_path()) != record['config_revision'] and _read(config_path()) != target_config:
-                _write(journal_path, {**(journal or {'relocation_id': identity}), 'state': 'abandoned'})
+                _finish(journal_path, journal or {'relocation_id': identity}, 'abandoned')
                 raise ValueError('The shared configuration changed during the relocation; nothing was published. Delete the partial copy in the destination and run setup --location again')
             if _manifest(source) != record['files']:
-                _write(journal_path, {**(journal or {'relocation_id': identity}), 'state': 'abandoned'})
+                _finish(journal_path, journal or {'relocation_id': identity}, 'abandoned')
                 raise ValueError('The source store changed during the relocation; nothing was published. Delete the partial copy in the destination and run setup --location again')
             if not journal:
                 if any(p.name != '.store.lock' and not is_os_junk(p) for p in destination.iterdir()):
@@ -365,8 +395,7 @@ def _relocate(identity):
                 raise ValueError('Source already relocated by another operation')
             _write(source / '.relocated.json', marker)
             _write(config_path(), target_config)
-            journal['state'] = 'committed'
-            _write(journal_path, journal)
+            _finish(journal_path, journal, 'committed')
     return {'ok': True, 'status': 'committed', 'root': str(destination), 'source_retained': str(source)}
 
 
@@ -399,7 +428,11 @@ def setup(location=None, non_interactive=False, source=None):
     pending = _pending_relocation(None, destination)
     if pending:
         return _relocate(pending)   # an interrupted relocation to this folder: finish it, never publish its partial copy
-    if (current is None or not _same(str(current), destination)) and _abandoned_relocation(destination) and destination.exists() and any(p.name != '.store.lock' and not is_os_junk(p) for p in destination.iterdir()):
+    try:
+        configured = _configured()   # only the folder the shared configuration names is exempt, never an environment override
+    except ValueError:
+        configured = None
+    if (configured is None or not _same(str(configured), destination)) and _abandoned_relocation(destination) and destination.exists() and any(p.name != '.store.lock' and not is_os_junk(p) for p in destination.iterdir()):
         raise ValueError(f'{destination} holds the partial copy of an abandoned relocation; delete its contents and run setup --location again')
     if destination.exists() and any(p.name != '.store.lock' and not is_os_junk(p) for p in destination.iterdir()):
         with store_lock(destination):
