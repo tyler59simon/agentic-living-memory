@@ -85,6 +85,15 @@ class Backups(StoreFixture):
         os.utime(path, (old, old))
         self.assertTrue(any('hours old' in w for w in warnings()))
 
+    def test_restore_refuses_to_replace_a_file_undo_could_not_put_back(self):
+        keep = self.note('Keep me', 'Original body.')
+        source = snap.backup(self.root)['backup']
+        path, _ = find_note(keep['id'], 'demo', self.root)
+        path.write_bytes(b'\xff\xfe not text')
+        with self.assertRaisesRegex(ValueError, 'not UTF-8'):
+            snap.restore_backup(self.root, source)
+        self.assertEqual(path.read_bytes(), b'\xff\xfe not text')
+
     def test_restore_round_trip(self):
         keep = self.note('Keep me', 'Original body.')
         source = snap.backup(self.root)['backup']

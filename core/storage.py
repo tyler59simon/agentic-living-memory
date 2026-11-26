@@ -180,10 +180,10 @@ def _relocations():
 
 
 def _pending_relocation(source, destination):
-    """The ID of an interrupted relocation from source to destination, which a rerun of the same command resumes, or None."""
+    """The ID of an interrupted relocation from source (None: any source) to destination, which a rerun resumes, or None."""
     for path in sorted(_relocations().glob('*.relocation.json')) if _relocations().is_dir() else []:
         record = _read(path)
-        if not isinstance(record, dict) or record.get('source') != str(source) or record.get('destination') != str(destination):
+        if not isinstance(record, dict) or (source is not None and record.get('source') != str(source)) or record.get('destination') != str(destination):
             continue
         journal = _read(path.with_name(record['id'] + '.journal.json'))
         if journal and journal.get('state') not in ('committed', 'abandoned'):
@@ -191,9 +191,10 @@ def _pending_relocation(source, destination):
     return None
 
 
-def relocate(source, destination):
+def relocate(source, destination, config_revision=False):
     """Move the shared store from source to destination in one direct command: copy, verify, then point the configuration at the
-    copy. The source is kept, marked as relocated. Rerunning the same command resumes an interrupted relocation."""
+    copy. The source is kept, marked as relocated. Rerunning the same command resumes an interrupted relocation.
+    config_revision: the configuration's hash when the caller chose source from it, so a setup that changed it meanwhile wins."""
     from .repository import store_lock
     source, destination = local_path(source), local_path(destination)
     if source == destination or source in destination.parents or destination in source.parents:
@@ -207,7 +208,7 @@ def relocate(source, destination):
         validate_store(source)
         manifest = _manifest(source)
     value = {'version': 1, 'id': uuid.uuid4().hex, 'source': str(source), 'destination': str(destination),
-             'config_path': str(config_path()), 'config_revision': _hash(config_path()), 'files': manifest,
+             'config_path': str(config_path()), 'config_revision': _hash(config_path()) if config_revision is False else config_revision, 'files': manifest,
              'notes': sum(1 for p in manifest if p.endswith('.md') and len(p.split('/')) > 3 and p.split('/')[0] == 'domains' and p.split('/')[2] in ('notes', 'archive'))}
     value['digest'] = _digest(value)
     destination.mkdir(parents=True, exist_ok=True)
@@ -356,6 +357,7 @@ def setup(location=None, non_interactive=False, source=None):
     from .migration import migrate_schema
     from .repository import store_lock
     current = None
+    seen = _hash(config_path())   # before the store is chosen from it: a relocation from that store refuses a configuration changed since
     try:
         current = resolve_root()[0]
     except ValueError:
@@ -377,17 +379,31 @@ def setup(location=None, non_interactive=False, source=None):
     destination = local_path(location)
     if source:
         return relocate(source, destination)
+    pending = _pending_relocation(None, destination)
+    if pending:
+        return _relocate(pending)   # an interrupted relocation to this folder: finish it, never publish its partial copy
     if destination.exists() and any(p.name != '.store.lock' and not is_os_junk(p) for p in destination.iterdir()):
         with store_lock(destination):
             validate_store(destination)
     else:
         if current and current != destination:
-            return relocate(current, destination)
+            return relocate(current, destination, seen)
         migrate_schema(destination)
     with file_lock(config_path().parent / '.setup.lock', timeout=30):
         _write(config_path(), {'version': 1, 'data_root': str(destination)})
     return {'ok': True, 'status': 'configured', 'root': str(destination), 'config_path': str(config_path()),
             'next': 'Install a harness adapter, bind a project, then run doctor --cwd PROJECT.'}
+
+
+def refuse_agent_setup():
+    """The refusals `alm setup` makes (core/cli.py), for install.py and integrations/setup.py run directly: not from an agent in a
+    Hivemind terminal, a subagent or a viewer."""
+    if os.environ.get('HIVEMIND_SESSION'):
+        from .runtime import HIVEMIND_DENY
+        raise SystemExit('hivemind: ' + HIVEMIND_DENY)
+    actor = os.environ.get('LIVING_MEMORY_ACTOR')
+    if actor in ('subagent', 'viewer'):
+        raise SystemExit(f'{actor.capitalize()}s are read-only')
 
 
 def ensure_setup(location=None):

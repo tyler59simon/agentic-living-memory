@@ -100,4 +100,30 @@ class UpgradeCommand(StoreFixture):
             with patch.dict(os.environ,{'HIVEMIND_SESSION':'s'}):code,text=self.run_cli('--json','upgrade');self.assertNotEqual(code,0);self.assertIn('hivemind',text)
             run.assert_not_called()
 
+class InstallerEntryPoints(StoreFixture):
+    def install_main(self,argv):
+        import install
+        out=io.StringIO()
+        with patch.object(sys,'argv',['install.py',*argv]),contextlib.redirect_stdout(out):code=install.main()
+        return code,out.getvalue()
+    def test_the_upgrader_from_before_plans_were_removed_still_installs(self):
+        import install
+        receipt={'ok':True,'operation_id':'i-'+'d'*32,'undo':'undo i-'+'d'*32,'summary':{'files':2,'next_steps':[]}}
+        home=self.base/'install home';(home/'.operations'/receipt['operation_id']).mkdir(parents=True)
+        (home/'.operations'/receipt['operation_id']/'journal.json').write_text('{}',encoding='utf-8')
+        with patch.object(install,'install',return_value=receipt) as direct,patch('core.storage.ensure_setup'),patch.object(install,'print_next_steps'),patch.object(install,'INSTALL_HOME',home):
+            code,out=self.install_main(['--plan'])   # the old upgrader's first call installs directly
+            plan=json.loads(out.splitlines()[-1]);self.assertEqual((code,plan['plan_id'],plan['digest']),(0,receipt['operation_id'],'direct'))
+            code,out=self.install_main(['--apply-plan',plan['plan_id'],'--expected-plan-sha256',plan['digest']])   # its second call confirms
+            self.assertEqual((code,json.loads(out)['operation_id']),(0,receipt['operation_id']));self.assertEqual(direct.call_count,1)
+            with contextlib.redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):self.install_main(['--apply-plan','p-old','--expected-plan-sha256','x'])
+    def test_agents_cannot_run_the_installer_or_harness_setup_directly(self):
+        import install
+        from integrations import setup
+        for env in ({'HIVEMIND_SESSION':'s'},{'LIVING_MEMORY_ACTOR':'subagent'},{'LIVING_MEMORY_ACTOR':'viewer'}):
+            with self.subTest(env=env),patch.dict(os.environ,env),patch.object(install,'install') as direct,patch.object(setup,'setup') as wire:
+                with self.assertRaises(SystemExit):self.install_main([])
+                with self.assertRaises(SystemExit):setup.main(['claude'])
+                direct.assert_not_called();wire.assert_not_called()
+
 if __name__=='__main__':unittest.main()

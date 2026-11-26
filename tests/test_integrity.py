@@ -102,6 +102,24 @@ class Integrity(StoreFixture):
         self.assertIn('duplicate id', repo.problems('demo', self.root)[0]['problem'])
         self.assertTrue(capture('Other', 'A separate note.', ['subject/project', 'concern/decision'], 'demo', self.root))
 
+    @__import__('unittest').skipIf(os.name == 'nt', 'POSIX file modes')
+    def test_undo_brings_a_removed_file_back_with_its_mode(self):
+        from core.governance import commit
+        commit(self.root, {'extra/tool.sh': 'echo hi\n'}, 'package_install')
+        (self.root / 'extra/tool.sh').chmod(0o755)
+        removed = commit(self.root, {'extra/tool.sh': None}, 'package_uninstall')
+        undo(self.root, removed['operation_id'])
+        self.assertEqual((self.root / 'extra/tool.sh').stat().st_mode & 0o777, 0o755)
+
+    def test_retag_undo_with_a_bom_taxonomy(self):
+        a = self.note()
+        taxonomy = self.root / 'tag_taxonomy.json'
+        taxonomy.write_bytes(b'\xef\xbb\xbf' + taxonomy.read_bytes())
+        before = taxonomy.read_bytes(), Path(a['path']).read_bytes()
+        done = retag(self.root, {'concern/architecture': 'concern/decision'})
+        undo(self.root, done['operation_id'])
+        self.assertEqual((taxonomy.read_bytes(), Path(a['path']).read_bytes()), before)
+
     def test_retag_covers_every_domain(self):
         init_domain('other', [str(self.base / 'other')], self.root)
         a = self.note()

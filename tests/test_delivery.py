@@ -329,6 +329,16 @@ class LauncherInstall(StoreFixture):
         profile=self.base/'h'/'.profile';profile.parent.mkdir();profile.write_text('alias x=y')
         change={'kind':'profile','target':str(profile),'before':None,'add':self.install.PROFILE_LINE}
         self.install._add_to_path_posix(change);self.assertEqual(profile.read_text(),'alias x=y\n'+self.install.PROFILE_LINE+'\n')
+    @unittest.skipUnless(os.name=='nt','Windows registry Path')
+    def test_windows_path_write_keeps_a_folder_added_after_the_step_was_read(self):
+        import winreg
+        change={'kind':'registry','target':'HKCU\\Environment\\Path','before':'C:\\a','before_type':winreg.REG_EXPAND_SZ,'add':'C:\\lm\\bin'}
+        written=[]
+        with patch.object(self.install,'_registry_path',return_value=('C:\\a;C:\\other-installer',winreg.REG_SZ)),\
+             patch.object(winreg,'OpenKey'),patch.object(winreg,'SetValueEx',side_effect=lambda key,name,res,kind,value:written.append((kind,value))),\
+             patch('ctypes.windll.user32.SendMessageTimeoutW'):
+            self.install._add_to_path_windows(change)
+        self.assertEqual(written,[(winreg.REG_SZ,'C:\\a;C:\\other-installer;C:\\lm\\bin')])
     @unittest.skipIf(os.name=='nt','POSIX profile file')
     def test_posix_path_change_by_profile(self):
         home=self.base/'h';home.mkdir();self.on_path(False)

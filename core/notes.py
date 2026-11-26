@@ -47,7 +47,7 @@ def note_revisions(changes):
     found={}
     for rel,text in changes.items():
         parts=str(rel).split('/')
-        if isinstance(text,str) and len(parts)==4 and parts[0]=='domains' and parts[2] in ('notes','archive') and parts[3].endswith('.md'):
+        if isinstance(text,str) and len(parts)>=4 and parts[0]=='domains' and parts[2] in ('notes','archive') and parts[-1].endswith('.md'):
             meta=parse_text(text,rel)
             if meta and meta.get('id'):found[f"{parts[1]}:{meta['id']}"]=digest(text.encode())
     return found

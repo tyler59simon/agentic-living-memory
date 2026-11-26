@@ -216,6 +216,9 @@ def _restore_backup(root,source):
         else:changes[rel]=text
     for rel in current:
         if rel not in wanted and rel not in skipped and rel not in TOP_LEVEL:changes[rel]=None
+    for rel in changes:   # undo writes text: a file it could not put back is moved aside by the user first, never lost
+        try:(root/rel).is_file() and (root/rel).read_bytes().decode('utf-8')
+        except UnicodeDecodeError:raise ValueError(f'Restore conflict: {rel} in the store is not UTF-8 text, so undo could not put it back; move it out of the store, then restore again') from None
     if changes.get('note_types.json') is not None:
         # An older registry must not drop a custom type that notes left after the restore still use.
         from .type_registry import restore_registry

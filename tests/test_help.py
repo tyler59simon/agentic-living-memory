@@ -45,7 +45,11 @@ class BlockAndFallback(unittest.TestCase):
         missing=[c for c in clauses if c.rstrip('.') not in new]
         self.assertEqual(missing,[])
     def test_the_fallback_fits_codex(self):
-        self.assertLessEqual(len(FALLBACK_PROTOCOL+'\n'+fallback_usage()),3450)   # Codex additionalContextLimit 4000, less CMD and tags (3400 until the folder notebook hint, CON-9)
+        session='0'*8+'-0000-0000-0000-'+'0'*12   # a real session ID is a 36-character UUID, and the fallback names it three times
+        self.assertLessEqual(len(FALLBACK_PROTOCOL+'\n'+fallback_usage(session)),3450)   # Codex additionalContextLimit 4000, less CMD and tags (3400 until the folder notebook hint, CON-9)
+    def test_the_fallback_commands_carry_the_revision_they_need(self):
+        for line in fallback_usage().splitlines():
+            if line.startswith(('Update:','Resuming:')):self.assertEqual(line.count('--expected-revision REV'),1 if line.startswith('Update:') else 2,line)
     def test_the_topic_list_in_the_fallback_is_the_topics(self):
         listed=re.search(r'help TOPIC \(([^)]*)\)',fallback_usage()).group(1).split(', ');self.assertEqual(listed,list(TOPICS))
     def test_the_fallback_keeps_the_concern_and_section_hints_agents_guessed_without(self):

@@ -18,6 +18,12 @@ from core.repository import inventory, read_json
 TAGS = ['subject/project', 'concern/decision']
 
 
+
+def at(root, domain, ref_id):
+    """DOMAIN:REF_ID@REVISION, the revision read from the note now (merge, remap and promote require one)."""
+    from core.notes import find_note
+    return f'{domain}:{ref_id}@' + find_note(ref_id, domain, root)[1]['revision']
+
 class GlobalFixture(StoreFixture):
     def cli(self, *argv):
         out, err = io.StringIO(), io.StringIO()
@@ -233,14 +239,14 @@ class AcrossDomains(GlobalFixture):
 
     def test_promote_cleans_the_same_way_and_refuses_the_same_notes(self):
         first = self.seeded(files=['x.py']);original = self.ids('other')[first['id']]
-        promote(self.root, ['other:' + first['id']])
+        promote(self.root, [at(self.root, 'other', first['id'])])
         self.assertCleaned(self.ids('_global')[first['id']], original)
         pathy = capture('Run the script', f"Run {self.base / 'other' / 'x.py'}.", TAGS, 'other', self.root)
         with self.assertRaisesRegex(ValueError, 'names a project path'):
-            promote(self.root, ['other:' + pathy['id']])
+            promote(self.root, [at(self.root, 'other', pathy['id'])])
         m = capture('Layout', 'Where things live.', TAGS, 'other', self.root, type='map', files=['.'])
         with self.assertRaisesRegex(ValueError, 'map'):
-            promote(self.root, ['other:' + m['id']])
+            promote(self.root, [at(self.root, 'other', m['id'])])
 
     def test_a_merely_similar_note_in_an_unrelated_project_is_refused_with_promote(self):
         self.other()
@@ -342,7 +348,7 @@ class Promotion(GlobalFixture):
         b = capture('Deploy using install.py', 'Run install.py --plan and then --apply-plan.', TAGS, 'demo', self.root, allow_similar=True)
         name = Path(b['path']).name
         c = capture('Release checklist', f'Deploy as in [the deploy note](<{name}>).', TAGS, 'demo', self.root)
-        done = promote(self.root, ['other:' + a['id'], 'demo:' + b['id']]);self.assertEqual((done['kind'], done['operation_id'][:2]), ('promote', 'd-'))
+        done = promote(self.root, [at(self.root, 'other', a['id']), at(self.root, 'demo', b['id'])]);self.assertEqual((done['kind'], done['operation_id'][:2]), ('promote', 'd-'))
         active, everything = self.ids('_global'), self.ids('_global', retired=True)
         self.assertEqual(set(active), {b['id']});self.assertEqual(everything[a['id']]['superseded_by'], b['id'])
         self.assertEqual(active[b['id']]['supersedes'], [a['id']])
@@ -350,7 +356,7 @@ class Promotion(GlobalFixture):
 
     def test_a_promotion_is_undone_directly_unless_a_later_edit_conflicts(self):
         a = capture('Deploy with install.py', 'Use install.py to deploy.', TAGS, 'demo', self.root)
-        done = promote(self.root, ['demo:' + a['id']])
+        done = promote(self.root, [at(self.root, 'demo', a['id'])])
         code, _ = self.cli('--domain', '_global', 'update', '_global:' + a['id'], '--body', 'Changed since the promotion.')
         self.assertEqual(code, 0)
         with self.assertRaisesRegex(ValueError, 'Undo conflicts with later edits'):
@@ -363,14 +369,14 @@ class Promotion(GlobalFixture):
         build_overlay('demo', vault, self.root);build_overlay('_global', vault, self.root)
         copies = lambda domain: sorted(p.name for p in (vault / 'Domains' / domain).glob('*.md')) if (vault / 'Domains' / domain).is_dir() else []
         self.assertEqual(copies('demo'), [Path(a['path']).name])
-        promote(self.root, ['demo:' + a['id']])
+        promote(self.root, [at(self.root, 'demo', a['id'])])
         build_overlay('demo', vault, self.root);build_overlay('_global', vault, self.root)
         self.assertEqual((copies('demo'), copies('_global')), ([], [Path(a['path']).name]))
 
     def test_an_old_ref_still_finds_a_promoted_note(self):
         from core.notes import resolve_ref
         a = capture('Deploy with install.py', 'Use install.py to deploy.', TAGS, 'demo', self.root)
-        promote(self.root, ['demo:' + a['id']])
+        promote(self.root, [at(self.root, 'demo', a['id'])])
         self.assertEqual(resolve_ref('demo:' + a['id'][:8], 'demo', self.root), ('_global', a['id']))
         code, out = self.cli('--domain', 'demo', 'read', 'demo:' + a['id'][:8])
         self.assertEqual((code, out['domain']), (0, '_global'))
@@ -378,4 +384,4 @@ class Promotion(GlobalFixture):
     def test_global_notes_cannot_be_promoted_again(self):
         g = capture('Prefer forward slashes', 'Use forward slashes.', TAGS, '_global', self.root)
         with self.assertRaisesRegex(ValueError, 'already in the global domain'):
-            promote(self.root, ['_global:' + g['id']])
+            promote(self.root, [at(self.root, '_global', g['id'])])

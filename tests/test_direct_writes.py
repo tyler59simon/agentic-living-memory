@@ -151,6 +151,8 @@ class Permissions(Fixture):
         for ask in ('promote-plan','remap','source','project','system','rewrite-plan'):self.assertNotIn(ask,runtime.ALLOWED_SUBCOMMANDS)
         self.assertTrue(set(NEW_VERBS)<=runtime.MUTATING_SUBCOMMANDS);self.assertTrue(set(NEW_VERBS)<=runtime.HIVEMIND_GOVERNED);self.assertEqual(set(NEW_VERBS),DIRECT_WRITES)
         self.assertFalse(BULK_WRITES&runtime.ALLOWED_SUBCOMMANDS);self.assertTrue(BULK_WRITES<=runtime.MUTATING_SUBCOMMANDS);self.assertTrue(BULK_WRITES<=runtime.HIVEMIND_GOVERNED)   # bulk writes keep the harness prompt
+        from core.cli import VAULT_SYNCS
+        self.assertFalse(VAULT_SYNCS&runtime.ALLOWED_SUBCOMMANDS);self.assertTrue(VAULT_SYNCS<=runtime.MUTATING_SUBCOMMANDS);self.assertTrue(VAULT_SYNCS<=runtime.HIVEMIND_GOVERNED)   # a manual sync applies vault deletions
         self.assertNotIn('inspect-plan',runtime.ALLOWED_SUBCOMMANDS);self.assertNotIn('apply',runtime.HIVEMIND_GOVERNED);self.assertIn('setup',runtime.HIVEMIND_GOVERNED)
     def test_what_is_auto_allowed(self):
         for rest in ("archive demo:abc","promote demo:abc",'taxonomy','taxonomy --json'):
@@ -175,7 +177,7 @@ class HivemindSession(Fixture):
     def test_every_new_write_is_refused_in_a_hivemind_session_and_reads_are_not(self):
         n=self.note()
         with patch.dict(os.environ,{'HIVEMIND_SESSION':'hm-1'}):
-            for argv in (('archive','demo:'+n['id']),('rewrite',),('remap',),('promote','demo:'+n['id']),('source','add'),('project','create'),('system','create'),('taxonomy','add','concern/x'),('undo','op-1'),('delete','demo:'+n['id']),('merge',),('retag',)):
+            for argv in (('archive','demo:'+n['id']),('rewrite',),('remap',),('promote','demo:'+n['id']),('source','add'),('project','create'),('system','create'),('taxonomy','add','concern/x'),('undo','op-1'),('delete','demo:'+n['id']),('merge',),('retag',),('sync',str(self.base/'vault')),('overlay-build',str(self.base/'vault')),('overlay-sync-all',)):
                 with self.subTest(argv=argv):
                     code,error=self.cli(*argv);self.assertEqual(code,2);self.assertIn('hivemind:',json.dumps(error))
             self.assertEqual(self.cli('taxonomy')[0],0);self.assertEqual(self.cli('projects')[0],0)
@@ -186,7 +188,7 @@ class HivemindSession(Fixture):
             payload={'cwd':str(self.base/'project'),'session_id':'s1','tool_name':'Bash','tool_input':{'command':cmd(rest)}}
             return 'Hivemind' in str(runtime.process('claude','pre-tool-use',payload,self.root).get('deny',''))
         with patch.dict(os.environ,{'HIVEMIND_SESSION':'hm-1'}):
-            for rest in ('archive demo:abc','rewrite','remap','promote demo:abc','source add','project create','system create','taxonomy add concern/x','delete demo:abc','merge','retag','setup claude'):
+            for rest in ('archive demo:abc','rewrite','remap','promote demo:abc','source add','project create','system create','taxonomy add concern/x','delete demo:abc','merge','retag','setup claude','sync vault','overlay-build vault','overlay-sync-all'):
                 with self.subTest(rest=rest):self.assertTrue(denied(rest))
             for rest in ('taxonomy','projects','search cache'):
                 with self.subTest(rest=rest):self.assertFalse(denied(rest))

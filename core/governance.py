@@ -1,7 +1,7 @@
 """Direct journaled writes, receipts, history, undo and derived-state recovery. There are no plans to approve: every write is
 journaled with its before-bytes, so `undo OPERATION` reverses it (the user removed plans on 2026-11-26)."""
 from __future__ import annotations
-import json,uuid
+import json,os,uuid
 from pathlib import Path
 from .common import memory_root
 from .note_types import keep_baseline
@@ -124,7 +124,7 @@ def merge(root,payload):
     if not isinstance(sources,list) or not 1<=len(sources)<=20 or len(set(sources))!=len(sources):raise ValueError('Merge requires 1..20 distinct source references')
     with store_lock(root):
         target_path,target=find_note(target_id,domain,root)
-        if target_revision:check_revision(target['revision'],target_revision,target_ref)
+        _require_revision(target['revision'],target_revision,target_ref)
         if target.get('status')!='active':raise ValueError('Merge target must be active')
         keep_baseline(target);target['body']=payload['body'].strip();target['updated']=now();changes={};merged=[];moves={};named=[]
         if target.get('checked'):target['checked']=target['updated']   # the merged body is the author's word for the facts as of now
@@ -132,7 +132,7 @@ def merge(root,payload):
             ref,revision=split_revision(given);source_domain,identity=ref.split(':',1)
             if source_domain!=domain:raise ValueError('Merge sources must be distinct notes in the target domain')
             path,note=find_note(identity,domain,root)
-            if revision:check_revision(note['revision'],revision,ref)
+            _require_revision(note['revision'],revision,ref)
             # Compare resolved notes, not spellings: a full ID and its short prefix are the same note.
             if note['id']==target['id'] or note['id'] in merged:raise ValueError('Merge sources must be distinct notes in the target domain')
             if note.get('status')!='active':raise ValueError('Merge sources must be active')
@@ -191,7 +191,7 @@ def undo(root,operation_id,include_private=False,revert_files=True):
         guards=None
         if 'tag_taxonomy.json' in changes:
             tags_of=lambda t:set((t.get('tags',[]) if isinstance(t,dict) else t) or [])
-            dropped=tags_of(read_json(root/'tag_taxonomy.json',{'tags':[]}))-tags_of(json.loads(changes['tag_taxonomy.json']) if changes['tag_taxonomy.json'] else {})
+            dropped=tags_of(read_json(root/'tag_taxonomy.json',{'tags':[]}))-tags_of(json.loads(changes['tag_taxonomy.json'].lstrip('\ufeff')) if changes['tag_taxonomy.json'] else {})
             guards={'unused_tags':dropped}
             try:_check_guards(root,{'guards':{'unused_tags':sorted(dropped)},'domains':sorted(domains),'changes':changes})
             except ValueError as exc:raise ValueError('Undo would remove tags that notes still use; retag those notes first ('+str(exc).split(': ',1)[-1]+')') from None
@@ -217,7 +217,17 @@ def undo(root,operation_id,include_private=False,revert_files=True):
                 raise
             record_index(root,new_id,changes)
             return receipt
-        return commit(root,changes,'undo:'+operation_id,domains,guards=guards)
+        receipt=commit(root,changes,'undo:'+operation_id,domains,guards=guards)
+        for effect in value['effects']:   # POSIX: a file undo brought back gets the mode it had, not the 0600 of a new file
+            if effect.get('before_mode') is not None and effect['before'] is not None:
+                os.chmod(confined(root,effect['path']),effect['before_mode'])
+        return receipt
+
+def _require_revision(actual,given,ref):
+    """The caller's revision is required here too, not only in the CLI, so a Python caller cannot write from an old read."""
+    if not given:raise ValueError(f'revision_required: pass the revision you read of {ref} (REF@REVISION)')
+    from .notes import check_revision
+    check_revision(actual,given,ref)
 
 def remap(root,mappings):
     from .notes import find_note
@@ -231,9 +241,7 @@ def remap(root,mappings):
         if sources&targets:raise ValueError('Remap cycles are not allowed')
         for mapping in mappings:
             before,after=mapping['before'],mapping['after'];path,note=find_note(before['id'],before['domain'],root)
-            if mapping.get('revision'):
-                from .notes import check_revision
-                check_revision(note['revision'],mapping['revision'],f"{before['domain']}:{before['id']}")
+            _require_revision(note['revision'],mapping.get('revision'),f"{before['domain']}:{before['id']}")
             if before['id']!=after['id']:raise ValueError('Stable IDs cannot change; remap changes domains only')
             try:find_note(after['id'],after['domain'],root)
             except ValueError:pass
@@ -299,7 +307,7 @@ def promote(root,refs):
             d,note_id=resolve_ref(ref,None,root,[f for f in domain_folders(root) if f not in globals_])
             if d in globals_:raise ValueError(f'{ref} is already in the global domain')
             note=find_note(note_id,d,root)[1]
-            if revision:check_revision(note['revision'],revision,f'{d}:{note_id}')
+            _require_revision(note['revision'],revision,f'{d}:{note_id}')
             if note.get('status','active')!='active':raise ValueError(f'{ref} is not active; only active notes are promoted')
             if any(n['id']==note['id'] for n in notes):raise ValueError(f'{ref} is listed twice')
             blocker=promotion_blocker(note,root)

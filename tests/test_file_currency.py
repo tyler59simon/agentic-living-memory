@@ -218,7 +218,7 @@ class Freshness(Base):
         build_overlay('demo',vault,self.root);note=self.note_of(target);self.assertEqual(note['title'],'Retry cap');self.assertEqual(note['checked'],before['checked'])
         copy=vault/'Domains/demo'/Path(note['path']).name;copy.write_text(copy.read_text(encoding='utf-8').replace('read from the config','read from the settings'),encoding='utf-8')
         build_overlay('demo',vault,self.root);note=self.note_of(target);self.assertIn('settings',note['body']);self.assertEqual(note['checked'],note['updated'])
-        merge(self.root,{'target':'demo:'+target['id'],'sources':['demo:'+source['id']],'body':'Merged retry facts.'})
+        merge(self.root,{'target':'demo:'+target['id']+'@'+self.note_of(target)['revision'],'sources':['demo:'+source['id']+'@'+self.note_of(source)['revision']],'body':'Merged retry facts.'})
         note=self.note_of(target);self.assertEqual(note['checked'],note['updated'])
 
     def test_baseline_migration_keeps_the_old_effective_baseline_of_existing_notes(self):

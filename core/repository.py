@@ -683,8 +683,11 @@ def transaction(root, changes, kind, expected=None, operation_id=None, skip_unch
             after = content.encode() if isinstance(content, str) else content
             if skip_unchanged and before == after:
                 continue
-            effects.append({"path": str(Path(rel).as_posix()), "before": _encode(before), "after": _encode(after),
-                            "before_hash": digest(before), "after_hash": digest(after)})
+            effect = {"path": str(Path(rel).as_posix()), "before": _encode(before), "after": _encode(after),
+                      "before_hash": digest(before), "after_hash": digest(after)}
+            if before is not None and os.name != "nt":   # undo recreates a removed file with this mode (the installer compares it)
+                effect["before_mode"] = path.stat().st_mode & 0o777
+            effects.append(effect)
         if skip_unchanged and not effects:
             return {"ok": True, "operation_id": None, "state": "unchanged", "kind": kind}
         journal = {"schema": 1, "id": operation_id, "kind": kind, "created": now(), "state": "prepared", "effects": effects}

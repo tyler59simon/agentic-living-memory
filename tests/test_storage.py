@@ -173,6 +173,40 @@ class SharedStorage(StorageBase):
         self.assertEqual(self.relocate()['status'], 'committed')
         self.assertEqual(len(list((self.config.parent / 'relocations').glob('*.relocation.json'))), 1)   # resumed, not started again
 
+    def test_setup_location_resumes_an_interrupted_relocation(self):
+        dest = self.prepared()
+        self.interrupted()
+        self.assertEqual(storage.setup(dest, True)['status'], 'committed')
+        self.assertEqual(storage.resolve_root()[0], dest)
+        self.assertTrue((self.root / '.relocated.json').exists())   # the source was retired, so the copy was verified first
+        self.assertEqual(len(list((self.config.parent / 'relocations').glob('*.relocation.json'))), 1)
+
+    def test_setup_location_resumes_after_the_source_was_retired(self):
+        dest = self.prepared()
+        real = storage._write
+        def fail(path, value):
+            if path == self.config:
+                raise OSError('pointer failure')
+            return real(path, value)
+        with patch.object(storage, '_write', fail), self.assertRaises(OSError):
+            storage.setup(dest, True)
+        self.assertEqual(storage.setup(dest, True)['status'], 'committed')
+        self.assertEqual(read_json(self.config)['data_root'], str(dest))
+
+    def test_setup_does_not_overwrite_a_configuration_changed_after_it_chose_the_store(self):
+        dest = self.prepared()
+        other = self.base / 'other store'
+        from core.migration import migrate_schema
+        migrate_schema(other)
+        real = storage.resolve_root
+        def racing(*args, **kwargs):
+            result = real(*args, **kwargs)
+            self.config.write_text(json.dumps({'version': 1, 'data_root': str(other)}), encoding='utf-8')   # another setup wins meanwhile
+            return result
+        with patch.object(storage, 'resolve_root', racing), self.assertRaisesRegex(ValueError, 'configuration changed'):
+            storage.setup(dest, True)
+        self.assertEqual(read_json(self.config)['data_root'], str(other))
+
     def test_pointer_failure_after_retirement_resumes(self):
         self.prepared()
         real = storage._write

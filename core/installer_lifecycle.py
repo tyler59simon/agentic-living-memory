@@ -553,12 +553,10 @@ def _emit(value: dict[str, Any]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Plan and apply governed Living Memory Core lifecycle changes")
+    # Only for receipts older installs left beside the legacy copy (RECOVERY.md); install.py installs and uninstalls.
+    parser = argparse.ArgumentParser(description="Show or roll back a lifecycle receipt left by an older Living Memory install")
     parser.add_argument("--target", type=Path, required=True)
-    parser.add_argument("--source", type=Path, default=Path(__file__).resolve().parents[1])
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--plan", action="store_true")
-    group.add_argument("--uninstall-plan", action="store_true")
     group.add_argument("--status", action="store_true")
     group.add_argument("--rollback", type=Path)
     parser.add_argument("--operation-id")
@@ -570,8 +568,6 @@ def main(argv: list[str] | None = None) -> int:
             if not args.operation_id:
                 raise InstallError("--operation-id is required for status")
             result = status(args.target, args.operation_id)
-        else:
-            result = build_plan(args.target, args.source, args.uninstall_plan)
         _emit(result)
         return 0
     except InstallError as exc:

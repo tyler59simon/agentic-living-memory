@@ -225,8 +225,12 @@ def _reader(home):
 
 def _write(home,harness,changes,uninstall,summary,read_set):
     """One journaled write in the harness home; its `s-HARNESS-` operation ID is what undo takes."""
-    return commit(home,changes,harness+'_uninstall' if uninstall else harness+'_setup',summary=summary,guards={'read_set':read_set},
-                  operation_id=f's-{harness}-{uuid.uuid4().hex}')
+    receipt=commit(home,changes,harness+'_uninstall' if uninstall else harness+'_setup',summary=summary,guards={'read_set':read_set},
+                   operation_id=f's-{harness}-{uuid.uuid4().hex}')
+    home=Path(home).resolve()
+    if home!=Path(harness_home(harness)).expanduser().resolve():   # undo looks only in the configured home; name this one
+        receipt['undo']=f'--root "{home}" undo {receipt["operation_id"]}'
+    return receipt
 
 def _antigravity(home,uninstall,adopt):
     """Own one named hook group in Antigravity's shared config file and the managed block in its global GEMINI.md."""
@@ -343,6 +347,8 @@ def setup(harness,home=None,enable_hooks=False,uninstall=False,adopt=False):
 
 def main(argv=None):
     p=argparse.ArgumentParser();p.add_argument('harness',choices=sorted(CONFIG));p.add_argument('--home',type=Path);p.add_argument('--location',type=Path);p.add_argument('--hooks',action='store_true');p.add_argument('--uninstall',action='store_true');p.add_argument('--adopt',action='store_true',help='Take ownership of a managed block or handler you edited; the difference it replaced is printed');a=p.parse_args(argv)
+    from core.storage import refuse_agent_setup
+    refuse_agent_setup()
     home=a.home or harness_home(a.harness)
     if not a.uninstall:
         from core.storage import ensure_setup

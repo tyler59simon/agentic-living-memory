@@ -105,19 +105,25 @@ class SectionUpdates(StoreFixture):
         self.assertNotIn('from the other writer', body)
 
 
+def at(root, domain, ref_id):
+    """DOMAIN:REF_ID@REVISION, the revision read from the note now (merge, remap and promote require one)."""
+    from core.notes import find_note
+    return f'{domain}:{ref_id}@' + find_note(ref_id, domain, root)[1]['revision']
+
+
 class Merge(StoreFixture):
     def test_a_note_cannot_be_merged_into_itself_by_prefix(self):
         a = self.note();b = self.note('Queue', 'Retries back off exponentially.')
-        for sources in (['demo:' + a['id'][:8]], ['demo:' + b['id'], 'demo:' + b['id'][:8]]):
+        for sources in ([at(self.root, 'demo', a['id'][:8])], [at(self.root, 'demo', b['id']), at(self.root, 'demo', b['id'][:8])]):
             with self.subTest(sources=sources), self.assertRaisesRegex(ValueError, 'distinct notes'):
-                merge(self.root, {'target': 'demo:' + a['id'], 'sources': sources, 'body': 'Combined.'})
+                merge(self.root, {'target': at(self.root, 'demo', a['id']), 'sources': sources, 'body': 'Combined.'})
 
     def test_merge_keeps_links_to_and_from_archived_sources(self):
         target = self.note()
         other = self.note('Queue', 'Retries back off exponentially.')
         source = self.note('Cache warmup', f'Warmup is described in [queue]({quote(Path(other["path"]).name)}).')
         self.note('Pointer', f'See [warmup]({quote(Path(source["path"]).name)}).')
-        merge(self.root, {'target': 'demo:' + target['id'][:8], 'sources': ['demo:' + source['id']], 'body': 'Combined.'})
+        merge(self.root, {'target': at(self.root, 'demo', target['id'][:8]), 'sources': [at(self.root, 'demo', source['id'])], 'body': 'Combined.'})
         archived, merged = find_note(source['id'], 'demo', self.root)
         self.assertEqual((archived.parent.name, merged['superseded_by']), ('archive', target['id']))
         for note in (merged, next(n for n in inventory('demo', self.root) if n['title'] == 'Pointer')):

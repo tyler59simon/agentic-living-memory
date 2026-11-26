@@ -141,7 +141,14 @@ def main() -> int:
     parser.add_argument('--retire-legacy', action='store_true', help=f'Remove the old copy in {LEGACY_DIR}')
     parser.add_argument('--home', action='append', default=[], metavar='HARNESS=PATH',
                         help='A harness home set up with setup.py --home PATH; uninstall and retirement check it too (repeatable)')
+    # The upgrader installed before 2026-11-26 runs `--plan`, then `--apply-plan ID --expected-plan-sha256 DIGEST`. For that one
+    # upgrade, --plan installs directly and --apply-plan confirms it; neither is offered otherwise.
+    parser.add_argument('--plan', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--apply-plan', help=argparse.SUPPRESS)
+    parser.add_argument('--expected-plan-sha256', help=argparse.SUPPRESS)
     args = parser.parse_args()
+    from core.storage import refuse_agent_setup
+    refuse_agent_setup()
     homes = []
     for value in args.home:
         harness, sep, path = value.partition('=')
@@ -150,6 +157,11 @@ def main() -> int:
         homes.append((harness, path))
     if args.uninstall and args.retire_legacy:
         parser.error('--uninstall and --retire-legacy are separate runs')
+    if args.apply_plan:
+        if not (args.apply_plan.startswith('i-') and (INSTALL_HOME / '.operations' / args.apply_plan / 'journal.json').is_file()):
+            parser.error('install plans were removed on 2026-11-26; run install.py with no options')
+        print(json.dumps({'ok': True, 'operation_id': args.apply_plan, 'undo': 'undo ' + args.apply_plan}, separators=(',', ':')))
+        return 0
     if not (args.uninstall or args.retire_legacy):
         from core.storage import ensure_setup
         ensure_setup(args.location)
@@ -157,6 +169,8 @@ def main() -> int:
         result = retire_legacy(homes)
     else:
         result = install(args.uninstall, homes)
+        if args.plan:
+            result = {**result, 'plan_id': result.get('operation_id'), 'digest': 'direct'}
         if not args.uninstall:
             print_next_steps(result.get('summary') or {})
     print(json.dumps(result, separators=(',', ':')))
@@ -287,9 +301,13 @@ def _path_step():
 def _add_to_path_windows(change):
     import ctypes
     import winreg
-    value = change['before'].rstrip(';')
+    # The value as it is now, not as the install step read it: another installer may have added a folder since.
+    value, kind = _registry_path()
+    if _on_path(change['add'], value, ';'):
+        return
+    value = value.rstrip(';')
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, 'Environment', 0, winreg.KEY_SET_VALUE) as key:
-        winreg.SetValueEx(key, 'Path', 0, change['before_type'], (value + ';' if value else '') + change['add'])
+        winreg.SetValueEx(key, 'Path', 0, kind, (value + ';' if value else '') + change['add'])
     # Tell running programs (Explorer, new terminals) the environment changed.
     ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, 'Environment', 0x2, 5000, ctypes.byref(ctypes.c_ulong()))
 

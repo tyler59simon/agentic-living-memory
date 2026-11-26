@@ -94,6 +94,25 @@ class EachWriteNeedsTheRevision(Fixture):
         again=self.cli('update',self.ref(n),'--expected-revision',written['revisions'][self.ref(n)],'--summary','Rebuilt nightly.')
         self.assertEqual(again[0],0,again[1])
 
+    def test_the_receipt_covers_a_note_in_a_nested_folder(self):
+        n=self.note();path=find_note(n['id'],'demo',self.root)[0]
+        nested=path.parent/'old'/path.name;nested.parent.mkdir();path.rename(nested)
+        written=self.cli('update',self.ref(n),'--expected-revision',self.rev(n),'--summary','The cache can be rebuilt.')[1]
+        self.assertEqual(written['revisions'],{self.ref(n):digest(nested.read_bytes())})
+
+    def test_the_python_calls_need_revisions_too(self):
+        from core import governance
+        target=self.note('Cache policy');source=self.note('Cache rebuild')
+        with self.assertRaisesRegex(ValueError,'revision_required'):
+            governance.merge(self.root,{'target':self.ref(target),'sources':[self.ref(source)+'@'+self.rev(source)],'body':'Merged.'})
+        with self.assertRaisesRegex(ValueError,'revision_required'):
+            governance.merge(self.root,{'target':self.ref(target)+'@'+self.rev(target),'sources':[self.ref(source)],'body':'Merged.'})
+        with self.assertRaisesRegex(ValueError,'revision_required'):governance.promote(self.root,[self.ref(target)])
+        init_domain('other',[str(self.base/'other')],self.root)
+        with self.assertRaisesRegex(ValueError,'revision_required'):
+            governance.remap(self.root,[{'before':{'domain':'demo','id':target['id']},'after':{'domain':'other','id':target['id']}}])
+        self.assertEqual(find_note(target['id'],'demo',self.root)[1]['status'],'active')
+
 
 class NotesACommandAlsoWrites(Fixture):
     def test_supersede_needs_both_revisions(self):

@@ -20,7 +20,8 @@ ALLOWED_SUBCOMMANDS={'ask','types','sources','source-sync','ingest-scan','search
 # Subagents are read-only: these are denied for them even though the main agent gets them auto-allowed. Their one write is
 # propose, a draft in .turns/ that only the main agent turns into a note (proposals accept, or capture --from-proposal with an edited note) or rejects.
 MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm','resolve','reopen','restore','off','on','undo','archive','rewrite','remap','promote','source','project','system','type',
-                     'delete','merge','retag','migrate','restore-backup','import','ingest','overlay-teardown','setup','upgrade'}   # `taxonomy add` is the same kind of write: taxonomy_write
+                     'delete','merge','retag','migrate','restore-backup','import','ingest','overlay-teardown','setup','upgrade',
+                     'sync','overlay-build','overlay-sync-all'}   # a vault sync by hand applies vault deletions, archives and resolves   # `taxonomy add` is the same kind of write: taxonomy_write
 GLOBAL_OPTIONS={'--root','--domain','--cwd','--actor'}
 HOOK_LOCK_TIMEOUT=5
 # Codex has no SessionEnd, so its session start picks up Obsidian edits, at most this often.
@@ -263,9 +264,9 @@ def memory_subcommand(text,grammar=None):
 
 # Hivemind sets HIVEMIND_SESSION for every program it starts in a terminal. Undo, the direct writes and the bulk writes there are the user's, done in Hivemind.
 HIVEMIND_GOVERNED={'undo','recover','upgrade','setup','archive','rewrite','remap','promote','source','project','system','type',
-                   'delete','merge','retag','migrate','restore-backup','import','ingest','overlay-teardown'}   # `taxonomy add` and `doc` writes are governed too (below)
+                   'delete','merge','retag','migrate','restore-backup','import','ingest','overlay-teardown','sync','overlay-build','overlay-sync-all'}   # `taxonomy add` and `doc` writes are governed too (below)
 HIVEMIND_DENY=('Undo, setup, upgrade, the direct writes (archive, rewrite, remap, promote, taxonomy add, source, project, system, type), the bulk writes (delete, merge, retag, '
-               'migrate, restore-backup, import, ingest, overlay-teardown) and folder notebook writes (settling a page proposal included) are for the user to do in Hivemind, '
+               'migrate, restore-backup, import, ingest, overlay-teardown), a vault sync run by hand and folder notebook writes (settling a page proposal included) are for the user to do in Hivemind, '
                'not for an agent. Stage a page edit with doc propose; for the rest, tell the user what to change.')
 # `doc` actions that write. `doc propose` is missing on purpose: it only stages an edit for the user, so agents may run it.
 DOC_WRITE_ACTIONS={'undo','folder'}

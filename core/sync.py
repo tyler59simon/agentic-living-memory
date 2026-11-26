@@ -191,7 +191,19 @@ def sync(domain,vault,root=None,trigger=None):
         missing=[n['id'] for n in notes if n.get('status')=='active' and entries.get(n['id'],{}).get('overlay')
                  and not entries[n['id']].get('pending_hash') and n['id'] not in moved and not (vault/entries[n['id']]['overlay']).exists()]
         managed=sum(1 for n in notes if n.get('status')=='active' and n['id'] in entries)
-        vault_reset=len(missing)>=MASS_MISSING[0] and len(missing)>=MASS_MISSING[1]*max(1,managed)
+        # Many copies gone at once, or the whole domain folder: a reset or a moved vault, never a deletion request.
+        vault_reset=(len(missing)>=MASS_MISSING[0] and len(missing)>=MASS_MISSING[1]*max(1,managed)) or bool(missing and not (vault/NOTES/domain).is_dir())
+        state_rel=state_path.relative_to(root).as_posix()
+        def prewrite(note_id,value):
+            """Save this note's sync-state entry (None removes it) before a canonical delete or retirement at sync, as its own write.
+            A sync that stops after the canonical write then does not apply the vault change again, and neither does the next sync
+            after an undo of it; a stop before the canonical write loses only the vault change (the copy comes back)."""
+            disk=read_json(state_path,None)
+            if not isinstance(disk,dict) or disk.get('version')!=3 or disk.get('vault_id')!=state.get('vault_id'):return
+            kept=dict(disk.get('entries') or {})
+            if value is None:kept.pop(note_id,None)
+            else:kept[note_id]=value
+            transaction(root,{state_rel:canonical_json({**disk,'entries':kept})},'overlay_state',skip_unchanged=True)
         known_paths=set()
         owned_copies=(read_json(vault/COPIES,None) or {}).get('files',{})
         blocked={}
@@ -246,10 +258,16 @@ def sync(domain,vault,root=None,trigger=None):
             elif overlay_hash is None and entry:
                 if vault_reset:
                     after_hash=place(note_id,old_rel,rel,source_text,None,None);restored+=1
+                elif source_hash!=old_source:
+                    # Deleted in the vault after memory changed the note: memory wins, the note stays and its copy comes back.
+                    conflicts+=1
+                    conflict={'message':'Deleted in the vault after it changed in memory, so the memory version was copied back. Delete it again to remove it.'}
+                    after_hash=place(note_id,old_rel,rel,source_text,None,None);copied+=1
                 else:
                     # Deleted in the vault: the user's intent, applied directly and journaled, so undo brings the note back.
                     from .notes import _change_set
                     changes,expected,_=_change_set(note_id,domain,'delete',root,note['revision'],actor='vault')
+                    prewrite(note_id,None)
                     receipt=transaction(root,changes,'overlay_delete',expected);wrote_canonical=True
                     log(DONE['delete'],note_id,note['title'],receipt.get('operation_id'))
                     entries.pop(note_id,None);continue
@@ -296,6 +314,9 @@ def sync(domain,vault,root=None,trigger=None):
                         from .notes import _change_set
                         action=LIFECYCLE[wanted]
                         changes,expected,canonical_target=_change_set(note_id,domain,action,root,actor='vault')
+                        # The vault edit counts as taken, and no memory hash is recorded: after an undo of the retirement the next
+                        # sync copies the memory version back instead of retiring the note again.
+                        prewrite(note_id,{'overlay':old_rel,'overlay_hash':overlay_hash,'status':wanted})
                         receipt=transaction(root,changes,action,expected);wrote_canonical=True
                         log(DONE[action],note_id,updated['title'],receipt.get('operation_id'))
                         new_text=changes[canonical_target.relative_to(root).as_posix()];after_source=digest(new_text.encode())
@@ -643,17 +664,18 @@ def teardown(vault):
 
 def _teardown(vault):
     from .governance import commit
-    vault=Path(vault).resolve();manifest={'files':{}};semantic={};changes={}
+    vault=Path(vault).resolve();manifest={'files':{}};semantic={};changes={};seen={}
     for rel in (GENERATED,COPIES,LEGACY_GENERATED,LEGACY_COPIES,VAULT_ID):
         if (vault/rel).exists():
-            data=read_json(vault/rel,{'files':{}});manifest['files'].update(data.get('files',{}));semantic.update(data.get('semantic',{}));changes[rel]=None
+            data=read_json(vault/rel,{'files':{}});manifest['files'].update(data.get('files',{}));semantic.update(data.get('semantic',{}));changes[rel]=None;seen[rel]=_hash(vault/rel)
     for rel,expected in manifest['files'].items():
         current=_hash(vault/rel)
         if current is None:continue
         if current!=expected and not (rel in semantic and _canvas_key(_read(vault/rel))==semantic[rel]):
             raise ValueError('Modified managed file preserved: '+rel)
-        changes[rel]=None
-    return commit(vault,changes,'overlay_teardown',summary={'files':len(changes)})
+        changes[rel]=None;seen[rel]=current
+    # Obsidian does not take the store lock: a file saved after the check above makes the removal stale, and nothing is removed.
+    return commit(vault,changes,'overlay_teardown',summary={'files':len(changes)},guards={'read_set':seen})
 def main(argv=None):
     import argparse
     p=argparse.ArgumentParser();p.add_argument('domain');p.add_argument('vault',type=Path);p.add_argument('--root',type=Path,default=memory_root());a=p.parse_args(argv);print(json.dumps(sync(a.domain,a.vault,a.root)));return 0

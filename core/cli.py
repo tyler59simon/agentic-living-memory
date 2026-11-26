@@ -341,6 +341,8 @@ DIRECT_WRITES={'archive','rewrite','remap','promote','source','project','system'
 # Direct journaled writes that delete, merge or rewrite many notes at once (plans until 2026-11-26). The harness asks the user
 # before each (runtime keeps them out of the auto-allow list), and subagents, viewers and Hivemind agents are refused.
 BULK_WRITES={'delete','merge','retag','migrate','restore-backup','import','ingest','overlay-teardown'}
+# Run by hand, a vault sync applies the deletions, archives and resolves found in the vault (automatic hook syncs do not come through here).
+VAULT_SYNCS={'sync','overlay-build','overlay-sync-all'}
 # Folder notebook writes: main actor only, and never from an agent inside a Hivemind terminal. `doc propose` stays open to agents.
 DOC_WRITES={'undo','folder'}   # runtime.DOC_WRITE_ACTIONS; runtime loads lazily here
 SERVE_API=4
@@ -939,7 +941,7 @@ def main(argv=None):
     try:
         # Agents started inside a Hivemind terminal inherit HIVEMIND_SESSION; Hivemind's own backend does not. Every path (batch and serve
         # re-enter main) reaches this point before a governed command runs.
-        if os.environ.get('HIVEMIND_SESSION') and (args.command in {'undo','recover','upgrade','setup'}|DIRECT_WRITES|BULK_WRITES or (args.command=='taxonomy' and args.action=='add') or (args.command=='doc' and args.doc_action in DOC_WRITES)
+        if os.environ.get('HIVEMIND_SESSION') and (args.command in {'undo','recover','upgrade','setup'}|DIRECT_WRITES|BULK_WRITES|VAULT_SYNCS or (args.command=='taxonomy' and args.action=='add') or (args.command=='doc' and args.doc_action in DOC_WRITES)
                                                     or (args.command=='proposals' and args.action in {'accept','reject'} and _proposal_kind(args.id)=='page')):
             from .runtime import HIVEMIND_DENY
             raise ValueError('hivemind: '+HIVEMIND_DENY)

@@ -160,6 +160,21 @@ class ObsidianLayout(StoreFixture):
         teardown(vault)
         self.assertFalse((vault / 'Canvas/demo.canvas').exists())
 
+    def test_teardown_keeps_a_file_saved_after_its_check(self):
+        n = self.note()
+        vault = self.vault()
+        build_overlay('demo', vault, self.root)
+        copy = vault / 'Domains/demo' / Path(n['path']).name
+        import core.governance as governance
+        from unittest.mock import patch
+        real = governance.commit
+        def save_then_commit(*args, **kwargs):
+            copy.write_text(copy.read_text(encoding='utf-8') + '\nA late edit.\n', encoding='utf-8')
+            return real(*args, **kwargs)
+        with patch.object(governance, 'commit', save_then_commit), self.assertRaisesRegex(ValueError, 'stale_write'):
+            teardown(vault)
+        self.assertIn('A late edit.', copy.read_text(encoding='utf-8'))
+
     def test_teardown_removes_everything_managed(self):
         self.note()
         vault = self.vault()

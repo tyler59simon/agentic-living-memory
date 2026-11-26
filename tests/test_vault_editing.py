@@ -237,6 +237,67 @@ class VaultEditing(StoreFixture):
         self.assertEqual(build_overlay('demo', self.vault, self.root)['view_conflicts'], [])
         self.assertTrue(home.exists())
 
+    def test_vault_deletion_after_a_memory_edit_keeps_the_note(self):
+        a = self.note()
+        copy, = self.built(a)
+        copy.unlink()
+        source = Path(a['path'])
+        source.write_text(source.read_text(encoding='utf-8').replace('rebuildable', 'disposable'), encoding='utf-8')
+        result = build_overlay('demo', self.vault, self.root)
+        self.assertEqual((result['applied'], result['conflicts']), ([], 1))
+        self.assertTrue(source.exists())
+        self.assertIn('disposable', copy.read_text(encoding='utf-8'))   # memory wins and the copy comes back
+
+    def _interrupt_after(self, kind):
+        """Make sync stop right after its canonical write of this kind; returns the list that receives that operation id."""
+        import core.sync as sync_module
+        real, done = sync_module.transaction, []
+        def stop(root, changes, k, *args, **kwargs):
+            receipt = real(root, changes, k, *args, **kwargs)
+            if k == kind:
+                done.append(receipt['operation_id'])
+                raise KeyboardInterrupt
+            return receipt
+        return patch.object(sync_module, 'transaction', stop), done
+
+    def test_undo_after_an_interrupted_vault_deletion_keeps_the_note(self):
+        a = self.note()
+        copy, = self.built(a)
+        before = Path(a['path']).read_bytes()
+        copy.unlink()
+        stopper, done = self._interrupt_after('overlay_delete')
+        with stopper, self.assertRaises(KeyboardInterrupt):
+            build_overlay('demo', self.vault, self.root)
+        self.assertFalse(Path(a['path']).exists())
+        undo(self.root, done[0])
+        self.assertEqual(build_overlay('demo', self.vault, self.root)['applied'], [])   # not deleted a second time
+        self.assertEqual(Path(a['path']).read_bytes(), before)
+        self.assertTrue(copy.exists())
+
+    def test_undo_after_an_interrupted_vault_archive_keeps_the_note_active(self):
+        a = self.note()
+        copy, = self.built(a)
+        self.edit(copy, 'status: "active"', 'status: "archived"')
+        stopper, done = self._interrupt_after('archive')
+        with stopper, self.assertRaises(KeyboardInterrupt):
+            build_overlay('demo', self.vault, self.root)
+        undo(self.root, done[0])
+        self.assertEqual(build_overlay('demo', self.vault, self.root)['applied'], [])   # not archived a second time
+        self.assertEqual(find_note(a['id'], 'demo', self.root)[1]['status'], 'active')
+        self.assertIn('status: "active"', copy.read_text(encoding='utf-8'))
+
+    def test_interrupted_vault_archive_finishes_at_the_next_sync(self):
+        a = self.note()
+        copy, = self.built(a)
+        self.edit(copy, 'status: "active"', 'status: "archived"')
+        stopper, done = self._interrupt_after('archive')
+        with stopper, self.assertRaises(KeyboardInterrupt):
+            build_overlay('demo', self.vault, self.root)
+        result = build_overlay('demo', self.vault, self.root)
+        self.assertEqual(result['applied'], [])
+        self.assertEqual(find_note(a['id'], 'demo', self.root)[1]['status'], 'archived')
+        self.assertTrue((self.vault / 'Archive/demo' / copy.name).exists())
+
     def test_new_vault_copies_instead_of_deleting(self):
         notes = [self.note(f'Note {i}', f'Body number {i}.', allow_similar=True) for i in range(6)]
         self.built(*notes)
@@ -256,6 +317,15 @@ class VaultEditing(StoreFixture):
         self.assertEqual((result['applied'], result['restored']), ([], 6))
         self.assertTrue(all(Path(n['path']).exists() for n in notes))
         self.assertEqual(len(list((self.vault / 'Domains/demo').glob('*.md'))), 6)
+
+    def test_deleting_the_domain_folder_with_few_notes_restores_them(self):
+        notes = [self.note(f'Note {i}', f'Body number {i}.', allow_similar=True) for i in range(2)]
+        self.built(*notes)
+        import shutil
+        shutil.rmtree(self.vault / 'Domains/demo')
+        result = build_overlay('demo', self.vault, self.root)
+        self.assertEqual((result['applied'], result['restored']), ([], 2))
+        self.assertTrue(all(Path(n['path']).exists() for n in notes))
 
     def test_teardown_stops_automatic_rebuilds(self):
         a = self.note()
