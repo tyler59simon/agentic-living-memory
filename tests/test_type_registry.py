@@ -196,14 +196,15 @@ class ReviewFixes(Fixture):
 
 class ReReviewFixes(Fixture):
     """Regressions for the Codex re-review of the review fixes (2026-11-20)."""
-    def test_apply_rechecks_custom_types(self):
-        from core.governance import plan,apply
+    def test_undo_rechecks_custom_types(self):
+        from core.governance import undo
         self.create();code,r=self.capture('--action','Add a canary');self.assertEqual(code,0,r)
-        path=find_note(r['id'],'demo',self.root)[0];rel=path.relative_to(self.root.resolve()).as_posix();old=path.read_text(encoding='utf-8')
-        self.assertEqual(self.cli('--domain','demo','update',r['id'],'--drop-section','Action items')[0],0)
-        made=plan(self.root,{rel:old},'restore',['demo'])   # brings the action items back
+        path=find_note(r['id'],'demo',self.root)[0]
+        code,done=self.cli('--domain','demo','update',r['id'],'--drop-section','Action items');self.assertEqual(code,0,done)
         self.assertEqual(self.write('update',name='incident',actions=False)[0],0)
-        with self.assertRaisesRegex(ValueError,'stale plan'):apply(self.root,made['plan_id'],made['digest'])
+        dropped=path.read_bytes()   # undoing the drop would bring the action items back, which the type no longer takes
+        with self.assertRaisesRegex(ValueError,'custom type'):undo(self.root,done['operation_id'])
+        self.assertEqual(path.read_bytes(),dropped)
 
     def test_a_damaged_live_registry_does_not_block_a_restore(self):
         from core.type_registry import restore_registry

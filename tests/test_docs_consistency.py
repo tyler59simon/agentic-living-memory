@@ -15,10 +15,10 @@ class NoteTypeLists(unittest.TestCase):
                 self.assertFalse(set(NOTE_TYPES)-listed,'missing: '+', '.join(sorted(set(NOTE_TYPES)-listed)))
 
 class MaintenanceDocs(unittest.TestCase):
-    def test_the_maintenance_clause_is_stated_where_plans_are_described_and_the_reference_ships(self):
+    def test_the_maintenance_clause_is_stated_where_writes_are_described_and_the_reference_ships(self):
         from core.instructions import PROTOCOL,TOPICS
         from core.installer_lifecycle import ROOT_DOCUMENTS
-        self.assertIn('maintenance the user enabled archives, resolves and supersedes within its policy and records why; restore REF undoes an archive',TOPICS['plans'][1]);self.assertIn('need approved script plans',PROTOCOL)
+        self.assertIn('maintenance the user enabled archives, resolves and supersedes within its policy and records why; restore REF undoes an archive',TOPICS['writes'][1]);self.assertIn('the harness asks the user before delete, merge and retag',PROTOCOL);self.assertNotIn('plans',PROTOCOL)
         for name in ('AGENTS.md','PROTOCOL.md'):
             self.assertIn('maintenance the user enabled'.lower(),(ROOT/name).read_text(encoding='utf-8').lower(),name)
         self.assertNotIn('There are no background engines',(ROOT/'MAINTENANCE.md').read_text(encoding='utf-8'))

@@ -120,7 +120,7 @@ def check(harness,setup):
     result={'config':str(path),'wired':True,'handlers':len(ours),'script':script,'script_exists':Path(script).is_file(),
             'interpreter':' '.join(part for part in (program,argument if LAUNCHER_VERSION.fullmatch(argument or '') else '') if part),
             'interpreter_ok':runs,'this_copy':here,'problems':[]}
-    fix=(f'run integrations/setup.py {harness} --hooks from {ROOT} with the Python you use now, then apply the plan it prints')
+    fix=(f'run integrations/setup.py {harness} --hooks from {ROOT} with the Python you use now, then restart the harness')
     if not result['script_exists']:
         result['problems'].append(f'the hook script {script} is missing, so every hooked event fails; {fix}')
     if runs is False:

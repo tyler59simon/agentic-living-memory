@@ -72,8 +72,8 @@ class Projects(StoreFixture):
                               (self.payload(slug='z',charter={'body':'## Key Details'+chr(10)+'* only details'}),'Note needs a summary'),(self.payload(slug='w',status='active'),'Unknown payload')):
             code,result=self.plan('create',value);self.assertNotEqual(code,0,value['slug']);self.assertIn(message,json.dumps(result),value['slug'])
         code,result=self.cli('taxonomy','add','project/x');self.assertNotEqual(code,0);self.assertIn('project create',json.dumps(result))
-        code,result=self.cli('retag-plan',stdin=json.dumps({'concern/decision':'project/ghost'}));self.assertNotEqual(code,0);self.assertIn('Unregistered',json.dumps(result))
-        code,result=self.cli('retag-plan',stdin=json.dumps({'concern/decision':'project/demo-app'}));self.assertEqual(code,0,result)
+        code,result=self.cli('retag',stdin=json.dumps({'concern/decision':'project/ghost'}));self.assertNotEqual(code,0);self.assertIn('Unregistered',json.dumps(result))
+        code,result=self.cli('retag',stdin=json.dumps({'concern/decision':'project/demo-app'}));self.assertEqual(code,0,result)
 
     def test_update_and_archive_touch_only_registry(self):
         self.create();tags=(self.root/'tag_taxonomy.json').read_text()

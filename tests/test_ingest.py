@@ -1,9 +1,9 @@
-"""#13 ingest-plan: Claude Code auto-memory files become reviewed notes."""
+"""#13 ingest: Claude Code auto-memory files become notes in one direct, undoable write."""
 import contextlib, io, json, os, unittest
 from pathlib import Path
 from test_core import StoreFixture
 from revision_fill import main
-from core.governance import apply, undo
+from core.governance import undo
 from core.ingest import default_source, parse
 from core.notes import capture, find_note
 from core.repository import inventory
@@ -37,7 +37,7 @@ class Ingest(StoreFixture):
         return code, json.loads(out.getvalue() or err.getvalue())
 
     def ingest(self, *extra):
-        code, result = self.cli('ingest-plan', '--source', str(self.source), *extra)
+        code, result = self.cli('ingest', '--source', str(self.source), *extra)
         self.assertEqual(code, 0, result)
         return result
 
@@ -47,8 +47,7 @@ class Ingest(StoreFixture):
         self.assertEqual(types, {'prefers-terse-replies.md': 'preference', 'staging-box-is-slow.md': 'context',
                                  'grafana-dashboard.md': 'knowledge', 'user-role.md': 'preference'})
         self.assertNotIn('MEMORY.md', json.dumps(result))
-        self.assertEqual(inventory('demo', self.root), [])  # only a plan so far
-        apply(self.root, result['plan_id'], result['digest'])
+        self.assertTrue(result['operation_id'].startswith('d-'))
         notes = {n['title']: n for n in inventory('demo', self.root)}
         terse = notes['Prefers terse replies']
         self.assertTrue(terse['body'].startswith('The user wants short answers.\n\n## Details'))
@@ -60,16 +59,11 @@ class Ingest(StoreFixture):
         self.assertEqual(slow['tags'], ['concern/knowledge', 'subject/project'])
         self.assertTrue(terse['capture_key'].startswith('auto-memory:'))
 
-    def test_rerun_and_after_apply_are_idempotent(self):
-        first = self.ingest()
-        second = self.ingest()
-        self.assertEqual(len(second['created']), 4)  # nothing applied yet: same proposal
-        apply(self.root, first['plan_id'], first['digest'])
-        third = self.ingest()
-        self.assertEqual((third['created'], third['plan_id']), ([], None))
-        self.assertEqual(len(third['unchanged']), 4)
-        with self.assertRaises(ValueError):
-            apply(self.root, second['plan_id'], second['digest'])  # the stale proposal can no longer apply cleanly
+    def test_rerun_is_idempotent(self):
+        self.assertEqual(len(self.ingest()['created']), 4)
+        again = self.ingest()
+        self.assertEqual((again['created'], again['operation_id']), ([], None))
+        self.assertEqual(len(again['unchanged']), 4)
         self.assertEqual(len(inventory('demo', self.root)), 4)
 
     def test_skip_rules(self):
@@ -95,7 +89,6 @@ class Ingest(StoreFixture):
         result = self.ingest('--redact')
         made = next(c for c in result['created'] if c['file'] == 'deploy-token.md')
         self.assertTrue(made['redacted'])
-        apply(self.root, result['plan_id'], result['digest'])
         body = next(n for n in inventory('demo', self.root) if n['title'] == 'Deploy token')['body']
         self.assertIn("<redacted type=", body)
         self.assertNotIn('ghp_', body)
@@ -107,17 +100,17 @@ class Ingest(StoreFixture):
         allowed = {s['file'] for s in self.ingest('--allow-similar')['skipped']}
         self.assertNotIn('staging-box-is-slow.md', allowed)
 
-    def test_apply_and_undo(self):
+    def test_undo(self):
         result = self.ingest()
-        receipt = apply(self.root, result['plan_id'], result['digest'])
-        plan = undo(self.root, receipt['operation_id'])
-        apply(self.root, plan['plan_id'], plan['digest'])
+        self.assertEqual(len(inventory('demo', self.root)), 4)
+        undo(self.root, result['operation_id'])
         self.assertEqual(inventory('demo', self.root), [])
 
     def test_not_for_subagents_or_auto_allow(self):
         from core import runtime
-        self.assertNotIn('ingest-plan', runtime.ALLOWED_SUBCOMMANDS)
-        self.assertEqual(self.cli('--actor', 'subagent', 'ingest-plan', '--source', str(self.source))[0], 2)
+        self.assertNotIn('ingest', runtime.ALLOWED_SUBCOMMANDS)
+        self.assertIn('ingest', runtime.MUTATING_SUBCOMMANDS)
+        self.assertEqual(self.cli('--actor', 'subagent', 'ingest', '--source', str(self.source))[0], 2)
 
     def test_default_source_and_parser(self):
         self.assertEqual(default_source(r'C:\Users\me\My Project') if os.name == 'nt' else default_source('/home/me/My Project'),
@@ -127,7 +120,7 @@ class Ingest(StoreFixture):
         self.assertEqual(parse('no frontmatter'), ({}, 'no frontmatter'))
 
     def test_missing_source_fails(self):
-        self.assertEqual(self.cli('ingest-plan', '--source', str(self.base / 'nope'))[0], 2)
+        self.assertEqual(self.cli('ingest', '--source', str(self.base / 'nope'))[0], 2)
 
 
 if __name__ == '__main__':

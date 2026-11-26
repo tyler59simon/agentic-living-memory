@@ -24,12 +24,12 @@ Vault copies use the same layout as canonical notes, described in [NOTE_TYPES.md
 - Templates follow the same layout. Sections you leave unfilled are dropped when the note is captured.
 - A section edit that breaks the layout rules is listed under "Couldn't save". Examples: removing the summary, or adding action items to a knowledge note.
 
-The vault is your own editing surface, so routine edits need no approval:
+The vault is your own editing surface, so edits there need no approval:
 
 - **Applied at sync:** edits to an active note's title, body, tags, type, context or review_by, and valid new notes in `Domains/DOMAIN/`. Each is one journaled transaction (`overlay_auto_update` / `overlay_capture`) listed under "Recently applied" with its undo command. A title or type change renames the canonical file and rewrites Markdown links that point to it.
 - **Still being edited:** a file saved in the last 30 seconds is left alone and picked up at the next sync, so a sync never races an open editor.
-- **Approved by checkbox:** deleting an active note's file, or setting `status` to `archived` or `resolved`. Sync creates a plan and lists it on `Dashboards/Sync Status - DOMAIN.md` as `- [ ] Action: Title <!-- lm:PLAN_ID -->`. Ticking the box applies it at the next sync, and it then appears under "Recently applied" with an undo command. Only plans that this domain's vault sync created can be approved this way. This is the vault's own approval flow: an agent's `archive` or `resolve` is a direct, undoable command and needs no plan. Restoring a deleted file cancels the deletion.
-- **Renaming a file** in Obsidian is followed by its `id`: no deletion is proposed and the file gets its memory name back. To rename a note, change its `title` property.
+- **Deleted, archived or resolved:** deleting an active note's file, or setting `status` to `archived` or `resolved`, is applied at the next sync directly, as one journaled transaction, and listed under "Recently applied" on `Dashboards/Sync Status - DOMAIN.md` with its undo command. Restoring a deleted file before that sync cancels the deletion; afterwards the undo command brings the note back.
+- **Renaming a file** in Obsidian is followed by its `id`: it is not treated as a deletion and the file gets its memory name back. To rename a note, change its `title` property.
 - **Properties memory does not store** (`aliases`, `cssclasses`, your own keys) stay in the vault copy and are carried over when memory updates the note.
 - **New notes from a template** are captured once their text replaces the template prompt. A note inserted from a template needs no `id`: sync assigns one, takes the domain from the folder, captures it, and replaces the vault file with the canonically named copy. Frontmatter may use Obsidian's YAML block lists for tags.
 - **Not from the vault:** supersede, restoring an archived note, taxonomy expansion and bulk changes. Use the script or ask an agent.
@@ -41,13 +41,13 @@ Living Memory no longer mirrors notebook pages into the vault (hosted notebooks 
 ## Conflicts and recovery
 
 - **Changed on both sides** (you edited a note while an agent updated it): memory's version is written to the vault, your version is saved under the store's `domains/DOMAIN/staged/`, and the Sync Status page offers `- [ ] Keep my vault version`. Ticking it applies your saved version at the next sync. Nothing is ever stuck: later edits apply normally.
-- **Deleted in memory after you edited it** (an agent or an applied plan removed a note whose vault copy you had changed): your version is saved under `domains/DOMAIN/staged/` once, the copy stays in the vault, and the status page lists the conflict until you delete that copy. To bring the note back, capture it again from the saved version.
+- **Deleted in memory after you edited it** (an agent's `delete` or `merge` removed a note whose vault copy you had changed): your version is saved under `domains/DOMAIN/staged/` once, the copy stays in the vault, and the status page lists the conflict until you delete that copy. To bring the note back, capture it again from the saved version.
 - **A rename blocked by another file** (memory renames a note's copy, but a file it does not manage already has the new name): that file is left alone, the copy keeps its old name, and the status page lists the conflict until the file is moved or renamed.
 - **New notes saved again during a sync** are left in place and captured with the newer text at the next sync.
 - **Edited dashboards or canvases** are preserved and no longer regenerated; the status page lists them. Delete the file to get a fresh copy. A dashboard edit never stops a sync.
 - **Edits that fail validation** (unknown tags, credentials, a changed `id`, missing frontmatter) leave canonical memory untouched and are reported under "Couldn't save" until the file changes again. Edits to archived copies are saved aside and the copy is restored.
-- **A new, moved or rebuilt vault** is recognised by its `.living-memory/vault.json` identity: notes are copied in and nothing is proposed for deletion. If many managed copies disappear at once (for example a deleted `Domains/DOMAIN` folder), they are restored instead of proposed for deletion.
-- `overlay-teardown-plan VAULT` proposes deletion only of unchanged managed files, including the vault identity; apply that plan with `--root VAULT`. After teardown, agent writes no longer rebuild the vault until you run `overlay-build` again.
+- **A new, moved or rebuilt vault** is recognised by its `.living-memory/vault.json` identity: notes are copied in and nothing is deleted. If many managed copies disappear at once (for example a deleted `Domains/DOMAIN` folder), they are restored instead of deleted.
+- `overlay-teardown VAULT` deletes only unchanged managed files, including the vault identity, in one write journaled in the vault (the harness asks the user first); undo it with `undo OPERATION` and `--root VAULT`. After teardown, agent writes no longer rebuild the vault until you run `overlay-build` again.
 
 Every vault edit is also kept under the canonical store's staged directory. The PreToolUse hook denies agent file edits under the vault's `Domains/`, `Archive/` and `Dashboards/` folders, so agent changes go through scripts. Overlay ownership is logical, not enforced by OS permissions. Vaults built with the earlier single `Living Memory/` folder migrate on the next sync or build.
 

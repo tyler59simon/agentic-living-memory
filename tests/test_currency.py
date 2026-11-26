@@ -11,7 +11,7 @@ from urllib.parse import quote
 from test_core import StoreFixture
 from core import runtime
 from revision_fill import main as cli
-from core.governance import undo, apply
+from core.governance import undo
 from core.notes import capture, change, find_note
 from core.note_types import STALE_DAYS, default_review_by, effective_date, review_due
 from core.repository import inventory

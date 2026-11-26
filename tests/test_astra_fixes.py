@@ -7,7 +7,7 @@ from urllib.parse import quote, unquote
 from test_core import StoreFixture
 from core import runtime, sync
 from revision_fill import main as cli
-from core.governance import apply, merge_plan
+from core.governance import merge
 from core.notes import change, find_note
 from core.repository import inventory, read_json
 from core.storage import validate_store
@@ -110,15 +110,14 @@ class Merge(StoreFixture):
         a = self.note();b = self.note('Queue', 'Retries back off exponentially.')
         for sources in (['demo:' + a['id'][:8]], ['demo:' + b['id'], 'demo:' + b['id'][:8]]):
             with self.subTest(sources=sources), self.assertRaisesRegex(ValueError, 'distinct notes'):
-                merge_plan(self.root, {'target': 'demo:' + a['id'], 'sources': sources, 'body': 'Combined.'})
+                merge(self.root, {'target': 'demo:' + a['id'], 'sources': sources, 'body': 'Combined.'})
 
     def test_merge_keeps_links_to_and_from_archived_sources(self):
         target = self.note()
         other = self.note('Queue', 'Retries back off exponentially.')
         source = self.note('Cache warmup', f'Warmup is described in [queue]({quote(Path(other["path"]).name)}).')
         self.note('Pointer', f'See [warmup]({quote(Path(source["path"]).name)}).')
-        proposal = merge_plan(self.root, {'target': 'demo:' + target['id'][:8], 'sources': ['demo:' + source['id']], 'body': 'Combined.'})
-        apply(self.root, proposal['plan_id'], proposal['digest'])
+        merge(self.root, {'target': 'demo:' + target['id'][:8], 'sources': ['demo:' + source['id']], 'body': 'Combined.'})
         archived, merged = find_note(source['id'], 'demo', self.root)
         self.assertEqual((archived.parent.name, merged['superseded_by']), ('archive', target['id']))
         for note in (merged, next(n for n in inventory('demo', self.root) if n['title'] == 'Pointer')):

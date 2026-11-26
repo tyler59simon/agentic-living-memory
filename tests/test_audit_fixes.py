@@ -149,7 +149,7 @@ class Pruning(StoreFixture):
             runtime._prune_journals(self.root);runtime._prune_journals(self.root)
         self.assertEqual(prune.call_count, 1)
 
-    def test_housekeeping_prunes_install_and_harness_plans_after_30_days(self):
+    def test_housekeeping_removes_leftover_install_and_harness_plans(self):
         home = self.base / 'local' / 'agentic-living-memory';(home / 'app').mkdir(parents=True);(home / 'app' / '.core-ownership-v1.json').write_text('{}');claude = Path(os.environ['CLAUDE_HOME']);codex = Path(os.environ['CODEX_HOME'])
         def make(folder, name, days, state=None, digest=None):
             plan_id = name * 32;when = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
@@ -159,28 +159,29 @@ class Pruning(StoreFixture):
                 (folder / '.operations' / plan_id).mkdir(parents=True);(folder / '.operations' / plan_id / 'journal.json').write_text(json.dumps({'id': plan_id, 'state': state, 'created': when, 'kind': 'x', 'effects': []}))
             return folder / '.plans' / (plan_id + '.json')
         old = {folder: make(folder, 'a', 40, 'committed') for folder in (home, claude, codex)}
-        young = {folder: make(folder, 'b', 5, 'committed') for folder in (home, claude, codex)}   # applied, but inside the 30 days
-        stale = make(claude, 'c', 40)                                                              # never applied, past 30 days
+        young = {folder: make(folder, 'b', 5) for folder in (home, claude, codex)}   # never applied and recent: nothing reads plans any more, so it goes too
         forged = make(claude, 'e', 400, 'committed', 'f' * 64)   # OPS-1b.1b: the right shape, but the digest is not the plan's
         odd = claude / '.plans' / ('0' * 32 + '.json');odd.write_text('{"id": "' + '0' * 32 + '", "kind": "x", "changes": {}, "digest": "' + 'f' * 64 + '", "summary": "\\ud800", "created": "2001-01-01T00:00:00+00:00"}')   # R-03: sorts first and cannot be encoded; the sweep must go on
         foreign = claude / '.plans' / ('9' * 32 + '.json');foreign.write_text(json.dumps({'created': (datetime.now(timezone.utc) - timedelta(days=400)).isoformat()}))   # OPS-1b.1: not an ALM plan
         with patch.object(runtime, 'SCRIPT', home / 'app' / 'living_memory.py'):runtime._prune_journals(self.root)
-        self.assertFalse(any(p.exists() for p in old.values()) or stale.exists());self.assertTrue(foreign.exists() and forged.exists() and odd.exists())
-        self.assertTrue(all(p.exists() for p in young.values()))
+        self.assertFalse(any(p.exists() for p in [*old.values(), *young.values()]));self.assertTrue(foreign.exists() and forged.exists() and odd.exists())
+        self.assertFalse((home / '.plans').exists() or (codex / '.plans').exists())   # an emptied folder goes as well
         (home / 'app' / '.core-ownership-v1.json').unlink();kept = make(home, 'd', 40, 'committed')   # a source checkout leaves the install folder alone
         with patch.object(runtime, 'SCRIPT', home / 'app' / 'living_memory.py'), patch('core.runtime.clock.now', return_value=datetime.now(timezone.utc) + timedelta(days=2)):runtime._prune_journals(self.root)
         self.assertTrue(kept.exists())
 
-    def test_a_real_applied_plan_is_pruned_by_digest(self):   # OPS-1b.1b
-        from core.governance import plan, apply
-        from core.repository import prune_plans
-        folder = self.base / 'harness';folder.mkdir();proposed = plan(folder, {'a.txt': 'x'}, 'x');apply(folder, proposed['plan_id'], proposed['digest'])
-        path = folder / '.plans' / (proposed['plan_id'] + '.json');tampered = json.loads(path.read_text());tampered['summary'] = {'files': 99};path.write_text(json.dumps(tampered))
-        later = datetime.now(timezone.utc) + timedelta(days=40)
-        with patch('core.repository.clock.now', return_value=later):self.assertEqual(prune_plans(folder, applied_days=30, require_plan=True), 0)
-        self.assertTrue(path.exists());path.write_text(json.dumps({k: v for k, v in tampered.items() if k != 'summary'} | {'summary': proposed['summary']}))
-        with patch('core.repository.clock.now', return_value=later):self.assertEqual(prune_plans(folder, applied_days=30, require_plan=True), 1)
-        self.assertFalse(path.exists())
+    def test_leftover_plans_in_a_folder_we_do_not_own_need_a_valid_digest(self):   # OPS-1b.1b
+        from core.repository import remove_leftover_plans
+        folder = self.base / 'harness';(folder / '.plans').mkdir(parents=True);plan_id = 'a' * 32
+        unsigned = {'schema': 2, 'id': plan_id, 'kind': 'x', 'created': '2026-01-01T00:00:00+00:00', 'changes': {'a.txt': 'x'}, 'summary': {'files': 1}}
+        path = folder / '.plans' / (plan_id + '.json');good = hashlib.sha256(canonical_json(unsigned).encode()).hexdigest()
+        path.write_text(json.dumps(unsigned | {'summary': {'files': 99}, 'digest': good}))   # tampered after signing
+        self.assertEqual(remove_leftover_plans(folder, require_plan=True), 0);self.assertTrue(path.exists())
+        path.write_text(json.dumps(unsigned | {'digest': good}))
+        self.assertEqual(remove_leftover_plans(folder, require_plan=True), 1);self.assertFalse((folder / '.plans').exists())
+        (folder / '.plans').mkdir();(folder / '.plans' / ('b' * 32 + '.json')).write_text('{}');(folder / '.plans' / 'notes.json').write_text('{}')
+        self.assertEqual(remove_leftover_plans(folder), 1)   # the store's own folder: any 32-hex plan file goes, other files and the folder stay
+        self.assertEqual([p.name for p in (folder / '.plans').iterdir()], ['notes.json'])
 
     def test_skip_unchanged_writes_no_journal(self):
         place = self.base / 'place';place.mkdir()
@@ -208,16 +209,14 @@ class Pruning(StoreFixture):
         self.assertEqual(prune.call_count, 0)
         self.assertFalse((self.root / 'hooks' / 'last-prune.json').exists())
 
-    def test_prune_journals_and_plans_scan_unlocked_and_recheck_under_lock(self):
+    def test_prune_journals_scans_unlocked_and_rechecks_under_lock(self):
         from contextlib import contextmanager
         from core import repository
-        from core.governance import plan, apply
         place = self.base / 'place';place.mkdir()
         recent = transaction(place, {'a.md': 'one'}, 'overlay_views')['operation_id']
         # No candidates -> store_lock is never acquired during the scan.
         with patch.object(repository, 'store_lock', side_effect=AssertionError('locked during scan')):
             self.assertEqual(repository.prune_journals(place), 0)
-            self.assertEqual(repository.prune_plans(place), 0)
         # Candidate becomes pending before lock acquisition -> re-check skips deletion.
         old = transaction(place, {'b.md': 'two'}, 'overlay_views')['operation_id']
         self.age(place, old, 30)
@@ -233,21 +232,6 @@ class Pruning(StoreFixture):
             self.assertEqual(repository.prune_journals(place), 0)
         self.assertEqual(len(lock_calls), 1)
         self.assertEqual(set(journals(place)), {recent, old})
-        # Plan becomes waiting in sync-state.json before lock acquisition -> re-check skips deletion.
-        proposed = plan(place, {'c.md': 'three'}, 'x')
-        apply(place, proposed['plan_id'], proposed['digest'])
-        plan_path = place / '.plans' / (proposed['plan_id'] + '.json')
-        later = datetime.now(timezone.utc) + timedelta(days=5)
-        @contextmanager
-        def racing_plan_lock(root, *a, **kw):
-            state_path = place / 'domains' / 'demo' / 'sync-state.json'
-            state_path.parent.mkdir(parents=True, exist_ok=True)
-            state_path.write_text(json.dumps({'entries': {'n1': {'pending_plan': proposed['plan_id']}}}))
-            with real_lock(root, *a, **kw):
-                yield
-        with patch('core.repository.clock.now', return_value=later), patch.object(repository, 'store_lock', side_effect=racing_plan_lock):
-            self.assertEqual(repository.prune_plans(place), 0)
-        self.assertTrue(plan_path.exists())
 
     def test_housekeeping_scheduling_and_cli_gates(self):
         import io

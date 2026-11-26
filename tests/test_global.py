@@ -9,9 +9,9 @@ from core import runtime, session_start
 from core.cli import doctor
 from revision_fill import main
 from core.common import canonical_domain, load_bindings
-from core.governance import apply, undo, promote, promote_suggest
+from core.governance import undo, promote, promote_suggest
 from core.init_domain import init_domain
-from core.migration import migration_plan
+from core.migration import migrate_schema
 from core.notes import capture, near_identical
 from core.repository import inventory, read_json
 
@@ -64,7 +64,7 @@ class Bindings(GlobalFixture):
         config = load_bindings(self.root);config['search_scope']['global_domains'] = ['global']
         (self.root / 'bindings.json').write_text(json.dumps(config), encoding='utf-8')
         self.assertTrue(any("names 'global'" in w for w in doctor(self.root, str(self.base / 'project'))['warnings']))
-        proposed = migration_plan(self.root);apply(self.root, proposed['plan_id'], proposed['digest'])
+        migrate_schema(self.root)
         config = load_bindings(self.root)
         self.assertEqual(config['search_scope']['global_domains'], ['_global'])
         self.assertEqual(canonical_domain('global', self.root), '_global')
@@ -321,16 +321,16 @@ class NearIdentical(GlobalFixture):
 
 class Promotion(GlobalFixture):
     def count(self, folder):
-        return len(list((self.root / folder).glob('*/journal.json' if folder == '.operations' else '*.json')))
+        return len(list((self.root / folder).glob('*/journal.json')))
 
     def test_suggest_lists_candidates_and_writes_nothing(self):
         self.other()
         a = capture('Deploy with install.py', 'Use install.py to deploy.', TAGS, 'other', self.root)
         b = capture('Deploy using install.py', 'Run install.py --plan and then --apply-plan.', TAGS, 'demo', self.root, allow_similar=True)
         p = capture('Prefer short commit messages', 'Keep subjects short.', TAGS, 'demo', self.root, type='preference')
-        before = (self.count('.operations'), self.count('.plans'))
+        before = self.count('.operations')
         rows = {r['ref']: r for r in promote_suggest(self.root)['candidates']}
-        self.assertEqual((self.count('.operations'), self.count('.plans')), before)
+        self.assertEqual(self.count('.operations'), before)
         self.assertIn('also in project demo', rows['other:' + a['id'][:8]]['reasons'][0])
         self.assertIn('also in project other', rows['demo:' + b['id'][:8]]['reasons'][0])
         self.assertIn('preference', rows['demo:' + p['id'][:8]]['reasons'][0])
@@ -342,7 +342,7 @@ class Promotion(GlobalFixture):
         b = capture('Deploy using install.py', 'Run install.py --plan and then --apply-plan.', TAGS, 'demo', self.root, allow_similar=True)
         name = Path(b['path']).name
         c = capture('Release checklist', f'Deploy as in [the deploy note](<{name}>).', TAGS, 'demo', self.root)
-        done = promote(self.root, ['other:' + a['id'], 'demo:' + b['id']]);self.assertEqual((done['kind'], 'plan_id' in done), ('promote', False))
+        done = promote(self.root, ['other:' + a['id'], 'demo:' + b['id']]);self.assertEqual((done['kind'], done['operation_id'][:2]), ('promote', 'd-'))
         active, everything = self.ids('_global'), self.ids('_global', retired=True)
         self.assertEqual(set(active), {b['id']});self.assertEqual(everything[a['id']]['superseded_by'], b['id'])
         self.assertEqual(active[b['id']]['supersedes'], [a['id']])

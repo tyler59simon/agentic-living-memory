@@ -27,13 +27,28 @@ class StorageBase(StoreFixture):
     def configure(self, root=None):
         return storage.setup(root or self.root, True)
 
-    def plan(self):
+    def prepared(self):
         self.configure()
         self.note()
-        return storage.relocation_plan(self.root, self.base / 'new shared store')
+        return self.base / 'new shared store'
 
-    def apply(self, plan):
-        return storage.apply_relocation(plan['plan_id'], plan['digest'])
+    def relocate(self, destination=None):
+        return storage.relocate(self.root, destination or self.base / 'new shared store')
+
+    def interrupted(self, destination=None):
+        """A relocation stopped by a failed copy of its second file."""
+        real = storage.shutil.copyfile
+        count = [0]
+        def fail(source, target):
+            count[0] += 1
+            if count[0] == 2:
+                Path(target).write_bytes(b'partial')
+                raise OSError('interrupted copy')
+            return real(source, target)
+        with patch.object(storage.shutil, 'copyfile', fail):
+            with self.assertRaises(OSError):
+                self.relocate(destination)
+        self.assertEqual(storage.resolve_root()[0], self.root)
 
 
 class SharedStorage(StorageBase):
@@ -106,13 +121,14 @@ class SharedStorage(StorageBase):
             self.configure(directory)
         self.assertEqual((directory / 'precious.txt').read_text(), 'preserve')
 
-    def test_relocation_is_preview_then_verified_copy(self):
-        plan = self.plan()
+    def test_relocation_is_a_verified_copy(self):
+        target = self.prepared()
         before = storage._manifest(self.root)
         self.assertEqual(storage.resolve_root()[0], self.root)
-        self.assertFalse(Path(plan['destination']).exists())
-        self.apply(plan)
-        target = Path(plan['destination'])
+        self.assertFalse(target.exists())
+        result = self.relocate()
+        self.assertEqual((result['status'], result['root'], result['notes'], result['files']), ('committed', str(target), 1, len(before)))
+        self.assertIn('Restart', result['next'])
         self.assertEqual(storage.resolve_root()[0], target)
         self.assertEqual(storage._manifest(target), before)
         self.assertTrue((target / 'domains/demo/search.sqlite3').exists())
@@ -120,48 +136,45 @@ class SharedStorage(StorageBase):
         with self.assertRaisesRegex(ValueError, 'retired'):
             with store_lock(self.root):
                 pass
-        self.assertEqual(self.apply(plan)['status'], 'committed')
+        identity = read_json(self.root / '.relocated.json')['relocation_id']
+        self.assertEqual(read_json(self.config.parent / 'relocations' / (identity + '.journal.json'))['state'], 'committed')
+        self.assertEqual(read_json(self.config.parent / 'relocations' / (identity + '.relocation.json'))['destination'], str(target))
+        with self.assertRaisesRegex(ValueError, 'empty destination'):   # a finished relocation is not run again
+            self.relocate()
 
-    def test_relocation_stale_source_and_digest_do_not_switch(self):
-        plan = self.plan()
-        initial = storage.inspect_relocation(plan['plan_id'])
-        self.assertEqual(initial['changed'] + initial['added'] + initial['removed'], [])
-        with self.assertRaisesRegex(ValueError, 'digest'):
-            storage.apply_relocation(plan['plan_id'], 'wrong')
-        self.note('Later', 'New knowledge after preview')
-        self.assertTrue(storage.inspect_relocation(plan['plan_id'])['added'])
-        with self.assertRaisesRegex(ValueError, 'Stale source'):
-            self.apply(plan)
+    def test_a_source_change_during_an_interrupted_relocation_does_not_switch(self):
+        self.prepared()
+        self.interrupted()
+        self.note('Later', 'New knowledge after the copy started')
+        with self.assertRaisesRegex(ValueError, 'source store changed'):
+            self.relocate()
         self.assertEqual(storage.resolve_root()[0], self.root)
+        self.assertFalse((self.root / '.relocated.json').exists())
 
     def test_relocation_destination_conflict_is_preserved(self):
-        plan = self.plan()
-        dest = Path(plan['destination'])
+        dest = self.prepared()
         dest.mkdir()
         (dest / 'unrelated').write_text('keep')
+        with self.assertRaisesRegex(ValueError, 'empty destination'):
+            self.relocate()
+        self.assertEqual((dest / 'unrelated').read_text(), 'keep')
+        self.assertEqual(storage.resolve_root()[0], self.root)
+        (dest / 'unrelated').unlink()
+        self.interrupted()
+        (dest / 'unrelated').write_text('keep')   # a file the relocation did not copy, found on resume
         with self.assertRaisesRegex(ValueError, 'conflict'):
-            self.apply(plan)
+            self.relocate()
         self.assertEqual((dest / 'unrelated').read_text(), 'keep')
         self.assertEqual(storage.resolve_root()[0], self.root)
 
     def test_interrupted_copy_resumes(self):
-        plan = self.plan()
-        real = storage.shutil.copyfile
-        count = [0]
-        def fail(source, target):
-            count[0] += 1
-            if count[0] == 2:
-                Path(target).write_bytes(b'partial')
-                raise OSError('interrupted copy')
-            return real(source, target)
-        with patch.object(storage.shutil, 'copyfile', fail):
-            with self.assertRaises(OSError):
-                self.apply(plan)
-        self.assertEqual(storage.resolve_root()[0], self.root)
-        self.assertEqual(self.apply(plan)['status'], 'committed')
+        self.prepared()
+        self.interrupted()
+        self.assertEqual(self.relocate()['status'], 'committed')
+        self.assertEqual(len(list((self.config.parent / 'relocations').glob('*.relocation.json'))), 1)   # resumed, not started again
 
     def test_pointer_failure_after_retirement_resumes(self):
-        plan = self.plan()
+        self.prepared()
         real = storage._write
         def fail(path, value):
             if path == self.config:
@@ -169,15 +182,14 @@ class SharedStorage(StorageBase):
             return real(path, value)
         with patch.object(storage, '_write', fail):
             with self.assertRaises(OSError):
-                self.apply(plan)
+                self.relocate()
         self.assertTrue((self.root / '.relocated.json').exists())
-        self.assertEqual(self.apply(plan)['status'], 'committed')
+        self.assertEqual(self.relocate()['status'], 'committed')
 
     def test_empty_domain_directories_survive(self):
         self.configure()
-        plan = storage.relocation_plan(self.root, self.base / 'empty relocated')
-        self.apply(plan)
-        self.assertTrue((Path(plan['destination']) / 'domains/demo/notes').is_dir())
+        result = self.relocate(self.base / 'empty relocated')
+        self.assertTrue((Path(result['root']) / 'domains/demo/notes').is_dir())
 
     def test_shared_adapters_capture_and_search(self):
         from hooks import claude_hooks, copilot_hooks, codex_hooks
@@ -211,36 +223,43 @@ class SharedStorage(StorageBase):
         self.assertFalse(self.config.exists())
 
     def test_verification_failure_does_not_publish_pointer(self):
-        plan = self.plan()
+        self.prepared()
         real = storage.shutil.copyfile
         def corrupt(source, target):
             real(source, target)
             Path(target).write_bytes(b'corrupted copy')
         with patch.object(storage.shutil, 'copyfile', corrupt):
             with self.assertRaisesRegex(ValueError, 'verification failed'):
-                self.apply(plan)
+                self.relocate()
         self.assertEqual(storage.resolve_root()[0], self.root)
         self.assertFalse((self.root / '.relocated.json').exists())
 
     def test_stale_configuration_blocks_relocation(self):
-        plan = self.plan()
+        self.prepared()
+        self.interrupted()
         self.config.write_text(json.dumps({'version': 1, 'data_root': str(self.base / 'another')}))
-        with self.assertRaisesRegex(ValueError, 'Stale shared configuration'):
-            self.apply(plan)
+        with self.assertRaisesRegex(ValueError, 'configuration changed'):
+            self.relocate()
+        self.assertFalse((self.root / '.relocated.json').exists())
+
+    def test_setup_relocates_directly_when_the_configured_store_differs(self):
+        dest = self.prepared()
+        result = storage.setup(dest, True)
+        self.assertEqual((result['status'], result['root'], result['notes']), ('committed', str(dest), 1))
+        self.assertEqual(storage.resolve_root()[0], dest)
 
     def test_refresh_after_stale_source_preserves_notes(self):
-        self.configure()
-        self.note()
-        plan = storage.relocation_plan(self.root, self.base / 'refreshed destination')
+        import shutil
+        dest = self.base / 'refreshed destination'
+        self.prepared()
+        self.interrupted(dest)
         (self.root / 'tag_taxonomy.json').write_text(json.dumps({'tags': ['subject/project', 'concern/architecture', 'concern/decision', 'concern/workflow']}))
-        self.assertEqual(storage.inspect_relocation(plan['plan_id'])['changed'], ['tag_taxonomy.json'])
-        with self.assertRaisesRegex(ValueError, 'Stale source'):
-            self.apply(plan)
-        refreshed = storage.setup(plan['destination'], True)
-        self.assertEqual(refreshed['notes'], plan['notes'])
-        self.assertEqual(refreshed['source'], plan['source'])
-        self.assertEqual(refreshed['destination'], plan['destination'])
-        self.assertEqual(self.apply(refreshed)['status'], 'committed')
+        with self.assertRaisesRegex(ValueError, 'source store changed'):
+            self.relocate(dest)
+        shutil.rmtree(dest)   # what the error says to do
+        refreshed = storage.setup(dest, True)
+        self.assertEqual((refreshed['status'], refreshed['notes'], refreshed['root']), ('committed', 1, str(dest)))
+        self.assertIn('concern/workflow', (dest / 'tag_taxonomy.json').read_text())
 
     def test_installer_reuses_shared_location_and_requires_unattended_selection(self):
         self.configure()
@@ -296,30 +315,25 @@ class MaintenanceRelocation(StorageBase):
         run = self.finished_run()
         self.ms.running(self.root)
         self.assertTrue((self.root / 'maintenance/worker.lock').exists())
-        plan = storage.relocation_plan(self.root, self.base / 'new shared store')
         self.assertFalse([k for k in storage._manifest(self.root) if k.endswith('worker.lock')])
-        self.apply(plan)
-        dest = Path(plan['destination'])
+        dest = Path(self.relocate()['root'])
         self.assertFalse([k for k in storage._manifest(dest) if k.endswith('worker.lock')])
         self.assertTrue((dest / f"maintenance/runs/{run['day']}/{run['id']}.json").is_file())
         self.assertEqual(self.ms.accounting(dest, self.T)[0]['reviewed'], 3)
 
     def test_the_destination_is_disabled_and_keeps_its_settings(self):
         self.ms.set_config(self.root, dict(self.cfg, model='haiku'))
-        plan = storage.relocation_plan(self.root, self.base / 'new shared store')
-        self.apply(plan)
-        cfg = self.ms.config(Path(plan['destination']))
+        result = self.relocate()
+        cfg = self.ms.config(Path(result['root']))
         self.assertEqual((cfg['enabled'], cfg['model'], cfg['domains']), (False, 'haiku', ['demo']))
         self.assertTrue(self.ms.config(self.root)['enabled'])   # the retired source is untouched
-        self.assertEqual(self.apply(plan)['status'], 'committed')
+        self.assertEqual(result['status'], 'committed')
 
     def test_a_bom_prefixed_enabled_config_is_disabled_at_the_destination(self):
         path = self.root / 'maintenance.json'
         path.write_bytes(bytes([0xef, 0xbb, 0xbf]) + path.read_bytes())
         self.assertTrue(self.ms.config(self.root)['enabled'])
-        plan = storage.relocation_plan(self.root, self.base / 'new shared store')
-        self.apply(plan)
-        self.assertFalse(self.ms.config(Path(plan['destination']))['enabled'])
+        self.assertFalse(self.ms.config(Path(self.relocate()['root']))['enabled'])
 
     def test_the_destination_config_must_be_the_source_one_disabled(self):
         from core.repository import canonical_json
@@ -333,20 +347,21 @@ class MaintenanceRelocation(StorageBase):
         (dest / 'maintenance.json').write_text('{broken')
         self.assertFalse(storage._maintenance_matches(self.root, dest, planned))
 
-    def test_an_unfinished_run_refuses_the_relocation_plan(self):
+    def test_an_unfinished_run_refuses_the_relocation(self):
         self.ms.reserve(self.root, self.cfg, 3, self.T)
         with self.assertRaisesRegex(ValueError, 'maintenance'):
-            storage.relocation_plan(self.root, self.base / 'new shared store')
+            self.relocate()
+        self.assertEqual(storage.resolve_root()[0], self.root)
 
-    def test_a_held_worker_lock_refuses_the_relocation_plan(self):
+    def test_a_held_worker_lock_refuses_the_relocation(self):
         with self.ms.worker_lock(self.root):
             with self.assertRaisesRegex(ValueError, 'maintenance'):
-                storage.relocation_plan(self.root, self.base / 'new shared store')
-        storage.relocation_plan(self.root, self.base / 'new shared store')
+                self.relocate()
+        self.assertEqual(self.relocate()['status'], 'committed')
 
     def test_an_old_worker_is_refused_after_relocation(self):
         from core import maintenance
-        self.apply(storage.relocation_plan(self.root, self.base / 'new shared store'))
+        self.relocate()
         with self.assertRaisesRegex(ValueError, 'Store retired'):
             self.ms.reserve(self.root, self.cfg, 3, self.T)
         with self.assertRaisesRegex(ValueError, 'Store retired'):

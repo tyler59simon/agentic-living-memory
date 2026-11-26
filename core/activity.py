@@ -130,7 +130,7 @@ def _actor(op,kind,old,new):
     if kind.startswith('undo:'):return 'undo'
     if kind.startswith('overlay_'):return 'obsidian'
     if kind=='rebaseline':return 'rebaseline'
-    # A retirement records who asked for it: agent (a direct command), plan, vault (an approved Obsidian change), auto_resolve or maintenance.
+    # A retirement records who asked for it: agent (a direct command), plan (before 2026-11-26), vault (an Obsidian change), auto_resolve or maintenance.
     if r.get('actor') and n.get('status') in RETIRED and (old[1].get('status','active') if old else None)!=n.get('status'):
         return {'agent':'command','vault':'obsidian'}.get(str(r['actor']),str(r['actor']))
     if (kind in PLAN_KINDS or kind.startswith(PLAN_PREFIXES)) and not str(op).startswith('d-'):return 'plan'   # a direct write (governance.commit) has an ID starting d-; older operations of these kinds were applied plans

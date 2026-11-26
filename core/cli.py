@@ -199,13 +199,13 @@ def doctor(root,cwd,explicit=None,domain=None):
     warnings+=[f'{name}: {count} notes; capture and freshness checks scale linearly and may slow hooks' for name,count in counts.items() if count>1500]
     scope=config.get('search_scope',{}) if isinstance(config.get('search_scope',{}),dict) else {}
     from .common import GLOBAL
-    for kind,names,effect in (('global_domains',scope.get('global_domains',['_global']),'no note can be saved there and the no-match title fallback uses the active domain instead; migration-plan points it at _global'),
+    for kind,names,effect in (('global_domains',scope.get('global_domains',['_global']),'no note can be saved there and the no-match title fallback uses the active domain instead; migrate --schema points it at _global'),
                               ('foreign_domains',scope.get('foreign_domains',[]),'it is never searched')):
         for name in names:
             try:canonical=canonical_domain(name,root);missing=not (root/'domains'/canonical).is_dir()
             except ValueError:canonical=None;missing=True
             # `capture --global` creates _global's folder on first use; an older name without a folder still
-            # warns, because migration-plan points it at _global.
+            # warns, because migrate --schema points it at _global.
             if kind=='global_domains' and canonical==GLOBAL:missing=False
             if missing:warnings.append(f"search_scope.{kind} names '{name}', which has no domain folder; {effect}")
     from .common import _entries
@@ -335,9 +335,12 @@ def _sectioned(args,body='',note_type=None,root=None):
 # (not for a remote source, which it would pull from the network: sources.sync refuses that for them).
 READ_ONLY={'help','config','status','search','read','query','doctor','validate','history','logs','open','stats','timeline','domains','version','projects','systems','types','ask','sources','source-sync','ingest-scan','views','wiki','log','maintenance','rebaseline','recap','proposals','doc'}
 # Viewer: a human-facing app browsing the store. Read-only, and its reads are not usage evidence for the diary.
-VIEWER=READ_ONLY|{'taxonomy','review','diff','inspect-plan'}
-# Direct journaled writes (no plan); `taxonomy add` is the same kind of write under a read command. Refused to subagents, viewers and Hivemind agents.
+VIEWER=READ_ONLY|{'taxonomy','review','diff'}
+# Direct journaled writes; `taxonomy add` is the same kind of write under a read command. Refused to subagents, viewers and Hivemind agents.
 DIRECT_WRITES={'archive','rewrite','remap','promote','source','project','system','type'}
+# Direct journaled writes that delete, merge or rewrite many notes at once (plans until 2026-11-26). The harness asks the user
+# before each (runtime keeps them out of the auto-allow list), and subagents, viewers and Hivemind agents are refused.
+BULK_WRITES={'delete','merge','retag','migrate','restore-backup','import','ingest','overlay-teardown'}
 # Folder notebook writes: main actor only, and never from an agent inside a Hivemind terminal. `doc propose` stays open to agents.
 DOC_WRITES={'undo','folder'}   # runtime.DOC_WRITE_ACTIONS; runtime loads lazily here
 SERVE_API=4
@@ -642,29 +645,28 @@ def _maintenance_hint(root):
     from . import maintenance_state as ms
     try:on=ms.config(root)['enabled']
     except ValueError:on=False
-    return 'Automatic maintenance is on for this store: within its policy it archives, resolves and supersedes notes without a plan and records why (maintenance history); restore REF undoes an archive. ' if on else ''
+    return 'Automatic maintenance is on for this store: within its policy it archives, resolves and supersedes notes on its own and records why (maintenance history); restore REF undoes an archive. ' if on else ''
 
 HELP={'setup':'Choose or move the shared memory folder','upgrade':'Pull the source checkout and install it','bind':'Bind a domain to project folders','unbind':'Remove a domain binding','capture':'Save a note','propose':'Stage a draft note for the main agent (subagents)','proposals':'List, show, accept or reject staged notes and page edits','search':'Find notes, pages, sources and links; list notes','read':'Show one note',
  'update':'Change a note','supersede':'Retire a note in favour of another','review':'Notes that are due, stale or duplicated','open':'Open plans, bugs, risks and action items','check':'Tick an action item',
- 'timeline':'Notes around a date or note','ingest-plan':'Plan importing Claude auto-memory files','export':'Write notes to a zip file','import-plan':'Plan importing an exported zip','confirm':'Mark a note still true',
- 'resolve':'Finish a plan, bug or risk','reopen':'Reopen a resolved note','restore':'Bring back an archived note','archive':'Retire a note without a replacement','stats':'Usage over the last days','logs':'Show the operational log','delete-plan':'Plan deleting one note',
- 'apply':'Apply a plan','inspect-plan':'Show a plan in full','rewrite':'Rewrite several note bodies','merge-plan':'Plan merging notes','history':'Recent operations','recap':'Summary of recent activity','log':'Note history',
- 'undo':'Undo an operation (merge, delete and bulk retag return a plan)','recover':'Finish or abandon an interrupted operation','diff':'Show what an operation changed','doctor':'Check the install and the store','backup':'Back up the store','housekeep':'Run daily backup and prune old journals, logs and plans',
- 'restore-plan':'Plan restoring a backup','migration-plan':'Plan a store migration','note-type-plan':'Plan note type changes','baseline-plan':'Plan a verification baseline','rebuild':'Rebuild search indexes',
+ 'timeline':'Notes around a date or note','ingest':'Import Claude auto-memory files','export':'Write notes to a zip file','import':'Import an exported zip','confirm':'Mark a note still true',
+ 'resolve':'Finish a plan, bug or risk','reopen':'Reopen a resolved note','restore':'Bring back an archived note','archive':'Retire a note without a replacement','stats':'Usage over the last days','logs':'Show the operational log','delete':'Delete one note',
+ 'rewrite':'Rewrite several note bodies','merge':'Merge notes into one','history':'Recent operations','recap':'Summary of recent activity','log':'Note history',
+ 'undo':'Undo an operation','recover':'Finish or abandon an interrupted operation','diff':'Show what an operation changed','doctor':'Check the install and the store','backup':'Back up the store','housekeep':'Run daily backup and prune old journals and logs',
+ 'restore-backup':'Restore the store from a backup','migrate':'Migrate the store (--schema, --note-types or --baseline)','rebuild':'Rebuild search indexes',
  'maintenance':'Automatic maintenance','rebaseline':'Re-baseline notes a file change did not touch','semantic':'Semantic search settings','validate':'Check notes against the rules','query':'Query the store','taxonomy':'Show the tag taxonomy, or add tags',
  'project':'Create or change a project','projects':'List projects','system':'Create or change a system','systems':'List systems','type':'Create, change or retire a custom note type','types':'List note types, built-in and custom','source':'Add or remove a knowledge-base source','sources':'List knowledge-base sources',
  'source-sync':'Re-index knowledge-base sources','ingest-scan':'Scan for files to ingest','ingest-skip':'Skip an ingest candidate','ask':'Ask a question about the project',
- 'views':'Saved views','wiki':'Domain wiki','batch':'Run several commands from a JSON file','retag-plan':'Plan retagging notes','remap':'Move notes between domains','promote':'Promote notes to the global domain',
+ 'views':'Saved views','wiki':'Domain wiki','batch':'Run several commands from a JSON file','retag':'Rename tags across notes','remap':'Move notes between domains','promote':'Promote notes to the global domain',
  'off':'Turn Living Memory off for this session','on':'Turn Living Memory back on for this session','status':'Whether Living Memory is on for this session','capture-finalize':'Record which notes a turn saved','domains':'List domains','config':'Show or change store settings',
- 'help':'Protocol details by topic','version':'Version and command list','doc':'Folder notebook pages: read them, and stage edits with doc propose','serve':'JSON-lines server on stdin and stdout','sync':'Sync a domain with an Obsidian vault','overlay-build':'Build the Obsidian overlay','overlay-teardown-plan':'Plan removing the overlay','overlay-sync-all':'Sync every domain with the vault'}
+ 'help':'Protocol details by topic','version':'Version and command list','doc':'Folder notebook pages: read them, and stage edits with doc propose','serve':'JSON-lines server on stdin and stdout','sync':'Sync a domain with an Obsidian vault','overlay-build':'Build the Obsidian overlay','overlay-teardown':'Remove the overlay from a vault','overlay-sync-all':'Sync every domain with the vault'}
 
 # The groups `alm --help` lists the commands under (CLI-2); every command is in exactly one.
 HELP_GROUPS=(
  ('Everyday',('help','capture','propose','proposals','search','read','update','supersede','open','check','confirm','resolve','reopen','ask','timeline','log','recap','capture-finalize','status','off','on','doc')),
  ('Maintenance',('review','maintenance','rebaseline','stats','history','diff','undo','recover','restore','doctor','validate','rebuild','semantic','backup','housekeep','logs')),
  ('Direct writes (journaled, undo OPERATION)',('archive','rewrite','remap','promote','source','project','system','type')),
- ('Governance (plans)',('delete-plan','apply','inspect-plan','merge-plan','retag-plan','note-type-plan','migration-plan','baseline-plan','restore-plan',
-   'import-plan','ingest-plan','overlay-teardown-plan')),
+ ('Bulk writes (journaled, undo OPERATION; the harness asks first)',('delete','merge','retag','migrate','restore-backup','import','ingest','overlay-teardown')),
  ('Admin',('setup','upgrade','bind','unbind','config','domains','projects','systems','types','sources','source-sync','ingest-scan','ingest-skip','taxonomy','views','wiki','export','query','batch','sync','overlay-build','overlay-sync-all','serve','version')))
 
 def _grouped_commands():
@@ -792,8 +794,8 @@ def build_parser():
     common(parser);subs=parser.add_subparsers(dest='command',required=True,metavar='COMMAND',help='one of the commands listed below')
     # No help= here, so argparse does not print its own flat list; the epilog lists them by group.
     def sub(name):p=subs.add_parser(name,description=HELP.get(name));common(p,True);return p
-    p=sub('setup');p.add_argument('--location',type=Path);p.add_argument('--non-interactive',action='store_true');p.add_argument('--source',type=Path);p.add_argument('--apply-plan');p.add_argument('--inspect-plan');p.add_argument('--expected-plan-sha256')
-    p=sub('upgrade');p.add_argument('--plan',action='store_true',help='Pull and plan the install, but do not apply it')
+    p=sub('setup');p.add_argument('--location',type=Path);p.add_argument('--non-interactive',action='store_true');p.add_argument('--source',type=Path,help='Move the store from this folder (default: the configured store) to --location')
+    p=sub('upgrade')
     from .instructions import TOPICS
     p=sub('help');p.add_argument('topic',nargs='?',choices=list(TOPICS))
     p=sub('bind');p.add_argument('name');p.add_argument('prefix',nargs='+')
@@ -838,22 +840,19 @@ def build_parser():
     p=sub('open');p.add_argument('--due-by',metavar='DATE',help='Only items with a due date on or before DATE (YYYY-MM-DD)');p.add_argument('--owner',help='Only items owned by this name (case-insensitive)');p.add_argument('--sort',choices=['updated','due'],default='updated',help='updated: newest note first (default); due: earliest due date first, undated items last');p.add_argument('--pages',choices=['injectable','searchable','none'],default='injectable',help='Which notebook page tasks join the list: injectable (default: injectable folder notebooks), searchable (searchable ones too) or none (notes only)');p.add_argument('--limit',type=int,default=50);p.add_argument('--all-domains',action='store_true',help='Every domain folder, not parents and global only');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match); page tasks have no tags, so none are listed then')
     p=sub('check');p.add_argument('reference');p.add_argument('item',nargs='?',help='Text of the action item: exact, or a unique part of it');p.add_argument('--index',type=int,help="1-based position among the note's action items, as open lists it");p.add_argument('--undo',action='store_true',help='Untick instead');p.add_argument('--expected-revision',help=REV_HELP);p.add_argument('--session');p.add_argument('--turn')
     p=sub('timeline');p.add_argument('reference',nargs='?',help='Anchor note; default: the newest note');p.add_argument('--date',help='YYYY-MM-DD: anchor at the first note on or after this date');p.add_argument('--before',type=int,default=5);p.add_argument('--after',type=int,default=5);p.add_argument('--type',type=_type_name,action='append');p.add_argument('--by',choices=['updated','created'],default='updated');p.add_argument('--all',action='store_true',help='Include superseded, archived and resolved notes')
-    p=sub('ingest-plan');p.add_argument('--source',type=Path,help="Auto-memory folder; default: Claude Code's folder for --cwd");p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of skipping the file");p.add_argument('--allow-similar',action='store_true')
+    p=sub('ingest');p.add_argument('--source',type=Path,help="Auto-memory folder; default: Claude Code's folder for --cwd");p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of skipping the file");p.add_argument('--allow-similar',action='store_true')
     p=sub('export');p.add_argument('--out',type=Path,required=True,help='New .zip file, outside the store');p.add_argument('--type',type=_type_name,action='append');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)');p.add_argument('--all',action='store_true',help='Include superseded, archived and resolved notes')
-    p=sub('import-plan');p.add_argument('file',type=Path)
+    p=sub('import');p.add_argument('file',type=Path)
     p=sub('confirm');p.add_argument('reference');p.add_argument('--expected-revision',help=REV_HELP);p.add_argument('--session');p.add_argument('--turn')
     for name in ('resolve','reopen'):p=sub(name);p.add_argument('reference',help='A plan, bug or risk note');p.add_argument('--expected-revision',help=REV_HELP);p.add_argument('--session');p.add_argument('--turn')
     p=sub('restore');p.add_argument('reference',help='An archived note: it returns to notes/, pinned, with its id, body and verification baseline kept (a resolved note uses reopen, a superseded one is read through its successor)');p.add_argument('--expected-revision',help=REV_HELP);p.add_argument('--session');p.add_argument('--turn')
     p=sub('stats');p.add_argument('--days',type=int,default=30,help='Window, at most 30 (the diary keeps 30 days)');p.add_argument('--limit',type=int,default=10)
     p=sub('logs');p.add_argument('--level',choices=['debug','info','warning','error'],default='info',help='Lowest level shown');p.add_argument('--kind',choices=['hook','command','internal']);p.add_argument('--event',help='Hook event, command name or internal call site');p.add_argument('--days',type=int,default=1,help='Last N x 24 hours, at most 30 (logs keep 30 days)');p.add_argument('--limit',type=int,default=50)
-    p=sub('delete-plan');p.add_argument('reference');p.add_argument('--payload-file',type=Path)
+    p=sub('delete');p.add_argument('reference');p.add_argument('--expected-revision',help=REV_HELP)
     p=sub('archive');p.add_argument('reference',help='A note to retire without a replacement (a plan, bug or risk that is finished uses resolve)');p.add_argument('--expected-revision',help=REV_HELP);p.add_argument('--payload-file',type=Path);p.add_argument('--session');p.add_argument('--turn')
-    p=sub('apply');p.add_argument('plan_id');p.add_argument('--expected-plan-sha256',required=True)
-    p.add_argument('--include-private',action='store_true',help='Hivemind only: allow a plan that changes a private notebook')
-    p=sub('inspect-plan');p.add_argument('plan_id');p.add_argument('--full',action='store_true',help='Show every diff in full instead of cutting each at 16000 characters');p.add_argument('--include-private',action='store_true',help='Hivemind only: show changes inside private notebooks')
     # A direct write replacing the bodies of several notes (a prose rewrite); titles never change.
     p=sub('rewrite');p.add_argument('--payload-file',type=Path,help='JSON list of {"ref", "revision", "body"}; default: stdin')
-    p=sub('merge-plan');p.add_argument('--payload-file',type=Path)
+    p=sub('merge');p.add_argument('--payload-file',type=Path,help='JSON {"target": "DOMAIN:ID@REVISION", "sources": ["DOMAIN:ID@REVISION", ...], "body": "..."}; default: stdin')
     p=sub('history');p.add_argument('--note');p.add_argument('--limit',type=int,default=20);p.add_argument('--include-private',action='store_true',help='Hivemind only: show operations on private notebooks');p.add_argument('--markdown',action='store_true',help='Return {ok, rows, markdown} with a dated list a person can read')
     p=sub('recap');p.add_argument('--days',type=int,default=7,help='Days back, 1 to 90');p.add_argument('--project',help='Project slug');p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain')
     p=sub('log');p.add_argument('--project',help='Project slug');p.add_argument('--since',help='ISO date or time');p.add_argument('--until',help='ISO date or time, inclusive');p.add_argument('--note',help='One note (REF or ID, deleted notes too)');p.add_argument('--type',help='Note type or session');p.add_argument('--event',help='created, updated, confirmed, superseded, resolved, archived, reopened, deleted, promoted, moved, undone or session');p.add_argument('--limit',type=int,default=50)
@@ -865,10 +864,10 @@ def build_parser():
     p=sub('doctor')
     p=sub('backup');p.add_argument('--keep',type=int,default=7)
     p=sub('housekeep')
-    p=sub('restore-plan');p.add_argument('file',type=Path)
-    p=sub('migration-plan')
-    p=sub('note-type-plan')
-    p=sub('baseline-plan')
+    p=sub('restore-backup');p.add_argument('file',type=Path)
+    p=sub('migrate');g=p.add_mutually_exclusive_group(required=True)
+    g.add_argument('--schema',action='store_true',help='Upgrade bindings, the tag taxonomy and the schema version');g.add_argument('--note-types',action='store_true',help="Rename notes to their type's filename prefix")
+    g.add_argument('--baseline',action='store_true',help='Keep the old verification baseline of notes whose checked date predates their last update')
     p=sub('rebuild');p.add_argument('name',nargs='?')
     p=sub('rebaseline');p.add_argument('--dry-run',action='store_true',help='list each stale note and whether its change is relevant, write nothing')
     p.add_argument('--scheduled',action='store_true',help=argparse.SUPPRESS)
@@ -908,7 +907,7 @@ def build_parser():
     p.add_argument('--model',help='--build: the Claude model alias (default sonnet)');p.add_argument('--budget',help='--build: most to spend, in USD (default 5.00); the build stops when it is used and the next one continues')
     p.add_argument('--dry-run',action='store_true',help='--build: print the calls it would make, packet sizes and the budget; spends nothing');p.add_argument('--progress',action='store_true',help='--build: one JSON line per finished call on stderr')
     p=sub('batch');p.add_argument('--payload-file',type=Path)
-    p=sub('retag-plan');p.add_argument('--payload-file',type=Path)
+    p=sub('retag');p.add_argument('--payload-file',type=Path,help='JSON {"OLD_TAG": "NEW_TAG", ...}; default: stdin')
     p=sub('remap');p.add_argument('--payload-file',type=Path)
     p=sub('promote');p.add_argument('refs',nargs='*',metavar='REF@REVISION',help='Project notes to move to the global domain, each with the revision you read');p.add_argument('--suggest',action='store_true',help='List candidates with reasons; writes nothing');p.add_argument('--only',help='With --suggest: one domain instead of all')
     for name in sorted(SWITCH):p=sub(name);p.add_argument('--session',help='Session ID; default: $CLAUDE_CODE_SESSION_ID, which Claude Code sets for shell commands')
@@ -918,7 +917,7 @@ def build_parser():
     p=sub('serve');p.add_argument('--stdio',action='store_true',required=True,help='JSON-lines requests on stdin, one reply line each on stdout')
     p=sub('sync');p.add_argument('vault',type=Path)
     p=sub('overlay-build');p.add_argument('vault',type=Path)
-    p=sub('overlay-teardown-plan');p.add_argument('vault',type=Path)
+    p=sub('overlay-teardown');p.add_argument('vault',type=Path)
     p=sub('overlay-sync-all');p.add_argument('--primary',help='Domain whose view the shared dashboards show (built last)')
     parser.subs=subs   # main() reads the command names from it
     return parser
@@ -940,7 +939,7 @@ def main(argv=None):
     try:
         # Agents started inside a Hivemind terminal inherit HIVEMIND_SESSION; Hivemind's own backend does not. Every path (batch and serve
         # re-enter main) reaches this point before a governed command runs.
-        if os.environ.get('HIVEMIND_SESSION') and (args.command in {'apply','undo','recover','upgrade'}|DIRECT_WRITES or (args.command=='setup' and args.apply_plan) or (args.command=='taxonomy' and args.action=='add') or (args.command=='doc' and args.doc_action in DOC_WRITES)
+        if os.environ.get('HIVEMIND_SESSION') and (args.command in {'undo','recover','upgrade','setup'}|DIRECT_WRITES|BULK_WRITES or (args.command=='taxonomy' and args.action=='add') or (args.command=='doc' and args.doc_action in DOC_WRITES)
                                                     or (args.command=='proposals' and args.action in {'accept','reject'} and _proposal_kind(args.id)=='page')):
             from .runtime import HIVEMIND_DENY
             raise ValueError('hivemind: '+HIVEMIND_DENY)
@@ -957,23 +956,13 @@ def main(argv=None):
             from .instructions import help_topic
             _emit(help_topic(args.topic),args);return 0
         if args.command=='setup':
-            from .storage import setup,apply_relocation,inspect_relocation
+            from .storage import setup
             if args.actor in {'subagent','viewer'}:raise ValueError('Subagents are read-only' if args.actor=='subagent' else 'Viewers are read-only')
-            if args.inspect_plan:
-                if args.apply_plan or args.location or args.source or args.expected_plan_sha256:raise ValueError('Inspection takes only a plan ID')
-                result=inspect_relocation(args.inspect_plan)
-            elif args.apply_plan:
-                if not args.expected_plan_sha256:raise ValueError('--expected-plan-sha256 is required')
-                if args.location or args.source:raise ValueError('Apply uses the locations in the approved plan')
-                result=apply_relocation(args.apply_plan,args.expected_plan_sha256)
-            else:
-                if args.expected_plan_sha256:raise ValueError('--apply-plan is required')
-                result=setup(args.location,args.non_interactive,args.source)
-            _emit(result,args);return 0
+            _emit(setup(args.location,args.non_interactive,args.source),args);return 0
         if args.command=='upgrade':
             if args.actor in {'subagent','viewer'}:raise ValueError('Subagents are read-only' if args.actor=='subagent' else 'Viewers are read-only')
             from .upgrade import run as upgrade
-            _emit(upgrade(args.plan),args);return 0
+            _emit(upgrade(),args);return 0
         from .storage import resolve_root
         root=resolve_root(args.root)[0]
         if args.root is not None:
@@ -989,7 +978,7 @@ def main(argv=None):
             invocation['domain']=domain
         except ValueError:
             # Snapshots exist to repair a damaged store, so restoring must not depend on readable bindings.
-            if cmd not in {'restore-plan','inspect-plan','apply','backup','housekeep','history'}:raise
+            if cmd not in {'restore-backup','backup','housekeep','history'}:raise
             domain=None
         # propose writes only a draft in .turns/, which the main agent accepts or rejects.
         if args.actor=='subagent' and cmd not in READ_ONLY|{'propose'}:raise ValueError('Subagents are read-only; stage a draft with propose for the main agent')
@@ -1273,7 +1262,7 @@ def main(argv=None):
         elif cmd=='domains':result=list_domains(root)
         elif cmd=='version':
             from .installer_lifecycle import CORE_RELEASE,installed_stamp
-            result={'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'proposals':1,'restore':1,'pin':1,'rule':1,'direct_writes':1,'note_types':1,'history':3,'items':{'fields':2},'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']},'wiki_agent':{'version':1},'systems':{'project':1},'views':{'version':2,'kinds':['note','query']},
+            result={'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'proposals':1,'restore':1,'pin':1,'rule':1,'direct_writes':2,'revisions':1,'note_types':1,'history':3,'items':{'fields':2},'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']},'wiki_agent':{'version':1},'systems':{'project':1},'views':{'version':2,'kinds':['note','query']},
                                                                                                                                          'docs':{'version':1,'max_page_bytes':4194304,'folder_policy':2,'accept_edited':True,'folder_proposals':1}}}
         elif cmd=='update':
             from .notes import change
@@ -1373,7 +1362,7 @@ def main(argv=None):
             found=worklist(root,domains,args.kind or None,max(1,min(100,args.limit)),args.tag,working_tree=True)
             result={'ok':True,'domain':None if args.all_domains else domain,'due':found['total'],'stale_digests':found['counts'].get('stale',0),'kinds':list(KINDS),'counts':found['counts'],'notes':found['items'],
                     'hint':_maintenance_hint(root)+'Each note lists why (kinds, reason) and an action. Still true -> confirm REF; changed -> update REF; replaced -> supersede REF --by NEW; finished -> resolve REF. A STALE note: read its files, then update REF (or confirm REF if it still holds). '
-                           'For an obsolete note, archive REF (undo OPERATION reverses it); for a duplicate (pair), propose a merge-plan for the user to apply. Stale notes come first, never-confirmed notes nobody has read lately lead the due ones.'}
+                           'For an obsolete note, archive REF (undo OPERATION reverses it); for a duplicate (pair), merge them (the harness asks the user first; undo OPERATION reverses it). Stale notes come first, never-confirmed notes nobody has read lately lead the due ones.'}
         elif cmd=='open':
             from .notes import open_work,short_ref
             from .runtime import scope_domains
@@ -1435,18 +1424,18 @@ def main(argv=None):
             rows=[{'ref':f"{domain}:{n['id']}",'short_ref':short_ref(domain,n['id']),'date':when(n)[:10],'type':n.get('type'),'title':n['title'],'status':n.get('status','active'),'revision':n.get('revision'),**({'anchor':True} if i==at else {})}
                   for i,n in enumerate(notes) if at-before<=i<=at+after]
             result={'ok':True,'domain':domain,'by':args.by,'anchor':rows[min(at,before)]['ref'],'notes':rows}
-        elif cmd=='ingest-plan':
-            from .ingest import ingest_plan,default_source
+        elif cmd=='ingest':
+            from .ingest import ingest,default_source
             if not domain:raise ValueError(UNBOUND)
-            result=ingest_plan(root,domain,args.source or default_source(cwd),args.redact,args.allow_similar)
+            result=ingest(root,domain,args.source or default_source(cwd),args.redact,args.allow_similar)
         elif cmd=='export':
             from .bundle import export
             if not domain:raise ValueError(UNBOUND)
             result=export(root,domain,args.out,args.type or (),args.tag,args.all)
-        elif cmd=='import-plan':
-            from .bundle import import_plan
+        elif cmd=='import':
+            from .bundle import import_bundle
             # The bundle's own domain unless --domain names another; the cwd binding does not choose it.
-            result=import_plan(root,args.file,args.domain)
+            result=import_bundle(root,args.file,args.domain)
         elif cmd=='confirm':
             from .notes import confirm
             d,n=_reference(args.reference,domain,root)
@@ -1473,11 +1462,11 @@ def main(argv=None):
             if not domain:raise ValueError(UNBOUND)
             from .common import global_domains
             result=stats(root,list(dict.fromkeys([domain]+parent_domains(domain,load_bindings(root))+global_domains(root))),max(1,min(30,args.days)),max(1,min(100,args.limit)))
-        elif cmd=='delete-plan':
+        elif cmd=='delete':
+            # A direct, journaled delete: the journal keeps the note's bytes, so undo OPERATION brings it back.
             from .notes import change
-            d,n=_reference(args.reference,domain,root);values=_payload(args) if args.payload_file else {}
-            if 'actor' in values:raise ValueError('Cannot plan with an actor field: the controller records who acts')
-            result=change(n,d,'delete',root,plan_only=True,**values)
+            d,n=_reference(args.reference,domain,root)
+            result=change(n,d,'delete',root,_need_revision(args.expected_revision,args.reference))
         elif cmd=='archive':
             # Retiring a note without a replacement: one journaled, undoable step, like resolve.
             from .notes import change
@@ -1485,18 +1474,18 @@ def main(argv=None):
             if 'actor' in values:raise ValueError('Cannot archive with an actor field: the controller records who acts')
             result=change(n,d,'archive',root,_need_revision(values.pop('expected_revision',None) or args.expected_revision,args.reference),**values);result.pop('path',None);result['undo']='undo '+result['operation_id']
             _receipt(args,d,n,root)
-        elif cmd=='apply':
-            from .governance import apply
-            result=apply(root,args.plan_id,args.expected_plan_sha256,include_private=args.include_private)
-        elif cmd=='inspect-plan':
-            from .governance import inspect_plan
-            result=inspect_plan(root,args.plan_id,full=args.full,include_private=args.include_private)
         elif cmd=='rewrite':
             from .notes import rewrite
             result=rewrite(_payload(args),domain,root)
-        elif cmd=='merge-plan':
-            from .governance import merge_plan
-            result=merge_plan(root,_payload(args))
+        elif cmd=='merge':
+            from .governance import merge
+            data=_payload(args)
+            if not isinstance(data,dict) or not isinstance(data.get('target'),str) or not isinstance(data.get('sources'),list) or not isinstance(data.get('body'),str):
+                raise ValueError('merge takes {"target": "DOMAIN:ID@REVISION", "sources": ["DOMAIN:ID@REVISION", ...], "body": "..."}')
+            for given in [data['target'],*data['sources']]:
+                if not isinstance(given,str):raise ValueError('Merge references are strings: DOMAIN:ID@REVISION')
+                _with_revision(given,'merge')
+            result=merge(root,data)
         elif cmd=='history':
             from .governance import history
             note_id=None
@@ -1529,8 +1518,9 @@ def main(argv=None):
                     if not re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',note):raise
             result=log(root,canonical_domain(args.domain,root) if args.domain else None,args.project,args.since,args.until,note,args.type,args.event,args.limit)
         elif cmd=='undo':
-            from .governance import undo
-            result=undo(root,args.operation_id,args.include_private)
+            from .governance import undo,operation_root
+            # Install and harness setup journal in the install folder and the harness homes (i- and s- IDs); undo finds them there.
+            result=undo(operation_root(root,args.operation_id),args.operation_id,args.include_private)
         elif cmd=='recover':
             from .repository import recover,reconcile,abandon
             import re
@@ -1574,18 +1564,12 @@ def main(argv=None):
         elif cmd=='housekeep':
             from .runtime import housekeep
             result=housekeep(root)
-        elif cmd=='restore-plan':
-            from .backup import restore_plan
-            result=restore_plan(root,args.file)
-        elif cmd=='migration-plan':
-            from .migration import migration_plan
-            result=migration_plan(root)
-        elif cmd=='baseline-plan':
-            from .migration import baseline_plan
-            result=baseline_plan(root)
-        elif cmd=='note-type-plan':
-            from .migration import note_type_plan
-            result=note_type_plan(root)
+        elif cmd=='restore-backup':
+            from .backup import restore_backup
+            result=restore_backup(root,args.file)
+        elif cmd=='migrate':
+            from .migration import migrate_schema,migrate_note_types,migrate_baseline
+            result=(migrate_schema if args.schema else migrate_note_types if args.note_types else migrate_baseline)(root)
         elif cmd in {'rebuild','validate'}:
             d=args.name or domain
             if not d:raise ValueError(UNBOUND)
@@ -1754,9 +1738,9 @@ def main(argv=None):
                     except SystemExit as exc:code=exc.code
                     finally:_IN_BATCH[0]-=1
                 result.append({'exit_code':code,'result':json.loads(out.getvalue()) if out.getvalue().strip() else None,'error':error.getvalue()[:1000] or None})
-        elif cmd=='retag-plan':
-            from .governance import retag_plan
-            result=retag_plan(root,_payload(args))
+        elif cmd=='retag':
+            from .governance import retag
+            result=retag(root,_payload(args))
         elif cmd=='remap':
             from .governance import remap
             mappings=_payload(args)
@@ -1778,9 +1762,9 @@ def main(argv=None):
         elif cmd=='overlay-sync-all':
             from .sync import sync_all
             result=sync_all(root,'manual',args.primary)
-        elif cmd=='overlay-teardown-plan':
-            from .sync import teardown_plan
-            result=teardown_plan(args.vault)
+        elif cmd=='overlay-teardown':
+            from .sync import teardown
+            result=teardown(args.vault)
         elif cmd in {'sync','overlay-build'}:
             if not domain:raise ValueError(UNBOUND)
             from .sync import sync,build_overlay

@@ -181,15 +181,15 @@ class MacRuntimeTest(StoreFixture):
 
 
 class InstallerTest(unittest.TestCase):
-    def test_a_crlf_profile_is_not_stale(self):
-        """The plan hashed decoded text and the apply check hashed raw bytes, so a CRLF profile was stale forever."""
+    def test_a_crlf_profile_keeps_its_bytes_and_counts_as_done(self):
+        """The old plan hashed decoded text and its apply check hashed raw bytes, so a CRLF profile was stale forever; the PATH step reads and appends bytes."""
         import install
         with tempfile.TemporaryDirectory() as tmp:
             profile=Path(tmp)/'.zprofile';profile.write_bytes(b'export A=1\r\nexport B=2\r\n')
             with patch.object(install,'_on_path',return_value=False),patch.object(install,'_profile',return_value=profile),\
                  patch.object(install.os,'name','posix'):
-                change=install._path_plan()
-            self.assertFalse(install._path_stale(change))
+                change=install._path_step()
+            self.assertEqual((change['kind'],change['target']),('profile',str(profile)))
             install._add_to_path_posix(change)
             self.assertTrue(profile.read_bytes().startswith(b'export A=1\r\nexport B=2\r\n'));self.assertTrue(install._path_done(change))
 

@@ -57,8 +57,8 @@ class LegacyBackups(Fixture):
     def test_a_legacy_snapshot_verifies_and_restores_without_the_hosted_parts(self):
         self.note();snapshot=backup.backup(self.root)['backup'];old=self.legacy(snapshot)
         self.assertEqual(backup.verify(old),[])
-        (self.root/'domains'/'demo'/'notes'/'extra.md').write_text('stray',encoding='utf-8')   # not in the snapshot: the restore deletes it, so there is a plan
-        planned=backup.restore_plan(self.root,old);self.assertTrue(governance.apply(self.root,planned['plan_id'],planned['digest'])['ok'])
+        (self.root/'domains'/'demo'/'notes'/'extra.md').write_text('stray',encoding='utf-8')   # not in the snapshot: the restore deletes it, so there is a write
+        self.assertTrue(backup.restore_backup(self.root,old)['ok'])
         self.assertEqual(len(repository.inventory('demo',self.root)),1)
         self.assertFalse((self.root/'notebook-privacy.json').exists());self.assertFalse((self.root/'domains'/'demo'/'notebooks').exists())
 
@@ -95,13 +95,6 @@ class LegacyJournals(Fixture):
         (folder/'journal.json').write_text(repository.canonical_json(journal))
         code,text=self.fails('undo',operation);self.assertIn('hosted notebooks were retired',text)
 
-    def test_a_plan_that_stages_an_attachment_cannot_be_applied(self):
-        plan_id='c'*32;value={'schema':2,'id':plan_id,'kind':'restore','domains':[],'created':'2026-01-01T00:00:00Z','changes':{'domains/demo/notebooks/nb1/assets/x.bin':{'blob':'f'*64}},
-                              'expected':{'domains/demo/notebooks/nb1/assets/x.bin':None},'summary':{'files':1}}
-        value['digest']=__import__('hashlib').sha256(repository.canonical_json(value).encode()).hexdigest()
-        (self.root/'.plans').mkdir(exist_ok=True);(self.root/'.plans'/(plan_id+'.json')).write_text(repository.canonical_json(value))
-        with self.assertRaisesRegex(ValueError,'retired'):governance.apply(self.root,plan_id,value['digest'])
-
 
 class LeftoverMirrorState(Fixture):
     """The retired Obsidian page mirror left domains/D/notebook-sync.json: nothing reads it, and the next vault sync removes it."""
@@ -113,11 +106,11 @@ class LeftoverMirrorState(Fixture):
         self.assertFalse(state.exists());self.assertEqual(copy.read_text(),'# Plan\n')
         self.ok('sync',str(vault))   # nothing left to remove
 
-    def test_a_leftover_state_never_holds_up_plan_pruning(self):
+    def test_a_leftover_state_never_holds_up_leftover_plan_removal(self):
         state=self.root/'domains'/'demo'/'notebook-sync.json'
         state.write_text(json.dumps({'version':1,'pending':{'p.md':{'plan_id':'d'*32}}}))
         (self.root/'.plans').mkdir(exist_ok=True);plan=self.root/'.plans'/('d'*32+'.json');plan.write_text(json.dumps({'created':'2020-01-01T00:00:00Z'}))
-        repository.prune_plans(self.root,unapplied_days=1)
+        self.assertEqual(repository.remove_leftover_plans(self.root),1)
         self.assertFalse(plan.exists())   # the old rule kept a plan a mirror deletion waited on
 
 
@@ -129,15 +122,15 @@ class FolderOperationPrivacy(Fixture):
         for path in ('domains/demo/notes/n.md','domains/demo/notebooks/nb1/a.md','notebook-privacy.json'):self.assertFalse(docs.is_private_path(path),path)
         self.assertFalse(hasattr(docs,'private_scope'));self.assertFalse(hasattr(docs,'PRIVACY'))
 
-    def test_note_history_and_plan_summaries_leave_out_bookkeeping(self):
+    def test_note_history_and_operation_listings_leave_out_bookkeeping(self):
         from unittest.mock import patch
         rows=[{'operation_id':'op','files':['domains/demo/notes/n.md','domains/demo/folder-proposals/nb-0123456789/0123456789ab.json']}]
         with patch('core.activity.note_history',return_value=rows):shown=governance.history(self.root,note_id='n')
         self.assertEqual((shown[0]['files'],shown[0]['redacted']),(['domains/demo/notes/n.md'],1))
         self.assertEqual(docs.redact_summary({'skipped_unreadable':['notebook-folders.json','domains/demo/notes/n.md'],'files':2}),{'skipped_unreadable':['domains/demo/notes/n.md'],'files':2})
-        made=governance.plan(self.root,{'notebook-folders.json':json.dumps({'version':1,'folders':[]})},'restore',(),{'files':1,'path':'notebook-folders.json'})
-        shown=governance.inspect_plan(self.root,made['plan_id']);self.assertEqual((shown['redacted'],shown['effects'],'path' in shown['summary']),(1,[],False))
-        self.assertEqual(len(governance.inspect_plan(self.root,made['plan_id'],include_private=True)['effects']),1)
+        made=governance.commit(self.root,{'notebook-folders.json':json.dumps({'version':1,'folders':[]})},'restore',(),{'files':1,'path':'notebook-folders.json'})
+        shown=next(r for r in governance.history(self.root) if r['operation_id']==made['operation_id']);self.assertEqual((shown['redacted'],shown['files'],shown['summary']),(1,[],None))
+        self.assertEqual(next(r for r in governance.history(self.root,include_private=True) if r['operation_id']==made['operation_id'])['files'],['notebook-folders.json'])
 
     def test_batch_items_never_ask_for_private_notebooks(self):
         result=self.ok('batch',stdin=json.dumps([{'argv':['doc','read','--file','x.md','--include-private']}]))

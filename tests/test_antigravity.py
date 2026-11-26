@@ -8,7 +8,6 @@ from unittest.mock import patch
 
 from core import runtime, wiring
 from core.capture import finalize, status
-from core.governance import apply
 from core.instructions import BEGIN, installed
 from core.init_domain import init_domain
 from core.notes import capture
@@ -176,8 +175,7 @@ class AntigravitySetup(unittest.TestCase):
         path.write_text(json.dumps(unrelated), encoding='utf-8')
 
         def apply_setup(**kwargs):
-            plan = setup.setup_plan('antigravity', home, **kwargs)
-            return apply(home, plan['plan_id'], plan['digest'])
+            return setup.setup('antigravity', home, **kwargs)
 
         apply_setup()
         document = read_json(path)
@@ -197,7 +195,7 @@ class AntigravitySetup(unittest.TestCase):
         path.write_text(json.dumps(document), encoding='utf-8')
         self.assertTrue(wiring.broken({'antigravity': wiring.check('antigravity', setup)}))
         with self.assertRaisesRegex(ValueError, 'modified managed hook group'):
-            setup.setup_plan('antigravity', home, uninstall=True)
+            setup.setup('antigravity', home, uninstall=True)
         apply_setup(uninstall=True, adopt=True)
         self.assertEqual(read_json(path), {**unrelated, 'added-later': document['added-later']})
         self.assertFalse((home / 'GEMINI.md').exists())
@@ -212,8 +210,7 @@ class AntigravitySetup(unittest.TestCase):
         rules = home / 'GEMINI.md'
 
         def apply_setup(**kwargs):
-            plan = setup.setup_plan('antigravity', home, **kwargs)
-            return apply(home, plan['plan_id'], plan['digest'])
+            return setup.setup('antigravity', home, **kwargs)
 
         # An ownership record from the hooks-only build, with no block yet, upgrades without --adopt.
         apply_setup()
@@ -234,10 +231,9 @@ class AntigravitySetup(unittest.TestCase):
         self.assertFalse(installed('antigravity'))
         self.assertEqual(wiring.check('antigravity', setup)['instructions'], 'stale_or_missing')
         with self.assertRaisesRegex(ValueError, 'modified managed instructions'):
-            setup.setup_plan('antigravity', home)
-        plan = setup.setup_plan('antigravity', home, adopt=True)
-        self.assertIn('GEMINI.md', plan['summary']['adopt'])
-        apply(home, plan['plan_id'], plan['digest'])
+            setup.setup('antigravity', home)
+        done = apply_setup(adopt=True)
+        self.assertIn('GEMINI.md', done['summary']['adopt'])
         self.assertEqual(rules.read_text(encoding='utf-8'), text)
 
         apply_setup(uninstall=True)

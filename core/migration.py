@@ -1,14 +1,21 @@
-"""Separate reviewed plans for configuration upgrades and note-type normalization."""
+"""Store migrations: configuration upgrades, note-type normalization and the verification baseline. Each is one direct,
+journaled write (`migrate --schema|--note-types|--baseline`), undone with `undo OPERATION`."""
 from pathlib import Path
 from .common import memory_root
 from .note_types import keep_baseline
 from .repository import read_json,canonical_json,inventory,FACETS
-from .governance import plan
+from .governance import commit
 
 DEFAULT_TAGS=['subject/project','subject/user','concern/architecture','concern/decision','concern/correction','concern/workflow','concern/preference','concern/knowledge','platform/codex','platform/claude','platform/copilot','platform/factory','platform/antigravity','technology/python','technology/sqlite']
 
-def migration_plan(root=None):
-    root=Path(root or memory_root()).resolve();changes={};warnings=[]
+def migrate_schema(root=None,sync_overlay=True):
+    root=Path(root or memory_root()).resolve()
+    from .repository import store_lock
+    with store_lock(root):return _migrate_schema(root,sync_overlay)
+
+
+def _migrate_schema(root,sync_overlay=True):
+    changes={};warnings=[]
     config=read_json(root/'bindings.json',{'version':2,'domains':{},'search_scope':{'global_domains':['_global'],'foreign_domains':[]}})
     if not isinstance(config,dict) or not isinstance(config.get('domains',{}),dict):raise ValueError('Invalid bindings preserved')
     config['version']=2;scope=config.setdefault('search_scope',{});scope.pop('min_relevance_score',None)
@@ -28,11 +35,11 @@ def migration_plan(root=None):
     if not (root/'tag_taxonomy.json').exists():changes['tag_taxonomy.json']=canonical_json({'version':2,'facets':list(FACETS),'tags':DEFAULT_TAGS})
     else:
         taxonomy=read_json(root/'tag_taxonomy.json');tags=taxonomy.get('tags',[]) if isinstance(taxonomy,dict) else taxonomy
-        if any('/' not in tag for tag in tags):warnings.append('Legacy tags retained; use a reviewed retag-plan to migrate existing values')
+        if any('/' not in tag for tag in tags):warnings.append('Legacy tags retained; use retag to migrate existing values')
     domains=sorted(p.name for p in (root/'domains').iterdir() if p.is_dir()) if (root/'domains').exists() else []
     count=sum(len(inventory(d,root,retired=True)) for d in domains)
     changes['schema-version.json']=canonical_json({'version':2,'canonical_notes_rewritten':False})
-    return plan(root,changes,'schema_migration',domains,{'notes_preserved':count,'warnings':warnings,'files':len(changes)})
+    return commit(root,changes,'schema_migration',domains,{'notes_preserved':count,'warnings':warnings,'files':len(changes)},sync_overlay=sync_overlay)
 
 
 def rewrite_type_links(body, referring_path, targets, moved_from=None):
@@ -63,8 +70,8 @@ def rewrite_type_links(body, referring_path, targets, moved_from=None):
                   lambda m:m.group('start')+rewrite(m.group('url')),body)
 
 
-def note_type_plan(root=None):
-    """Rename existing notes through a digest-approved, revision-checked plan."""
+def migrate_note_types(root=None):
+    """Rename existing notes to their type's filename prefix in one direct, journaled write."""
     from .repository import store_lock,serialize,validate,now
     from .note_types import normalize
     from .notes import slug
@@ -92,15 +99,15 @@ def note_type_plan(root=None):
             if old!=new:changes[old]=None
             changes[new]=serialize(note);domains.add(note['domain'])
             updates.append({'id':note['id'],'domain':note['domain'],'type':note['type'],'status':note['status'],'before':old,'after':new})
-        return plan(root,changes,'note_type_migration',domains,
-                    {'notes':len(updates),'renamed':sum(n['before']!=n['after'] for n in updates),
+        return commit(root,changes,'note_type_migration',domains,
+                      {'notes':len(updates),'renamed':sum(n['before']!=n['after'] for n in updates),
                      'ids_preserved':True,'statuses_preserved':True,'updates':updates})
 
 
-def baseline_plan(root=None):
-    """A reviewed plan that keeps the old effective verification baseline of existing notes. Before `checked` became the baseline, a note
+def migrate_baseline(root=None):
+    """A direct, journaled write that keeps the old effective verification baseline of existing notes. Before `checked` became the baseline, a note
     was current from max(updated, checked); `verified_at` now reads `checked` alone, so a map, brief or note with `sources` or
-    `file_hashes` whose `checked` is older than a later body update would report already-covered changes. The plan sets
+    `file_hashes` whose `checked` is older than a later body update would report already-covered changes. It sets
     checked=updated for those notes (only `checked` changes; `updated` and the body stay). Notes without `checked` are unaffected."""
     from .repository import serialize,validate
     root=Path(root or memory_root()).resolve();changes={};updates=[];domains=set()
@@ -114,4 +121,4 @@ def baseline_plan(root=None):
                 note=dict(note,checked=note['updated']);validate(note,note['domain'],root)
                 rel=Path(note['path']).relative_to(root).as_posix();changes[rel]=serialize(note);domains.add(note['domain'])
                 updates.append({'id':note['id'],'domain':note['domain'],'type':note.get('type'),'path':rel})
-        return plan(root,changes,'baseline_migration',domains,{'notes':len(updates),'updates':updates})
+        return commit(root,changes,'baseline_migration',domains,{'notes':len(updates),'updates':updates})

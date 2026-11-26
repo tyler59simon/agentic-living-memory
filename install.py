@@ -1,13 +1,14 @@
 """Install the Agentic Living Memory package into its own per-user folder, independent of any harness.
 
 Windows: %LOCALAPPDATA%/agentic-living-memory/app. Elsewhere: ~/.local/lib/agentic-living-memory/app.
-Plans, journals and the ownership record live beside app/ in that folder. Each harness (Claude Code, Codex,
-Copilot, Factory, Antigravity CLI) is wired afterwards with integrations/setup.py HARNESS --hooks, run from the installed copy.
-Older releases installed into CODEX_HOME/agentic-living-memory; --retire-legacy-plan removes that copy once
+Journals and the ownership record live beside app/ in that folder. Each run is one journaled write whose `i-` operation
+ID undo takes (`alm undo i-...` puts the previous package files back). Each harness (Claude Code, Codex, Copilot, Factory,
+Antigravity CLI) is wired afterwards with integrations/setup.py HARNESS --hooks, run from the installed copy.
+Older releases installed into CODEX_HOME/agentic-living-memory; --retire-legacy removes that copy once
 no harness points at it.
 
-The plan also puts an `alm` launcher in ~/.local/bin and, when that folder is not on PATH, adds it (summary
-keys `launcher` and `path_change`). Apply checks both are unchanged since the plan, then writes them."""
+The install also puts an `alm` launcher in ~/.local/bin and, when that folder is not on PATH, adds it (receipt
+keys `launcher` and `path_change`). Undo leaves both: the launcher runs whatever copy is in app/."""
 from __future__ import annotations
 
 import hashlib
@@ -79,7 +80,7 @@ def _lead() -> str:
 def _unwire_command(harness: str, path: Path) -> str:
     home = path.parents[len(Path(CONFIG_NAMES[harness]).parts) - 1]
     custom = '' if home.resolve() == harness_home(harness).resolve() else f' --home "{home}"'
-    return f'{_lead()}"{sys.executable}" "{INSTALL_DIR / "integrations" / "setup.py"}" {harness} --uninstall-plan{custom}'
+    return f'{_lead()}"{sys.executable}" "{INSTALL_DIR / "integrations" / "setup.py"}" {harness} --uninstall{custom}'
 
 
 def legacy_references(extra_homes=(), folder=None, unwire=False) -> list:
@@ -123,14 +124,11 @@ def next_steps() -> tuple:
     return steps, current
 
 
-def print_next_steps(root, plan_id) -> None:
-    """After an install, the wiring commands from the applied plan, ready to paste into PowerShell, on stderr (stdout stays the JSON result)."""
-    from core.repository import read_json
-    summary = (read_json(Path(root) / '.plans' / f'{plan_id}.json') or {}).get('summary') or {}
+def print_next_steps(summary) -> None:
+    """After an install, the wiring commands, ready to paste into PowerShell, on stderr (stdout stays the JSON result)."""
     steps = summary.get('next_steps') or []
     if steps:
-        print('Installed. Next, wire each harness: run these, then review and apply each plan they print (--apply-plan ID --expected-plan-sha256 DIGEST).\n' +
-              '\n'.join('  ' + _lead() + step for step in steps), file=sys.stderr)
+        print('Installed. Next, wire each harness: run these.\n' + '\n'.join('  ' + _lead() + step for step in steps), file=sys.stderr)
     elif summary.get('wiring_current'):
         print(f'Installed. Harness wiring is current ({", ".join(summary["wiring_current"])}); nothing to rerun.', file=sys.stderr)
 
@@ -139,11 +137,8 @@ def main() -> int:
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--location', type=Path, help='Shared memory folder for unattended first-time setup')
-    parser.add_argument('--plan', action='store_true')
-    parser.add_argument('--apply-plan')
-    parser.add_argument('--expected-plan-sha256')
-    parser.add_argument('--uninstall-plan', action='store_true', help='Remove the package (unwire each harness first)')
-    parser.add_argument('--retire-legacy-plan', action='store_true', help=f'Remove the old copy in {LEGACY_DIR}')
+    parser.add_argument('--uninstall', action='store_true', help='Remove the package (unwire each harness first)')
+    parser.add_argument('--retire-legacy', action='store_true', help=f'Remove the old copy in {LEGACY_DIR}')
     parser.add_argument('--home', action='append', default=[], metavar='HARNESS=PATH',
                         help='A harness home set up with setup.py --home PATH; uninstall and retirement check it too (repeatable)')
     args = parser.parse_args()
@@ -153,23 +148,17 @@ def main() -> int:
         if not sep or harness not in HARNESSES or not path:
             parser.error('--home takes HARNESS=PATH, with HARNESS one of ' + ', '.join(HARNESSES))
         homes.append((harness, path))
-    if not (args.uninstall_plan or args.apply_plan or args.retire_legacy_plan):
+    if args.uninstall and args.retire_legacy:
+        parser.error('--uninstall and --retire-legacy are separate runs')
+    if not (args.uninstall or args.retire_legacy):
         from core.storage import ensure_setup
         ensure_setup(args.location)
-    if args.apply_plan:
-        if not args.expected_plan_sha256:
-            parser.error('--expected-plan-sha256 is required')
-        # Package plans live in INSTALL_HOME; legacy retirement plans in CODEX_HOME.
-        root = INSTALL_HOME if (INSTALL_HOME / '.plans' / f'{args.apply_plan}.json').is_file() else CODEX_HOME
-        result = apply_plan(root, args.apply_plan, args.expected_plan_sha256, homes)
-        print_next_steps(root, args.apply_plan)
-    elif args.retire_legacy_plan:
-        result = plan_retire(homes)
+    if args.retire_legacy:
+        result = retire_legacy(homes)
     else:
-        proposed = plan_install(args.uninstall_plan, homes)
-        result = proposed if args.plan or args.uninstall_plan else apply_plan(INSTALL_HOME, proposed['plan_id'], proposed['digest'])
-        if result is not proposed:
-            print_next_steps(INSTALL_HOME, proposed['plan_id'])
+        result = install(args.uninstall, homes)
+        if not args.uninstall:
+            print_next_steps(result.get('summary') or {})
     print(json.dumps(result, separators=(',', ':')))
     return 0
 
@@ -177,30 +166,45 @@ def main() -> int:
 def _refuse_if_in_use(extra_homes=()):
     still = legacy_references(extra_homes, INSTALL_DIR, True)
     if still:
-        raise ValueError('The package is still in use by: ' + '; '.join(still) + '. Apply each unwire plan, then retry the uninstall.')
+        raise ValueError('The package is still in use by: ' + '; '.join(still) + '. Run each unwire command, then retry the uninstall.')
 
 
-def plan_install(uninstall=False, extra_homes=()):
+def _operation_id():
+    import uuid
+    return 'i-' + uuid.uuid4().hex
+
+
+def install(uninstall=False, extra_homes=()):
+    """Install (or with uninstall, remove) the package as one journaled write in INSTALL_HOME, then write the launcher and PATH entry."""
     from core.repository import store_lock
-    from core.governance import plan
+    from core.governance import commit
     if uninstall:
         _refuse_if_in_use(extra_homes)
     INSTALL_HOME.mkdir(parents=True, exist_ok=True)
     with store_lock(INSTALL_HOME):
         changes = _package_changes(INSTALL_DIR, uninstall)
         summary = {'package': str(INSTALL_DIR), 'files': len(changes), 'interpreter': sys.executable}
-        summary['launcher'] = _launcher_plan(uninstall)
+        record = _launcher_step(uninstall)
+        change = None
         if uninstall:
-            summary['homes'] = [[h, str(Path(p).expanduser().resolve())] for h, p in extra_homes]   # absolute: apply may run from another folder
-            summary['default_homes'] = [[h, str(p.expanduser().resolve())] for h, p in default_homes()]   # apply may run with other variables
-            summary['before'] = 'Unwire each harness first: setup.py HARNESS --uninstall-plan from the installed copy.'
             summary['path'] = f'A PATH entry for {LAUNCHER_DIR} is left in place: other programs may live in that folder.'
         else:
             summary['next_steps'], summary['wiring_current'] = next_steps()
-            change = _path_plan() if summary['launcher']['action'] in ('create', 'replace', 'keep') else None
-            if change:
-                summary['path_change'] = change
-        return plan(INSTALL_HOME, changes, 'package_uninstall' if uninstall else 'package_install', summary=summary)
+            change = _path_step() if record['action'] in ('create', 'replace', 'keep') else None
+        receipt = commit(INSTALL_HOME, changes, 'package_uninstall' if uninstall else 'package_install', summary=summary,
+                         operation_id=_operation_id(), meta={'launcher': record, 'path_change': change})
+    warning = _write_launcher(record)
+    receipt['launcher'] = {'path': record['path'], 'action': record['action'] if not warning else 'failed'}
+    if record.get('reason'):
+        receipt['launcher']['reason'] = record['reason']
+    if warning:
+        receipt.setdefault('warnings', []).append(warning)
+    elif change:
+        if not _path_done(change):
+            (_add_to_path_windows if change['kind'] == 'registry' else _add_to_path_posix)(change)
+        receipt['path_change'] = change['add']
+        receipt['notice'] = 'Open a new terminal (and restart running agent sessions) so `alm` is found.'
+    return receipt
 
 
 def _sha(data):
@@ -222,8 +226,8 @@ def _on_path(folder, path_value, sep):
     return any(_norm_dir(e) == _norm_dir(str(folder)) for e in path_value.split(sep) if e)
 
 
-def _launcher_plan(uninstall):
-    """The `alm` launcher this plan creates, replaces, keeps or removes. Only a file carrying our marker is ever touched."""
+def _launcher_step(uninstall):
+    """The `alm` launcher this install creates, replaces, keeps or removes. Only a file carrying our marker is ever touched."""
     from core import launcher
     path = LAUNCHER_DIR / launcher.FILE
     script = INSTALL_DIR / 'living_memory.py'
@@ -264,7 +268,7 @@ def _profile():
     return Path(zdot if os.path.isabs(zdot) else home) / '.zprofile' if shell == 'zsh' else home / '.bash_profile' if shell == 'bash' and (home / '.bash_profile').exists() else home / '.profile'
 
 
-def _path_plan():
+def _path_step():
     """The PATH change that makes the launcher folder reachable, or None when it already is (this process's PATH, the user's registry value or profile)."""
     if _on_path(LAUNCHER_DIR, os.environ.get('PATH', ''), os.pathsep):
         return None
@@ -274,17 +278,10 @@ def _path_plan():
             return None
         return {'kind': 'registry', 'target': 'HKCU\\Environment\\Path', 'before': value, 'before_type': kind, 'add': str(LAUNCHER_DIR)}
     profile = _profile()
-    data = profile.read_bytes() if profile.is_file() else None   # bytes: a CRLF or non-UTF-8 profile must hash as _path_stale reads it
+    data = profile.read_bytes() if profile.is_file() else None   # bytes: a CRLF or non-UTF-8 profile is read as it is
     if data is not None and PROFILE_LINE.encode() in data:
         return None
     return {'kind': 'profile', 'target': str(profile), 'before': _sha(data) if data is not None else None, 'add': PROFILE_LINE}
-
-
-def _path_stale(change):
-    if change['kind'] == 'registry':
-        return list(_registry_path()) != [change['before'], change['before_type']]
-    profile = Path(change['target'])
-    return (_sha(profile.read_bytes()) if profile.is_file() else None) != change['before']
 
 
 def _add_to_path_windows(change):
@@ -310,19 +307,6 @@ def _path_done(change):
         return _on_path(change['add'], _registry_path()[0], ';')
     profile = Path(change['target'])
     return profile.is_file() and change['add'].encode() in profile.read_bytes()
-
-
-def _launcher_stale(record):
-    if record['python'] != sys.executable:
-        return True
-    # A retry of this plan may find its own launcher step already done: that state is expected too.
-    done = {'create': record['after'], 'replace': record['after'], 'remove': None}.get(record['action'], record['before'])
-    if _launcher_state(Path(record['path'])) not in (record['before'], done):
-        return True
-    if record['action'] in ('create', 'replace', 'keep'):
-        from core import launcher
-        return _sha(launcher.build(record['python'], record['script'])) != record['after']
-    return False
 
 
 def _write_launcher(record):
@@ -360,40 +344,11 @@ def _write_launcher(record):
     return f'The launcher {path} did not run ({reason}) and was removed; agents keep using the full command.'
 
 
-def apply_plan(root, plan_id, digest, extra_homes=()):
-    """governance.apply, plus the launcher and PATH change a package plan records. Both are checked before anything is written.
-    A package uninstall re-checks that no harness runs the package: the --home folders and default homes it was planned with,
-    today's default homes and extra_homes."""
-    from core.governance import apply
-    from core.repository import canonical_json, read_json
-    value = read_json(Path(root) / '.plans' / f'{plan_id}.json') or {}
-    unsigned = {k: v for k, v in value.items() if k != 'digest'}
-    summary = value.get('summary') or {}
-    if value.get('digest') != digest or hashlib.sha256(canonical_json(unsigned).encode()).hexdigest() != digest or 'launcher' not in summary:
-        return apply(root, plan_id, digest)   # unverified or not a package plan: governance decides
-    if value.get('kind') == 'package_uninstall':   # only a verified plan names the folders to probe
-        _refuse_if_in_use([tuple(h) for h in (summary.get('homes') or []) + (summary.get('default_homes') or [])] + list(extra_homes))
-    record, change = summary['launcher'], summary.get('path_change')
-    if _launcher_stale(record) or (change and _path_stale(change) and not _path_done(change)):
-        raise ValueError('stale plan: the launcher or PATH changed since this plan was made; plan again')
-    receipt = apply(root, plan_id, digest)
-    warning = _write_launcher(record)
-    receipt['launcher'] = {'path': record['path'], 'action': record['action'] if not warning else 'failed'}
-    if warning:
-        receipt.setdefault('warnings', []).append(warning)
-    elif change:
-        if not _path_done(change):
-            (_add_to_path_windows if change['kind'] == 'registry' else _add_to_path_posix)(change)
-        receipt['path_change'] = change['add']
-        receipt['notice'] = 'Open a new terminal (and restart running agent sessions) so `alm` is found.'
-    return receipt
-
-
-def plan_retire(extra_homes=()):
-    """Remove the files the legacy CODEX_HOME copy owns, once nothing runs from it. Harness homes outside
-    the defaults (setup.py --home PATH) are checked only when passed here, so the plan lists what it checked."""
+def retire_legacy(extra_homes=()):
+    """Remove the files the legacy CODEX_HOME copy owns, once nothing runs from it, as one journaled write in CODEX_HOME.
+    Harness homes outside the defaults (setup.py --home PATH) are checked only when passed here, so the receipt lists what it checked."""
     from core.repository import store_lock
-    from core.governance import plan
+    from core.governance import commit
     if not (LEGACY_DIR / '.core-ownership-v1.json').is_file():
         raise ValueError(f'No legacy package at {LEGACY_DIR}')
     if not (INSTALL_DIR / '.core-ownership-v1.json').is_file():
@@ -401,7 +356,7 @@ def plan_retire(extra_homes=()):
     still = legacy_references(extra_homes)
     if still:
         raise ValueError('Legacy package still in use by: ' + '; '.join(still) +
-                         '. Run integrations/setup.py HARNESS --hooks from the new copy for each, apply, then retry.')
+                         '. Run integrations/setup.py HARNESS --hooks from the new copy for each, then retry.')
     with store_lock(CODEX_HOME):
         changes = _package_changes(LEGACY_DIR, True)
         removed = {k for k, v in changes.items() if v is None}
@@ -413,11 +368,11 @@ def plan_retire(extra_homes=()):
                    'untouched': untouched,
                    'note': 'Only files the old install owns and that are unchanged are removed. Harness homes set up with '
                            '--home PATH are checked only if passed as --home HARNESS=PATH.'}
-        return plan(CODEX_HOME, changes, 'legacy_package_retire', summary=summary)
+        return commit(CODEX_HOME, changes, 'legacy_package_retire', summary=summary, operation_id=_operation_id())
 
 
 def _package_changes(target: Path, uninstall: bool) -> dict:
-    """Package files and the ownership record, keyed relative to target.parent (the plan root)."""
+    """Package files and the ownership record, keyed relative to target.parent (the journal root)."""
     from core import installer_lifecycle as lifecycle
     from core.repository import canonical_json, now
     import uuid

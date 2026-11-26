@@ -3,7 +3,7 @@ from pathlib import Path
 from unittest.mock import patch
 from test_core import StoreFixture
 from core.repository import read_json,inventory,parse,serialize
-from core.governance import apply,retag_plan
+from core.governance import retag,undo
 
 class Delivery(StoreFixture):
     def through_shells(self,command,action):
@@ -61,7 +61,7 @@ class Delivery(StoreFixture):
         from integrations import setup
         def warning(launcher,executable,short):
             with patch.object(setup.shutil,'which',return_value=launcher),patch.object(sys,'executable',executable),patch.object(setup,'_short_path',return_value=short):
-                return setup.setup_plan('codex',self.base/'codex')['summary'].get('warning','')
+                return setup.setup('codex',self.base/'codex')['summary'].get('warning','')
         spaced=r'C:\Program Files\Python\python.exe';text=warning(None,spaced,None)
         self.assertIn('EDR',text);self.assertIn('py launcher',text)
         self.assertEqual(warning(None,r'C:\Python\python.exe',None),'');self.assertEqual(warning(r'C:\Windows\py.EXE',spaced,None),'');self.assertEqual(warning(None,spaced,r'C:\PROGRA~1\Python\python.exe'),'')
@@ -81,7 +81,7 @@ class Delivery(StoreFixture):
         self.assertEqual(wiring._script(handler,'codex'),str(script));self.assertTrue(setup._ours(handler,'codex'))
         home=self.base/'codex';home.mkdir();(home/'hooks.json').write_text(json.dumps({'hooks':{'Stop':[{'hooks':[handler]}]}}))
         with patch.object(setup.shutil,'which',return_value=r'C:\Windows\py.EXE'):
-            proposed=setup.setup_plan('codex',home);apply(home,proposed['plan_id'],proposed['digest'])
+            setup.setup('codex',home)
         stops=read_json(home/'hooks.json')['hooks']['Stop'];self.assertEqual(len(stops),1);self.assertNotIn('EncodedCommand',json.dumps(stops))
     def test_needs_rewire_covers_factory_instructions_only_and_antigravity(self):
         from integrations import setup
@@ -90,43 +90,44 @@ class Delivery(StoreFixture):
         for name in ('factory','antigravity'):self.assertIsNone(needs_rewire(name,setup,package))   # never wired
         for name in ('factory','antigravity'):
             home=Path(os.environ[name.upper()+'_HOME'])
-            with patch.object(setup,'ROOT',package):wired=setup.setup_plan(name,home);apply(home,wired['plan_id'],wired['digest'])   # Factory: instructions only
+            with patch.object(setup,'ROOT',package):setup.setup(name,home)   # Factory: instructions only
             self.assertIs(needs_rewire(name,setup,package),False,name)
             self.assertIs(needs_rewire(name,setup,moved),True,name)   # the block or the handlers name the package path
     def test_package_install_rerun_and_uninstall(self):
         import install
         home=self.base/'local'/'agentic-living-memory'
-        with patch.multiple(install,INSTALL_HOME=home,INSTALL_DIR=home/'app'):
-            proposed=install.plan_install();self.assertIn('next_steps',proposed['summary']);apply(home,proposed['plan_id'],proposed['digest'])
+        with patch.multiple(install,INSTALL_HOME=home,INSTALL_DIR=home/'app',LAUNCHER_DIR=self.base/'bin',_path_step=lambda:None):   # no real launcher folder or PATH
+            done=install.install();self.assertIn('next_steps',done['summary']);self.assertTrue(done['operation_id'].startswith('i-'))
             self.assertTrue((home/'app/living_memory.py').exists());self.assertTrue((home/'app/.core-ownership-v1.json').exists())
             self.assertFalse((home/'app/skills').exists())
-            proposed=install.plan_install();apply(home,proposed['plan_id'],proposed['digest'])   # rerun keeps, never duplicates
-            proposed=install.plan_install(True);apply(home,proposed['plan_id'],proposed['digest'])
-        self.assertFalse((home/'app/living_memory.py').exists());self.assertFalse((home/'app/.core-ownership-v1.json').exists())
+            install.install()   # rerun keeps, never duplicates
+            removed=install.install(True)
+            self.assertFalse((home/'app/living_memory.py').exists());self.assertFalse((home/'app/.core-ownership-v1.json').exists())
+            undo(home,removed['operation_id']);self.assertTrue((home/'app/living_memory.py').exists())   # the journal in INSTALL_HOME puts the package back
     def test_codex_setup_and_uninstall_preserve_other_hooks(self):
-        from integrations.setup import setup_plan
+        from integrations.setup import setup
         from core.instructions import instruction_block
         home=self.base/'codex';home.mkdir();hooks=home/'hooks.json'
         original={'hooks':{'Stop':[{'hooks':[{'type':'command','command':'other.exe'}]}]},'custom':True}
         hooks.write_text(json.dumps(original));(home/'AGENTS.md').write_text('# my codex rules\n',encoding='utf-8')
-        proposed=setup_plan('codex',home);apply(home,proposed['plan_id'],proposed['digest'])
+        setup('codex',home)
         config=read_json(hooks);self.assertEqual(len(config['hooks']['Stop']),2);self.assertTrue(config['custom'])
         self.assertEqual(config['hooks']['SessionStart'][0]['hooks'][0]['additionalContextLimit'],4000)
         agents=(home/'AGENTS.md').read_text(encoding='utf-8')
         self.assertTrue(agents.startswith('# my codex rules\n'));self.assertIn(instruction_block('codex'),agents)
-        proposed=setup_plan('codex',home);apply(home,proposed['plan_id'],proposed['digest'])   # rerun replaces, never duplicates
+        setup('codex',home)   # rerun replaces, never duplicates
         self.assertEqual(len(read_json(hooks)['hooks']['Stop']),2)
         self.assertEqual((home/'AGENTS.md').read_text(encoding='utf-8').count('agentic-living-memory:begin'),1)
-        proposed=setup_plan('codex',home,uninstall=True);apply(home,proposed['plan_id'],proposed['digest'])
+        setup('codex',home,uninstall=True)
         self.assertEqual(read_json(hooks)['hooks'],original['hooks']);self.assertTrue(read_json(hooks)['custom'])
         self.assertEqual((home/'AGENTS.md').read_text(encoding='utf-8').strip(),'# my codex rules')
         self.assertFalse((home/'.living-memory-ownership.json').exists())
     def test_adapter_rerun_preserves_later_unrelated_changes(self):
-        from integrations.setup import setup_plan
-        home=self.base/'claude';proposed=setup_plan('claude',home);apply(home,proposed['plan_id'],proposed['digest'])
+        from integrations.setup import setup
+        home=self.base/'claude';setup('claude',home)
         settings=read_json(home/'settings.json');settings['theme']='light';settings['hooks']['Other']=[{'hooks':[{'command':'other'}]}]
         (home/'settings.json').write_text(json.dumps(settings))
-        proposed=setup_plan('claude',home);apply(home,proposed['plan_id'],proposed['digest'])
+        setup('claude',home)
         self.assertEqual(read_json(home/'settings.json')['hooks']['Other'],settings['hooks']['Other'])
     def managed(self,files):
         """A managed settings folder holding files (relative name -> text), with no registry policy."""
@@ -135,23 +136,23 @@ class Delivery(StoreFixture):
         for name,text in files.items():(folder/name).parent.mkdir(parents=True,exist_ok=True);(folder/name).write_text(text,encoding='utf-8')
         return patch.multiple(setup,MANAGED_DIR=folder,_registry_policies=lambda:iter(()))
     def test_claude_setup_warns_when_managed_settings_allow_only_managed_hooks(self):
-        from integrations.setup import setup_plan
+        from integrations.setup import setup
         for name in ('managed-settings.json','managed-settings.d/50-hooks.json'):
             with self.subTest(name=name),self.managed({name:'{"allowManagedHooksOnly": true}'}):
-                warning=setup_plan('claude',self.base/'claude').get('summary',{}).get('warning','')
+                warning=setup('claude',self.base/'claude').get('summary',{}).get('warning','')
                 self.assertIn('allowManagedHooksOnly',warning);self.assertIn(str(self.base/'managed'/name),warning)
             (self.base/'managed'/name).unlink()
     def test_claude_setup_ignores_managed_settings_without_the_hooks_lock(self):
-        from integrations.setup import setup_plan
+        from integrations.setup import setup
         for text in ('{"allowManagedHooksOnly": false}','{"model": "x"}','{"allowManagedHooksOnly": "true"}','{not json','[true]'):
             with self.subTest(text=text),self.managed({'managed-settings.json':text}):
-                proposed=setup_plan('claude',self.base/'claude');self.assertNotIn('warning',proposed['summary'])
-        with self.managed({}):self.assertNotIn('warning',setup_plan('claude',self.base/'claude')['summary'])
+                self.assertNotIn('warning',setup('claude',self.base/'claude')['summary'])
+        with self.managed({}):self.assertNotIn('warning',setup('claude',self.base/'claude')['summary'])
     def test_hooks_lock_warning_only_for_claude_setup(self):
-        from integrations.setup import setup_plan
+        from integrations.setup import setup
         with self.managed({'managed-settings.json':'{"allowManagedHooksOnly": true}'}):
-            self.assertNotIn('warning',setup_plan('claude',self.base/'claude',uninstall=True)['summary'])
-            self.assertNotIn('warning',setup_plan('codex',self.base/'codex')['summary'])
+            self.assertNotIn('warning',setup('claude',self.base/'claude',uninstall=True)['summary'])
+            self.assertNotIn('warning',setup('codex',self.base/'codex')['summary'])
     def test_setup_main_prints_hooks_lock_warning_to_stderr(self):
         import io
         from contextlib import redirect_stderr,redirect_stdout
@@ -160,35 +161,29 @@ class Delivery(StoreFixture):
         with self.managed({'managed-settings.json':'{"allowManagedHooksOnly": true}'}),patch('core.storage.ensure_setup'),redirect_stdout(out),redirect_stderr(err):
             self.assertEqual(main(['claude','--home',str(self.base/'claude')]),0)
         self.assertIn('Warning: allowManagedHooksOnly',err.getvalue());self.assertIn('warning',json.loads(out.getvalue())['summary'])
-    def test_safe_write_requires_approved_plan(self):
-        from core.safe_write import safe_write
-        from core.notes import find_note
-        a=self.note();path,note=find_note(a['id'],'demo',self.root);text=path.read_text().replace('rebuildable','replaceable')
-        proposed=safe_write('demo','notes/'+path.name,text,self.root,note['revision'])
-        self.assertIn('rebuildable',path.read_text());apply(self.root,proposed['plan_id'],proposed['digest']);self.assertIn('replaceable',path.read_text())
     def test_migration_preserves_canonical_bytes(self):
-        from core.migration import migration_plan
-        a=self.note();before=Path(a['path']).read_bytes();proposed=migration_plan(self.root);apply(self.root,proposed['plan_id'],proposed['digest'])
+        from core.migration import migrate_schema
+        a=self.note();before=Path(a['path']).read_bytes();migrate_schema(self.root)
         self.assertEqual(Path(a['path']).read_bytes(),before)
     def test_retag_does_not_erase_notes(self):
-        a=self.note();proposed=retag_plan(self.root,{'concern/architecture':'concern/decision'});apply(self.root,proposed['plan_id'],proposed['digest'])
+        a=self.note();done=retag(self.root,{'concern/architecture':'concern/decision'})
         self.assertIn('concern/decision',inventory('demo',self.root)[0]['tags'])
         self.assertEqual(inventory('demo',self.root)[0]['id'],a['id'])
+        undo(self.root,done['operation_id']);self.assertIn('concern/architecture',inventory('demo',self.root)[0]['tags'])
     def test_bug_lifecycle_moves_and_reopens(self):
         from core.notes import change,find_note
-        a=self.note(type='bug');proposed=change(a['id'],'demo','resolve',self.root,plan_only=True);apply(self.root,proposed['plan_id'],proposed['digest'])
+        a=self.note(type='bug');change(a['id'],'demo','resolve',self.root)
         path,note=find_note(a['id'],'demo',self.root);self.assertEqual(path.parent.name,'archive');self.assertEqual(note['prefix'],'BUG');self.assertEqual(note['type'],'bug');self.assertEqual(note['status'],'resolved')
-        proposed=change(a['id'],'demo','reopen',self.root,plan_only=True);apply(self.root,proposed['plan_id'],proposed['digest'])
+        change(a['id'],'demo','reopen',self.root)
         self.assertEqual(find_note(a['id'],'demo',self.root)[0].parent.name,'notes')
     def test_merge_retains_ids_and_supersession(self):
-        from core.governance import merge_plan
+        from core.governance import merge
         from core.notes import find_note
         a=self.note('First','Claim one');b=self.note('Second','Claim two')
-        proposal=merge_plan(self.root,{'target':'demo:'+a['id'],'sources':['demo:'+b['id']],'body':'Combined reviewed claim'})
-        self.assertEqual(find_note(a['id'],'demo',self.root)[1]['body'],'Claim one')
-        apply(self.root,proposal['plan_id'],proposal['digest'])
+        done=merge(self.root,{'target':'demo:'+a['id']+'@'+parse(Path(a['path']))['revision'],'sources':['demo:'+b['id']+'@'+parse(Path(b['path']))['revision']],'body':'Combined reviewed claim'})
         self.assertEqual(find_note(b['id'],'demo',self.root)[1]['superseded_by'],a['id'])
         self.assertEqual(len(inventory('demo',self.root)),1)
+        undo(self.root,done['operation_id']);self.assertEqual(find_note(a['id'],'demo',self.root)[1]['body'],'Claim one');self.assertEqual(len(inventory('demo',self.root)),2)
     def test_scoped_fallback_and_all_labels(self):
         from core.init_domain import init_domain
         from core.notes import capture
@@ -240,119 +235,75 @@ class LauncherInstall(StoreFixture):
         self.on_path(True)
     def on_path(self,yes):
         os.environ['PATH']=(str(self.bin)+os.pathsep if yes else '')+self.old_path;self.addCleanup(os.environ.__setitem__,'PATH',self.old_path)
-    def plan(self,uninstall=False):return self.install.plan_install(uninstall)
-    def apply(self,proposed):return self.install.apply_plan(self.home,proposed['plan_id'],proposed['digest'])
+    def inst(self,uninstall=False,homes=()):return self.install.install(uninstall,homes)
     def test_create_then_keep(self):
-        proposed=self.plan();self.assertEqual(proposed['summary']['launcher']['action'],'create');self.assertNotIn('path_change',proposed['summary'])
-        receipt=self.apply(proposed);self.assertEqual(receipt['launcher']['action'],'create');self.assertTrue(self.launcher.ours(self.exe));self.assertFalse(receipt.get('warnings'))
-        self.assertEqual(self.plan()['summary']['launcher']['action'],'keep')
+        receipt=self.inst();self.assertEqual(receipt['launcher']['action'],'create');self.assertNotIn('path_change',receipt);self.assertTrue(self.launcher.ours(self.exe));self.assertFalse(receipt.get('warnings'))
+        self.assertEqual(self.inst()['launcher']['action'],'keep')
         self.assertTrue(self.launcher.active(self.home/'app'/'living_memory.py'))
         shown=subprocess.run([str(self.exe),'--json','version'],capture_output=True,text=True);self.assertEqual(json.loads(shown.stdout)['ok'],True)
     def test_ownership_record_names_the_installing_python(self):   # REG-4: Hivemind reads it to start ALM
-        self.apply(self.plan());record=json.loads((self.home/'app'/'.core-ownership-v1.json').read_text(encoding='utf-8'))
+        self.inst();record=json.loads((self.home/'app'/'.core-ownership-v1.json').read_text(encoding='utf-8'))
         self.assertEqual(record['interpreter'],sys.executable)
-    def test_retrying_an_applied_plan_succeeds(self):   # Codex review: the launcher step already done must not read as stale
-        proposed=self.plan();self.apply(proposed);again=self.apply(proposed);self.assertEqual(again['launcher']['action'],'create');self.assertTrue(self.launcher.ours(self.exe))
-        removal=self.plan(True);self.apply(removal);self.apply(removal);self.assertFalse(self.exe.exists())
+    def test_a_second_uninstall_finds_nothing_to_remove(self):
+        self.inst();self.inst(True);again=self.inst(True);self.assertEqual((again['launcher']['action'],again['launcher']['reason']),('none','no launcher installed'));self.assertFalse(self.exe.exists())
     def test_replace_a_launcher_that_differs_from_what_would_be_built(self):
-        self.apply(self.plan());self.exe.write_bytes(self.exe.read_bytes()+b'x')   # still ours (marker), but no longer what would be built
-        self.assertEqual(self.plan()['summary']['launcher']['action'],'replace')
+        self.inst();self.exe.write_bytes(self.exe.read_bytes()+b'x')   # still ours (marker), but no longer what would be built
+        self.assertEqual(self.inst()['launcher']['action'],'replace');self.assertTrue(self.launcher.ours(self.exe))
     def test_foreign_file_is_left_alone(self):
         self.bin.mkdir(parents=True);self.exe.write_bytes(b'foreign program')
-        proposed=self.plan();record=proposed['summary']['launcher'];self.assertEqual(record['action'],'none');self.assertIn('not ours',record['reason'])
-        self.apply(proposed);self.assertEqual(self.exe.read_bytes(),b'foreign program');self.assertTrue((self.home/'app/living_memory.py').exists())
-        self.apply(self.plan(True));self.assertEqual(self.exe.read_bytes(),b'foreign program')   # uninstall keeps it too
-    def test_file_changed_between_plan_and_apply_is_stale(self):
-        proposed=self.plan();self.bin.mkdir(parents=True);self.exe.write_bytes(b'appeared later')
-        with self.assertRaisesRegex(ValueError,'stale'):self.apply(proposed)
-        self.assertFalse((self.home/'app/living_memory.py').exists());self.assertEqual(self.exe.read_bytes(),b'appeared later')
+        record=self.inst()['launcher'];self.assertEqual(record['action'],'none');self.assertIn('not ours',record['reason'])
+        self.assertEqual(self.exe.read_bytes(),b'foreign program');self.assertTrue((self.home/'app/living_memory.py').exists())
+        self.inst(True);self.assertEqual(self.exe.read_bytes(),b'foreign program')   # uninstall keeps it too
     def test_uninstall_refuses_while_a_harness_still_runs_the_package(self):
         from integrations import setup
-        from core.governance import apply
-        self.apply(self.plan());claude=Path(os.environ['CLAUDE_HOME'])
-        with patch.object(setup,'ROOT',self.home/'app'):unwire=setup.setup_plan('claude',claude);apply(claude,unwire['plan_id'],unwire['digest'])
-        with self.assertRaises(ValueError) as caught:self.plan(True)
-        message=str(caught.exception);self.assertIn(str(claude/'settings.json'),message);self.assertIn('claude --uninstall-plan',message);self.assertTrue(os.name!='nt' or 'unwire it with: & "'+sys.executable+'"' in message,message);self.assertIn(str(self.home/'app'/'integrations'/'setup.py'),message)
+        self.inst();claude=Path(os.environ['CLAUDE_HOME'])
+        with patch.object(setup,'ROOT',self.home/'app'):setup.setup('claude',claude)
+        with self.assertRaises(ValueError) as caught:self.inst(True)
+        message=str(caught.exception);self.assertIn(str(claude/'settings.json'),message);self.assertIn('claude --uninstall',message);self.assertTrue(os.name!='nt' or 'unwire it with: & "'+sys.executable+'"' in message,message);self.assertIn(str(self.home/'app'/'integrations'/'setup.py'),message)
         self.assertTrue((self.home/'app/living_memory.py').exists())
-        with patch.object(setup,'ROOT',self.home/'app'):removal=setup.setup_plan('claude',claude,uninstall=True);apply(claude,removal['plan_id'],removal['digest'])
-        self.apply(self.plan(True));self.assertFalse((self.home/'app/living_memory.py').exists())
-    def test_applying_a_saved_uninstall_plan_refuses_once_a_harness_is_wired(self):   # INST-4.1: the check ran at plan time only
+        with patch.object(setup,'ROOT',self.home/'app'):setup.setup('claude',claude,uninstall=True)
+        self.inst(True);self.assertFalse((self.home/'app/living_memory.py').exists())
+    def test_uninstall_does_not_check_a_custom_home_nobody_named(self):
         from integrations import setup
-        from core.governance import apply
-        self.apply(self.plan());removal=self.plan(True);claude=Path(os.environ['CLAUDE_HOME']);custom=self.base/'custom-claude'
-        with patch.object(setup,'ROOT',self.home/'app'):wired=setup.setup_plan('claude',claude);apply(claude,wired['plan_id'],wired['digest'])
-        with self.assertRaisesRegex(ValueError,'still in use by: claude'):self.apply(removal)
-        self.assertTrue((self.home/'app/living_memory.py').exists())
-        with patch.object(setup,'ROOT',self.home/'app'):off=setup.setup_plan('claude',claude,uninstall=True);apply(claude,off['plan_id'],off['digest'])
-        with patch.object(setup,'ROOT',self.home/'app'):wired=setup.setup_plan('claude',custom);apply(custom,wired['plan_id'],wired['digest'])
-        self.apply(removal)   # a custom home nobody named is not checked
-        self.assertFalse((self.home/'app/living_memory.py').exists())
-    def test_saved_uninstall_plan_remembers_its_home_and_apply_takes_more(self):
-        from integrations import setup
-        from core.governance import apply
-        self.apply(self.plan());custom=self.base/'custom-claude'
-        removal=self.install.plan_install(True,[('claude',str(custom))]);self.assertEqual(removal['summary']['homes'],[['claude',str(custom.resolve())]])
-        with patch.object(setup,'ROOT',self.home/'app'):wired=setup.setup_plan('claude',custom);apply(custom,wired['plan_id'],wired['digest'])
-        with self.assertRaisesRegex(ValueError,'--home'):self.apply(removal)
-        other=self.base/'other-claude';two=self.plan(True)
-        with patch.object(setup,'ROOT',self.home/'app'):wired=setup.setup_plan('claude',other);apply(other,wired['plan_id'],wired['digest'])
-        with self.assertRaisesRegex(ValueError,'--home'):self.install.apply_plan(self.home,two['plan_id'],two['digest'],[('claude',str(other))])
-        self.assertTrue((self.home/'app/living_memory.py').exists())
-    def test_saved_uninstall_plan_stores_a_relative_home_as_an_absolute_path(self):   # INST-4.1b
-        from integrations import setup
-        from core.governance import apply
-        self.apply(self.plan());here=os.getcwd();elsewhere=self.base/'elsewhere';elsewhere.mkdir()
-        os.chdir(self.base);self.addCleanup(os.chdir,here)
-        removal=self.install.plan_install(True,[('claude','claude-local')]);self.assertEqual(removal['summary']['homes'],[['claude',str((self.base/'claude-local').resolve())]])
-        with patch.object(setup,'ROOT',self.home/'app'):wired=setup.setup_plan('claude',self.base/'claude-local');apply(self.base/'claude-local',wired['plan_id'],wired['digest'])
-        os.chdir(elsewhere)
-        with self.assertRaisesRegex(ValueError,'--home'):self.apply(removal)
-        self.assertTrue((self.home/'app/living_memory.py').exists())
+        self.inst();custom=self.base/'custom-claude'
+        with patch.object(setup,'ROOT',self.home/'app'):setup.setup('claude',custom)
+        self.inst(True);self.assertFalse((self.home/'app/living_memory.py').exists())
     def test_with_claude_config_dir_set_uninstall_still_checks_the_default_claude_folder(self):   # CODEX-R4A
         from integrations import setup
-        from core.governance import apply
-        self.apply(self.plan());user=self.base/'user';default=user/'.claude';chosen=self.base/'claude-config'
-        with patch.object(setup,'ROOT',self.home/'app'):wired=setup.setup_plan('claude',default);apply(default,wired['plan_id'],wired['digest'])
+        self.inst();user=self.base/'user';default=user/'.claude';chosen=self.base/'claude-config'
+        with patch.object(setup,'ROOT',self.home/'app'):setup.setup('claude',default)
         with patch.dict(os.environ,{'CLAUDE_CONFIG_DIR':str(chosen)}),patch('pathlib.Path.home',return_value=user):
             os.environ.pop('CLAUDE_HOME')
-            with self.assertRaisesRegex(ValueError,'still in use by: claude'):self.plan(True)
+            with self.assertRaisesRegex(ValueError,'still in use by: claude'):self.inst(True)
         self.assertTrue((self.home/'app/living_memory.py').exists())
-    def test_a_saved_uninstall_plan_rechecks_the_claude_folder_it_was_planned_for(self):   # CODEX-R4B
+    def test_with_claude_config_dir_set_uninstall_checks_that_folder(self):   # CODEX-R4B
         from integrations import setup
-        from core.governance import apply
-        self.apply(self.plan());chosen=self.base/'claude-config'
+        self.inst();chosen=self.base/'claude-config'
+        with patch.object(setup,'ROOT',self.home/'app'):setup.setup('claude',chosen)
         with patch.dict(os.environ,{'CLAUDE_CONFIG_DIR':str(chosen)}),patch('pathlib.Path.home',return_value=self.base/'user'):
-            os.environ.pop('CLAUDE_HOME');removal=self.plan(True)
-        with patch.object(setup,'ROOT',self.home/'app'):wired=setup.setup_plan('claude',chosen);apply(chosen,wired['plan_id'],wired['digest'])
-        with self.assertRaisesRegex(ValueError,'still in use by: claude'):self.apply(removal)   # applied where CLAUDE_HOME names another folder
+            os.environ.pop('CLAUDE_HOME')
+            with self.assertRaisesRegex(ValueError,'still in use by: claude'):self.inst(True)
         self.assertTrue((self.home/'app/living_memory.py').exists())
-    def test_a_tampered_uninstall_plan_is_rejected_before_any_harness_is_probed(self):   # NEW-1
-        self.apply(self.plan());removal=self.plan(True);path=self.home/'.plans'/(removal['plan_id']+'.json');value=json.loads(path.read_text())
-        value['summary']['homes']=[['claude',str(self.base/'anywhere')]];path.write_text(json.dumps(value))
-        with patch.object(self.install,'legacy_references') as scan,patch.object(self.install,'harness_configs') as configs:
-            with self.assertRaises(Exception):self.apply(removal)
-        scan.assert_not_called();configs.assert_not_called();self.assertTrue((self.home/'app/living_memory.py').exists())
     def test_uninstall_checks_a_custom_home_given_with_home(self):
         from integrations import setup
-        from core.governance import apply
-        self.apply(self.plan());custom=self.base/'custom-claude'
-        with patch.object(setup,'ROOT',self.home/'app'):wired=setup.setup_plan('claude',custom);apply(custom,wired['plan_id'],wired['digest'])
-        self.plan(True)   # the default homes are clean
-        with self.assertRaisesRegex(ValueError,'--home'):self.install.plan_install(True,[('claude',str(custom))])
+        self.inst();custom=self.base/'custom-claude'
+        with patch.object(setup,'ROOT',self.home/'app'):setup.setup('claude',custom)
+        with self.assertRaisesRegex(ValueError,'--home'):self.inst(True,[('claude',str(custom))])
+        self.assertTrue((self.home/'app/living_memory.py').exists())
     def test_uninstall_removes_ours_and_says_the_path_entry_stays(self):
-        self.apply(self.plan());proposed=self.plan(True);self.assertEqual(proposed['summary']['launcher']['action'],'remove');self.assertIn('left in place',proposed['summary']['path'])
-        self.apply(proposed);self.assertFalse(self.exe.exists());self.assertFalse((self.home/'app/living_memory.py').exists())
+        self.inst();receipt=self.inst(True);self.assertEqual(receipt['launcher']['action'],'remove');self.assertIn('left in place',receipt['summary']['path'])
+        self.assertFalse(self.exe.exists());self.assertFalse((self.home/'app/living_memory.py').exists())
     @unittest.skipUnless(os.name=='nt','Windows builds the launcher from pip\'s stub')
     def test_no_stub_means_no_launcher(self):
-        with patch.object(self.launcher,'_stub',return_value=None):record=self.plan()['summary']['launcher']
+        with patch.object(self.launcher,'_stub',return_value=None):record=self.inst()['launcher']
         self.assertEqual(record['action'],'none');self.assertIn('ensurepip',record['reason'])
     def test_launcher_that_does_not_run_is_removed_with_a_warning(self):
-        with patch('subprocess.run',return_value=subprocess.CompletedProcess([],1,b'',b'blocked')):receipt=self.apply(self.plan())
+        with patch('subprocess.run',return_value=subprocess.CompletedProcess([],1,b'',b'blocked')):receipt=self.inst()
         self.assertFalse(self.exe.exists());self.assertIn('blocked',receipt['warnings'][0]);self.assertEqual(receipt['launcher']['action'],'failed');self.assertNotIn('path_change',receipt)
     def test_launcher_removed_by_antivirus_during_the_probe_is_still_a_warning(self):   # REG-20
         def quarantined(*a,**k):
             self.exe.unlink();return subprocess.CompletedProcess([],1,b'',b'quarantined')
-        with patch('subprocess.run',side_effect=quarantined):receipt=self.apply(self.plan())
+        with patch('subprocess.run',side_effect=quarantined):receipt=self.inst()
         self.assertFalse(self.exe.exists());self.assertIn('quarantined',receipt['warnings'][0]);self.assertEqual(receipt['launcher']['action'],'failed')
     @unittest.skipUnless(os.name=='nt','Windows registry')
     def test_windows_path_change_keeps_the_value_type_and_is_idempotent(self):
@@ -363,14 +314,10 @@ class LauncherInstall(StoreFixture):
             def __exit__(self,*a):return False
         patches=[patch('winreg.OpenKey',return_value=Key()),patch('winreg.QueryValueEx',side_effect=lambda k,n:store['v']),patch('winreg.SetValueEx',side_effect=lambda k,n,r,kind,v:store.update(v=(v,kind))),patch('ctypes.windll',create=True)]
         for each in patches:each.start();self.addCleanup(each.stop)
-        self.on_path(False);proposed=self.plan();change=proposed['summary']['path_change'];self.assertEqual((change['kind'],change['add']),('registry',str(self.bin)))
-        receipt=self.apply(proposed);self.assertEqual(store['v'],(f"C:\\Tools;%USERPROFILE%\\x;{self.bin}",winreg.REG_EXPAND_SZ));self.assertIn('new terminal',receipt['notice'])
-        self.apply(proposed);self.assertEqual(store['v'][0],f"C:\\Tools;%USERPROFILE%\\x;{self.bin}")   # a retry finds the entry written and adds it once
-        self.assertNotIn('path_change',self.plan()['summary'])   # already in the registry value
-        store['v']=('C:\\Tools',winreg.REG_EXPAND_SZ);stale=self.plan();store['v']=('C:\\Other',winreg.REG_EXPAND_SZ)
-        with self.assertRaisesRegex(ValueError,'stale'):self.apply(stale)
-        self.assertEqual(store['v'][0],'C:\\Other');store['v']=('C:\\Tools',winreg.REG_EXPAND_SZ)
-        self.apply(self.plan(True));self.assertEqual(store['v'][0],'C:\\Tools')   # uninstall leaves PATH alone
+        self.on_path(False);receipt=self.inst();self.assertEqual(receipt['path_change'],str(self.bin))
+        self.assertEqual(store['v'],(f"C:\\Tools;%USERPROFILE%\\x;{self.bin}",winreg.REG_EXPAND_SZ));self.assertIn('new terminal',receipt['notice'])
+        self.assertNotIn('path_change',self.inst());self.assertEqual(store['v'][0],f"C:\\Tools;%USERPROFILE%\\x;{self.bin}")   # a rerun finds the entry in the registry value and adds it once
+        self.inst(True);self.assertEqual(store['v'][0],f"C:\\Tools;%USERPROFILE%\\x;{self.bin}")   # uninstall leaves PATH alone
     def test_profile_choice_by_shell(self):
         home=self.base/'h';home.mkdir()
         with patch.object(Path,'home',return_value=home):
@@ -383,15 +330,14 @@ class LauncherInstall(StoreFixture):
         change={'kind':'profile','target':str(profile),'before':None,'add':self.install.PROFILE_LINE}
         self.install._add_to_path_posix(change);self.assertEqual(profile.read_text(),'alias x=y\n'+self.install.PROFILE_LINE+'\n')
     @unittest.skipIf(os.name=='nt','POSIX profile file')
-    def test_posix_path_change_by_profile_with_stale_check(self):
+    def test_posix_path_change_by_profile(self):
         home=self.base/'h';home.mkdir();self.on_path(False)
         with patch.object(Path,'home',return_value=home),patch.dict(os.environ,{'SHELL':'/bin/zsh'}):
-            proposed=self.plan();change=proposed['summary']['path_change'];self.assertEqual((change['kind'],change['target']),('profile',str(home/'.zprofile')))
-            self.apply(proposed);text=(home/'.zprofile').read_text();self.assertEqual(text.count(self.install.PROFILE_LINE),1)
-            self.assertNotIn('path_change',self.plan()['summary'])
-            (home/'.zprofile').write_text('');stale=self.plan();(home/'.zprofile').write_text('# edited')
-            with self.assertRaisesRegex(ValueError,'stale'):self.apply(stale)
-            self.apply(self.plan(True));self.assertIn('edited',(home/'.zprofile').read_text())
+            receipt=self.inst();self.assertEqual(receipt['path_change'],self.install.PROFILE_LINE)
+            text=(home/'.zprofile').read_text();self.assertEqual(text.count(self.install.PROFILE_LINE),1)
+            self.assertNotIn('path_change',self.inst());self.assertEqual((home/'.zprofile').read_text(),text)   # a rerun adds it once
+            (home/'.zprofile').write_text(text+'# edited\n')
+            self.inst(True);self.assertIn('edited',(home/'.zprofile').read_text())   # uninstall leaves the profile alone
     def run_main(self,*argv):
         import contextlib,io
         out,err=io.StringIO(),io.StringIO()
@@ -399,27 +345,25 @@ class LauncherInstall(StoreFixture):
         return out.getvalue(),err.getvalue()
     def test_install_prints_paste_ready_next_steps_on_stderr_and_keeps_stdout_json(self):
         (self.base/'home-claude').mkdir();lead='& ' if os.name=='nt' else ''
-        proposed=json.loads(self.run_main('--plan')[0]);steps=proposed['summary']['next_steps'];self.assertTrue(steps)
-        out,err=self.run_main('--apply-plan',proposed['plan_id'],'--expected-plan-sha256',proposed['digest'])
-        self.assertIn('operation_id',json.loads(out));self.assertNotIn('Installed',out)   # stdout is still the one JSON result
+        out,err=self.run_main();result=json.loads(out);steps=result['summary']['next_steps'];self.assertTrue(steps)
+        self.assertTrue(result['operation_id'].startswith('i-'));self.assertNotIn('Installed',out)   # stdout is still the one JSON result
         for step in steps:self.assertIn('  '+lead+step,err)
         self.assertIn(f'{lead}"{sys.executable}" "',err)
-        out,err=self.run_main();json.loads(out);self.assertNotIn('claude --hooks',err)   # plan and apply in one run; an update leaves out a harness never wired
+        out,err=self.run_main();json.loads(out);self.assertNotIn('claude --hooks',err)   # an update leaves out a harness never wired
     def harness(self,name):return Path(os.environ[name.upper()+'_HOME'])
     def wire(self,name,hooks=True):
         from integrations import setup
-        from core.governance import apply
-        with patch.object(setup,'ROOT',self.home/'app'):wired=setup.setup_plan(name,self.harness(name),hooks);apply(self.harness(name),wired['plan_id'],wired['digest'])
+        with patch.object(setup,'ROOT',self.home/'app'):setup.setup(name,self.harness(name),hooks)
     def test_an_update_lists_only_harnesses_whose_wiring_would_change(self):
         named=lambda steps:[step.rsplit(' ',2)[1] for step in steps]
         for name in ('claude','codex','copilot'):self.harness(name).mkdir(parents=True,exist_ok=True)
-        first=self.plan()['summary'];self.assertEqual(named(first['next_steps']),['claude','codex','copilot']);self.assertEqual(first['wiring_current'],[])   # a first install lists every harness found
-        self.apply(self.plan());self.wire('claude');self.wire('codex')
-        summary=self.plan()['summary'];self.assertEqual(summary['next_steps'],[]);self.assertEqual(summary['wiring_current'],['claude','codex'])   # copilot was never wired: left out
+        first=self.inst()['summary'];self.assertEqual(named(first['next_steps']),['claude','codex','copilot']);self.assertEqual(first['wiring_current'],[])   # a first install lists every harness found
+        self.wire('claude');self.wire('codex')
+        summary=self.inst()['summary'];self.assertEqual(summary['next_steps'],[]);self.assertEqual(summary['wiring_current'],['claude','codex'])   # copilot was never wired: left out
         out,err=self.run_main();self.assertIn('Harness wiring is current (claude, codex); nothing to rerun.',err)
         rules=self.harness('claude')/'CLAUDE.md';rules.write_text(rules.read_text(encoding='utf-8').replace('Change memory only through CMD','Change memory through CMD',1),encoding='utf-8')   # an older block
         hooks=self.harness('codex')/'hooks.json';config=read_json(hooks);config['hooks']['Stop'][0]['hooks'][0]['timeout']=99;hooks.write_text(json.dumps(config))   # an older handler
-        summary=self.plan()['summary'];self.assertEqual(named(summary['next_steps']),['claude','codex']);self.assertEqual(summary['wiring_current'],[])
+        summary=self.inst()['summary'];self.assertEqual(named(summary['next_steps']),['claude','codex']);self.assertEqual(summary['wiring_current'],[])
         out,err=self.run_main();self.assertIn('claude --hooks',err);self.assertIn('codex --hooks',err)
     def stamped_source(self):
         source=self.base/'src';(source/'core').mkdir(parents=True);(source/'core/a.py').write_text('a')
@@ -434,11 +378,11 @@ class LauncherInstall(StoreFixture):
     def test_install_stamps_the_source_commit_and_doctor_warns_when_head_moves(self):
         from core import installer_lifecycle as lifecycle
         source,git=self.stamped_source();first=git('rev-parse','HEAD')
-        with patch.object(self.install,'SOURCE',source):self.apply(self.plan())
+        with patch.object(self.install,'SOURCE',source):self.inst()
         stamp=lifecycle.installed_stamp(self.home/'app');self.assertEqual((stamp['commit'],stamp['dirty'],stamp['source']),(first,False,str(source)))
         self.assertIsNone(lifecycle.source_warning(stamp))
         (source/'core/a.py').write_text('b')
-        with patch.object(self.install,'SOURCE',source):self.apply(self.plan())
+        with patch.object(self.install,'SOURCE',source):self.inst()
         self.assertTrue(lifecycle.installed_stamp(self.home/'app')['dirty'])   # installed from an uncommitted tree
         git('commit','-qam','two');moved=lifecycle.source_warning(lifecycle.installed_stamp(self.home/'app'))
         self.assertIn('newer than the installed copy',moved);self.assertIn(first[:12],moved)

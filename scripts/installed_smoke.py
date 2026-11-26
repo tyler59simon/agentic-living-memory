@@ -11,7 +11,7 @@ def main():
             if result.returncode:raise RuntimeError(result.stderr or result.stdout)
             return json.loads(result.stdout or '{}')
         def cli(arguments,payload=None):return run('living_memory.py',arguments,payload)
-        cli(['bind','demo',str(project)]);p=cli(['migration-plan']);cli(['apply',p['plan_id'],'--expected-plan-sha256',p['digest']])
+        cli(['bind','demo',str(project)]);cli(['migrate','--schema'])
         event={'cwd':str(project),'session_id':'installed-smoke','turn_id':'turn-one','prompt':'How does the cache work?'}
         session=run('hooks/codex_hooks.py',['session-start'],event);prompt=run('hooks/codex_hooks.py',['user-prompt'],event)
         note=cli(['capture'],{'domain':'demo','title':'Cache policy','body':'The cache is rebuildable.','tags':['subject/project','concern/knowledge'],'session_id':'installed-smoke','turn_id':'turn-one'})

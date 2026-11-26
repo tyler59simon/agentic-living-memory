@@ -1,8 +1,8 @@
-"""#13 export bundles and reviewed import."""
+"""#13 export bundles and direct, undoable import."""
 import contextlib, io, json, unittest, zipfile
 from test_core import StoreFixture
 from revision_fill import main
-from core.governance import apply
+from core.governance import undo
 from core.init_domain import init_domain
 from core.notes import capture, change, find_note
 from core.repository import inventory
@@ -41,10 +41,9 @@ class Bundles(StoreFixture):
             names = set(z.namelist())
         self.assertIn('manifest.json', names)
         self.assertTrue(any(n.startswith('archive/') for n in names))
-        code, plan = self.cli(self.other, 'import-plan', str(bundle))
-        self.assertEqual(code, 0, plan)
-        self.assertEqual(len(plan['created']), 4)
-        apply(self.other, plan['plan_id'], plan['digest'])
+        code, imported = self.cli(self.other, 'import', str(bundle))
+        self.assertEqual(code, 0, imported)
+        self.assertEqual(len(imported['created']), 4)
         mine = {n['id']: find_note(n['id'], 'demo', self.root)[0].read_bytes() for n in inventory('demo', self.root, retired=True)}
         theirs = {n['id']: find_note(n['id'], 'demo', self.other)[0].read_bytes() for n in inventory('demo', self.other, retired=True)}
         self.assertEqual(mine.keys(), theirs.keys())
@@ -52,8 +51,10 @@ class Bundles(StoreFixture):
             self.assertEqual(mine[note_id].replace(b'\r\n', b'\n'), theirs[note_id].replace(b'\r\n', b'\n'))
         self.assertEqual(find_note(self.old['id'], 'demo', self.other)[1]['status'], 'superseded')
         # Re-import is a no-op.
-        code, again = self.cli(self.other, 'import-plan', str(bundle))
-        self.assertEqual((again['plan_id'], len(again['unchanged']), again['created']), (None, 4, []))
+        code, again = self.cli(self.other, 'import', str(bundle))
+        self.assertEqual((again['operation_id'], len(again['unchanged']), again['created']), (None, 4, []))
+        undo(self.other, imported['operation_id'])
+        self.assertEqual(inventory('demo', self.other, retired=True), [])
 
     def test_filters_and_refusals(self):
         _, result = self.export('decisions.zip', '--type', 'decision')
@@ -67,30 +68,28 @@ class Bundles(StoreFixture):
 
     def test_conflicts_are_reported_not_written(self):
         bundle, _ = self.export()
-        code, plan = self.cli(self.other, 'import-plan', str(bundle))
-        apply(self.other, plan['plan_id'], plan['digest'])
+        self.assertEqual(self.cli(self.other, 'import', str(bundle))[0], 0)
         change(self.a['id'], 'demo', 'update', self.root, body='LRU eviction with a TTL.')
         newer, _ = self.export('newer.zip')
-        code, result = self.cli(self.other, 'import-plan', str(newer))
+        code, result = self.cli(self.other, 'import', str(newer))
         self.assertEqual(code, 0, result)
         self.assertEqual([c['ref'] for c in result['conflicts']], ['demo:' + self.a['id']])
         self.assertEqual(len(result['unchanged']), 2)
-        self.assertIsNone(result['plan_id'])
+        self.assertIsNone(result['operation_id'])
         self.assertIn('LRU eviction.', find_note(self.a['id'], 'demo', self.other)[1]['body'])
 
     def test_into_another_domain(self):
         init_domain('team', [str(self.base / 'team')], self.other)
         bundle, _ = self.export()
-        code, plan = self.cli(self.other, '--domain', 'team', 'import-plan', str(bundle))
-        self.assertEqual(code, 0, plan)
-        apply(self.other, plan['plan_id'], plan['digest'])
+        code, imported = self.cli(self.other, '--domain', 'team', 'import', str(bundle))
+        self.assertEqual(code, 0, imported)
         self.assertEqual({n['domain'] for n in inventory('team', self.other)}, {'team'})
 
-    def test_taxonomy_gap_names_the_plan(self):
+    def test_taxonomy_gap_names_the_fix(self):
         capture('Architecture note', 'Layers.', ['subject/project', 'concern/architecture'], 'demo', self.root)
         (self.other / 'tag_taxonomy.json').write_text(json.dumps({'tags': TAGS}))
         bundle, _ = self.export()
-        code, result = self.cli(self.other, 'import-plan', str(bundle))
+        code, result = self.cli(self.other, 'import', str(bundle))
         self.assertEqual(code, 2)
         self.assertIn('taxonomy add concern/architecture', result['error']['message'])
 
@@ -103,7 +102,7 @@ class Bundles(StoreFixture):
         with zipfile.ZipFile(target, 'w') as z:
             for n, data in members.items():
                 z.writestr(n, data)
-        return self.cli(self.other, 'import-plan', str(target))
+        return self.cli(self.other, 'import', str(target))
 
     def test_pin_and_retirement_data_survive_and_no_maintenance_config_travels(self):
         from core import maintenance_state as ms
@@ -113,9 +112,8 @@ class Bundles(StoreFixture):
         bundle, _ = self.export('pins.zip', '--all')
         with zipfile.ZipFile(bundle) as z:
             self.assertFalse([n for n in z.namelist() if 'maintenance' in n], z.namelist())
-        code, plan = self.cli(self.other, 'import-plan', str(bundle))
-        self.assertEqual(code, 0, plan)
-        apply(self.other, plan['plan_id'], plan['digest'])
+        code, imported = self.cli(self.other, 'import', str(bundle))
+        self.assertEqual(code, 0, imported)
         mine = {n['id']: n for n in inventory('demo', self.root, retired=True)}
         theirs = {n['id']: n for n in inventory('demo', self.other, retired=True)}
         self.assertIs(theirs[self.b['id']]['pinned'], True)
@@ -140,7 +138,7 @@ class Bundles(StoreFixture):
 
     def test_unbound_target_domain_fails(self):
         bundle, _ = self.export()
-        code, result = self.cli(self.other, '--domain', 'nowhere', 'import-plan', str(bundle))
+        code, result = self.cli(self.other, '--domain', 'nowhere', 'import', str(bundle))
         self.assertEqual(code, 2)
 
 

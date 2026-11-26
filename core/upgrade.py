@@ -1,9 +1,10 @@
 """`alm upgrade`: update the installed copy from the git checkout it was installed from.
 
 It pulls the checkout (fast-forward only, on the remote's default branch, with no uncommitted changes), then runs that
-checkout's install.py to plan and apply the package install. install.py runs in its own process, with the Python that
-made the install: the checkout's new code must do the install, and install.py refuses to run from inside the installed
-copy. The result relays the plan's `next_steps` (the harnesses whose wiring the new copy changes) and `wiring_current`."""
+checkout's install.py, which installs the package as one journaled write (undo OPERATION reverses it). install.py runs in its
+own process, with the Python that made the install: the checkout's new code must do the install, and install.py refuses to run
+from inside the installed copy. The result relays the install's `next_steps` (the harnesses whose wiring the new copy changes)
+and `wiring_current`."""
 from __future__ import annotations
 import json,sys
 from pathlib import Path
@@ -33,13 +34,10 @@ def _install(python,source,*args):
     result=_last_json(out)
     if code or not isinstance(result,dict):
         lines=[line for line in err.strip().splitlines() if line.strip()]
-        raise ValueError(f'install.py {" ".join(args) or "(plan and apply)"} failed in {source}: '+(lines[-1] if lines else f'exit {code}'))
+        raise ValueError(f'{" ".join(["install.py",*args])} failed in {source}: '+(lines[-1] if lines else f'exit {code}'))
     return result
 
-def _apply_command(python,source,plan):
-    return f'"{python}" "{Path(source)/"install.py"}" --apply-plan {plan["plan_id"]} --expected-plan-sha256 {plan["digest"]}'
-
-def run(plan_only=False):
+def run():
     stamp=installed_stamp()
     if not stamp or not stamp.get('source') or not stamp.get('commit'):
         raise ValueError('upgrade works from an installed copy made from a git checkout; this copy records none. Run install.py from your checkout instead.')
@@ -62,12 +60,9 @@ def run(plan_only=False):
     count=_git(source,'rev-list','--count',f'{old}..{new}')
     result['commits']=int(count) if count and count.isdigit() else None
     python=stamp.get('interpreter') if stamp.get('interpreter') and Path(stamp['interpreter']).is_file() else sys.executable
-    plan=_install(python,source,'--plan');summary=plan.get('summary') or {}
+    receipt=_install(python,source);summary=receipt.get('summary') or {}
     result.update(files=summary.get('files'),next_steps=summary.get('next_steps') or [],wiring_current=summary.get('wiring_current') or [],
-                  plan_id=plan.get('plan_id'),digest=plan.get('digest'))
-    if plan_only:
-        return {**result,'status':'planned','apply':_apply_command(python,source,plan)}
-    receipt=_install(python,source,'--apply-plan',plan['plan_id'],'--expected-plan-sha256',plan['digest'])
+                  operation_id=receipt.get('operation_id'),undo=receipt.get('undo'))
     for key in ('warnings','notice'):
         if receipt.get(key):result[key]=receipt[key]
     return {**result,'status':'upgraded','restart':RESTART}

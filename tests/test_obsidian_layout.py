@@ -1,12 +1,12 @@
 import json
+import unittest
 from pathlib import Path
 
 from test_core import StoreFixture
-from core.governance import apply
 from core.notes import find_note
 from core.note_types import NOTE_TYPES
 from core.repository import parse_text, read_json
-from core.sync import sync, build_overlay, teardown_plan
+from core.sync import sync, build_overlay, teardown
 
 
 class ObsidianLayout(StoreFixture):
@@ -37,7 +37,7 @@ class ObsidianLayout(StoreFixture):
         custom = vault / 'Templates/Decision.md'
         custom.write_text(custom.read_text(encoding='utf-8') + '\nMy extra prompt\n',encoding='utf-8')
         result = build_overlay('demo', vault, self.root)
-        self.assertEqual(result['plans'], [])
+        self.assertEqual(result['applied'], [])
         self.assertIn('My extra prompt', custom.read_text(encoding='utf-8'))
 
     def test_template_note_without_id_is_captured(self):
@@ -50,7 +50,6 @@ class ObsidianLayout(StoreFixture):
         incoming = vault / 'Domains/demo/Chose top-level folders.md'
         incoming.write_text(text,encoding='utf-8')
         result = sync('demo', vault, self.root)
-        self.assertEqual(result['plans'], [])
         self.assertEqual(len(result['applied']), 1)
         self.assertFalse(incoming.exists())
         notes_dir = self.root / 'domains/demo/notes'
@@ -58,7 +57,7 @@ class ObsidianLayout(StoreFixture):
         self.assertEqual(len(created), 1)
         self.assertTrue((vault / 'Domains/demo' / created[0].name).exists())
         again = sync('demo', vault, self.root)
-        self.assertEqual((again['plans'], again['applied'], again['conflicts']), ([], [], 0))
+        self.assertEqual((again['applied'], again['conflicts']), ([], 0))
 
     def test_yaml_block_lists_from_property_editor(self):
         raw = '---\ntitle: "T"\ntags:\n  - subject/project\n  - concern/decision\ncontext:\ntype: "decision"\n---\n\nBody\n'
@@ -76,7 +75,7 @@ class ObsidianLayout(StoreFixture):
         legacy_note.parent.mkdir(parents=True)
         legacy_note.write_text(Path(a['path']).read_text(encoding='utf-8'),encoding='utf-8')
         first = sync('demo', vault, self.root)
-        self.assertEqual(first['plans'], [])
+        self.assertEqual(first['applied'], [])
         state_path = self.root / 'domains/demo/sync-state.json'
         state = read_json(state_path)
         for entry in state['entries'].values():
@@ -95,7 +94,7 @@ class ObsidianLayout(StoreFixture):
             'Living Memory/Home.md': digest(b'# old\n'), 'Living Memory/Timeline.md': digest(b'# original\n')}}),encoding='utf-8')
 
         result = build_overlay('demo', vault, self.root)
-        self.assertEqual(result['plans'], [])
+        self.assertEqual(result['applied'], [])
         self.assertEqual(result['conflicts'], 0)
         self.assertEqual(result['legacy_conflicts'], ['Living Memory/Timeline.md'])
         self.assertTrue((vault / 'Domains/demo' / name).exists())
@@ -158,15 +157,13 @@ class ObsidianLayout(StoreFixture):
         vault = self.vault()
         build_overlay('demo', vault, self.root)
         self.obsidian_reformat(vault / 'Canvas/demo.canvas')
-        proposal = teardown_plan(vault)
-        apply(vault, proposal['plan_id'], proposal['digest'])
+        teardown(vault)
         self.assertFalse((vault / 'Canvas/demo.canvas').exists())
 
     def test_teardown_removes_everything_managed(self):
         self.note()
         vault = self.vault()
         build_overlay('demo', vault, self.root)
-        proposal = teardown_plan(vault)
-        apply(vault, proposal['plan_id'], proposal['digest'])
+        teardown(vault)
         leftover = [p for p in vault.rglob('*') if p.is_file() and not p.relative_to(vault).parts[0].startswith('.')]
         self.assertEqual(leftover, [])

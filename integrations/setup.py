@@ -1,11 +1,11 @@
-"""Plan-bound native adapter setup. Never changes sandbox or trust policies."""
+"""Native adapter setup: one direct, journaled write per harness home (undo OPERATION reverses it). Never changes sandbox or trust policies."""
 from __future__ import annotations
-import argparse,difflib,hashlib,json,os,re,shlex,shutil,sys
+import argparse,difflib,hashlib,json,os,re,shlex,shutil,sys,uuid
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from core.common import retry_sharing
 from core.repository import read_json,canonical_json,digest
-from core.governance import plan,apply
+from core.governance import commit
 from core.instructions import BLOCK,INSTRUCTION_FILE,harness_home,instruction_block as _block,merge_block
 ROOT=Path(__file__).resolve().parents[1]
 EVENTS={'SessionStart':'session-start','UserPromptSubmit':'user-prompt','SubagentStart':'subagent-start','PreToolUse':'pre-tool-use','Stop':'stop','PreCompact':'pre-compact'}
@@ -123,7 +123,7 @@ def hook_command(script,action):
     """A Codex command handler. On Windows Codex runs commandWindows through a shell that is not pinned down (PowerShell or
     cmd.exe), and a quoted executable alone is a string expression in PowerShell, so the program must be a bare path without
     spaces: the py launcher, else this interpreter, else its 8.3 short path. Only when none of them qualifies does it fall
-    back to an encoded PowerShell command, which EDR tools may flag (setup_plan warns)."""
+    back to an encoded PowerShell command, which EDR tools may flag (setup warns)."""
     bad='"$`'+('%' if os.name=='nt' else '')
     if any(c in str(script) for c in bad):raise ValueError(f'The hook script path {script} contains one of {" ".join(bad)}, which no quoting makes safe in both PowerShell and cmd.exe. Install Living Memory in a folder without them.')
     script_arg=f'"{script}"'
@@ -205,11 +205,11 @@ def _diff(name,edited,managed):
     return '\n'.join(difflib.unified_diff(edited.splitlines(),managed.splitlines(),'edited '+name,'managed '+name,lineterm=''))
 
 def _refuse(what,path,harness,uninstall):
-    flag='--uninstall-plan' if uninstall else '--hooks';script=ROOT/'integrations'/'setup.py'   # outside the f-string: nested quotes need Python 3.12
-    raise ValueError(f'{what} preserved: {path} was edited. Run "{sys.executable}" "{script}" {harness} {flag} --adopt to see the difference and take ownership, or undo the edit and run it without --adopt')
+    flag='--uninstall' if uninstall else '--hooks';script=ROOT/'integrations'/'setup.py'   # outside the f-string: nested quotes need Python 3.12
+    raise ValueError(f'{what} preserved: {path} was edited. Run "{sys.executable}" "{script}" {harness} {flag} --adopt to take ownership (it prints the difference it replaced), or undo the edit and run it without --adopt')
 
 def _reader(home):
-    """Read files under home once each and record the digest of the bytes read, so apply refuses a file changed after this read."""
+    """Read files under home once each and record the digest of the bytes read, so the write refuses a file changed after this read."""
     read_set={}
     def read(rel):
         try:data=retry_sharing(lambda:(home/rel).read_bytes())
@@ -223,7 +223,12 @@ def _reader(home):
         except (OSError,UnicodeError,json.JSONDecodeError) as exc:raise ValueError(f'Invalid or unreadable configuration preserved: {home/rel}') from exc
     return read,read_config,read_set
 
-def _antigravity_plan(home,uninstall,adopt):
+def _write(home,harness,changes,uninstall,summary,read_set):
+    """One journaled write in the harness home; its `s-HARNESS-` operation ID is what undo takes."""
+    return commit(home,changes,harness+'_uninstall' if uninstall else harness+'_setup',summary=summary,guards={'read_set':read_set},
+                  operation_id=f's-{harness}-{uuid.uuid4().hex}')
+
+def _antigravity(home,uninstall,adopt):
     """Own one named hook group in Antigravity's shared config file and the managed block in its global GEMINI.md."""
     read,read_config,read_set=_reader(home)
     name=CONFIG['antigravity']
@@ -258,12 +263,12 @@ def _antigravity_plan(home,uninstall,adopt):
     if data is not None or not uninstall:
         # A GEMINI.md that held only the block is removed with it.
         changes[instruction]=None if uninstall and not text.strip() else text
-    return plan(home,changes,'antigravity_uninstall' if uninstall else 'antigravity_setup',summary=summary,guards={'read_set':read_set})
+    return _write(home,'antigravity',changes,uninstall,summary,read_set)
 
-def setup_plan(harness,home=None,enable_hooks=False,uninstall=False,adopt=False):
+def setup(harness,home=None,enable_hooks=False,uninstall=False,adopt=False):
     if harness not in CONFIG:raise ValueError('Unknown harness')
     home=Path(home or harness_home(harness)).expanduser().resolve();home.mkdir(parents=True,exist_ok=True)
-    if harness=='antigravity':return _antigravity_plan(home,uninstall,adopt)
+    if harness=='antigravity':return _antigravity(home,uninstall,adopt)
     read,read_config,read_set=_reader(home)
     state=read_config('.living-memory-ownership.json',{'files':{},'instruction_hash':None})
     instruction=INSTRUCTION_FILE[harness]
@@ -333,22 +338,17 @@ def setup_plan(harness,home=None,enable_hooks=False,uninstall=False,adopt=False)
         summary['warning']='No py launcher or space-free Python path is available, so the Windows hook commands use an encoded PowerShell command, which EDR tools may flag. Installing the py launcher or Python in a folder without spaces in its path avoids it.'
     if harness=='claude' and not uninstall:
         locked=_managed_hooks_lock()
-        if locked:summary['warning']=f'allowManagedHooksOnly is true in managed settings ({", ".join(locked)}): Claude Code will not run the hooks this plan adds to settings.json. Living Memory works only through the CLI until an administrator deploys the hooks in managed settings.'
-    return plan(home,changes,harness+'_uninstall' if uninstall else harness+'_setup',summary=summary,guards={'read_set':read_set})
+        if locked:summary['warning']=f'allowManagedHooksOnly is true in managed settings ({", ".join(locked)}): Claude Code will not run the hooks this setup adds to settings.json. Living Memory works only through the CLI until an administrator deploys the hooks in managed settings.'
+    return _write(home,harness,changes,uninstall,summary,read_set)
 
 def main(argv=None):
-    p=argparse.ArgumentParser();p.add_argument('harness',choices=sorted(CONFIG));p.add_argument('--home',type=Path);p.add_argument('--location',type=Path);p.add_argument('--hooks',action='store_true');p.add_argument('--uninstall-plan',action='store_true');p.add_argument('--adopt',action='store_true',help='Take ownership of a managed block or handler you edited, after showing the difference in the plan');p.add_argument('--apply-plan');p.add_argument('--expected-plan-sha256');a=p.parse_args(argv)
+    p=argparse.ArgumentParser();p.add_argument('harness',choices=sorted(CONFIG));p.add_argument('--home',type=Path);p.add_argument('--location',type=Path);p.add_argument('--hooks',action='store_true');p.add_argument('--uninstall',action='store_true');p.add_argument('--adopt',action='store_true',help='Take ownership of a managed block or handler you edited; the difference it replaced is printed');a=p.parse_args(argv)
     home=a.home or harness_home(a.harness)
-    if not a.uninstall_plan and not a.apply_plan:
+    if not a.uninstall:
         from core.storage import ensure_setup
         ensure_setup(a.location)
-    if a.apply_plan:
-        if not a.expected_plan_sha256:p.error('Expected plan digest required')
-        if a.adopt:p.error('--adopt belongs on the plan command; apply the plan it prints')
-        result=apply(home,a.apply_plan,a.expected_plan_sha256)
-    else:
-        result=setup_plan(a.harness,home,a.hooks,a.uninstall_plan,a.adopt)
-        for name,diff in result['summary'].get('adopt',{}).items():print(f'Adopting {name}: review this difference, then apply the plan.{chr(10)}{diff}',file=sys.stderr)
-        if result['summary'].get('warning'):print('Warning: '+result['summary']['warning'],file=sys.stderr)
+    result=setup(a.harness,home,a.hooks,a.uninstall,a.adopt)
+    for name,diff in result['summary'].get('adopt',{}).items():print(f'Adopted {name}; this difference was replaced ({result["undo"]} puts it back):{chr(10)}{diff}',file=sys.stderr)
+    if result['summary'].get('warning'):print('Warning: '+result['summary']['warning'],file=sys.stderr)
     print(json.dumps(result));return 0
 if __name__=='__main__':raise SystemExit(main())

@@ -91,7 +91,7 @@ class Retrieval(StoreFixture):
         self.assertFalse(any('global_domains' in w for w in warnings()))
         config = json.loads((self.root / 'bindings.json').read_text());config['search_scope']['global_domains'] = ['shared']
         (self.root / 'bindings.json').write_text(json.dumps(config))
-        self.assertTrue(any("global_domains names 'shared'" in w and 'migration-plan' in w for w in warnings()))
+        self.assertTrue(any("global_domains names 'shared'" in w and 'migrate --schema' in w for w in warnings()))
 
     def test_snippets_respect_word_boundaries(self):
         body = ('filler words here ' * 40) + 'the important latest result is here ' + ('more filler text ' * 40)

@@ -1,7 +1,7 @@
-"""Point-in-time snapshots of the canonical store, and restore as an exact-hash approved plan.
+"""Point-in-time snapshots of the canonical store, and restore as one direct, journaled write (`restore-backup FILE`).
 
 Journals make every script operation reversible; snapshots cover what journals cannot: a deleted or
-mangled store folder (an external sync tool, a bad manual edit). Indexes, turn state, journals, plans
+mangled store folder (an external sync tool, a bad manual edit). Indexes, turn state, journals
 and staged files are derived or transient and are not included."""
 from __future__ import annotations
 import json,os,re,zipfile
@@ -109,7 +109,7 @@ def backup(root,keep=KEEP):
     if retained:
         result['retained']=retained
         warnings.append(f'this snapshot has {notes} note(s), far fewer than {len(retained)} older snapshot(s), which were kept; '
-                        'if notes are missing, restore-plan one of them, and if the drop is intended, delete them by hand')
+                        'if notes are missing, restore-backup one of them, and if the drop is intended, delete them by hand')
     if warnings:result['warning']='; '.join(warnings)
     return result
 
@@ -175,15 +175,14 @@ def staleness_warning(root,notes=None):
     if hours>STALE_HOURS:return f'newest backup {found[0].name} is {int(hours)} hours old; {advice}'
     return None
 
-def restore_plan(root,source):
-    """restore_plan_unlocked under the store lock: the registry merge and the plan's preconditions are read together."""
+def restore_backup(root,source):
+    """One direct, journaled write that makes the canonical set match a snapshot, read and written under one store lock.
+    Notes in domains the snapshot does not contain are left alone; `undo OPERATION` reverses it like any operation."""
     with store_lock(Path(root).resolve()):
-        return restore_plan_unlocked(root,source)
+        return _restore_backup(root,source)
 
-def restore_plan_unlocked(root,source):
-    """An exact-hash plan that makes the canonical set match a snapshot. Notes in domains the snapshot
-    does not contain are left alone; apply the plan with inspect-plan and apply, and undo it like any operation."""
-    from .governance import plan
+def _restore_backup(root,source):
+    from .governance import commit
     root=Path(root).resolve();source=Path(source)
     # Members that were unreadable when the snapshot was taken are neither restored nor a reason to delete
     # the file that is there now: a damaged copy must not replace, or remove, a possibly good one.
@@ -208,10 +207,10 @@ def restore_plan_unlocked(root,source):
     changes={};unchanged=0
     for rel,text in wanted.items():
         path=root/rel
-        if path.is_dir():raise ValueError(f'Restore conflict: {rel} is a folder in the store now; move or delete it, then make the restore plan again')
+        if path.is_dir():raise ValueError(f'Restore conflict: {rel} is a folder in the store now; move or delete it, then restore again')
         for parent in list(Path(rel).parents)[:-1]:
             if (root/parent).is_file() and parent.as_posix() in wanted:continue
-            if (root/parent).is_file():raise ValueError(f'Restore conflict: {parent.as_posix()} is a file in the store now and {rel} needs it as a folder; move or delete it, then make the restore plan again')
+            if (root/parent).is_file():raise ValueError(f'Restore conflict: {parent.as_posix()} is a file in the store now and {rel} needs it as a folder; move or delete it, then restore again')
         if path.is_file() and path.read_bytes()==(text if isinstance(text,bytes) else text.encode('utf-8')):unchanged+=1
         elif LEDGER.fullmatch(rel) and path.is_file() and not text.encode('utf-8').startswith(path.read_bytes()):unchanged+=1   # the ledger only grows: keep a copy that holds rows the snapshot lacks
         else:changes[rel]=text
@@ -236,7 +235,10 @@ def restore_plan_unlocked(root,source):
     if skipped:summary['skipped_unreadable']=sorted(skipped)
     from .docs import redact_summary
     if not changes:return {'ok':True,'status':'unchanged','summary':redact_summary(summary)}
-    result=plan(root,changes,'restore',covered,summary)
+    # The store as the restore leaves it must not hold a note whose custom type is unregistered or takes no action items.
+    from .type_registry import check_undo
+    try:check_undo(root,changes)
+    except ValueError as exc:raise ValueError('Restore would break notes that use a custom type: '+str(exc)+'; retype those notes first') from None
+    result=commit(root,changes,'restore',covered,summary)
     result['summary']=redact_summary(result.get('summary',summary))
-    result['hint']='Review with inspect-plan PLAN_ID, then apply PLAN_ID --expected-plan-sha256 DIGEST.'
     return result

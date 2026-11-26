@@ -96,12 +96,11 @@ class StoreCase(StoreFixture):
     def test_taxonomy_and_credentials(self):
         with self.assertRaises(ValueError):capture('Bad','body',[],'demo',self.root)
         with self.assertRaises(ValueError):self.note(body='-----BEGIN RSA PRIVATE KEY-----')
-    def test_governed_plan_and_undo(self):
-        from core.governance import apply,undo
-        n=self.note();p=change(n['id'],'demo','update',self.root,plan_only=True,body='New body')
-        with self.assertRaises(ValueError):apply(self.root,p['plan_id'],'bad')
-        receipt=apply(self.root,p['plan_id'],p['digest']);self.assertEqual(find_note(n['id'],'demo',self.root)[1]['body'],'New body')
-        undone=undo(self.root,receipt['operation_id']);self.assertNotIn('plan_id',undone)   # an update is a direct kind
-        self.assertIn('rebuildable',find_note(n['id'],'demo',self.root)[1]['body'])
+    def test_direct_update_and_undo(self):
+        from core.governance import undo
+        n=self.note();before=Path(n['path']).read_bytes();receipt=change(n['id'],'demo','update',self.root,body='New body')
+        self.assertNotIn('plan_id',receipt);self.assertEqual(find_note(n['id'],'demo',self.root)[1]['body'],'New body')
+        undone=undo(self.root,receipt['operation_id']);self.assertNotIn('plan_id',undone)   # undo is always direct
+        self.assertIn('rebuildable',find_note(n['id'],'demo',self.root)[1]['body']);self.assertEqual(Path(n['path']).read_bytes(),before)
 
 if __name__=='__main__':unittest.main()

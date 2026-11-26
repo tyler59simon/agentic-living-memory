@@ -3,15 +3,14 @@ import json,statistics,sys,tempfile,time
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from core.init_domain import init_domain
-from core.migration import migration_plan
-from core.governance import apply
+from core.migration import migrate_schema
 from core.notes import capture
 from core.search import search_domains
 
 def main():
     cases=[('Cache eviction policy','The cache uses least recently used eviction.','Please explain how our cache eviction works'),('Deployment rollback','Deployment rollback restores the prior immutable release.','How should we handle a deployment rollback?'),('Authentication sessions','Authentication sessions expire after thirty minutes.','What is the authentication session expiry?'),('Database backups','Database backups run before schema migrations.','Tell me about database backups before migrations')]
     with tempfile.TemporaryDirectory(prefix='living-memory-benchmark-') as directory:
-        root=Path(directory);init_domain('benchmark',[str(root/'project')],root);p=migration_plan(root);apply(root,p['plan_id'],p['digest']);expected=[]
+        root=Path(directory);init_domain('benchmark',[str(root/'project')],root);migrate_schema(root);expected=[]
         for title,body,query in cases:expected.append(capture(title,body,['subject/project','concern/knowledge'],'benchmark',root)['id'])
         for i in range(96):capture('Reference '+str(i),'Synthetic unrelated reference number '+str(i)+': violet meadow pebble.',['subject/project','concern/knowledge'],'benchmark',root)
         durations=[];quality=[]
@@ -37,7 +36,7 @@ def synthetic_store(base,count,semantic_from=None,model_dir=None,siblings=0):
     from core.notes import build_note
     from core.repository import reconcile
     rng=random.Random(7);root=base/'store';project=base/'project';project.mkdir()
-    init_domain('scale',[str(project)],root);p=migration_plan(root);apply(root,p['plan_id'],p['digest'])
+    init_domain('scale',[str(project)],root);migrate_schema(root)
     if semantic_from:shutil.copytree(Path(semantic_from)/'.models',root/'.models')
     if model_dir:shutil.copytree(model_dir,root/'.models'/Path(model_dir).name)   # a copy: the store being measured is never the real one
     names=['scale']+[f'sib{i}' for i in range(siblings)]
@@ -171,7 +170,7 @@ def session_start_case(runs=15):
     from core import repository,runtime
     with tempfile.TemporaryDirectory(prefix='living-memory-session-',ignore_cleanup_errors=True) as directory,patch.dict(os.environ,{'LIVING_MEMORY_NO_BACKGROUND':'1'}):
         base=Path(directory);root=base/'store';project=base/'project';repo=project/'app';repo.mkdir(parents=True)
-        init_domain('bench',[str(project)],root);p=migration_plan(root);apply(root,p['plan_id'],p['digest'])
+        init_domain('bench',[str(project)],root);migrate_schema(root)
         _git(repo,'init','-q');_git(repo,'remote','add','origin','https://example.org/acme/app.git')
         for name in ('pom.xml','src/Money.java','src/Other.java','README.md'):
             path=repo/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(f'{name} v1\n',encoding='utf-8')

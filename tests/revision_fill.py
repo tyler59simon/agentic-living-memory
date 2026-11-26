@@ -9,7 +9,7 @@ import contextlib,io,json
 from core.cli import build_parser,main as cli_main
 from core.notes import split_revision
 
-WRITES={'update','archive','restore','resolve','reopen','confirm','check','supersede'}
+WRITES={'update','archive','restore','resolve','reopen','confirm','check','supersede','delete'}
 
 
 def _read(base,ref):

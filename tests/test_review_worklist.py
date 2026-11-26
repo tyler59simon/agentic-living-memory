@@ -64,7 +64,7 @@ class Worklist(Base):
         self.cap('Unrelated billing rounding','Invoices round half up.')
         rows=self.rows(kinds=['duplicate']);self.assertEqual(list(rows),[self.ref(second)])
         row=rows[self.ref(second)];self.assertEqual(row['pair']['ref'],self.ref(first));self.assertEqual(row['pair']['title'],'Retry limit setting')
-        self.assertGreaterEqual(row['pair']['score'],0.6);self.assertEqual(row['action'],'merge-plan')
+        self.assertGreaterEqual(row['pair']['score'],0.6);self.assertEqual(row['action'],'merge')
         self.assertEqual(worklist(self.root,['demo'],cheap=True)['counts'].get('duplicate'),None)   # cheap skips the scan
         self.assertEqual(self.rows(cheap=True),{})
 
@@ -124,7 +124,7 @@ class Worklist(Base):
         old=self.cap('Old status','Green.',type='status',review_by='2020-01-01');warned=self.cap('Wiring task','Pending: wire the adapter.')
         found=self.cli('review')
         self.assertEqual((found['due'],found['stale_digests']),(2,0));self.assertEqual(found['kinds'],list(KINDS));self.assertEqual(found['counts']['due'],1);self.assertEqual(found['counts']['warned'],1)
-        self.assertIn('archive REF (undo OPERATION reverses it); for a duplicate (pair), propose a merge-plan for the user to apply',found['hint'])
+        self.assertIn('archive REF (undo OPERATION reverses it); for a duplicate (pair), merge them (the harness asks the user first; undo OPERATION reverses it)',found['hint'])
         note={n['ref']:n for n in found['notes']}[self.ref(old)]
         for key in ('ref','title','type','updated','review_by','confirmed','revision','domain'):self.assertIn(key,note)
         only=self.cli('review','--kind','warned');self.assertEqual([n['ref'] for n in only['notes']],[self.ref(warned)]);self.assertEqual(only['due'],1)
@@ -302,7 +302,7 @@ class Maps(StoreFixture):
 
 class ActionsParse(unittest.TestCase):
     SAMPLES={'confirm':'confirm demo:abc','update':'update demo:abc --body text','supersede':'supersede demo:abc --by demo:def','resolve':'resolve demo:abc',
-             'merge-plan':'merge-plan','archive':'archive demo:abc'}
+             'merge':'merge --payload-file merge.json','archive':'archive demo:abc'}
     def test_every_action_the_worklist_emits_is_a_command_the_cli_parses(self):
         from core.cli import build_parser
         from core.worklist import _action,KINDS

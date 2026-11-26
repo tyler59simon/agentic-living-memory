@@ -4,7 +4,7 @@ from unittest.mock import patch
 from test_core import StoreFixture
 from core.repository import read_json,parse,serialize,transaction,recover,inventory
 from core.notes import change,find_note
-from core.governance import apply,remap
+from core.governance import remap
 from core.sync import sync,build_overlay
 from core import runtime,launcher
 from test_launcher import fake
@@ -15,7 +15,7 @@ class Features(StoreFixture):
         dst.write_text(Path(a['path']).read_text());sync('demo',vault,self.root)
         dst.write_text(dst.read_text().replace('rebuildable','replaceable'))
         result=sync('demo',vault,self.root)
-        self.assertEqual(result['conflicts'],0);self.assertEqual(result['plans'],[]);self.assertEqual(len(result['applied']),1)
+        self.assertEqual(result['conflicts'],0);self.assertNotIn('plans',result);self.assertEqual(len(result['applied']),1)
         self.assertIn('replaceable',find_note(a['id'],'demo',self.root)[1]['body'])
         self.assertEqual(sync('demo',vault,self.root)['conflicts'],0)
     def test_canvas_and_six_dashboards(self):
@@ -86,9 +86,9 @@ class Features(StoreFixture):
         denied=subprocess.run([sys.executable,str(script),'capture','--root',str(self.root),'--actor','subagent'],input=json.dumps(payload),text=True,capture_output=True)
         self.assertNotEqual(denied.returncode,0)
     def test_adapter_setup_preserves_unrelated_state(self):
-        from integrations.setup import setup_plan
+        from integrations.setup import setup
         home=self.base/'claude';home.mkdir();(home/'settings.json').write_text(json.dumps({'theme':'dark','hooks':{}}))
-        proposal=setup_plan('claude',home);apply(home,proposal['plan_id'],proposal['digest'])
+        self.assertTrue(setup('claude',home)['operation_id'].startswith('s-claude-'))
         self.assertEqual(read_json(home/'settings.json')['theme'],'dark')
         self.assertIn('agentic-living-memory:begin',(home/'CLAUDE.md').read_text())
     def test_process_interruption_recovers(self):
@@ -307,9 +307,9 @@ class ClaudeIntegrationFixes(StoreFixture):
         self.assertIn('allow',bash(self.memory('capture-finalize --session s1 --turn t1')))
         self.assertIn('deny',bash('& '+self.memory('capture-finalize --session s1 --turn t1')))   # Bash has no call operator
         self.assertIn('allow',bash(self.memory('capture --subject project --concern knowledge "Apply rule" "We apply X"')))
-        # Plan application gets no hook decision: the host's normal permissions apply.
-        self.assertEqual(bash(self.memory('apply 0123 --expected-plan-sha256 abc')),{})
-        self.assertEqual(bash(f'"{sys.executable}" integrations/setup.py claude --apply-plan x --expected-plan-sha256 y'),{})
+        # Bulk writes and setup get no hook decision: the host's normal permissions apply, so the user is asked first.
+        self.assertEqual(bash(self.memory('merge --payload-file m.json')),{})
+        self.assertEqual(bash(f'"{sys.executable}" integrations/setup.py claude'),{})
         self.assertNotIn('allow',bash(self.memory('search cache')+' ; rm -rf x'))
         self.assertNotIn('allow',bash(f'"{sys.executable}" "C:/elsewhere/living_memory.py" search cache'))
         edit=self.run_hook('pre-tool-use',self.payload(tool_name='Edit',tool_input={'file_path':str(self.root/'bindings.json')}))
@@ -366,10 +366,10 @@ class ClaudeIntegrationFixes(StoreFixture):
             result=json.loads(out.getvalue())
             self.assertEqual('systemMessage' in result,expect_message)
     def test_claude_setup_exec_form_matcher_and_pretty_settings(self):
-        from integrations.setup import setup_plan
+        from integrations.setup import setup
         home=self.base/'claude';home.mkdir();(home/'settings.json').write_text(json.dumps({'theme':'dark'}))
         with patch.dict(os.environ,{'LIVING_MEMORY_ROOT':str(self.root)}):
-            proposal=setup_plan('claude',home);apply(home,proposal['plan_id'],proposal['digest'])
+            setup('claude',home)
         text=(home/'settings.json').read_text();settings=json.loads(text)
         self.assertIn('\n  "hooks"',text);self.assertEqual(settings['theme'],'dark')
         pre=settings['hooks']['PreToolUse'][0];handler=pre['hooks'][0]
@@ -378,15 +378,15 @@ class ClaudeIntegrationFixes(StoreFixture):
         end=settings['hooks']['SessionEnd'][0]['hooks'][0];self.assertEqual((end['args'][1],end['timeout']),('session-end',60))
         claude_md=(home/'CLAUDE.md').read_text();self.assertIn('applies only when',claude_md);self.assertIn('Subagents are read-only',claude_md)
         self.assertNotIn(sys.executable,claude_md)   # the static block is machine-independent
-        proposal=setup_plan('claude',home,uninstall=True);apply(home,proposal['plan_id'],proposal['digest'])
+        setup('claude',home,uninstall=True)
         self.assertEqual(json.loads((home/'settings.json').read_text()),{'theme':'dark','hooks':{}})
     def test_factory_setup_has_no_subagent_start_and_plain_instructions(self):
-        from integrations.setup import setup_plan
+        from integrations.setup import setup
         home=self.base/'factory'
-        proposal=setup_plan('factory',home,enable_hooks=True);apply(home,proposal['plan_id'],proposal['digest'])
+        setup('factory',home,enable_hooks=True)
         self.assertNotIn('SubagentStart',json.loads((home/'hooks.json').read_text()))
         other=self.base/'factory-plain'
-        proposal=setup_plan('factory',other);apply(other,proposal['plan_id'],proposal['digest'])
+        setup('factory',other)
         text=(other/'AGENTS.md').read_text();self.assertIn('No per-turn receipt',text);self.assertNotIn('capture-finalize',text)
 
 if __name__=='__main__':unittest.main()

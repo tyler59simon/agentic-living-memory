@@ -7,7 +7,7 @@ from core import backup as snap
 from core import note_format, repository, runtime, semantic, usage
 from core.capture import status as receipt
 from revision_fill import main as cli
-from core.governance import apply, undo
+from core.governance import undo
 from core.notes import capture, change, find_note
 from core.repository import inventory
 
@@ -424,9 +424,8 @@ class Backups(StoreFixture):
         saved = snap.backup(self.root)['backup']
         (self.root / stray).write_text('edited since the snapshot', encoding='utf-8')
         change(kept['id'], 'demo', 'update', self.root, body='Changed after the snapshot.')
-        proposed = snap.restore_plan(self.root, saved)
-        self.assertEqual(proposed['summary']['skipped_unreadable'], [stray])
-        apply(self.root, proposed['plan_id'], proposed['digest'])
+        restored = snap.restore_backup(self.root, saved)
+        self.assertEqual(restored['summary']['skipped_unreadable'], [stray])
         self.assertIn('rebuildable', find_note(kept['id'], 'demo', self.root)[1]['body'])
         self.assertEqual((self.root / stray).read_text(encoding='utf-8'), 'edited since the snapshot')
 
@@ -815,7 +814,7 @@ class Cli5DefaultConcern(Cli):
 
 
 class Ops1HistoryAndPlans(Cli):
-    """OPS-1: history survives a corrupt journal, undo refuses one, and old plan files are pruned."""
+    """OPS-1: history survives a corrupt journal, undo refuses one, and plan files older releases left are removed."""
 
     def corrupt(self):
         self.ok('capture', '--type', 'knowledge', '--concern', 'architecture', '--title', 'First fact', '--summary', 'One.')
@@ -841,37 +840,34 @@ class Ops1HistoryAndPlans(Cli):
         with self.assertRaisesRegex(ValueError, 'Operation unavailable'):
             undo(self.root, 'nosuchop')
 
-    def test_prune_plans(self):
-        from datetime import datetime, timedelta, timezone
+    def test_remove_leftover_plans(self):
         plans = self.root / '.plans'
         plans.mkdir(exist_ok=True)
-        def make(name, days, state=None):
-            plan_id = name * 32
-            when = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-            (plans / (plan_id + '.json')).write_text(json.dumps({'id': plan_id, 'created': when}))
-            if state:
-                folder = self.root / '.operations' / plan_id
-                folder.mkdir(parents=True)
-                (folder / 'journal.json').write_text(json.dumps({'id': plan_id, 'state': state, 'created': when, 'kind': 'x', 'effects': []}))
-            return plans / (plan_id + '.json')
-        old_done, old_unapplied = make('a', 5, 'committed'), make('b', 40)
-        new_done, new_unapplied, old_pending = make('c', 0, 'committed'), make('d', 5), make('e', 40, 'pending')
-        self.assertEqual(repository.prune_plans(self.root), 2)
-        self.assertFalse(old_done.exists() or old_unapplied.exists())
-        self.assertTrue(new_done.exists() and new_unapplied.exists() and old_pending.exists())
+        old = [plans / (name * 32 + '.json') for name in 'abc']
+        for path in old:
+            path.write_text(json.dumps({'id': path.stem, 'created': '2026-01-01T00:00:00+00:00'}))
+        (plans / ('a' * 32)).mkdir()          # the attachment folder an older plan staged
+        other = plans / 'notes.json'
+        other.write_text('{}')
+        self.assertEqual(repository.remove_leftover_plans(self.root), 3)
+        self.assertFalse(any(p.exists() for p in old) or (plans / ('a' * 32)).exists())
+        self.assertTrue(other.exists())           # not a plan file: kept, and so is the folder
+        other.unlink()
+        self.assertEqual(repository.remove_leftover_plans(self.root), 0)
+        self.assertFalse(plans.exists())
 
-    def test_prune_plans_keeps_a_plan_a_vault_approval_waits_on(self):
-        from datetime import datetime, timedelta, timezone
-        plans = self.root / '.plans'
-        plans.mkdir(exist_ok=True)
-        plan_id = 'f' * 32
-        when = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat()
-        (plans / (plan_id + '.json')).write_text(json.dumps({'id': plan_id, 'created': when}))
-        state = self.root / 'domains' / 'demo' / 'sync-state.json'
-        state.parent.mkdir(parents=True, exist_ok=True)
-        state.write_text(json.dumps({'entries': {'n1': {'pending_plan': plan_id, 'pending_action': 'Delete'}}}))
-        self.assertEqual(repository.prune_plans(self.root), 0)
-        self.assertTrue((plans / (plan_id + '.json')).exists())
+    def test_remove_leftover_plans_in_a_folder_the_store_does_not_own_needs_a_real_plan(self):
+        import hashlib
+        home = self.base / 'harness home'
+        plans = home / '.plans'
+        plans.mkdir(parents=True)
+        value = {'id': 'f' * 32, 'kind': 'claude_setup', 'changes': {}}
+        value['digest'] = hashlib.sha256(repository.canonical_json(value).encode()).hexdigest()
+        real, forged = plans / ('f' * 32 + '.json'), plans / ('e' * 32 + '.json')
+        real.write_text(json.dumps(value))
+        forged.write_text(json.dumps({**value, 'id': 'e' * 32}))
+        self.assertEqual(repository.remove_leftover_plans(home, require_plan=True), 1)
+        self.assertEqual((real.exists(), forged.exists()), (False, True))
 
 
 class Priv1RecallMasking(unittest.TestCase):
@@ -963,29 +959,33 @@ class Priv1ShingleCap(unittest.TestCase):
 class Gov4RetagSourceTypo(Cli):
     def test_unknown_source_tag_fails(self):
         self.note()
-        code, out, err = self.run_cli('retag-plan', stdin=json.dumps({'concern/archtecture': 'concern/decision'}))
+        code, out, err = self.run_cli('retag', stdin=json.dumps({'concern/archtecture': 'concern/decision'}))
         self.assertNotEqual(code, 0, out)
         self.assertEqual(err['error']['message'], 'Unknown source tags: concern/archtecture; check the spelling with taxonomy')
 
-    def test_real_source_tag_still_plans(self):
-        self.note()
-        out = self.ok('retag-plan', stdin=json.dumps({'concern/architecture': 'concern/decision'}))
-        self.assertTrue(out['plan_id'])
+    def test_real_source_tag_still_retags(self):
+        note = self.note()
+        out = self.ok('retag', stdin=json.dumps({'concern/architecture': 'concern/decision'}))
+        self.assertTrue(out['operation_id'])
+        self.assertIn('concern/decision', find_note(note['id'], 'demo', self.root)[1]['tags'])
 
 
 class Sto1RelocationLogs(unittest.TestCase):
-    def test_log_written_between_plan_and_apply(self):
-        from test_storage import SharedStorage
+    def test_logs_move_with_the_store(self):
+        from core import storage
+        from test_storage import StorageBase
 
-        class Case(SharedStorage):
+        class Case(StorageBase):
             def runTest(self):
-                plan = self.plan()
+                self.configure()
+                self.note()
                 logs = self.root / 'logs'
-                logs.mkdir()
+                logs.mkdir(exist_ok=True)
                 (logs / 'log-2026-01-01.jsonl').write_text('{"event":"x"}\n')
-                result = self.apply(plan)
+                destination = self.base / 'new shared store'
+                result = storage.relocate(self.root, destination)
                 self.assertEqual(result['status'], 'committed')
-                self.assertTrue((Path(plan['destination']) / 'logs' / 'log-2026-01-01.jsonl').exists())
+                self.assertTrue((destination / 'logs' / 'log-2026-01-01.jsonl').exists())
         case = Case()
         res = unittest.TestResult()
         case.run(res)
@@ -1002,9 +1002,8 @@ class Sto3GlobalBundle(StoreFixture):
         find_note(note['id'], '_global', self.root)[0].unlink()
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            self.assertEqual(cli(['--root', str(self.root), 'import-plan', str(bundle)]), 0, err.getvalue())
-        plan = json.loads(out.getvalue())
-        apply(self.root, plan['plan_id'], plan['digest'])
+            self.assertEqual(cli(['--root', str(self.root), 'import', str(bundle)]), 0, err.getvalue())
+        self.assertTrue(json.loads(out.getvalue())['operation_id'])
         self.assertTrue(find_note(note['id'], '_global', self.root)[1])
 
 
@@ -1059,8 +1058,7 @@ class Cli3RefResolution(Cli):
 
     def test_history_of_a_deleted_note_by_full_id(self):
         a = self.note('Deleted subject')
-        plan = self.ok('delete-plan', a['id'])
-        self.ok('apply', plan['plan_id'], '--expected-plan-sha256', plan['digest'])
+        self.ok('delete', a['id'])
         for ref in (a['id'], 'demo:' + a['id']):
             self.assertTrue(self.ok('history', '--note', ref), ref)
 

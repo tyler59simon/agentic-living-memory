@@ -14,10 +14,13 @@ SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 # Tools that cannot change files; anything else marks the turn as mutating.
 READ_TOOLS={'read','read_file','glob','grep','search','view_image','view','ls','list','webfetch','websearch','web_fetch','web_search','todowrite','task','agent','toolsearch','askuserquestion','exitplanmode','enterplanmode'}
 SHELL_TOOLS={'bash','powershell','shell','run_shell_command','exec_command','local_shell','execute'}
-ALLOWED_SUBCOMMANDS={'ask','types','sources','source-sync','ingest-scan','search','read','taxonomy','doctor','history','logs','inspect-plan','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','archive','rewrite','promote','projects','systems','views','wiki','resolve','reopen','restore','log','maintenance','rebaseline','recap','status','help','propose','proposals','doc'}
+# The bulk writes (delete, merge, retag, migrate, restore-backup, import, ingest, overlay-teardown) are left out on purpose:
+# they are direct and undoable, and the harness asks the user before each one (the user chose this gate on 2026-11-26).
+ALLOWED_SUBCOMMANDS={'ask','types','sources','source-sync','ingest-scan','search','read','taxonomy','doctor','history','logs','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','archive','rewrite','promote','projects','systems','views','wiki','resolve','reopen','restore','log','maintenance','rebaseline','recap','status','help','propose','proposals','doc'}
 # Subagents are read-only: these are denied for them even though the main agent gets them auto-allowed. Their one write is
 # propose, a draft in .turns/ that only the main agent turns into a note (proposals accept, or capture --from-proposal with an edited note) or rejects.
-MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm','resolve','reopen','restore','off','on','undo','archive','rewrite','remap','promote','source','project','system','type'}   # `taxonomy add` is the same kind of write: taxonomy_write
+MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm','resolve','reopen','restore','off','on','undo','archive','rewrite','remap','promote','source','project','system','type',
+                     'delete','merge','retag','migrate','restore-backup','import','ingest','overlay-teardown','setup','upgrade'}   # `taxonomy add` is the same kind of write: taxonomy_write
 GLOBAL_OPTIONS={'--root','--domain','--cwd','--actor'}
 HOOK_LOCK_TIMEOUT=5
 # Codex has no SessionEnd, so its session start picks up Obsidian edits, at most this often.
@@ -130,7 +133,7 @@ def protected_rule(path,cwd,root):
         if is_within(p,root/'ledger') or is_within(p,root/'.views') or is_within(p,root/'maintenance'):return 'config'
         if path_key(p) in {path_key(x) for x in (root/'bindings.json',root/'tag_taxonomy.json',root/'projects.json',root/'systems.json',root/'sources.json',root/'note_types.json',root/'maintenance.json',root/'views.json',root/'.relocated.json',
                  root/'notebook-folders.json',config_path())}:return 'config'
-        # Vault edits are auto-applied and vault checkboxes approve plans, so agents must not write there either.
+        # Vault edits, archives and deletions are applied at sync, so agents must not write there either.
         return 'vault' if any(is_within(p,v/folder) for v in vault_roots(root) for folder in ('Domains','Archive','Dashboards','Notebooks')) else None
     except (ValueError,OSError):return None
 
@@ -258,11 +261,12 @@ def memory_subcommand(text,grammar=None):
     found={_subcommand(words) for words in parsed}
     return found.pop() if len(found)==1 else None
 
-# Hivemind sets HIVEMIND_SESSION for every program it starts in a terminal. Agents there write plans (delete, merge-plan, ...); only the user applies or undoes them, and the direct writes are the user's too.
-HIVEMIND_GOVERNED={'apply','undo','recover','upgrade','archive','rewrite','remap','promote','source','project','system','type'}   # `setup --apply-plan`, `taxonomy add` and `doc` writes are governed too (below)
-HIVEMIND_DENY=('Applying or undoing a plan, the direct writes (archive, rewrite, remap, promote, taxonomy add, source, project, system, type) '
-               'and folder notebook writes (settling a page proposal included) are for the user to do in Hivemind, not for an agent. Write a plan for a delete or merge, and stage a page edit with doc propose; '
-               'for the rest, tell the user what to change.')
+# Hivemind sets HIVEMIND_SESSION for every program it starts in a terminal. Undo, the direct writes and the bulk writes there are the user's, done in Hivemind.
+HIVEMIND_GOVERNED={'undo','recover','upgrade','setup','archive','rewrite','remap','promote','source','project','system','type',
+                   'delete','merge','retag','migrate','restore-backup','import','ingest','overlay-teardown'}   # `taxonomy add` and `doc` writes are governed too (below)
+HIVEMIND_DENY=('Undo, setup, upgrade, the direct writes (archive, rewrite, remap, promote, taxonomy add, source, project, system, type), the bulk writes (delete, merge, retag, '
+               'migrate, restore-backup, import, ingest, overlay-teardown) and folder notebook writes (settling a page proposal included) are for the user to do in Hivemind, '
+               'not for an agent. Stage a page edit with doc propose; for the rest, tell the user what to change.')
 # `doc` actions that write. `doc propose` is missing on purpose: it only stages an edit for the user, so agents may run it.
 DOC_WRITE_ACTIONS={'undo','folder'}
 # What agents may run. Anything else after `doc`, an unknown word included, counts as a write.
@@ -426,18 +430,16 @@ def page_settle(text,grammar):
     return any(_subcommand(words)=='proposals' and _settles_page(words) for words in _parsed(text,grammar) or [])
 
 def hivemind_governed(text,grammar):
-    """True when a shell command applies or undoes a plan or makes a direct write: apply, undo, recover, setup --apply-plan, taxonomy add, archive, rewrite and the other HIVEMIND_GOVERNED verbs. Exact invocations are read by
+    """True when a shell command undoes an operation or makes a direct or bulk write: undo, recover, setup, taxonomy add, archive, delete, merge and the other HIVEMIND_GOVERNED verbs. Exact invocations are read by
     word; text that cannot be parsed (chained, redirected, expanded) is refused when it names living_memory or a standalone `alm`
     together with a governed word as a separate token."""
-    def flag(word):
-        name=word.partition('=')[0];return len(name)>=3 and name.startswith('--') and '--apply-plan'.startswith(name)
     parsed=_parsed(text,grammar)
     subs=[_subcommand(words) for words in parsed or []]
     if parsed and all(sub and not sub.startswith('-') for sub in subs):   # an option in the subcommand slot (--domain=x, --dom x) is not a subcommand: read the tokens
-        return any(sub in HIVEMIND_GOVERNED or (sub=='setup' and any(flag(w) for w in words)) or (sub=='taxonomy' and 'add' in words)
+        return any(sub in HIVEMIND_GOVERNED or (sub=='taxonomy' and 'add' in words)
                    or (sub=='doc' and _doc_action(words) not in DOC_AGENT_ACTIONS) or (sub=='proposals' and _settles_page(words)) for sub,words in zip(subs,parsed))
     tokens=[t for t in re.split(r'''[\s;&|()"'`{}<>=,]+''',text) if t]
-    return _names_memory(tokens) and (any(t in HIVEMIND_GOVERNED or flag(t) for t in tokens) or ('taxonomy' in tokens and 'add' in tokens)
+    return _names_memory(tokens) and (any(t in HIVEMIND_GOVERNED for t in tokens) or ('taxonomy' in tokens and 'add' in tokens)
                                       or ('doc' in tokens and any(t in DOC_WRITE_ACTIONS for t in tokens)) or ('proposals' in tokens and _settles_page(tokens)))
 
 # Options that read a file into a note. Auto-approval covers only files the session could already see.
@@ -765,9 +767,9 @@ def _daily_backup(root):
         from .logs import swallowed
         swallowed('runtime.daily_backup',exc,root);return None
 
-def _package_plan_folders():
-    """Where install.py and integrations/setup.py keep their plans (full settings copies): each harness home, and the install folder when
-    this code is the installed copy (app/ beside its plans; a source checkout never reaches into the user's install folder)."""
+def _old_plan_folders():
+    """Where install.py and integrations/setup.py kept their plans before 2026-11-26: each harness home, and the install folder when
+    this code is the installed copy (app/ beside it; a source checkout never reaches into the user's install folder)."""
     from .instructions import harness_home
     app=SCRIPT.parent;homes=[harness_home(h) for h in ('claude','codex','copilot','factory','antigravity')]
     if (app/'.core-ownership-v1.json').is_file():homes.append(app.parent)
@@ -837,7 +839,7 @@ def _prune_journals(root):
     Never fails the hook."""
     try:
         from contextlib import ExitStack
-        from .repository import prune_journals,prune_plans
+        from .repository import prune_journals,remove_leftover_plans
         root=Path(root).resolve()
         if not _prune_due(root):return None
         with ExitStack() as stack:
@@ -856,10 +858,9 @@ def _prune_journals(root):
             out={r:prune_journals(Path(r)) for r in sorted(roots)}
             from .docs import prune_journals as prune_page_journals
             out['notebook_operations']=prune_page_journals(root)
-            prune_plans(root)
-            # Undo reads journals, never plan files, so those folders only need the long retention for a plan applied late.
-            # A harness home is not ours: only files that have the shape of a plan are touched.
-            for home in _package_plan_folders():prune_plans(home,applied_days=30,require_plan=True)
+            # Plans were removed on 2026-11-26; their leftover files go. A harness home is not ours: only files shaped like a plan are touched.
+            for folder in sorted(roots):remove_leftover_plans(Path(folder))
+            for home in _old_plan_folders():remove_leftover_plans(home,require_plan=True)
             atomic_write(root/'hooks'/'last-prune.json',canonical_json({'at':now()}))
             return out
     except Exception as exc:
@@ -2133,7 +2134,7 @@ def _process(harness,event,payload,root=None,info=None):
         detail['housekeeping']={'synced':len(synced.get('results',[])) if isinstance(synced,dict) else None,'worker':worker}
         return {}
     if event=='pre-tool-use' and os.environ.get('HIVEMIND_SESSION'):
-        # Before the unbound-project return: an agent in a Hivemind terminal may not apply or undo a plan whatever its working directory.
+        # Before the unbound-project return: an agent in a Hivemind terminal may not undo or make a governed write whatever its working directory.
         args=payload.get('tool_input',payload.get('toolArgs',payload.get('toolArguments',{})))
         if isinstance(args,str):
             try:args=json.loads(args)

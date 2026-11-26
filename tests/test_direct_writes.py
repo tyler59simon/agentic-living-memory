@@ -1,11 +1,11 @@
-"""Direct journaled writes (archive, rewrite, remap, promote, taxonomy add, source, project, system): each journals and undoes
-without a plan; the old *-plan names are gone; undo still returns a plan for the kept plan kinds; the permission lists know the new verbs."""
+"""Direct journaled writes (archive, rewrite, remap, promote, taxonomy add, source, project, system) and bulk writes (delete, merge, retag, ...):
+each journals and undoes without a plan; the old *-plan names and apply are gone; undo is always direct; the permission lists know the new verbs."""
 import contextlib,io,json,os,sys,unittest
 from pathlib import Path
 from unittest.mock import patch
 from test_core import StoreFixture
 from core import runtime,governance,render
-from core.cli import DIRECT_WRITES
+from core.cli import DIRECT_WRITES,BULK_WRITES
 from revision_fill import main
 from core.notes import find_note
 from core.repository import read_json
@@ -29,6 +29,7 @@ class Fixture(StoreFixture):
     def ok(self,*argv,**kw):
         code,result=self.cli(*argv,**kw);self.assertEqual(code,0,result);return result
     def journal(self,written):return read_json(self.root/'.operations'/written['operation_id']/'journal.json')
+    def at(self,n):return 'demo:'+n['id']+'@'+find_note(n['id'],'demo',self.root)[1]['revision']   # a merge payload ref with the revision read
 
 class EachVerbJournalsAndUndoes(Fixture):
     def check(self,written,kind):
@@ -69,48 +70,51 @@ class EachVerbJournalsAndUndoes(Fixture):
         system=self.ok('system','create',stdin=json.dumps({'slug':'billing','name':'Billing','repos':[str(self.base/'project')],'passport':{'body':CHARTER}}));self.check(system,'system_create')
         self.undo(system);self.undo(project);self.assertFalse((self.root/'projects.json').exists())
 
-    def test_a_direct_operation_is_not_labelled_a_plan_but_an_applied_plan_is(self):
+    def test_a_direct_or_bulk_operation_is_labelled_a_command_not_a_plan(self):
         n=self.note();written=self.ok('rewrite',stdin=json.dumps([{'ref':'demo:'+n['id'],'revision':find_note(n['id'],'demo',self.root)[1]['revision'],'body':'The cache can be deleted.'}]))
         rows={r['operation_id']:r for r in self.ok('history')}
         self.assertEqual(rows[written['operation_id']]['actor'],'command')
         a,b=self.note('One','Alpha body.',allow_similar=True),self.note('Two','Beta body.',allow_similar=True)
-        plan=self.ok('merge-plan',stdin=json.dumps({'target':'demo:'+a['id'],'sources':['demo:'+b['id']],'body':'Merged body.'}))
-        applied=self.ok('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest'])
-        rows={r['operation_id']:r for r in self.ok('history')};self.assertEqual(rows[applied['operation_id']]['actor'],'plan')
+        merged=self.ok('merge',stdin=json.dumps({'target':self.at(a),'sources':[self.at(b)],'body':'Merged body.'}));self.check(merged,'merge')
+        rows={r['operation_id']:r for r in self.ok('history')};self.assertEqual(rows[merged['operation_id']]['actor'],'command')
 
 class RemovedNames(Fixture):
     def test_old_commands_fail_at_argparse(self):
-        for old in ('rewrite-plan','taxonomy-plan','remap-plan','promote-plan','source-plan','project-plan','system-plan','change-plan','change','changes','plan','list','links','recall'):
+        removed=('rewrite-plan','taxonomy-plan','remap-plan','promote-plan','source-plan','project-plan','system-plan','change-plan','change','changes','plan','list','links','recall',
+                 'apply','inspect-plan','delete-plan','merge-plan','retag-plan','restore-plan','migration-plan','note-type-plan','baseline-plan','import-plan','ingest-plan','overlay-teardown-plan')
+        for old in removed:
             with self.subTest(old=old):
                 code,error=self.cli(old);self.assertEqual(code,2,old);self.assertIn('invalid',json.dumps(error))
         for action in ('update','rename','retag','resolve','reopen','restore','archive','supersede'):
             with self.subTest(action=action):self.assertEqual(self.cli('plan',action,'demo:x')[0],2)
-        self.assertIn('plan_id',self.ok('delete-plan','demo:'+self.note()['id']))   # delete-plan stays
+        n=self.note();deleted=self.ok('delete','demo:'+n['id']);self.assertNotIn('plan_id',deleted);self.assertEqual(deleted['undo'],'undo '+deleted['operation_id'])   # delete is direct now
+        self.assertEqual({r['operation_id']:r for r in self.ok('history')}[deleted['operation_id']]['actor'],'command')
         code,version=self.cli('version');commands=set(version['commands'])
-        self.assertTrue(set(NEW_VERBS)<=commands);self.assertFalse(commands&{'rewrite-plan','taxonomy-plan','remap-plan','promote-plan','source-plan','project-plan','system-plan','change-plan','change','changes','plan','list','links','recall'})
+        self.assertTrue(set(NEW_VERBS)|BULK_WRITES<=commands);self.assertFalse(commands&set(removed))
         self.assertEqual(self.cli('doc','search','x')[0],2)   # doc search folded into search --pages
 
-class UndoOfKeptKinds(Fixture):
-    def test_undo_of_a_merge_returns_a_plan(self):
+class UndoIsDirect(Fixture):
+    def test_undo_of_a_merge_is_direct_and_brings_the_sources_back(self):
         a,b=self.note('One','Alpha body.',allow_similar=True),self.note('Two','Beta body.',allow_similar=True)
-        plan=self.ok('merge-plan',stdin=json.dumps({'target':'demo:'+a['id'],'sources':['demo:'+b['id']],'body':'Merged body.'}))
-        applied=self.ok('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest'])
-        undo=self.ok('undo',applied['operation_id']);self.assertTrue(undo.get('plan_id') and undo.get('digest'));self.assertEqual(undo['kind'],'undo:'+applied['operation_id'])
-        self.ok('apply',undo['plan_id'],'--expected-plan-sha256',undo['digest']);self.assertEqual(find_note(b['id'],'demo',self.root)[1]['status'],'active')
-    def test_undo_of_a_plan_delete_returns_a_plan_and_of_an_archive_does_not(self):
-        a=self.note('One','Alpha body.');plan=self.ok('delete-plan','demo:'+a['id'])
-        deleted=self.ok('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest']);undo=self.ok('undo',deleted['operation_id']);self.assertIn('plan_id',undo)
-        self.ok('apply',undo['plan_id'],'--expected-plan-sha256',undo['digest'])
+        before={p:p.read_bytes() for p in (self.root/'domains').rglob('*.md')}
+        merged=self.ok('merge',stdin=json.dumps({'target':self.at(a),'sources':[self.at(b)],'body':'Merged body.'}));self.assertNotEqual(find_note(b['id'],'demo',self.root)[1]['status'],'active')
+        undo=self.ok('undo',merged['operation_id']);self.assertNotIn('plan_id',undo);self.assertEqual(undo['kind'],'undo:'+merged['operation_id'])
+        self.assertEqual(find_note(b['id'],'demo',self.root)[1]['status'],'active');self.assertEqual({p:p.read_bytes() for p in (self.root/'domains').rglob('*.md')},before)
+    def test_undo_of_a_delete_is_direct_like_an_archive(self):
+        a=self.note('One','Alpha body.');path=Path(a['path']);raw=path.read_bytes()
+        deleted=self.ok('delete','demo:'+a['id']);self.assertFalse(path.exists());self.assertEqual(deleted['undo'],'undo '+deleted['operation_id'])
+        undo=self.ok('undo',deleted['operation_id']);self.assertNotIn('plan_id',undo);self.assertEqual(path.read_bytes(),raw)
         archived=self.ok('archive','demo:'+a['id']);self.assertNotIn('plan_id',self.ok('undo',archived['operation_id']))
     def test_an_undo_of_an_undo_follows_the_kind_of_the_original(self):
         a=self.note('One','Alpha body.');archived=self.ok('archive','demo:'+a['id']);undone=self.ok('undo',archived['operation_id'])
         again=self.ok('undo',undone['operation_id']);self.assertNotIn('plan_id',again);self.assertEqual(find_note(a['id'],'demo',self.root)[1]['status'],'archived')
-    def test_undo_of_an_unlisted_kind_such_as_a_harness_setup_returns_a_plan(self):
-        # Only the direct kinds are undone at once; anything else (install and setup operations outside the store, maintenance, a kind added later) needs approval.
+    def test_undo_of_any_kind_such_as_a_harness_setup_is_direct(self):
+        # Every kind is undone at once now: install and setup operations, maintenance and kinds added later included.
         a=self.note('One','Alpha body.');written=self.ok('update','demo:'+a['id'],'--body','Changed body.')
         journal=self.root/'.operations'/written['operation_id']/'journal.json';value=read_json(journal);value['kind']='claude_setup';journal.write_text(json.dumps(value))
-        self.assertIn('plan_id',self.ok('undo',written['operation_id']))
-        self.assertTrue(governance._plan_kind('package_install'));self.assertTrue(governance._plan_kind('maintenance_decision'));self.assertFalse(governance._plan_kind('change_update'))
+        undo=self.ok('undo',written['operation_id']);self.assertNotIn('plan_id',undo);self.assertTrue(undo['operation_id'].startswith('d-'))
+        self.assertIn('Alpha body.',find_note(a['id'],'demo',self.root)[1]['body'])
+        self.assertFalse(hasattr(governance,'_plan_kind') or hasattr(governance,'apply') or hasattr(governance,'plan'))
     def test_the_conflict_check_stays(self):
         a=self.note('One','Alpha body.');archived=self.ok('archive','demo:'+a['id'])
         self.ok('restore','demo:'+a['id'])
@@ -129,12 +133,12 @@ class Guards(Fixture):
         self.assertNotEqual(code,0);self.assertIn('too_many_link_updates',json.dumps(error));self.assertEqual({p:p.read_bytes() for p in (self.root/'domains').rglob('*.md')},before)
     def test_a_registry_write_fails_as_stale_when_a_file_it_read_changed(self):
         (self.root/'projects.json').write_text('{"version":1,"projects":[]}')
-        with self.assertRaisesRegex(ValueError,'stale plan'):
+        with self.assertRaisesRegex(ValueError,'stale_write'):
             governance.commit(self.root,{'projects.json':'{}'},'project_create',[],guards={'read_set':{'projects.json':'0'*64}})
         self.assertEqual((self.root/'projects.json').read_text(),'{"version":1,"projects":[]}')
     def test_unused_tags_guard_is_checked_at_commit(self):
         self.note()
-        with self.assertRaisesRegex(ValueError,'stale plan'):
+        with self.assertRaisesRegex(ValueError,'stale_write'):
             governance.commit(self.root,{'tag_taxonomy.json':'{"tags":[]}'},'taxonomy_expansion',['demo'],guards={'unused_tags':['subject/project']})
 
 class Permissions(Fixture):
@@ -146,20 +150,22 @@ class Permissions(Fixture):
         for allowed in ('archive','rewrite','promote'):self.assertIn(allowed,runtime.ALLOWED_SUBCOMMANDS)
         for ask in ('promote-plan','remap','source','project','system','rewrite-plan'):self.assertNotIn(ask,runtime.ALLOWED_SUBCOMMANDS)
         self.assertTrue(set(NEW_VERBS)<=runtime.MUTATING_SUBCOMMANDS);self.assertTrue(set(NEW_VERBS)<=runtime.HIVEMIND_GOVERNED);self.assertEqual(set(NEW_VERBS),DIRECT_WRITES)
+        self.assertFalse(BULK_WRITES&runtime.ALLOWED_SUBCOMMANDS);self.assertTrue(BULK_WRITES<=runtime.MUTATING_SUBCOMMANDS);self.assertTrue(BULK_WRITES<=runtime.HIVEMIND_GOVERNED)   # bulk writes keep the harness prompt
+        self.assertNotIn('inspect-plan',runtime.ALLOWED_SUBCOMMANDS);self.assertNotIn('apply',runtime.HIVEMIND_GOVERNED);self.assertIn('setup',runtime.HIVEMIND_GOVERNED)
     def test_what_is_auto_allowed(self):
         for rest in ("archive demo:abc","promote demo:abc",'taxonomy','taxonomy --json'):
             with self.subTest(rest=rest):self.assertIn('allow',self.decision(rest))
-        for rest in ('remap','source add','project create','system create','taxonomy add concern/x','taxonomy --json add concern/x','remap-plan'):
+        for rest in ('remap','source add','project create','system create','taxonomy add concern/x','taxonomy --json add concern/x','remap-plan','delete demo:abc','merge','retag'):
             with self.subTest(rest=rest):self.assertNotIn('allow',self.decision(rest))
     def test_subagents_are_denied_every_new_write_including_taxonomy_add(self):
-        for rest in ('archive demo:abc','rewrite','remap','promote demo:abc','source add','project create','system create','taxonomy add concern/x'):
+        for rest in ('archive demo:abc','rewrite','remap','promote demo:abc','source add','project create','system create','taxonomy add concern/x','delete demo:abc','merge','retag'):
             with self.subTest(rest=rest):self.assertIn('deny',self.decision(rest,agent_id='sub1'))
         self.assertNotIn('deny',self.decision('taxonomy',agent_id='sub1'))
         self.assertIn('deny',self.decision('undo d-abc',agent_id='sub1'))   # undo writes directly now
     def test_the_cli_refuses_subagents_and_viewers(self):
         n=self.note()
         for actor in ('subagent','viewer'):
-            for argv in (('archive','demo:'+n['id']),('rewrite',),('remap',),('promote','demo:'+n['id']),('source','add'),('project','create'),('system','create'),('taxonomy','add','concern/x')):
+            for argv in (('archive','demo:'+n['id']),('rewrite',),('remap',),('promote','demo:'+n['id']),('source','add'),('project','create'),('system','create'),('taxonomy','add','concern/x'),('delete','demo:'+n['id']),('merge',),('retag',)):
                 with self.subTest(actor=actor,argv=argv):
                     code,error=self.cli(*argv,actor=actor);self.assertEqual(code,2);self.assertIn('read-only',json.dumps(error))
         self.assertEqual(find_note(n['id'],'demo',self.root)[1]['status'],'active')
@@ -169,7 +175,7 @@ class HivemindSession(Fixture):
     def test_every_new_write_is_refused_in_a_hivemind_session_and_reads_are_not(self):
         n=self.note()
         with patch.dict(os.environ,{'HIVEMIND_SESSION':'hm-1'}):
-            for argv in (('archive','demo:'+n['id']),('rewrite',),('remap',),('promote','demo:'+n['id']),('source','add'),('project','create'),('system','create'),('taxonomy','add','concern/x'),('undo','op-1')):
+            for argv in (('archive','demo:'+n['id']),('rewrite',),('remap',),('promote','demo:'+n['id']),('source','add'),('project','create'),('system','create'),('taxonomy','add','concern/x'),('undo','op-1'),('delete','demo:'+n['id']),('merge',),('retag',)):
                 with self.subTest(argv=argv):
                     code,error=self.cli(*argv);self.assertEqual(code,2);self.assertIn('hivemind:',json.dumps(error))
             self.assertEqual(self.cli('taxonomy')[0],0);self.assertEqual(self.cli('projects')[0],0)
@@ -180,21 +186,22 @@ class HivemindSession(Fixture):
             payload={'cwd':str(self.base/'project'),'session_id':'s1','tool_name':'Bash','tool_input':{'command':cmd(rest)}}
             return 'Hivemind' in str(runtime.process('claude','pre-tool-use',payload,self.root).get('deny',''))
         with patch.dict(os.environ,{'HIVEMIND_SESSION':'hm-1'}):
-            for rest in ('archive demo:abc','rewrite','remap','promote demo:abc','source add','project create','system create','taxonomy add concern/x'):
+            for rest in ('archive demo:abc','rewrite','remap','promote demo:abc','source add','project create','system create','taxonomy add concern/x','delete demo:abc','merge','retag','setup claude'):
                 with self.subTest(rest=rest):self.assertTrue(denied(rest))
             for rest in ('taxonomy','projects','search cache'):
                 with self.subTest(rest=rest):self.assertFalse(denied(rest))
 
 class Capabilities(Fixture):
     def test_version_reports_direct_writes(self):
-        self.assertEqual(self.ok('version')['capabilities']['direct_writes'],1)
+        caps=self.ok('version')['capabilities'];self.assertEqual((caps['direct_writes'],caps['revisions']),(2,1))
 
 class Receipt(Fixture):
     def test_a_direct_receipt_prints_the_operation_and_the_undo_hint(self):
         written=self.ok('taxonomy','add','concern/security');text=render.render(written)
         self.assertIn(written['operation_id'],text);self.assertIn('alm undo '+written['operation_id'],text);self.assertNotIn('Apply it with',text)
         n=self.note();archived=self.ok('archive','demo:'+n['id']);text=render.render(archived);self.assertIn('alm undo '+archived['operation_id'],text)
-    def test_a_plan_still_prints_as_a_plan(self):
-        n=self.note();plan=self.ok('delete-plan','demo:'+n['id']);self.assertIn('Apply it with',render.render(plan))
+    def test_a_bulk_write_prints_as_done_not_as_a_plan(self):
+        n=self.note();deleted=self.ok('delete','demo:'+n['id']);text=render.render(deleted)
+        self.assertIn(deleted['operation_id'],text);self.assertNotIn('Apply it with',text);self.assertNotIn('Plan ',text)
 
 if __name__=='__main__':unittest.main()

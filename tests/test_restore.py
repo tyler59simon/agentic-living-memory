@@ -7,7 +7,7 @@ from urllib.parse import quote
 from test_core import StoreFixture
 from core import backup as snap, runtime
 from revision_fill import main
-from core.governance import apply, undo
+from core.governance import undo
 from core.init_domain import init_domain
 from core.notes import capture, change, find_note
 from core.repository import inventory, validate
@@ -128,7 +128,7 @@ class Restore(StoreFixture):
         self.archive(a)
         result = self.ok('restore', 'demo:' + a['id'])
         reverse = undo(self.root, result['operation_id'])
-        self.assertNotIn('plan_id', reverse)   # a note restore is a direct kind: the undo runs at once
+        self.assertNotIn('plan_id', reverse)   # every undo runs at once
         self.assertEqual(self.get(a)[1]['status'], 'archived')
 
     def test_cross_domain_relative_links_follow_the_move(self):
@@ -169,7 +169,7 @@ class Restore(StoreFixture):
     def test_version_lists_the_new_capabilities_and_command(self):
         version = self.ok('version')
         self.assertIn('restore', version['commands'])
-        self.assertEqual(version['capabilities'], {'proposals': 1, 'restore': 1, 'pin': 1, 'rule': 1, 'direct_writes': 1, 'note_types': 1, 'history': 3, 'items': {'fields': 2},
+        self.assertEqual(version['capabilities'], {'proposals': 1, 'restore': 1, 'pin': 1, 'rule': 1, 'direct_writes': 2, 'revisions': 1, 'note_types': 1, 'history': 3, 'items': {'fields': 2},
                                                    'maintenance': {'version': 1, 'actions': ['status', 'preview', 'run', 'enable', 'disable', 'history']}, 'wiki_agent': {'version': 1}, 'systems': {'project': 1}, 'views': {'version': 2, 'kinds': ['note', 'query']},
                                                    'docs': {'version': 1, 'max_page_bytes': 4194304, 'folder_policy': 2, 'accept_edited': True, 'folder_proposals': 1}})
 
@@ -247,20 +247,19 @@ class Pin(StoreFixture):
         (other / 'tag_taxonomy.json').write_text(json.dumps({'tags': TAGS}))
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            main(['--root', str(other), '--domain', 'demo', 'import-plan', str(bundle)])
-        imported = json.loads(out.getvalue())
-        apply(other, imported['plan_id'], imported['digest'])
+            main(['--root', str(other), '--domain', 'demo', 'import', str(bundle)])
+        self.assertTrue(json.loads(out.getvalue())['operation_id'].startswith('d-'))
         self.assertIs(find_note(a['id'], 'demo', other)[1]['pinned'], True)
         self.assertEqual(find_note(b['id'], 'demo', other)[1]['last_retirement'], self.get(b)['last_retirement'])
         source = snap.backup(self.root)['backup']
         for note in (a, b):
             Path(self.get(note)['path']).unlink()
-        proposed = snap.restore_plan(self.root, source)
-        applied = apply(self.root, proposed['plan_id'], proposed['digest'])
+        applied = snap.restore_backup(self.root, source)
         self.assertIs(self.get(a)['pinned'], True)
         self.assertEqual(self.get(b)['last_retirement']['action'], 'archive')
-        # A backup restore is a plan kind (it rewrites more than notes), though a note restore shares its journal kind: its undo is still a plan.
-        self.assertIn('plan_id', undo(self.root, applied['operation_id']))
+        # A backup restore shares its journal kind with a note restore; its undo runs at once like any other.
+        self.assertNotIn('plan_id', undo(self.root, applied['operation_id']))
+        self.assertFalse({a['id'], b['id']} & {n['id'] for n in inventory('demo', self.root, retired=True)})
 
     def edit(self, path, old, new):
         text = path.read_text(encoding='utf-8')
@@ -320,8 +319,7 @@ class Pin(StoreFixture):
         copy = self.vault / 'Domains/demo' / Path(a['path']).name
         self.edit(copy, 'status: "active"', 'status: "archived"')
         result = build_overlay('demo', self.vault, self.root)
-        plan = result['plans'][0]
-        apply(self.root, plan['plan_id'], plan['digest'])
+        self.assertEqual(len(result['applied']), 1)   # applied at sync, no approval step
         self.assertEqual(self.get(a)['last_retirement']['actor'], 'vault')
 
 
@@ -488,7 +486,7 @@ class Rule(StoreFixture):
         self.assertIn(f"update _global:{new['id'][:8]} --rule", capture_old())   # promotion keeps the ID; the warning names its new domain
         self.ok('update', f"_global:{new['id']}", '--rule')
         self.assertIn(f"_global:{new['id'][:8]} is already a rule", capture_old())
-        find_note(new['id'], '_global', self.root)[0].unlink()   # as an approved delete plan would leave it
+        find_note(new['id'], '_global', self.root)[0].unlink()   # as a delete would leave it
         warning = capture_old()
         self.assertIn(f"superseded by {new['id'][:8]}, which no longer exists", warning)
         self.assertNotIn('update', warning)
@@ -597,14 +595,13 @@ class LastRetirement(StoreFixture):
         self.ok('supersede', 'demo:' + old2['id'], '--by', 'demo:' + new['id'])
         self.assertEqual(self.get(old2)['last_retirement']['successor'], f"demo:{new['id']}")
 
-    def test_merge_records_a_plan_supersession_with_the_successor(self):
+    def test_merge_records_a_supersession_with_the_successor(self):
         a = self.note('Cache policy', 'The cache is rebuildable.')
         b = self.note('Eviction policy', 'Entries expire after a day.')
-        from core.governance import merge_plan
-        proposed = merge_plan(self.root, {'target': 'demo:' + a['id'], 'sources': ['demo:' + b['id']], 'body': 'Rebuildable, and entries expire after a day.'})
-        apply(self.root, proposed['plan_id'], proposed['digest'])
+        from core.governance import merge
+        merge(self.root, {'target': f"demo:{a['id']}@{self.get(a)['revision']}", 'sources': [f"demo:{b['id']}@{self.get(b)['revision']}"], 'body': 'Rebuildable, and entries expire after a day.'})
         record = self.get(b)['last_retirement']
-        self.assertEqual((record['action'], record['actor'], record['successor']), ('supersede', 'plan', f"demo:{a['id']}"))
+        self.assertEqual((record['action'], record['actor'], record['successor']), ('supersede', 'agent', f"demo:{a['id']}"))
 
     def test_auto_resolve_records_actor_auto_resolve(self):
         p = self.ok('capture', '--type', 'plan', '--title', 'Ship the batch', '--summary', 'Order.', '--action', 'Publish it', '--concern', 'architecture')

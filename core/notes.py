@@ -455,7 +455,7 @@ def _set_identity(note,files,domain,root,moved=True):
 
 def build_note(title,body,tags,domain,root,note_type='knowledge',context='',key=None,review_by=None,supersedes=(),files=None,origin=None,note_id=None,extra_tags=(),commands=None,sources=None,pinned=False,rule=False):
     """(path, note, file text) for a new active note, validated like every capture. Writes nothing; capture and
-    ingest-plan both create notes through it."""
+    ingest both create notes through it."""
     stamp=now()
     note={'id':note_id or str(uuid.uuid4()),'title':title.strip(),'body':format_body(body).strip(),'domain':domain,'tags':sorted(set(tags)),'status':'active','created':stamp,'updated':stamp,'type':note_type,'prefix':prefix_for(note_type,root=root),'schema_version':3,'context':context or '','capture_key':key}
     review=_review_date(review_by) or default_review_by(note_type,root=root)
@@ -869,7 +869,7 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
     note's links and files into its successor (unless values has drop_links); `carried`, when a dict, receives what moved.
     `rehash=False` (check, rewrite) leaves the recorded file hashes alone: those edits do not re-read the files.
     `retirement` (maintenance only: rule, reason, evidence, run_id, operation_id) adds its fields to that record.
-    `actor` (agent, plan, vault, auto_resolve, maintenance) is recorded in the `last_retirement` of a retired note and as `restored_by` of a restored one.
+    `actor` (agent, vault, auto_resolve, maintenance; `plan` in notes retired before 2026-11-26) is recorded in the `last_retirement` of a retired note and as `restored_by` of a restored one.
     `successor_revision`: a standalone supersede also checks the successor it rewrites against the revision the caller read."""
     pending=pending or {}
     path,note=find_note(note_id,domain,root)
@@ -1043,17 +1043,15 @@ def parse_changed(pending_text,note):
     from .repository import parse_text
     return {**parse_text(pending_text,note['path']),'path':note['path']}
 
-def change(note_id,domain,action,root=None,expected_revision=None,plan_only=False,rehash=True,actor=None,**values):
+def change(note_id,domain,action,root=None,expected_revision=None,rehash=True,actor=None,**values):
     root=Path(root or memory_root()).resolve()
     domain=canonical_domain(domain,root)
     with store_lock(root):
         carried={}
-        actor=actor or ('plan' if plan_only else 'agent')
+        actor=actor or 'agent'
         changes,expected,target=_change_set(note_id,domain,action,root,expected_revision,carried=carried,rehash=rehash,actor=actor,**values)
-        if plan_only:
-            from .governance import plan
-            return plan(root,changes,action,[domain,*touched_domains(changes)],{'id':note_id,'action':action,'files':len(changes)})
         result=_commit(domain,changes,action,root,expected);result.update(id=note_id,path=str(target),status=action,**carried)
+        if action=='delete':result.update(path=None,undo='undo '+result['operation_id'])
         if action=='update' and ('body' in values or 'title' in values):
             from .repository import parse
             warnings=quality_warnings(parse(target) or {})

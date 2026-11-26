@@ -70,7 +70,7 @@ class Notes(Log):
         self.assertEqual([(r['event'],r['title']) for r in self.rows()],[('undone','Cache policy'),('created','Cache policy')])
 
     def test_deleted_note_stays_in_its_history(self):
-        a=self.note('Cache policy','Body one.');code,plan=self.cli('--domain','demo','delete-plan','demo:'+a['id']);self.assertEqual(code,0,plan);self.cli('apply',plan['plan_id'],'--expected-plan-sha256',plan['digest'])   # delete is still a plan
+        a=self.note('Cache policy','Body one.');code,deleted=self.cli('--domain','demo','delete','demo:'+a['id']);self.assertEqual(code,0,deleted)   # a direct, journaled delete
         self.assertEqual([r['event'] for r in self.rows('--note',a['id'])],['deleted','created'])
         self.assertEqual([r['event'] for r in self.rows('--note','demo:'+a['id'])],['deleted','created'])
 
@@ -243,9 +243,9 @@ class Ledger(Log):
         self.assertIn(rel,backup.canonical_files(self.root))
         result=backup.backup(self.root);self.assertIn(rel,zipfile.ZipFile(result['backup']).namelist());self.assertNotIn('unreadable',result)
         with path.open('ab') as handle:handle.write(b'{"t":"2026-11-14T00:00:00+00:00","s":"later","h":"claude","d":"demo","p":[],"n":[],"f":1}\n')
-        grown=path.read_bytes();plan=backup.restore_plan(self.root,result['backup']);self.assertEqual(plan['status'],'unchanged')
+        grown=path.read_bytes();restored=backup.restore_backup(self.root,result['backup']);self.assertEqual(restored['status'],'unchanged')
         self.assertEqual(path.read_bytes(),grown)
-        path.unlink();plan=backup.restore_plan(self.root,result['backup']);self.assertEqual(plan['summary']['write'],1)
+        path.unlink();restored=backup.restore_backup(self.root,result['backup']);self.assertEqual(restored['summary']['write'],1);self.assertTrue(path.exists())
 
     def test_direct_edits_of_the_ledger_are_denied(self):
         target=str(self.root/'ledger'/'sessions-2026.jsonl')

@@ -247,8 +247,10 @@ class HistoryB2(test_sources_notebooks.Notebooks):
         closed=self.set(self.nb,'searchable','--private')
         code,result=self.cli('--json','undo',closed['operation_id']);self.assertNotEqual(code,0,result);self.assertIn('--include-private',json.dumps(result))
         stricter=json.dumps({'version':1,'folders':[dict(folder_policy.load(self.root)['folders'][0],visibility='hidden')]})
-        made=governance.plan(self.root,{folder_policy.REGISTRY:stricter},'restore')
-        self.assertTrue(governance.apply(self.root,made['plan_id'],made['digest'])['ok'])
+        self.assertFalse(folder_policy.loosens(self.root,stricter))
+        self.set(self.nb,'hidden');opened=self.set(self.nb,'searchable','--private')   # undoing this one closes the folder further
+        code,result=self.cli('--json','undo',opened['operation_id']);self.assertEqual(code,0,result)
+        self.assertEqual(folder_policy.load(self.root)['folders'][0].get('visibility'),'hidden')
 
 
 @own

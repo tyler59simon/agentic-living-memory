@@ -1,4 +1,4 @@
-"""Hivemind guard: with HIVEMIND_SESSION set, an agent's shell command may not apply or undo a plan or make a direct write."""
+"""Hivemind guard: with HIVEMIND_SESSION set, an agent's shell command may not undo an operation, run setup or make a direct or bulk write."""
 import contextlib, io, json, os, sys, unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -8,7 +8,7 @@ from revision_fill import main
 
 from core.runtime import HIVEMIND_DENY as REASON
 MODES = ('default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions')
-APPLY = 'apply plan-1 --expected-plan-sha256 abc'
+BULK = 'merge --payload-file m.json'
 
 
 class HivemindGuard(StoreFixture):
@@ -31,7 +31,8 @@ class HivemindGuard(StoreFixture):
         return self.run_hook(harness, tool, command, **extra).get('deny') == REASON
 
     def test_governed_subcommands_are_denied_for_both_harnesses(self):
-        for rest in (APPLY, 'undo op-1', 'recover op-1 --direction backward', 'setup --apply-plan p1', 'archive demo:x', 'rewrite --payload-file r.json', 'remap', 'promote demo:x', 'taxonomy add concern/x', 'source add', 'project create', 'system update'):
+        for rest in (BULK, 'undo op-1', 'recover op-1 --direction backward', 'setup', 'setup --non-interactive', 'upgrade', 'archive demo:x',
+                     'delete demo:x --expected-revision r', 'retag --payload-file t.json', 'migrate --schema', 'restore-backup b.zip', 'import x.zip', 'ingest', 'overlay-teardown v', 'rewrite --payload-file r.json', 'remap', 'promote demo:x', 'taxonomy add concern/x', 'source add', 'project create', 'system update'):
             for harness, tool in (('claude', 'Bash'), ('codex', 'shell'), ('codex', 'exec_command')):
                 with self.subTest(rest=rest, harness=harness, tool=tool):
                     result = self.run_hook(harness, tool, self.memory(rest))
@@ -48,26 +49,24 @@ class HivemindGuard(StoreFixture):
     def test_adapters_emit_the_deny(self):
         from hooks import claude_hooks, codex_hooks
         with patch.dict(os.environ, {'LIVING_MEMORY_ROOT': str(self.root)}):
-            claude = claude_hooks.handle('pre-tool-use', self.payload('claude', 'Bash', self.memory(APPLY)))
+            claude = claude_hooks.handle('pre-tool-use', self.payload('claude', 'Bash', self.memory(BULK)))
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
-                codex_hooks.handle('pre-tool-use', self.payload('codex', 'shell', self.memory(APPLY)))
+                codex_hooks.handle('pre-tool-use', self.payload('codex', 'shell', self.memory(BULK)))
         for result in (claude, json.loads(out.getvalue())):
             body = result['hookSpecificOutput']
             self.assertEqual((body['hookEventName'], body['permissionDecision'], body['permissionDecisionReason']), ('PreToolUse', 'deny', REASON))
 
-    def test_setup_is_denied_only_with_apply_plan(self):
-        for rest in ('setup --apply-plan p1', 'setup --apply-plan=p1', 'setup --apply p1', 'setup --non-interactive --apply-plan p1'):
+    def test_setup_is_denied_in_every_form(self):
+        for rest in ('setup', 'setup --non-interactive', 'setup --location x', '--domain=demo setup', 'setup --help'):
             self.assertTrue(self.denied(self.memory(rest)), rest)
-        for rest in ('setup', 'setup --inspect-plan p1', 'setup --non-interactive'):
-            self.assertFalse(self.denied(self.memory(rest)), rest)
 
     def test_chained_commands_are_denied(self):
-        for command in (f'cd x && {self.memory(APPLY)}',
+        for command in (f'cd x && {self.memory(BULK)}',
                         f'{self.memory("undo op-1")} ; echo done',
                         f'{self.memory("recover op-1")} | cat',
-                        'cd x && python /opt/living_memory.py setup --apply-plan p1',
-                        'cd x && alm apply p1 --expected-plan-sha256 a',
+                        'cd x && python /opt/living_memory.py setup',
+                        'cd x && alm delete demo:x --expected-revision r',
                         'alm undo op-1 && echo ok'):
             with self.subTest(command=command):
                 self.assertTrue(self.denied(command))
@@ -75,33 +74,31 @@ class HivemindGuard(StoreFixture):
 
     def test_powershell_forms_are_denied(self):
         for command in (self.memory('undo op-1'),
-                        '& ' + self.memory(APPLY),
+                        '& ' + self.memory(BULK),
                         'Set-Location x; & ' + self.memory('recover op-1'),
-                        'cd x; python .\\living_memory.py apply p1'):
+                        'cd x; python .\\living_memory.py merge --payload-file m.json'):
             with self.subTest(command=command):
                 self.assertTrue(self.denied(command, tool='PowerShell'))
 
     def test_every_permission_mode_is_denied(self):
         for mode in MODES:
             with self.subTest(mode=mode):
-                self.assertTrue(self.denied(self.memory(APPLY), permission_mode=mode))
+                self.assertTrue(self.denied(self.memory(BULK), permission_mode=mode))
                 self.assertTrue(self.denied(f'cd x && {self.memory("undo op-1")}', permission_mode=mode))
                 self.assertTrue(self.denied(self.memory('undo op-1'), harness='codex', tool='shell', permission_mode=mode))
 
     def test_a_subagent_is_denied_too(self):
         self.assertTrue(self.denied(self.memory('undo op-1'), agent_id='sub'))
 
-    def test_reading_and_plan_writing_commands_are_allowed(self):
-        for rest in ('delete-plan --list', 'delete-plan demo:NOTE', 'inspect-plan plan-1', 'setup --inspect-plan p1', 'search apply', 'taxonomy', 'projects',
-                     'read undo', 'show', 'diff op-1', 'history', 'retag-plan', 'merge-plan', 'restore-plan b.zip', 'import-plan x.zip',
-                     'ingest-plan', 'doctor', "capture 'apply the plan' 'undo recover'"):
+    def test_reading_commands_are_allowed(self):
+        for rest in ('search merge', 'taxonomy', 'projects', 'read undo', 'show', 'diff op-1', 'history', 'doctor', "capture 'merge the plan' 'undo recover'"):
             with self.subTest(rest=rest):
                 self.assertFalse(self.denied(self.memory(rest)))
                 self.assertFalse(self.denied(self.memory(rest), harness='codex', tool='shell'))
         for command in ('git apply fix.patch', 'cd x && echo undo recover', 'python tool.py apply'):
             self.assertFalse(self.denied(command), command)
         # Fails closed: an unparsed command naming alm and a governed word is refused even when the word is only an argument.
-        self.assertTrue(self.denied('cd x && alm search apply'))
+        self.assertTrue(self.denied('cd x && alm search merge'))
 
     def test_no_refusal_without_the_variable(self):
         for value in (None, ''):
@@ -110,7 +107,7 @@ class HivemindGuard(StoreFixture):
                 if value is not None:
                     env['HIVEMIND_SESSION'] = value
                 with patch.dict(os.environ, env, clear=True):
-                    for command in (self.memory(APPLY), self.memory('setup --apply-plan p1'), f'cd x && {self.memory("undo op-1")}', 'alm recover op-1'):
+                    for command in (self.memory(BULK), self.memory('setup'), f'cd x && {self.memory("undo op-1")}', 'alm recover op-1'):
                         self.assertFalse(self.denied(command), command)
                         self.assertFalse(self.denied(command, harness='codex', tool='shell'), command)
 
@@ -130,8 +127,8 @@ class HivemindGuard(StoreFixture):
 
     def test_equals_and_abbreviated_global_options_are_denied(self):
         base = f'"{sys.executable}" "{runtime.SCRIPT}"'
-        for rest in ('--domain=demo undo op-1', '--dom demo undo op-1', '--root=x --domain=demo apply p --expected-plan-sha256 a',
-                     '--domain=demo setup --apply-plan p1', '--json --actor=main recover op-1'):
+        for rest in ('--domain=demo undo op-1', '--dom demo undo op-1', '--root=x --domain=demo merge --payload-file m.json',
+                     '--domain=demo setup', '--json --actor=main recover op-1'):
             with self.subTest(rest=rest):
                 self.assertTrue(self.denied(f'{base} {rest}'))
                 self.assertTrue(self.denied(f'{base} {rest}', tool='PowerShell'))
@@ -173,7 +170,8 @@ class HivemindCli(StoreFixture):
 
     def test_governed_commands_are_refused_with_the_variable(self):
         self.with_env('hm-1')
-        for argv in (['apply', 'p1', '--expected-plan-sha256', 'a'], ['undo', 'op-1'], ['recover', 'op-1'], ['setup', '--apply-plan', 'p1', '--expected-plan-sha256', 'a']):
+        for argv in (['undo', 'op-1'], ['recover', 'op-1'], ['setup', '--non-interactive'], ['delete', 'demo:x', '--expected-revision', 'r'], ['merge', '--payload-file', 'm.json'],
+                     ['retag', '--payload-file', 't.json'], ['migrate', '--schema'], ['restore-backup', 'b.zip'], ['import', 'x.zip'], ['overlay-teardown', 'v']):
             with self.subTest(argv=argv):
                 code, out, err = self.run_main('--json', *argv)
                 self.assertEqual(code, 2)

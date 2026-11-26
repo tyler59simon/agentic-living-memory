@@ -209,7 +209,7 @@ class Freshness(Base):
         self.assertEqual((after['checked'],after['updated']),(checked,note['updated']))   # neither a prose rewrite nor a tick confirms the note
 
     def test_a_merge_body_and_a_vault_body_edit_advance_checked_but_a_vault_title_edit_does_not(self):
-        from core.governance import apply,merge_plan
+        from core.governance import merge
         from core.sync import build_overlay
         target=self.cap('Retry limit',['src/a.py']);source=self.cap('Retry old',['src/b.py'],body='Different words about backoff entirely.');confirm(target['id'],'demo',self.root)
         before=self.note_of(target)
@@ -218,19 +218,17 @@ class Freshness(Base):
         build_overlay('demo',vault,self.root);note=self.note_of(target);self.assertEqual(note['title'],'Retry cap');self.assertEqual(note['checked'],before['checked'])
         copy=vault/'Domains/demo'/Path(note['path']).name;copy.write_text(copy.read_text(encoding='utf-8').replace('read from the config','read from the settings'),encoding='utf-8')
         build_overlay('demo',vault,self.root);note=self.note_of(target);self.assertIn('settings',note['body']);self.assertEqual(note['checked'],note['updated'])
-        proposal=merge_plan(self.root,{'target':'demo:'+target['id'],'sources':['demo:'+source['id']],'body':'Merged retry facts.'});apply(self.root,proposal['plan_id'],proposal['digest'])
+        merge(self.root,{'target':'demo:'+target['id'],'sources':['demo:'+source['id']],'body':'Merged retry facts.'})
         note=self.note_of(target);self.assertEqual(note['checked'],note['updated'])
 
-    def test_baseline_plan_keeps_the_old_effective_baseline_of_existing_notes(self):
-        from core.governance import apply
-        from core.migration import baseline_plan
+    def test_baseline_migration_keeps_the_old_effective_baseline_of_existing_notes(self):
+        from core.migration import migrate_baseline
         made=self.cap('Retry limit',['src/a.py']);confirm(made['id'],'demo',self.root)
         path,note=find_note(made['id'],'demo',self.root);old=note['checked'];note['updated']='2999-01-01T00:00:00+00:00';Path(path).write_text(notes.serialize(note),encoding='utf-8')   # a body update of the old code: updated moved, checked did not
         plain=self.cap('Plain fact',[],body='Nothing tracked here.')
-        proposal=baseline_plan(self.root);self.assertEqual([u['id'] for u in proposal['summary']['updates']],[made['id']])
-        apply(self.root,proposal['plan_id'],proposal['digest']);after=self.note_of(made)
+        done=migrate_baseline(self.root);self.assertEqual([u['id'] for u in done['summary']['updates']],[made['id']]);after=self.note_of(made)
         self.assertEqual((after['checked'],after['updated']),('2999-01-01T00:00:00+00:00','2999-01-01T00:00:00+00:00'));self.assertNotEqual(after['checked'],old)
-        self.assertEqual(baseline_plan(self.root)['summary']['notes'],0)
+        self.assertEqual(migrate_baseline(self.root)['summary']['notes'],0)
 
 class BatchedFollow(Base):
     """C5: one batch lookup for files no hint looked up and for files a shell or git changed; the pull guard; one sentence for many notes."""

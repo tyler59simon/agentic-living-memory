@@ -1,7 +1,7 @@
-"""Export bundles of one domain's notes, and their reviewed import (#13).
+"""Export bundles of one domain's notes, and their import (#13).
 
 A bundle is a zip holding manifest.json plus notes/NAME.md and archive/NAME.md, the canonical note files as
-they are. Import is an exact-hash plan, idempotent by note ID: a note already present unchanged is skipped,
+they are. Import is one direct, journaled write, idempotent by note ID: a note already present unchanged is skipped,
 one present with different content is reported as a conflict and left alone, and new notes keep their IDs.
 """
 from __future__ import annotations
@@ -62,12 +62,17 @@ def _read(source):
         if hashlib.sha256(data).hexdigest()!=listed[name].get('sha256'):raise ValueError(f'Bundle member changed after export: {name}')
     return manifest,members
 
-def import_plan(root,source,domain=None):
-    """A plan that adds the bundle's new notes to `domain` (default: the bundle's), plus what was skipped."""
+def import_bundle(root,source,domain=None):
+    """One direct, journaled write that adds the bundle's new notes to `domain` (default: the bundle's), read and written under
+    one store lock; the result also lists what was skipped. `undo OPERATION` reverses it."""
+    from .repository import store_lock
+    with store_lock(Path(root).resolve()):return _import_bundle(root,source,domain)
+
+def _import_bundle(root,source,domain=None):
     from .common import canonical_domain
     from .repository import parse_text,serialize,validate,inventory,read_json,canonical_json
     from .notes import taxonomy
-    from .governance import plan
+    from .governance import commit
     root=Path(root).resolve();source=Path(source).expanduser()
     manifest,members=_read(source)
     target=canonical_domain(domain or str(manifest.get('domain') or ''),root)
@@ -104,9 +109,8 @@ def import_plan(root,source,domain=None):
         changes[path.relative_to(root).as_posix()]=text;created.append({'ref':ref,'title':note['title'],'status':note.get('status','active')})
     result={'ok':True,'source':str(source),'domain':target,'created':created,'unchanged':unchanged,'conflicts':conflicts}
     if changes:
-        # A second plan adding the same IDs under other filenames would pass its file checks; the guard stops it.
-        result.update(plan(root,changes,'import',[target],{'source':source.name,'notes':len(changes)},
-                           guards={'absent_ids':[c['ref'].split(':',1)[1] for c in created]}))
-        result['hint']='Review with inspect-plan PLAN_ID, then apply PLAN_ID --expected-plan-sha256 DIGEST.'
-    else:result['plan_id']=None
+        # A note with one of these IDs under another filename would pass the file checks; the guard stops it.
+        result.update(commit(root,changes,'import',[target],{'source':source.name,'notes':len(changes)},
+                             guards={'absent_ids':[c['ref'].split(':',1)[1] for c in created]}))
+    else:result['operation_id']=None
     return result

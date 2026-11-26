@@ -1,9 +1,9 @@
-"""Reviewed import of Claude Code auto-memory files (#13): one plan of new notes, applied by digest.
+"""Import of Claude Code auto-memory files (#13): one direct, journaled write of new notes.
 
 Auto-memory keeps one topic file per memory under CLAUDE_HOME/projects/<encoded cwd>/memory, with frontmatter
 `name`, `description` and `metadata.type` (user, feedback, project, reference) and an index in MEMORY.md.
 Each file becomes one note, created exactly as capture would create it. The file's SHA-256 is the note's
-capture key, so a re-run, or a run after the plan was applied, adds nothing.
+capture key, so a re-run adds nothing.
 """
 from __future__ import annotations
 import hashlib,re,uuid
@@ -52,12 +52,17 @@ def _details(body):
         lines.append(f'**{heading[1].strip()}**' if heading else stripped)
     return lines
 
-def ingest_plan(root,domain,source,redact=False,allow_similar=False):
-    """A plan of new notes for the auto-memory files under source, plus what was skipped and why."""
+def ingest(root,domain,source,redact=False,allow_similar=False):
+    """One direct, journaled write of new notes for the auto-memory files under source, read and written under one store lock,
+    plus what was skipped and why. `undo OPERATION` reverses it."""
+    from .repository import store_lock
+    with store_lock(Path(root).resolve()):return _ingest(root,domain,source,redact,allow_similar)
+
+def _ingest(root,domain,source,redact=False,allow_similar=False):
     from .notes import build_note,similar_title,quality_warnings,taxonomy
     from .note_format import render
     from .repository import inventory,find_secrets,redact as redact_text
-    from .governance import plan
+    from .governance import commit
     from .cli import _infer_tags
     root=Path(root).resolve();source=Path(source).expanduser()
     if not source.is_dir():raise ValueError(f'No auto-memory folder at {source}')
@@ -108,8 +113,7 @@ def ingest_plan(root,domain,source,redact=False,allow_similar=False):
         created.append(entry)
     result={'ok':True,'source':str(source),'domain':domain,'created':created,'unchanged':unchanged,'skipped':skipped}
     if changes:
-        result.update(plan(root,changes,'ingest',[domain],{'source':str(source),'notes':len(changes)},
-                           guards={'absent_ids':[c['ref'].split(':',1)[1] for c in created]}))
-        result['hint']='Review with inspect-plan PLAN_ID, then apply PLAN_ID --expected-plan-sha256 DIGEST.'
-    else:result['plan_id']=None
+        result.update(commit(root,changes,'ingest',[domain],{'source':str(source),'notes':len(changes)},
+                             guards={'absent_ids':[c['ref'].split(':',1)[1] for c in created]}))
+    else:result['operation_id']=None
     return result

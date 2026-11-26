@@ -1,7 +1,8 @@
 """Every CLI write to an existing note carries the revision its caller read (the user's rule, 2026-11-26): a missing one is
 refused with revision_required, an old one with stale (exit 6), and each receipt returns the new revisions. These tests call
 core.cli.main directly, without tests/revision_fill, so nothing fills the revision in for them."""
-import contextlib,io,json,threading,unittest
+import contextlib,io,json,subprocess,sys,threading,unittest
+from pathlib import Path
 from core.cli import main
 from core.notes import find_note
 from core.repository import digest
@@ -38,6 +39,7 @@ class EachWriteNeedsTheRevision(Fixture):
             ('resolve',['resolve',self.ref(p)]),
             ('confirm',['confirm',self.ref(n)]),
             ('check',['check',self.ref(p),'Write the tests']),
+            ('delete',['delete',self.ref(done)]),
         ]
         return main_args,n,p,done
 
@@ -132,8 +134,13 @@ class NotesACommandAlsoWrites(Fixture):
 class ConcurrentWriters(Fixture):
     def test_two_writers_with_the_same_read_one_wins_and_the_other_is_stale(self):
         n=self.note();read=self.rev(n);gate=threading.Barrier(2);codes=[]
+        script=Path(__file__).resolve().parents[1]/'living_memory.py'
         def writer(text):
-            gate.wait();codes.append(self.cli('update',self.ref(n),'--expected-revision',read,'--add-detail',text)[0])
+            # Two processes, as two agents would be: redirect_stdout is shared by threads in one process.
+            gate.wait()
+            done=subprocess.run([sys.executable,str(script),'--root',str(self.root),'--domain','demo','--json','update',self.ref(n),'--expected-revision',read,'--add-detail',text],
+                                capture_output=True,text=True,encoding='utf-8')
+            codes.append(done.returncode)
         threads=[threading.Thread(target=writer,args=(f'**Writer {i}:** edit {i}',)) for i in (1,2)]
         for t in threads:t.start()
         for t in threads:t.join()
@@ -144,3 +151,28 @@ class ConcurrentWriters(Fixture):
 
 if __name__=='__main__':
     unittest.main()
+
+
+class BulkWritesNeedRevisions(Fixture):
+    def test_merge_needs_the_revision_of_the_target_and_every_source_and_undo_reverses_it(self):
+        target=self.note('Cache policy');source=self.note('Cache rebuild')
+        payload=lambda t,s:json.dumps({'target':t,'sources':[s],'body':'The cache can be rebuilt from the notes.'})
+        path=self.root/'merge.json'
+        path.write_text(payload(self.ref(target),self.ref(source)+'@'+self.rev(source)),encoding='utf-8')
+        code,result=self.cli('merge','--payload-file',str(path));self.assertEqual((code,result['error']['code']),(2,'revision_required'),result)
+        path.write_text(payload(self.ref(target)+'@'+self.rev(target),self.ref(source)+'@'+STALE),encoding='utf-8')
+        code,result=self.cli('merge','--payload-file',str(path));self.assertEqual((code,result['error']['code']),(6,'stale'),result)
+        before=(self.rev(target),self.rev(source))
+        path.write_text(payload(self.ref(target)+'@'+self.rev(target),self.ref(source)+'@'+self.rev(source)),encoding='utf-8')
+        code,result=self.cli('merge','--payload-file',str(path));self.assertEqual(code,0,result)
+        self.assertTrue(result['operation_id'].startswith('d-'));self.assertIn('demo:'+target['id'],result['revisions'])
+        self.assertEqual(find_note(source['id'],'demo',self.root)[1]['status'],'superseded')
+        code,undone=self.cli('undo',result['operation_id']);self.assertEqual(code,0,undone)
+        self.assertEqual((self.rev(target),self.rev(source)),before)
+
+    def test_delete_is_direct_and_undo_brings_the_note_back(self):
+        n=self.note();revision=self.rev(n)
+        code,result=self.cli('delete',self.ref(n),'--expected-revision',revision);self.assertEqual(code,0,result)
+        self.assertEqual(result['undo'],'undo '+result['operation_id'])
+        with self.assertRaises(ValueError):find_note(n['id'],'demo',self.root)
+        self.assertEqual(self.cli('undo',result['operation_id'])[0],0);self.assertEqual(self.rev(n),revision)

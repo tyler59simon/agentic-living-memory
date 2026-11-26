@@ -1,4 +1,4 @@
-"""`alm upgrade`: pull the source checkout, then plan and apply the install. The git side runs for real against a local
+"""`alm upgrade`: pull the source checkout, then run its install (one direct, journaled write). The git side runs for real against a local
 bare origin; install.py is replaced, so nothing here touches LOCALAPPDATA, the registry PATH or ~/.local/bin."""
 import contextlib,io,json,os,subprocess,sys,unittest
 from unittest.mock import patch
@@ -6,7 +6,8 @@ from test_core import StoreFixture
 from core import upgrade
 
 REAL_INSTALL=upgrade._install   # the tests below replace it
-PLAN={'ok':True,'plan_id':'a'*32,'digest':'b'*64,'summary':{'files':3,'next_steps':['"py" "setup.py" claude --hooks'],'wiring_current':['codex']}}
+RECEIPT={'ok':True,'operation_id':'i-'+'c'*32,'undo':'undo i-'+'c'*32,'warnings':['launcher note'],
+         'summary':{'files':3,'next_steps':['"py" "setup.py" claude --hooks'],'wiring_current':['codex']}}
 
 class Checkout(StoreFixture):
     """A source checkout on main with a local bare origin (origin/HEAD set), a second clone to push from, and an install stamp."""
@@ -48,21 +49,18 @@ class Upgrade(Checkout):
         self.calls=[]
         def install(python,source,*args):
             self.calls.append(args)
-            return PLAN if args==('--plan',) else {'ok':True,'operation_id':'c'*32,'warnings':['launcher note']}
+            return RECEIPT
         fake=patch.object(upgrade,'_install',side_effect=install);fake.start();self.addCleanup(fake.stop)
     def push_from_other(self):
         self.commit(self.other,'two');self.git(self.other,'push','-q','origin','main');return self.git(self.other,'rev-parse','HEAD')
-    def test_pulls_plans_and_applies_then_relays_the_wiring_steps(self):
+    def test_pulls_installs_then_relays_the_wiring_steps_and_the_undo(self):
         new=self.push_from_other();result=upgrade.run()
         self.assertEqual((result['status'],result['from'],result['to'],result['commits']),('upgraded',self.installed[:12],new[:12],1))
         self.assertEqual(self.git(self.src,'rev-parse','HEAD'),new)
-        self.assertEqual(self.calls,[('--plan',),('--apply-plan','a'*32,'--expected-plan-sha256','b'*64)])
-        self.assertEqual((result['next_steps'],result['wiring_current'],result['files']),(PLAN['summary']['next_steps'],['codex'],3))
+        self.assertEqual(self.calls,[()])   # install.py with no arguments installs directly
+        self.assertEqual((result['next_steps'],result['wiring_current'],result['files']),(RECEIPT['summary']['next_steps'],['codex'],3))
+        self.assertEqual((result['operation_id'],result['undo']),(RECEIPT['operation_id'],RECEIPT['undo']))
         self.assertEqual(result['warnings'],['launcher note']);self.assertIn('Restart',result['restart'])
-    def test_plan_stops_before_applying(self):
-        self.push_from_other();result=upgrade.run(True)
-        self.assertEqual(result['status'],'planned');self.assertEqual(self.calls,[('--plan',)])
-        self.assertIn('--apply-plan '+'a'*32+' --expected-plan-sha256 '+'b'*64,result['apply']);self.assertIn(str(self.src/'install.py'),result['apply'])
     def test_already_current_installs_nothing(self):
         import install
         with patch.object(install,'next_steps',return_value=([],['claude'])):result=upgrade.run()
@@ -80,13 +78,13 @@ class Upgrade(Checkout):
         self.assertEqual(self.calls,[])
     def test_an_install_failure_names_its_error(self):
         with patch.object(upgrade,'_run',return_value=(1,'','Traceback (most recent call last):\nValueError: Installation target overlaps the source tree')):
-            with self.assertRaisesRegex(ValueError,'install.py --plan failed in .*overlaps the source tree'):REAL_INSTALL(sys.executable,self.src,'--plan')
-        with patch.object(upgrade,'_run',return_value=(0,'progress line\n{"ok": true, "plan_id": "x"}\n','')):
-            self.assertEqual(REAL_INSTALL(sys.executable,self.src,'--plan'),{'ok':True,'plan_id':'x'})   # the last JSON line on stdout
+            with self.assertRaisesRegex(ValueError,'install.py failed in .*overlaps the source tree'):REAL_INSTALL(sys.executable,self.src)
+        with patch.object(upgrade,'_run',return_value=(0,'progress line\n{"ok": true, "operation_id": "i-x"}\n','')):
+            self.assertEqual(REAL_INSTALL(sys.executable,self.src),{'ok':True,'operation_id':'i-x'})   # the last JSON line on stdout
     def test_render_gives_paste_ready_steps(self):
         from core.render import render
         self.push_from_other();text=render(upgrade.run());lead='& ' if os.name=='nt' else ''
-        self.assertIn('Upgraded from',text);self.assertIn('  '+lead+PLAN['summary']['next_steps'][0],text);self.assertIn('Restart',text)
+        self.assertIn('Upgraded from',text);self.assertIn('  '+lead+RECEIPT['summary']['next_steps'][0],text);self.assertIn('Restart',text)
 
 class UpgradeCommand(StoreFixture):
     def run_cli(self,*argv):

@@ -1,8 +1,8 @@
-import json,os,unittest
+import contextlib,io,json,os,unittest
 from pathlib import Path
 from unittest.mock import patch
 from test_core import StoreFixture
-from core.governance import apply,plan
+from core.governance import commit,undo
 from core.repository import read_json,canonical_json,digest
 from integrations import setup
 
@@ -13,10 +13,9 @@ class Relocation(StoreFixture):
         self.codex=Path(os.environ['CODEX_HOME']);self.codex.mkdir(parents=True,exist_ok=True)
         self.claude=Path(os.environ['CLAUDE_HOME'])
         self.legacy=self.codex/'agentic-living-memory'
-    def apply(self,home,proposed):return apply(home,proposed['plan_id'],proposed['digest'])
     def from_legacy(self,harness,home):
         """Wire a harness the way an older release did: from the copy inside CODEX_HOME."""
-        with patch.object(setup,'ROOT',self.legacy):self.apply(home,setup.setup_plan(harness,home))
+        with patch.object(setup,'ROOT',self.legacy):setup.setup(harness,home)
     def ours(self,config,harness):
         return [h for groups in setup._events(config,harness).values() for g in groups for h in g.get('hooks',[]) if setup._ours(h,harness)]
     def commands(self,handlers):return [' '.join([str(h.get('command',''))]+[str(a) for a in h.get('args',[])]) for h in handlers]
@@ -25,7 +24,7 @@ class Relocation(StoreFixture):
         self.from_legacy('claude',self.claude)
         settings=read_json(self.claude/'settings.json');settings['hooks']['Stop'].append({'hooks':[{'type':'command','command':'other'}]})
         (self.claude/'settings.json').write_text(json.dumps(settings))
-        self.apply(self.claude,setup.setup_plan('claude',self.claude))   # no "Modified managed handlers preserved"
+        setup.setup('claude',self.claude)   # no "Modified managed handlers preserved"
         settings=read_json(self.claude/'settings.json');handlers=self.ours(settings,'claude')
         self.assertEqual(len(handlers),7)
         self.assertTrue(all(str(setup._script('claude')) in c and str(self.legacy) not in c for c in self.commands(handlers)))
@@ -34,26 +33,26 @@ class Relocation(StoreFixture):
         self.from_legacy('codex',self.codex)
         # The old install.py kept only the instruction hash.
         state=read_json(self.codex/'.living-memory-ownership.json');(self.codex/'.living-memory-ownership.json').write_text(canonical_json({'schema':2,'instruction_hash':state['instruction_hash']}))
-        self.apply(self.codex,setup.setup_plan('codex',self.codex))
+        setup.setup('codex',self.codex)
         config=read_json(self.codex/'hooks.json');handlers=self.ours(config,'codex')
         self.assertEqual(len(handlers),6);self.assertTrue(all(str(self.legacy) not in c for c in self.commands(handlers)))
         self.assertEqual((self.codex/'AGENTS.md').read_text(encoding='utf-8').count('agentic-living-memory:begin'),1)
 
     def wired_from(self,source,harness='claude'):
-        with patch.object(setup,'ROOT',source):self.apply(self.claude,setup.setup_plan(harness,self.claude))
+        with patch.object(setup,'ROOT',source):setup.setup(harness,self.claude)
     def test_handlers_wired_from_the_source_checkout_are_managed_by_the_installed_copy(self):
         source,app=self.base/'checkout',self.base/'app';app.mkdir();(app/'.core-ownership-v1.json').write_text(json.dumps({'source':str(source)}))
         self.wired_from(source)
         with patch.object(setup,'ROOT',app):
-            self.apply(self.claude,setup.setup_plan('claude',self.claude))   # no "Modified managed handlers preserved"
+            setup.setup('claude',self.claude)   # no "Modified managed handlers preserved"
             handlers=self.ours(read_json(self.claude/'settings.json'),'claude')
             self.assertEqual(len(handlers),7);self.assertTrue(all(str(app) in c and str(source) not in c for c in self.commands(handlers)))
-            self.apply(self.claude,setup.setup_plan('claude',self.claude,uninstall=True))   # uninstall is not blocked either
+            setup.setup('claude',self.claude,uninstall=True)   # uninstall is not blocked either
         self.assertEqual(self.ours(read_json(self.claude/'settings.json'),'claude'),[])
     def test_handlers_wired_from_the_default_install_folder_are_managed_from_a_checkout(self):
         import install
         app=self.base/'app';self.wired_from(app)
-        with patch.object(install,'INSTALL_DIR',app):self.apply(self.claude,setup.setup_plan('claude',self.claude))
+        with patch.object(install,'INSTALL_DIR',app):setup.setup('claude',self.claude)
         self.assertTrue(all(str(setup._script('claude')) in c for c in self.commands(self.ours(read_json(self.claude/'settings.json'),'claude'))))
     def test_a_handler_path_is_matched_by_boundary_and_on_windows_by_case_and_slash(self):   # INST-3.1
         script=str(setup._script('claude'));handler=lambda command:{'type':'command','command':command}
@@ -77,29 +76,27 @@ class Relocation(StoreFixture):
         self.wired_from(setup.ROOT)
         settings=read_json(self.claude/'settings.json');settings['hooks']['Stop'][0]['hooks'][0]['timeout']=999
         (self.claude/'settings.json').write_text(json.dumps(settings))
-        with self.assertRaises(ValueError) as caught:setup.setup_plan('claude',self.claude)
+        with self.assertRaises(ValueError) as caught:setup.setup('claude',self.claude)
         self.assertIn('Modified managed handlers preserved',str(caught.exception));self.assertIn(str(self.claude/'settings.json'),str(caught.exception));self.assertIn('claude --hooks',str(caught.exception))
 
     def edit_handler(self):
         self.wired_from(setup.ROOT)
         settings=read_json(self.claude/'settings.json');settings['hooks']['Stop'][0]['hooks'][0]['timeout']=999
         (self.claude/'settings.json').write_text(json.dumps(settings))
-    def test_adopt_shows_the_handler_diff_and_applies_through_the_plan(self):
-        self.edit_handler()
-        with self.assertRaisesRegex(ValueError,'--adopt'):setup.setup_plan('claude',self.claude)
-        before=(self.claude/'settings.json').read_text()
-        proposed=setup.setup_plan('claude',self.claude,adopt=True);diff=proposed['summary']['adopt']['settings.json']
+    def test_adopt_shows_the_handler_diff_and_undo_puts_the_edit_back(self):
+        self.edit_handler();before=(self.claude/'settings.json').read_text()
+        with self.assertRaisesRegex(ValueError,'--adopt'):setup.setup('claude',self.claude)
+        self.assertEqual((self.claude/'settings.json').read_text(),before)   # a refusal changes nothing
+        done=setup.setup('claude',self.claude,adopt=True);diff=done['summary']['adopt']['settings.json']
         self.assertIn('--- edited settings.json',diff);self.assertIn('+++ managed settings.json',diff);self.assertIn('-          "timeout": 999',diff);self.assertIn('+          "timeout": 15',diff)
-        self.assertEqual((self.claude/'settings.json').read_text(),before)   # a plan changes nothing
-        with self.assertRaisesRegex(ValueError,'digest'):apply(self.claude,proposed['plan_id'],'0'*64)
-        self.apply(self.claude,proposed)
-        self.assertNotIn('999',(self.claude/'settings.json').read_text());self.assertNotIn('adopt',setup.setup_plan('claude',self.claude)['summary'])
+        self.assertTrue(done['operation_id'].startswith('s-claude-'));self.assertNotIn('999',(self.claude/'settings.json').read_text())
+        undo(self.claude,done['operation_id']);self.assertEqual((self.claude/'settings.json').read_text(),before)
     def test_adopt_shows_the_instruction_block_diff_and_keeps_text_around_it(self):
         self.wired_from(setup.ROOT);path=self.claude/'CLAUDE.md';text=path.read_text(encoding='utf-8');begin='agentic-living-memory:begin -->'
         path.write_text('Mine before.'+chr(10)+text.replace(begin,begin+chr(10)+'My own rule.',1),encoding='utf-8')
-        with self.assertRaisesRegex(ValueError,'--adopt'):setup.setup_plan('claude',self.claude)
-        proposed=setup.setup_plan('claude',self.claude,adopt=True);self.assertIn('-My own rule.',proposed['summary']['adopt']['CLAUDE.md'])
-        self.apply(self.claude,proposed);after=path.read_text(encoding='utf-8')
+        with self.assertRaisesRegex(ValueError,'--adopt'):setup.setup('claude',self.claude)
+        done=setup.setup('claude',self.claude,adopt=True);self.assertIn('-My own rule.',done['summary']['adopt']['CLAUDE.md'])
+        after=path.read_text(encoding='utf-8')
         self.assertNotIn('My own rule.',after);self.assertTrue(after.startswith('Mine before.'));self.assertEqual(after.count('agentic-living-memory:begin'),1)
     COPILOT_HOOK={'type':'command','bash':'echo mine','powershell':'echo mine','timeoutSec':5}
     def copilot(self):
@@ -109,38 +106,38 @@ class Relocation(StoreFixture):
     def test_copilot_owns_only_its_handlers(self):   # CODEX-R1B
         from core import wiring
         home,path=self.copilot();mine=self.COPILOT_HOOK
-        self.apply(home,setup.setup_plan('copilot',home))
+        setup.setup('copilot',home)
         config=read_json(path);config['hooks']['agentStop'].append(mine);config['hooks']['postToolUse']=[mine];path.write_text(json.dumps(config))
-        self.apply(home,setup.setup_plan('copilot',home))   # a rerun keeps the user's hooks and is not refused
+        setup.setup('copilot',home)   # a rerun keeps the user's hooks and is not refused
         config=read_json(path);self.assertIn(mine,config['hooks']['agentStop']);self.assertEqual(config['hooks']['postToolUse'],[mine])
         self.assertEqual(len(self.copilot_ours(config)),5);self.assertTrue(wiring._current('copilot',config,setup))
         config['hooks']['sessionStart'][0]['timeoutSec']=99;path.write_text(json.dumps(config))
-        with self.assertRaisesRegex(ValueError,'Modified managed handlers.*--adopt'):setup.setup_plan('copilot',home)
-        proposed=setup.setup_plan('copilot',home,adopt=True);diff=proposed['summary']['adopt'][setup.CONFIG['copilot']]
+        with self.assertRaisesRegex(ValueError,'Modified managed handlers.*--adopt'):setup.setup('copilot',home)
+        done=setup.setup('copilot',home,adopt=True);diff=done['summary']['adopt'][setup.CONFIG['copilot']]
         self.assertIn('"timeoutSec": 99',diff);self.assertNotIn('echo mine',diff)   # the diff is our handlers only
-        self.apply(home,proposed);config=read_json(path)
+        config=read_json(path)
         self.assertEqual(config['hooks']['sessionStart'][0]['timeoutSec'],15);self.assertEqual(config['hooks']['postToolUse'],[mine])
-        self.apply(home,setup.setup_plan('copilot',home,uninstall=True))   # uninstall leaves the user's hooks only
+        setup.setup('copilot',home,uninstall=True)   # uninstall leaves the user's hooks only
         self.assertEqual(read_json(path),{'version':1,'hooks':{'agentStop':[mine],'postToolUse':[mine]}});self.assertFalse((home/'.living-memory-ownership.json').exists())
-        self.apply(home,setup.setup_plan('copilot',home))   # and setup works again over that file
+        setup.setup('copilot',home)   # and setup works again over that file
         config=read_json(path);self.assertEqual(len(self.copilot_ours(config)),5);self.assertEqual(config['hooks']['postToolUse'],[mine])
     def test_copilot_whole_file_ownership_moves_to_handlers_and_adopt_keeps_user_hooks(self):   # CODEX-R1B
         home,path=self.copilot();mine=self.COPILOT_HOOK;name=setup.CONFIG['copilot']
-        self.apply(home,setup.setup_plan('copilot',home));config=read_json(path)
+        setup.setup('copilot',home);config=read_json(path)
         state=read_json(home/'.living-memory-ownership.json');state['handlers']={};state['files'][name]=digest(canonical_json(config).encode())   # as builds before this one wrote it
         (home/'.living-memory-ownership.json').write_text(canonical_json(state))
         config['hooks']['postToolUse']=[mine];path.write_text(json.dumps(config))
-        with self.assertRaisesRegex(ValueError,'--adopt'):setup.setup_plan('copilot',home)
-        proposed=setup.setup_plan('copilot',home,adopt=True);self.assertNotIn('echo mine',proposed['summary']['adopt'][name])
-        self.apply(home,proposed);self.assertEqual(read_json(path)['hooks']['postToolUse'],[mine])
+        with self.assertRaisesRegex(ValueError,'--adopt'):setup.setup('copilot',home)
+        done=setup.setup('copilot',home,adopt=True);self.assertNotIn('echo mine',done['summary']['adopt'][name])
+        self.assertEqual(read_json(path)['hooks']['postToolUse'],[mine])
         self.assertIn(name,read_json(home/'.living-memory-ownership.json')['handlers'])
     def test_a_whole_file_copilot_record_replaces_handlers_of_a_moved_checkout(self):   # Codex review of 8e7c779
         from core import wiring
         home,path=self.copilot();name=setup.CONFIG['copilot'];moved=self.base/'moved-checkout'
-        with patch.object(setup,'ROOT',moved):self.apply(home,setup.setup_plan('copilot',home))
+        with patch.object(setup,'ROOT',moved):setup.setup('copilot',home)
         state=read_json(home/'.living-memory-ownership.json');state['handlers']={};state['files'][name]=digest(canonical_json(read_json(path)).encode())
         (home/'.living-memory-ownership.json').write_text(canonical_json(state))   # as builds before 8e7c779 wrote it
-        self.apply(home,setup.setup_plan('copilot',home))
+        setup.setup('copilot',home)
         config=read_json(path);handlers=[h for hs in config['hooks'].values() for h in hs]
         self.assertEqual(len(handlers),5);self.assertNotIn(str(moved),json.dumps(config))
         self.assertFalse(wiring._current('copilot',{**config,'version':2},setup))   # doctor: Copilot would not load it
@@ -150,12 +147,17 @@ class Relocation(StoreFixture):
         home,path=self.copilot();mine=self.COPILOT_HOOK
         for bad in ('[1, 2]',json.dumps({'hooks':{'agentStop':'echo'}}),json.dumps({'hooks':[]}),json.dumps({'version':None,'hooks':{}}),json.dumps({'version':True,'hooks':{}})):
             path.write_text(bad)
-            with self.assertRaisesRegex(ValueError,'Unknown existing Copilot file preserved'):setup.setup_plan('copilot',home)
+            with self.assertRaisesRegex(ValueError,'Unknown existing Copilot file preserved'):setup.setup('copilot',home)
         path.write_text(json.dumps({'version':1,'hooks':{'agentStop':[mine]}}))
-        self.apply(home,setup.setup_plan('copilot',home));config=read_json(path)
+        setup.setup('copilot',home);config=read_json(path)
         self.assertEqual(config['hooks']['agentStop'][0],mine);self.assertEqual(len(self.copilot_ours(config)),5)
-    def test_adopt_is_a_plan_flag_only(self):
-        with self.assertRaises(SystemExit):setup.main(['claude','--home',str(self.claude),'--apply-plan','a'*32,'--expected-plan-sha256','b'*64,'--adopt'])
+    def test_adopt_from_the_command_line_applies_and_prints_the_replaced_diff(self):
+        self.edit_handler();err,out=io.StringIO(),io.StringIO()
+        with self.assertRaises(SystemExit),contextlib.redirect_stderr(io.StringIO()):setup.main(['claude','--home',str(self.claude),'--apply-plan','a'*32,'--expected-plan-sha256','b'*64])   # the plan flags are gone
+        with patch('core.storage.ensure_setup',lambda location=None:self.root),contextlib.redirect_stderr(err),contextlib.redirect_stdout(out):
+            self.assertEqual(setup.main(['claude','--home',str(self.claude),'--hooks','--adopt']),0)
+        result=json.loads(out.getvalue());self.assertIn('Adopted settings.json',err.getvalue());self.assertIn('"timeout": 999',err.getvalue());self.assertIn(result['undo'],err.getvalue())
+        self.assertNotIn('999',(self.claude/'settings.json').read_text())
     def test_claude_home_follows_claude_config_dir_unless_claude_home_is_set(self):   # INST-6
         import install
         from core.instructions import harness_home
@@ -165,58 +167,59 @@ class Relocation(StoreFixture):
             os.environ.pop('CLAUDE_HOME')
             self.assertEqual(harness_home('claude'),custom);self.assertEqual(install.harness_home('claude'),custom)
             self.assertNotEqual(harness_home('codex'),custom)
-            proposed=setup.setup_plan('claude',enable_hooks=True)
-            self.assertTrue((custom/'.plans'/(proposed['plan_id']+'.json')).is_file())
-    def planned_after_an_edit(self,name,text):
-        """A setup plan made while someone appends text to name after setup read it and before plan() hashed it."""
-        real=setup.plan
+            done=setup.setup('claude',enable_hooks=True)
+            self.assertTrue((custom/'.operations'/done['operation_id']/'journal.json').is_file());self.assertTrue((custom/'settings.json').is_file())
+            from core.governance import operation_root
+            self.assertEqual(operation_root(self.root,done['operation_id']),custom.resolve())   # undo finds it in the harness home
+    def set_up_after_an_edit(self,name,text):
+        """setup while someone appends text to name after setup read it and before commit() wrote."""
+        real=setup.commit
         def late(home,*args,**kwargs):
             with open(Path(home)/name,'a',encoding='utf-8') as file:file.write(text)
             return real(home,*args,**kwargs)
-        with patch.object(setup,'plan',late):return setup.setup_plan('claude',self.claude)
-    def test_setup_apply_does_not_list_a_domains_folder_in_the_harness_home(self):   # CODEX-R4C: file guards only
-        proposed=setup.setup_plan('claude',self.claude);(self.claude/'domains').mkdir();real=Path.iterdir
+        with patch.object(setup,'commit',late):return setup.setup('claude',self.claude)
+    def test_setup_does_not_list_a_domains_folder_in_the_harness_home(self):   # CODEX-R4C: file guards only
+        (self.claude/'domains').mkdir(parents=True);real=Path.iterdir
         def unlistable(path):
             if path.name=='domains':raise PermissionError(str(path))
             return real(path)
-        with patch.object(Path,'iterdir',unlistable):self.apply(self.claude,proposed)
+        with patch.object(Path,'iterdir',unlistable):setup.setup('claude',self.claude)
         self.assertTrue((self.claude/'settings.json').is_file())
-    def test_a_file_edited_after_setup_read_it_makes_the_plan_stale(self):   # CODEX-R1C
+    def test_a_file_edited_after_setup_read_it_makes_the_write_stale(self):   # CODEX-R1C
         self.wired_from(setup.ROOT)
         for name,text in (('settings.json',' '),('CLAUDE.md','My late line.\n')):
-            proposed=self.planned_after_an_edit(name,text);edited=(self.claude/name).read_text(encoding='utf-8')
-            with self.assertRaisesRegex(ValueError,'stale plan'):self.apply(self.claude,proposed)
+            with self.assertRaisesRegex(ValueError,'stale_write'):self.set_up_after_an_edit(name,text)
+            edited=(self.claude/name).read_text(encoding='utf-8');self.assertTrue(edited.endswith(text))
             self.assertEqual((self.claude/name).read_text(encoding='utf-8'),edited)   # the edit survives
 
     def test_retire_refuses_while_referenced_then_removes_owned_files(self):
         import install
         home=self.base/'local'/'agentic-living-memory'
-        with patch.multiple(install,CODEX_HOME=self.codex,LEGACY_DIR=self.legacy,INSTALL_HOME=home,INSTALL_DIR=home/'app'):
-            self.apply(self.codex,plan(self.codex,install._package_changes(self.legacy,False),'legacy_install'))
+        with patch.multiple(install,CODEX_HOME=self.codex,LEGACY_DIR=self.legacy,INSTALL_HOME=home,INSTALL_DIR=home/'app',LAUNCHER_DIR=self.base/'bin',_path_step=lambda:None):   # no real launcher folder or PATH
+            commit(self.codex,install._package_changes(self.legacy,False),'legacy_install')
             (self.legacy/'.gitignore').write_text('*.pyc\n')   # a file the old install never owned
-            with self.assertRaisesRegex(ValueError,'before retiring'):install.plan_retire()
-            self.apply(home,install.plan_install())
+            with self.assertRaisesRegex(ValueError,'before retiring'):install.retire_legacy()
+            install.install()
             self.from_legacy('claude',self.claude)
-            with self.assertRaisesRegex(ValueError,'still in use by: claude'):install.plan_retire()
-            self.apply(self.claude,setup.setup_plan('claude',self.claude))
-            proposed=install.plan_retire()
-            self.assertEqual(proposed['summary']['not_owned_left_in_place'],['.gitignore'])
-            self.apply(self.codex,proposed)
+            with self.assertRaisesRegex(ValueError,'still in use by: claude'):install.retire_legacy()
+            setup.setup('claude',self.claude)
+            done=install.retire_legacy()
+            self.assertEqual(done['summary']['not_owned_left_in_place'],['.gitignore']);self.assertTrue(done['operation_id'].startswith('i-'))
         self.assertFalse((self.legacy/'living_memory.py').exists());self.assertFalse((self.legacy/'.core-ownership-v1.json').exists())
         self.assertTrue((self.legacy/'.gitignore').exists());self.assertTrue((home/'app/living_memory.py').exists())
     def test_retire_checks_custom_homes_when_given(self):
         import install
         home=self.base/'local'/'agentic-living-memory';custom=self.base/'custom-claude'
-        with patch.multiple(install,CODEX_HOME=self.codex,LEGACY_DIR=self.legacy,INSTALL_HOME=home,INSTALL_DIR=home/'app'):
-            self.apply(self.codex,plan(self.codex,install._package_changes(self.legacy,False),'legacy_install'))
-            self.apply(home,install.plan_install())
+        with patch.multiple(install,CODEX_HOME=self.codex,LEGACY_DIR=self.legacy,INSTALL_HOME=home,INSTALL_DIR=home/'app',LAUNCHER_DIR=self.base/'bin',_path_step=lambda:None):   # no real launcher folder or PATH
+            commit(self.codex,install._package_changes(self.legacy,False),'legacy_install')
+            install.install()
             self.from_legacy('claude',custom)
-            proposed=install.plan_retire()   # the default homes are clean
-            self.assertNotIn(str(custom/'settings.json'),proposed['summary']['checked'])
-            with self.assertRaisesRegex(ValueError,'still in use by: claude'):install.plan_retire([('claude',str(custom))])
+            with self.assertRaisesRegex(ValueError,'still in use by: claude'):install.retire_legacy([('claude',str(custom))])
+            done=install.retire_legacy()   # the default homes are clean
+            self.assertNotIn(str(custom/'settings.json'),done['summary']['checked'])
     def test_retire_without_legacy_copy(self):
         import install
         with patch.multiple(install,LEGACY_DIR=self.legacy):
-            with self.assertRaisesRegex(ValueError,'No legacy package'):install.plan_retire()
+            with self.assertRaisesRegex(ValueError,'No legacy package'):install.retire_legacy()
 
 if __name__=='__main__':unittest.main()

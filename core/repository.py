@@ -512,7 +512,7 @@ def validate(note, domain, root=None, new=False, extra_tags=()):
             check_type(note.get('type'), Path(root or memory_root()))   # a new note needs a built-in or active custom type
         prefix = prefix_for(note.get('type'), legacy=not new, root=Path(root or memory_root()))
         if note.get('schema_version') != 3 or note.get('prefix') != prefix:
-            raise ValueError('Prefix must be derived from type; use capture or the note-type-plan migration')
+            raise ValueError('Prefix must be derived from type; use capture or migrate --note-types')
         if note.get('status') == 'resolved' and not takes_actions(note['type'], Path(root or memory_root())):
             raise ValueError('Only plan, bug and risk notes, and custom types that take action items, may have resolved status')
         if note.get('path'):
@@ -780,79 +780,39 @@ def prune_journals(root, days=14, kinds=BOOKKEEPING_KINDS):
     return removed
 
 
-def _waiting_plans(root):
-    """Plan IDs an Obsidian approval still waits on, or None when sync state cannot be read (prune nothing)."""
-    waiting = set()
-    for state_path in Path(root).glob("domains/*/sync-state.json"):
-        try:
-            entries = (read_json(state_path, {}) or {}).get("entries") or {}
-            waiting |= {e["pending_plan"] for e in entries.values() if isinstance(e, dict) and e.get("pending_plan")}
-        except (ValueError, AttributeError, TypeError):
-            return None
-    return waiting
-
-
-def _pruneable_plan(root, plan_path, waiting, now_utc, applied_days, unapplied_days, require_plan):
-    from datetime import timedelta
-    if not re.fullmatch("[a-f0-9]{32}", plan_path.stem) or plan_path.stem in waiting:
+def _plan_file(path, require_plan):
+    """True for a plan file this package wrote before plans were removed (2026-11-26). require_plan: also check its shape and digest,
+    for a folder this store does not own (a harness home)."""
+    if not re.fullmatch("[a-f0-9]{32}", path.stem):
         return False
+    if not require_plan:
+        return True
     try:
-        value = read_json(plan_path, None)
-        if not isinstance(value, dict):
-            return False
-        created = parse_iso(str(value.get("created")))
-    except (ValueError, AttributeError, TypeError):
-        return False
-    if require_plan:
-        try:
-            shaped = (value.get("id") == plan_path.stem and isinstance(value.get("kind"), str) and isinstance(value.get("changes"), dict)
-                      and isinstance(value.get("digest"), str)
-                      and value["digest"] == hashlib.sha256(canonical_json({k: v for k, v in value.items() if k != "digest"}).encode()).hexdigest())
-        except (UnicodeEncodeError, TypeError, ValueError):
-            shaped = False   # a lone surrogate or an odd value cannot be a plan we wrote; keep it and go on to the next file
-        if not shaped:
-            return False
-    if created.tzinfo is None:
-        created = created.replace(tzinfo=timezone.utc)
-    folder = Path(root) / ".operations" / plan_path.stem
-    if folder.exists():
-        try:
-            journal = read_json(folder / "journal.json", None)
-        except ValueError:
-            return False
-        if not isinstance(journal, dict) or journal.get("state") != "committed" or (folder / PENDING).exists():
-            return False
-        cutoff = now_utc - timedelta(days=applied_days)
-    else:
-        cutoff = now_utc - timedelta(days=unapplied_days)
-    return created < cutoff
+        value = read_json(path, None)
+        return (isinstance(value, dict) and value.get("id") == path.stem and isinstance(value.get("kind"), str) and isinstance(value.get("changes"), dict)
+                and isinstance(value.get("digest"), str)
+                and value["digest"] == hashlib.sha256(canonical_json({k: v for k, v in value.items() if k != "digest"}).encode()).hexdigest())
+    except (UnicodeEncodeError, TypeError, ValueError, AttributeError):
+        return False   # unreadable or an odd value: not a plan we wrote; keep it
 
 
-def prune_plans(root, applied_days=1, unapplied_days=30, require_plan=False):
-    """Delete plan files: applied ones (committed journal) older than `applied_days`, never-applied ones older
-    than `unapplied_days`. A plan whose journal is in any other state, or unreadable, stays, and so does one an
-    Obsidian approval still waits on (`pending_plan` in a domain's sync-state.json). Returns the count removed.
-    require_plan: for a folder this store does not own (a harness home), touch only files shaped like governance.plan() output."""
+def remove_leftover_plans(root, require_plan=False):
+    """Delete the plan files (and the attachment folders older plans staged) that releases before 2026-11-26 left in `.plans/`,
+    then the folder once it is empty. Nothing reads them any more. Returns the count removed."""
     import shutil
-    root = Path(root).resolve()
-    now_utc = clock.now()
-    waiting = _waiting_plans(root)
-    if waiting is None:
-        return 0  # cannot tell which plans a vault approval needs; prune nothing
-    # Scan without store_lock; lock only per candidate deletion after re-checking waiting state and journal.
-    candidates = [path for path in sorted(root.glob(".plans/*.json"))
-                  if _pruneable_plan(root, path, waiting, now_utc, applied_days, unapplied_days, require_plan)]
+    folder = Path(root).resolve() / ".plans"
+    if not folder.is_dir():
+        return 0
     removed = 0
-    for plan_path in candidates:
-        with store_lock(root):
-            live_waiting = _waiting_plans(root)
-            if live_waiting is None:
-                return removed
-            if not _pruneable_plan(root, plan_path, live_waiting, now_utc, applied_days, unapplied_days, require_plan):
-                continue
-            plan_path.unlink(missing_ok=True)
-            shutil.rmtree(plan_path.with_suffix(""), ignore_errors=True)   # attachment bytes an older plan staged
+    for path in sorted(folder.glob("*.json")):
+        if _plan_file(path, require_plan):
+            path.unlink(missing_ok=True)
+            shutil.rmtree(path.with_suffix(""), ignore_errors=True)
             removed += 1
+    try:
+        folder.rmdir()
+    except OSError:
+        pass   # something else is still in it
     return removed
 
 
@@ -925,7 +885,7 @@ def recover(root, operation_id, direction="forward"):
         if journal["state"] == "abandoned":
             raise ValueError("Operation was abandoned")
         if journal["state"] == "committed":
-            raise ValueError(f"Operation {operation_id} is committed; plan its reversal with undo {operation_id}")
+            raise ValueError(f"Operation {operation_id} is committed; reverse it with undo {operation_id}")
         if journal["state"] == "rolled_back":
             raise ValueError(f"Operation {operation_id} was rolled back")
         # Validate ALL resources before changing ANY resource.

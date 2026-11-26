@@ -1,10 +1,11 @@
 import json
+import unittest
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import quote
 
 from test_core import StoreFixture
-from core.governance import apply, undo, plan
+from core.governance import undo
 from core.notes import capture, find_note
 from core.repository import read_json
 from core.sync import sync, build_overlay
@@ -32,6 +33,9 @@ class VaultEditing(StoreFixture):
         page = self.status_page()
         page.write_text(page.read_text(encoding='utf-8').replace('- [ ]', '- [x]'), encoding='utf-8')
 
+    def journal(self, operation_id):
+        return read_json(self.root / '.operations' / operation_id / 'journal.json')
+
     def body(self, note_id):
         return find_note(note_id, 'demo', self.root)[1]['body']
 
@@ -40,12 +44,12 @@ class VaultEditing(StoreFixture):
         copy, = self.built(a)
         self.edit(copy, 'rebuildable', 'disposable')
         result = build_overlay('demo', self.vault, self.root)
-        self.assertEqual((result['plans'], result['conflicts']), ([], 0))
+        self.assertEqual(result['conflicts'], 0)
+        self.assertNotIn('plans', result)
         self.assertEqual(len(result['applied']), 1)
         self.assertIn('disposable', self.body(a['id']))
         self.assertIn('Edited: Cache', self.status_page().read_text(encoding='utf-8'))
-        reverse = undo(self.root, result['applied'][0])
-        apply(self.root, reverse['plan_id'], reverse['digest'])
+        undo(self.root, result['applied'][0])
         self.assertIn('rebuildable', self.body(a['id']))
         self.assertIn('rebuildable', copy.read_text(encoding='utf-8'))
 
@@ -75,28 +79,43 @@ class VaultEditing(StoreFixture):
         self.assertEqual(Path(a['path']).read_bytes(), before)
         self.assertIn('concern/made-up', self.status_page().read_text(encoding='utf-8'))
         again = build_overlay('demo', self.vault, self.root)
-        self.assertEqual((again['applied'], again['plans']), ([], []))
+        self.assertEqual(again['applied'], [])
         self.assertIn('made-up', copy.read_text(encoding='utf-8'))
 
-    def test_status_change_waits_for_checkbox_then_archives(self):
+    def test_status_change_archives_at_sync_and_undo_brings_it_back(self):
         a = self.note()
         copy, = self.built(a)
         self.edit(copy, 'status: "active"', 'status: "archived"')
         result = build_overlay('demo', self.vault, self.root)
-        self.assertEqual(len(result['plans']), 1)
-        self.assertEqual(find_note(a['id'], 'demo', self.root)[1]['status'], 'active')
-        self.assertIn('- [ ] Archive: Cache', self.status_page().read_text(encoding='utf-8'))
-        untouched = build_overlay('demo', self.vault, self.root)
-        self.assertEqual((untouched['plans'], untouched['approved']), ([], []))
-        self.tick_all()
-        result = build_overlay('demo', self.vault, self.root)
-        self.assertEqual(len(result['approved']), 1)
-        self.assertEqual(result['conflicts'], 0)
+        self.assertEqual((len(result['applied']), result['conflicts']), (1, 0))
+        self.assertNotIn('approved', result)
+        self.assertEqual(self.journal(result['applied'][0])['kind'], 'archive')
         self.assertEqual(find_note(a['id'], 'demo', self.root)[1]['status'], 'archived')
         self.assertFalse(copy.exists())
         self.assertTrue((self.vault / 'Archive/demo' / copy.name).exists())
-        self.assertNotIn('- [ ]', self.status_page().read_text(encoding='utf-8'))
+        page = self.status_page().read_text(encoding='utf-8')
+        self.assertIn('Archived: Cache', page)
+        self.assertIn(f"undo {result['applied'][0]}", page)
+        self.assertNotIn('- [ ]', page)
+        self.assertNotIn('Waiting for approval', page)
         self.assertEqual(build_overlay('demo', self.vault, self.root)['conflicts'], 0)
+        undo(self.root, result['applied'][0])
+        self.assertEqual(find_note(a['id'], 'demo', self.root)[1]['status'], 'active')
+        self.assertEqual(build_overlay('demo', self.vault, self.root)['applied'], [])   # the vault follows the undo; it is not read as a new edit
+        self.assertTrue(copy.exists())
+        self.assertEqual(find_note(a['id'], 'demo', self.root)[1]['status'], 'active')
+
+    def test_resolve_in_the_vault_is_applied_at_sync(self):
+        a = capture('Ship the batch', 'Order of the fixes.', ['subject/project', 'concern/decision'], 'demo', self.root, type='plan')
+        copy, = self.built(a)
+        self.edit(copy, 'status: "active"', 'status: "resolved"')
+        result = build_overlay('demo', self.vault, self.root)
+        self.assertEqual(len(result['applied']), 1)
+        self.assertEqual(self.journal(result['applied'][0])['kind'], 'resolve')
+        self.assertEqual(find_note(a['id'], 'demo', self.root)[1]['status'], 'resolved')
+        self.assertIn('Resolved: Ship the batch', self.status_page().read_text(encoding='utf-8'))
+        undo(self.root, result['applied'][0])
+        self.assertEqual(find_note(a['id'], 'demo', self.root)[1]['status'], 'active')
 
     def test_body_and_status_edit_together(self):
         a = self.note()
@@ -104,52 +123,56 @@ class VaultEditing(StoreFixture):
         self.edit(copy, 'rebuildable', 'disposable')
         self.edit(copy, 'status: "active"', 'status: "archived"')
         result = build_overlay('demo', self.vault, self.root)
-        self.assertEqual((len(result['applied']), len(result['plans'])), (1, 1))
-        self.assertIn('disposable', self.body(a['id']))
-        self.tick_all()
-        result = build_overlay('demo', self.vault, self.root)
-        self.assertEqual((len(result['approved']), result['conflicts']), (1, 0))
+        self.assertEqual((len(result['applied']), result['conflicts']), (2, 0))   # the edit, then the archive, each journaled
+        self.assertEqual([self.journal(op)['kind'] for op in result['applied']], ['overlay_auto_update', 'archive'])
         path, note = find_note(a['id'], 'demo', self.root)
         self.assertEqual(note['status'], 'archived')
         self.assertIn('disposable', note['body'])
 
-    def test_vault_deletion_waits_for_checkbox(self):
+    def test_vault_deletion_is_applied_at_sync_and_undo_brings_the_note_back(self):
         a = self.note()
         copy, = self.built(a)
+        before = Path(a['path']).read_bytes()
         copy.unlink()
         result = build_overlay('demo', self.vault, self.root)
-        self.assertEqual(len(result['plans']), 1)
-        self.assertTrue(Path(a['path']).exists())
-        self.assertIn('- [ ] Delete: Cache', self.status_page().read_text(encoding='utf-8'))
-        self.assertEqual(build_overlay('demo', self.vault, self.root)['plans'], [])
-        self.tick_all()
-        result = build_overlay('demo', self.vault, self.root)
-        self.assertEqual(len(result['approved']), 1)
+        self.assertEqual(len(result['applied']), 1)
+        self.assertNotIn('approved', result)
+        self.assertEqual(self.journal(result['applied'][0])['kind'], 'overlay_delete')
         self.assertFalse(Path(a['path']).exists())
         state = read_json(self.root / 'domains/demo/sync-state.json')
         self.assertNotIn(a['id'], state['entries'])
-
-    def test_restoring_deleted_file_cancels(self):
-        a = self.note()
-        copy, = self.built(a)
-        saved = copy.read_bytes()
-        copy.unlink()
-        build_overlay('demo', self.vault, self.root)
-        copy.write_bytes(saved)
-        result = build_overlay('demo', self.vault, self.root)
-        self.assertEqual((result['plans'], result['conflicts']), ([], 0))
+        self.assertEqual([(e['action'], e['operation_id']) for e in state['applied']], [('Deleted', result['applied'][0])])
         self.assertNotIn('- [ ]', self.status_page().read_text(encoding='utf-8'))
+        self.assertEqual(build_overlay('demo', self.vault, self.root)['applied'], [])
+        undo(self.root, result['applied'][0])
+        self.assertEqual(Path(a['path']).read_bytes(), before)
+        self.assertEqual(build_overlay('demo', self.vault, self.root)['applied'], [])
+        self.assertTrue(copy.exists())   # the next sync copies the note back into the vault
         self.assertTrue(Path(a['path']).exists())
 
-    def test_ticked_foreign_plan_is_ignored(self):
+    def test_a_ticked_line_in_the_old_approval_format_does_nothing(self):
         a = self.note()
         self.built(a)
-        foreign = plan(self.root, {Path(a['path']).relative_to(self.root).as_posix(): None}, 'delete', ['demo'])
         page = self.status_page()
-        page.write_text(page.read_text(encoding='utf-8') + f"\n- [x] Delete: Cache <!-- lm:{foreign['plan_id']} -->\n", encoding='utf-8')
+        page.write_text(page.read_text(encoding='utf-8') + f"\n- [x] Delete: Cache <!-- lm:{'0' * 32} -->\n", encoding='utf-8')
         result = build_overlay('demo', self.vault, self.root)
-        self.assertEqual(result['approved'], [])
+        self.assertEqual(result['applied'], [])
         self.assertTrue(Path(a['path']).exists())
+
+    def test_a_change_that_waited_for_approval_before_plans_were_removed_is_applied(self):
+        from core.sync import _hash
+        a = self.note()
+        copy, = self.built(a)
+        self.edit(copy, 'status: "active"', 'status: "archived"')
+        # What an older release left: the hash of the edited vault copy recorded, and the archive waiting on a plan.
+        path = self.root / 'domains/demo/sync-state.json'
+        state = read_json(path)
+        state['entries'][a['id']].update(overlay_hash=_hash(copy), pending_plan='a' * 32, pending_action='archive')
+        path.write_text(json.dumps(state), encoding='utf-8')
+        result = build_overlay('demo', self.vault, self.root)
+        self.assertEqual(len(result['applied']), 1)
+        self.assertEqual(find_note(a['id'], 'demo', self.root)[1]['status'], 'archived')
+        self.assertNotIn('pending_plan', read_json(path)['entries'][a['id']])
 
     def test_two_sided_change_clears_and_keep_restores_vault_version(self):
         a = self.note()
@@ -181,8 +204,8 @@ class VaultEditing(StoreFixture):
         a = self.note()
         copy, = self.built(a)
         self.edit(copy, 'rebuildable', 'vault-side')
-        deletion = plan(self.root, {Path(a['path']).relative_to(self.root).as_posix(): None}, 'delete', ['demo'])
-        apply(self.root, deletion['plan_id'], deletion['digest'])
+        from core.notes import change
+        change(a['id'], 'demo', 'delete', self.root, find_note(a['id'], 'demo', self.root)[1]['revision'])
         build_overlay('demo', self.vault, self.root)
         saved = list((self.root / 'domains/demo/staged').glob('*.conflict.md'))
         self.assertEqual(len(saved), 1)
@@ -214,12 +237,13 @@ class VaultEditing(StoreFixture):
         self.assertEqual(build_overlay('demo', self.vault, self.root)['view_conflicts'], [])
         self.assertTrue(home.exists())
 
-    def test_new_vault_copies_instead_of_proposing_deletes(self):
+    def test_new_vault_copies_instead_of_deleting(self):
         notes = [self.note(f'Note {i}', f'Body number {i}.', allow_similar=True) for i in range(6)]
         self.built(*notes)
         fresh = self.base / 'fresh-vault'
         result = build_overlay('demo', fresh, self.root)
-        self.assertEqual(result['plans'], [])
+        self.assertEqual(result['applied'], [])
+        self.assertTrue(all(Path(n['path']).exists() for n in notes))
         self.assertTrue(result['new_vault'])
         self.assertEqual(len(list((fresh / 'Domains/demo').glob('*.md'))), 6)
 
@@ -229,20 +253,22 @@ class VaultEditing(StoreFixture):
         import shutil
         shutil.rmtree(self.vault / 'Domains/demo')
         result = build_overlay('demo', self.vault, self.root)
-        self.assertEqual((result['plans'], result['restored']), ([], 6))
+        self.assertEqual((result['applied'], result['restored']), ([], 6))
+        self.assertTrue(all(Path(n['path']).exists() for n in notes))
         self.assertEqual(len(list((self.vault / 'Domains/demo').glob('*.md'))), 6)
 
     def test_teardown_stops_automatic_rebuilds(self):
         a = self.note()
         self.built(a)
-        from core.sync import teardown_plan
-        proposal = teardown_plan(self.vault)
-        apply(self.vault, proposal['plan_id'], proposal['digest'])
-        self.note('Later', 'Captured after teardown.')
+        from core.sync import teardown
+        receipt = teardown(self.vault)
+        self.assertTrue(receipt['operation_id'].startswith('d-'))
+        later = self.note('Later', 'Captured after teardown.')
         folder = self.vault / 'Domains/demo'
         self.assertFalse(folder.exists() and any(folder.iterdir()))
         rebuilt = build_overlay('demo', self.vault, self.root)
-        self.assertEqual(rebuilt['plans'], [])
+        self.assertEqual(rebuilt['applied'], [])   # copies removed by teardown are not read as deletions
+        self.assertTrue(Path(a['path']).exists() and Path(later['path']).exists())
 
     def test_renamed_file_is_followed_not_deleted(self):
         a = self.note()
@@ -250,7 +276,7 @@ class VaultEditing(StoreFixture):
         renamed = copy.with_name('My cache notes.md')
         copy.rename(renamed)
         result = build_overlay('demo', self.vault, self.root)
-        self.assertEqual((result['plans'], result['renamed']), ([], 1))
+        self.assertEqual((result['applied'], result['renamed']), ([], 1))
         self.assertTrue(copy.exists())
         self.assertFalse(renamed.exists())
         self.assertTrue(Path(a['path']).exists())
@@ -263,7 +289,7 @@ class VaultEditing(StoreFixture):
         copy.rename(renamed)
         self.edit(renamed, 'rebuildable', 'disposable')
         result = build_overlay('demo', self.vault, self.root)
-        self.assertEqual((result['plans'], len(result['applied'])), ([], 1))
+        self.assertEqual(len(result['applied']), 1)
         self.assertIn('disposable', self.body(a['id']))
 
     def test_recent_edits_wait_for_quiet(self):
@@ -305,12 +331,10 @@ class VaultEditing(StoreFixture):
         self.assertIn('cssclasses: wide', copy.read_text(encoding='utf-8'))
         self.assertNotIn('aliases', Path(find_note(a['id'], 'demo', self.root)[0]).read_text(encoding='utf-8'))
 
-    def test_ticked_delete_is_logged_with_runnable_undo(self):
+    def test_vault_delete_is_logged_with_runnable_undo(self):
         a = self.note()
         copy, = self.built(a)
         copy.unlink()
-        build_overlay('demo', self.vault, self.root)
-        self.tick_all()
         build_overlay('demo', self.vault, self.root)
         page = self.status_page().read_text(encoding='utf-8')
         self.assertIn('Deleted: Cache', page)

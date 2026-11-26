@@ -18,9 +18,9 @@ class RenderShapes(unittest.TestCase):
         self.assertEqual(text.splitlines()[0],'Cache');self.assertIn('demo:a6e9955e',text);self.assertIn('tags: a/b',text);self.assertTrue(text.endswith('(truncated)'))
     def test_rows(self):
         text=render.render({'ok':True,'notes':[{'ref':'demo:a6e9955e-ed50','title':'T','type':'plan','date':'2026-11-14T10:00:00','reason':'due'}],'hint':'Do this.'});self.assertIn('- T  [plan, 2026-11-14]  demo:a6e9955e',text);self.assertIn('hint: Do this.',text)
-    def test_plan_names_the_apply_command(self):
-        text=render.render({'ok':True,'plan_id':'p'*32,'digest':'d'*64,'kind':'rename','summary':{'id':'x','files':2}})
-        self.assertIn('alm apply '+'p'*32+' --expected-plan-sha256 '+'d'*64,text);self.assertIn('files: 2',text)
+    def test_direct_receipt_names_the_operation_and_its_undo(self):
+        op='d-'+'a'*32;text=render.render({'ok':True,'operation_id':op,'undo':'undo '+op,'kind':'rename','summary':{'id':'x','files':2}})
+        self.assertEqual(text.splitlines()[0],'Done (rename), operation '+op);self.assertIn('Undo it with: alm undo '+op,text);self.assertIn('files: 2',text);self.assertNotIn('Plan',text)
     def test_receipt_lists_similar_and_warnings(self):
         text=render.render({'ok':True,'status':'created','id':self.HIT['id'],'domain':'demo','similar':[{'ref':'demo:b','title':'Other'}],'quality_warnings':['style: x']})
         self.assertEqual(text.splitlines()[:2],['created: demo:a6e9955e','  similar: demo:b  Other']);self.assertIn('quality_warnings: style: x',text)
@@ -41,10 +41,6 @@ class RenderShapes(unittest.TestCase):
     def test_list_with_summary_shows_summary_files_and_actions(self):
         text=render.render({'ok':True,'notes':[dict(self.HIT,summary='The cache is rebuildable.',files=['core/a.py'],actions={'open':2,'done':1})]})
         self.assertIn('The cache is rebuildable.',text);self.assertIn('files: core/a.py',text);self.assertIn('actions: 2 open, 1 done',text)
-    def test_relocation_inspection_names_setup_apply_and_keeps_its_checks(self):
-        text=render.render({'ok':True,'plan_id':'p'*32,'digest':'d'*64,'source':'C:/old','destination':'D:/new','config_changed':False,'added':[],'removed':['x.md'],'changed':[]})
-        self.assertIn('alm setup --apply-plan '+'p'*32+' --expected-plan-sha256 '+'d'*64,text);self.assertNotIn('alm apply ',text)
-        self.assertIn('destination: D:/new',text);self.assertIn('config_changed: false',text);self.assertIn('x.md',text)
     def test_markdown_results_print_their_markdown(self):   # recap and history --markdown
         self.assertEqual(render.render({'ok':True,'rows':[{'op':'x'}],'markdown':'## Recap\n- one\n'}),'## Recap\n- one')
     def test_batch_and_fallback(self):

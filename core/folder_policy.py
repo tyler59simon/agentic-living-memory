@@ -71,7 +71,7 @@ def _strictest(entries):
 
 def loosens(root,text):
     """Whether writing registry `text` (None: deleting it) would make a folder that is hidden or private now less strict:
-    an undo, a plan or a restore that would reopen it needs --include-private. A damaged live or given registry counts."""
+    an undo or a restore that would reopen it needs --include-private. A damaged live or given registry counts."""
     try:live=_strictest(load(root)['folders'])
     except ValueError:return True
     try:

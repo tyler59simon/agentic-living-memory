@@ -9,7 +9,8 @@ from test_core import StoreFixture
 from core.paths import fold
 from core import runtime, session_start
 from core.backup import snapshots
-from core.governance import apply, retag_plan
+from core import governance
+from core.governance import retag
 from core.notes import capture, change, confirm, find_note
 from core.note_types import review_due
 from core.repository import inventory, parse
@@ -53,8 +54,7 @@ class LinkedSupersede(StoreFixture):
     def test_archiving_rebases_the_notes_own_links(self):
         b = capture('Target note', 'Stays active.', TAGS, 'demo', self.root)
         a = capture('Linking note', f'See [target]({quote(Path(b["path"]).name)}).', TAGS, 'demo', self.root)
-        p = change(a['id'], 'demo', 'archive', self.root, plan_only=True)
-        apply(self.root, p['plan_id'], p['digest'])
+        change(a['id'], 'demo', 'archive', self.root)
         path, note = find_note(a['id'], 'demo', self.root)
         self.assertIn('(../notes/' + quote(Path(b['path']).name) + ')', note['body'])
         self.assertTrue((path.parent / '../notes' / Path(b['path']).name).resolve().exists())
@@ -74,7 +74,7 @@ class Rehearsal(StoreFixture):
         self.assertEqual(before, after)
 
 
-class PlanRaces(StoreFixture):
+class WriteRaces(StoreFixture):
     def test_taxonomy_add_reads_under_the_store_lock(self):
         from core import tag_taxonomy, repository
         held = []
@@ -86,13 +86,16 @@ class PlanRaces(StoreFixture):
             tag_taxonomy.add_tags(['concern/bug'], self.root)
         self.assertEqual(held, [True])
 
-    def test_retag_plan_goes_stale_when_a_new_note_uses_the_old_tag(self):
+    def test_retag_goes_stale_when_a_new_note_uses_the_old_tag(self):
         self.note('Uses architecture', 'A.')
         (self.root / 'tag_taxonomy.json').write_text(json.dumps({'tags': ['subject/project', 'concern/architecture', 'concern/decision', 'concern/design']}))
-        p = retag_plan(self.root, {'concern/architecture': 'concern/design'})
-        self.note('Captured after the plan', 'B.')  # still uses concern/architecture
-        with self.assertRaisesRegex(ValueError, 'stale plan'):
-            apply(self.root, p['plan_id'], p['digest'])
+        real = governance.commit
+        def racing(*a, **k):
+            self.note('Captured meanwhile', 'B.')  # still uses concern/architecture, written after the retag read the notes
+            return real(*a, **k)
+        with patch.object(governance, 'commit', racing), self.assertRaisesRegex(ValueError, 'stale_write'):
+            retag(self.root, {'concern/architecture': 'concern/design'})
+        self.assertEqual({n['title'] for n in inventory('demo', self.root) if 'concern/architecture' in n['tags']}, {'Uses architecture', 'Captured meanwhile'})
 
 
 class BundleIdentity(StoreFixture):
@@ -110,7 +113,7 @@ class BundleIdentity(StoreFixture):
         return target
 
     def test_two_notes_with_one_id_are_rejected(self):
-        from core.bundle import import_plan
+        from core.bundle import import_bundle
         a = capture('First title', 'A.', TAGS, 'demo', self.root)
         b = capture('Second title', 'B.', TAGS, 'demo', self.root)
         source = self.bundle('dup.zip', None)
@@ -129,17 +132,20 @@ class BundleIdentity(StoreFixture):
             for n, data in members.items():
                 z.writestr(n, data)
         with self.assertRaisesRegex(ValueError, 'two notes with ID'):
-            import_plan(self.other, tampered)
+            import_bundle(self.other, tampered)
 
-    def test_second_plan_adding_the_same_id_goes_stale(self):
-        from core.bundle import import_plan
+    def test_an_import_adding_an_id_that_arrived_meanwhile_goes_stale(self):
+        from core.bundle import import_bundle
         a = capture('Original title', 'A.', TAGS, 'demo', self.root)
-        first = import_plan(self.other, self.bundle('one.zip', None))
+        one = self.bundle('one.zip', None)
         change(a['id'], 'demo', 'update', self.root, title='Renamed title')
-        second = import_plan(self.other, self.bundle('two.zip', None))  # same ID, other filename
-        apply(self.other, first['plan_id'], first['digest'])
-        with self.assertRaisesRegex(ValueError, 'stale plan'):
-            apply(self.other, second['plan_id'], second['digest'])
+        two = self.bundle('two.zip', None)  # same ID, other filename
+        real, raced = governance.commit, []
+        def racing(*a, **k):
+            if not raced:raced.append(1);import_bundle(self.other, one)   # lands after the second import read the store
+            return real(*a, **k)
+        with patch.object(governance, 'commit', racing), self.assertRaisesRegex(ValueError, 'stale_write'):
+            import_bundle(self.other, two)
         self.assertEqual(len(inventory('demo', self.other)), 1)
 
 
@@ -199,8 +205,7 @@ class SelfLinks(StoreFixture):
         a = capture('Self linking note', 'Intro.', TAGS, 'demo', self.root)
         name = Path(a['path']).name
         change(a['id'], 'demo', 'update', self.root, body=f'Intro. See [details]({quote(name)}#details).')
-        p = change(a['id'], 'demo', 'archive', self.root, plan_only=True)
-        apply(self.root, p['plan_id'], p['digest'])
+        change(a['id'], 'demo', 'archive', self.root)
         _, note = find_note(a['id'], 'demo', self.root)
         self.assertIn(f'({quote(name)}#details)', note['body'])
 

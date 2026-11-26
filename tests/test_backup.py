@@ -1,4 +1,4 @@
-"""Snapshots of the canonical store and restore through an approved, undoable plan."""
+"""Snapshots of the canonical store and restore as a direct, undoable write."""
 import io
 import json
 import os
@@ -11,9 +11,13 @@ from test_core import StoreFixture
 from core import backup as snap
 from core import runtime
 from revision_fill import main as cli
-from core.governance import apply, inspect_plan, undo
+from core.governance import undo
 from core.notes import find_note
 from core.repository import inventory
+
+
+def journal_paths(root, receipt):
+    return {e['path'] for e in json.loads((root / '.operations' / receipt['operation_id'] / 'journal.json').read_text())['effects']}
 
 
 class Backups(StoreFixture):
@@ -81,27 +85,24 @@ class Backups(StoreFixture):
         os.utime(path, (old, old))
         self.assertTrue(any('hours old' in w for w in warnings()))
 
-    def test_restore_plan_round_trip(self):
+    def test_restore_round_trip(self):
         keep = self.note('Keep me', 'Original body.')
         source = snap.backup(self.root)['backup']
         path, _ = find_note(keep['id'], 'demo', self.root)
         path.unlink()
         later = self.note('Added after the backup', 'New.')
-        proposed = snap.restore_plan(self.root, source)
-        self.assertEqual((proposed['summary']['write'], proposed['summary']['delete']), (1, 1))
-        effects = {e['action'] for e in inspect_plan(self.root, proposed['plan_id'])['effects']}
-        self.assertEqual(effects, {'write', 'delete'})
-        receipt = apply(self.root, proposed['plan_id'], proposed['digest'])
+        receipt = snap.restore_backup(self.root, source)
+        self.assertEqual((receipt['summary']['write'], receipt['summary']['delete']), (1, 1))
+        self.assertTrue(receipt['operation_id'].startswith('d-'))
         ids = {n['id'] for n in inventory('demo', self.root)}
         self.assertEqual(ids, {keep['id']})
-        reverse = undo(self.root, receipt['operation_id'])
-        apply(self.root, reverse['plan_id'], reverse['digest'])
+        undo(self.root, receipt['operation_id'])
         self.assertEqual({n['id'] for n in inventory('demo', self.root)}, {later['id']})
 
     def test_restore_of_an_identical_store_changes_nothing(self):
         self.note()
         source = snap.backup(self.root)['backup']
-        self.assertEqual(snap.restore_plan(self.root, source)['status'], 'unchanged')
+        self.assertEqual(snap.restore_backup(self.root, source)['status'], 'unchanged')
 
     def test_restore_rejects_members_outside_the_canonical_set(self):
         for name in ('../escape.md', 'domains/demo/notes/../../x.md', 'C:/abs.md', 'domains/demo/search.sqlite3', 'hooks/x.json'):
@@ -110,7 +111,7 @@ class Backups(StoreFixture):
                 with zipfile.ZipFile(bad, 'w') as archive:
                     archive.writestr(name, '---\nid: x\n---\nbody')
                 with self.assertRaisesRegex(ValueError, 'outside the canonical set'):
-                    snap.restore_plan(self.root, bad)
+                    snap.restore_backup(self.root, bad)
 
     def test_an_old_snapshot_with_changes_json_still_restores_and_drops_it(self):
         keep = self.note('Keep me', 'Original body.')
@@ -124,10 +125,7 @@ class Backups(StoreFixture):
         self.assertEqual(snap.verify(old), [])
         find_note(keep['id'], 'demo', self.root)[0].unlink()
         (self.root / 'changes.json').unlink()
-        proposed = snap.restore_plan(self.root, old)
-        paths = {e['path'] for e in inspect_plan(self.root, proposed['plan_id'])['effects']}
-        self.assertNotIn('changes.json', paths)
-        apply(self.root, proposed['plan_id'], proposed['digest'])
+        self.assertNotIn('changes.json', journal_paths(self.root, snap.restore_backup(self.root, old)))
         self.assertFalse((self.root / 'changes.json').exists())
         self.assertEqual({n['id'] for n in inventory('demo', self.root)}, {keep['id']})
 
@@ -155,9 +153,7 @@ class Backups(StoreFixture):
             with redirect_stdout(out):
                 self.assertEqual(cli(['--root', str(self.root), '--cwd', str(self.base / 'project'), *argv]), 0)
             return json.loads(out.getvalue())
-        proposed = run('restore-plan', source)
-        run('inspect-plan', proposed['plan_id'])
-        run('apply', proposed['plan_id'], '--expected-plan-sha256', proposed['digest'])
+        self.assertTrue(run('restore-backup', source)['operation_id'].startswith('d-'))
         self.assertIn('demo', json.loads((self.root / 'bindings.json').read_text())['domains'])
 
     def test_restore_covers_domains_that_were_empty(self):
@@ -166,8 +162,7 @@ class Backups(StoreFixture):
         init_domain('empty', [str(self.base / 'other')], self.root)
         source = snap.backup(self.root)['backup']
         capture('Added later', 'New.', ['subject/project', 'concern/decision'], 'empty', self.root)
-        proposed = snap.restore_plan(self.root, source)
-        self.assertEqual(proposed['summary']['delete'], 1)
+        self.assertEqual(snap.restore_backup(self.root, source)['summary']['delete'], 1)
 
     def test_same_second_backups_get_distinct_names(self):
         self.note()
@@ -196,10 +191,7 @@ class MaintenanceFiles(StoreFixture):
         return self.ms.finish(self.root, run, micro, 'completed', at)
 
     def restore(self, source):
-        proposed = snap.restore_plan(self.root, source)
-        if proposed.get('status') != 'unchanged':
-            apply(self.root, proposed['plan_id'], proposed['digest'])
-        return proposed
+        return snap.restore_backup(self.root, source)
 
     def test_snapshot_holds_configuration_checkpoint_and_run_records_but_not_the_lock(self):
         run = self.finish_run(self.T)
@@ -270,18 +262,14 @@ class MaintenanceFiles(StoreFixture):
         rel = f"maintenance/runs/{run['day']}/{run['id']}.json"
         source = snap.backup(self.root)['backup']
         (self.root / rel).write_bytes(bytes([0xff, 0xfe]) + b' not utf-8')
-        from core.governance import inspect_plan
-        proposed = snap.restore_plan(self.root, source)
-        shown = inspect_plan(self.root, proposed['plan_id'])
-        self.assertIn(rel, [e['path'] for e in shown['effects']])
-        apply(self.root, proposed['plan_id'], proposed['digest'])
+        self.assertIn(rel, journal_paths(self.root, snap.restore_backup(self.root, source)))
         self.assertEqual(json.loads((self.root / rel).read_text())['id'], run['id'])
 
     def test_a_restore_with_only_equal_maintenance_files_is_unchanged(self):
         self.finish_run(self.T)
         self.ms.set_config(self.root, dict(self.cfg, enabled=False))
         source = snap.backup(self.root)['backup']
-        self.assertEqual(snap.restore_plan(self.root, source)['status'], 'unchanged')
+        self.assertEqual(snap.restore_backup(self.root, source)['status'], 'unchanged')
 
 
 if __name__ == '__main__':

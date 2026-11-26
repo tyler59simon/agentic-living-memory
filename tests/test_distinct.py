@@ -2,7 +2,7 @@
 import contextlib,io,json,unittest,unittest.mock
 from test_core import StoreFixture
 from revision_fill import main
-from core.governance import apply,undo
+from core.governance import undo
 from core.notes import capture,find_note,distinct
 from core.repository import validate
 from core.worklist import worklist

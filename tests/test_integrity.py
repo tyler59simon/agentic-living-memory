@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from test_core import StoreFixture
 from core import common, repository as repo
-from core.governance import apply, retag_plan
+from core.governance import retag, undo
 from core.init_domain import init_domain
 from core.notes import capture, change, find_note
 from core.search import search_domain
@@ -106,13 +106,15 @@ class Integrity(StoreFixture):
         init_domain('other', [str(self.base / 'other')], self.root)
         a = self.note()
         b = capture('Elsewhere', 'Other domain note.', ['subject/project', 'concern/architecture'], 'other', self.root)
-        proposed = retag_plan(self.root, {'concern/architecture': 'concern/decision'})
-        apply(self.root, proposed['plan_id'], proposed['digest'])
+        before = {n['id']: Path(n['path']).read_bytes() for n in (a, b)}
+        done = retag(self.root, {'concern/architecture': 'concern/decision'})
         for domain, note in (('demo', a), ('other', b)):
             self.assertEqual(find_note(note['id'], domain, self.root)[1]['tags'], ['concern/decision', 'subject/project'])
+        undo(self.root, done['operation_id'])
+        self.assertEqual({n['id']: Path(n['path']).read_bytes() for n in (a, b)}, before)
         with self.assertRaisesRegex(ValueError, 'other domains'):
             capture('Again', 'Uses the tag again.', ['subject/project', 'concern/decision'], 'other', self.root)
-            retag_plan(self.root, {'concern/decision': 'concern/architecture'}, ['demo'])
+            retag(self.root, {'concern/decision': 'concern/architecture'}, ['demo'])
 
     def test_sharing_violation_is_retried(self):
         real = os.replace
@@ -235,7 +237,7 @@ class Governance(StoreFixture):
 
     def test_recover_refuses_to_reverse_a_final_state(self):
         repo.transaction(self.root, {'a.txt': 'a'}, 'test', operation_id='done')
-        with self.assertRaisesRegex(ValueError, 'is committed; plan its reversal with undo done'):
+        with self.assertRaisesRegex(ValueError, 'is committed; reverse it with undo done'):
             repo.recover(self.root, 'done', 'backward')
         self.assertEqual((self.root / 'a.txt').read_text(), 'a')
         self.assertTrue(repo.recover(self.root, 'done', 'forward')['idempotent'])

@@ -1,4 +1,4 @@
-"""Project knowledge base, layer 1: extraction and chunking per kind, the source registry and its plans, the incremental
+"""Project knowledge base, layer 1: extraction and chunking per kind, the source registry and its writes, the incremental
 index, ask / search --sources / sources, auto-allow, the SessionStart line with its background sync, and prompt excerpts."""
 import contextlib,io,json,os,shutil,sqlite3,sys,time,unittest
 from pathlib import Path

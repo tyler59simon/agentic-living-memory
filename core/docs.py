@@ -211,12 +211,12 @@ BOOKKEEPING = re.compile(r"notebook-folders\.json|domains/[^/]+/notebook-sync\.j
 
 
 def is_private_path(path):
-    """Whether `path` is bookkeeping about folder notebooks: shown in history, diff and inspect-plan only with --include-private."""
+    """Whether `path` is bookkeeping about folder notebooks: shown in history and diff only with --include-private."""
     return bool(BOOKKEEPING.fullmatch(str(path).replace("\\", "/").casefold()))
 
 
 def redact_summary(summary):
-    """A plan or operation summary without the bookkeeping paths it names."""
+    """An operation summary without the bookkeeping paths it names."""
     if not isinstance(summary, dict):
         return summary
 

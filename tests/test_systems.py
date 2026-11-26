@@ -90,8 +90,8 @@ class Systems(Fixture):
                               (self.payload(slug='w',status='active'),'Unknown payload'),(self.payload(slug='v',owners=['x']*11),'at most 10'),({'slug':'u','repos':[]},'requires name')):
             code,result=self.plan('create',value);self.assertNotEqual(code,0,value['slug']);self.assertIn(message,json.dumps(result),value['slug'])
         code,result=self.cli('taxonomy','add','system/x');self.assertNotEqual(code,0);self.assertIn('system create',json.dumps(result))
-        code,result=self.cli('retag-plan',stdin=json.dumps({'concern/decision':'system/ghost'}));self.assertNotEqual(code,0);self.assertIn('Unregistered',json.dumps(result))
-        code,result=self.cli('retag-plan',stdin=json.dumps({'concern/decision':'system/billing'}));self.assertEqual(code,0,result)
+        code,result=self.cli('retag',stdin=json.dumps({'concern/decision':'system/ghost'}));self.assertNotEqual(code,0);self.assertIn('Unregistered',json.dumps(result))
+        code,result=self.cli('retag',stdin=json.dumps({'concern/decision':'system/billing'}));self.assertEqual(code,0,result)
 
     def test_update_and_retire_touch_only_registry(self):
         self.create();tags=(self.root/'tag_taxonomy.json').read_text()

@@ -2,20 +2,19 @@
 
 `hooks/antigravity_hooks.py` connects the Antigravity CLI (`agy`) to the shared Living Memory runtime. Event names and output fields were checked against the [Antigravity hooks reference](https://antigravity.google/docs/hooks) and the [rules reference](https://antigravity.google/docs/rules) on 2026-11-24.
 
-Generate a setup plan from the installed package, then apply it with the digest the plan prints:
+Run setup from the installed package. It writes directly, as one journaled write in `~/.gemini/config` (operation ID `s-antigravity-...`; `alm undo s-antigravity-...` restores the previous files):
 
 ```powershell
 py -3.15 $env:LOCALAPPDATA/agentic-living-memory/app/integrations/setup.py antigravity
-py -3.15 $env:LOCALAPPDATA/agentic-living-memory/app/integrations/setup.py antigravity --apply-plan ID --expected-plan-sha256 HASH
 ```
 
 Setup owns three things in `~/.gemini/config` (or `$ANTIGRAVITY_HOME`):
 
 - the `agentic-living-memory` hook group in `hooks.json`. Antigravity shares this file across the CLI, App and IDE; other groups in it are kept through reruns, `--adopt` and uninstall.
 - the managed Living Memory block in `GEMINI.md`, the same gated protocol the other harnesses get in `CLAUDE.md` or `AGENTS.md`. The CLI and App read this file; the IDE reads only `~/.gemini/GEMINI.md`. Text outside the block is kept.
-- `.living-memory-antigravity-ownership.json`, which records the digests of the group and the block so an edit to either stops the next plan (`--adopt` shows the difference and takes ownership).
+- `.living-memory-antigravity-ownership.json`, which records the digests of the group and the block so an edit to either stops the next setup run (`--adopt` takes ownership and prints the difference it replaced).
 
-Start a new `agy` conversation in a project bound to Living Memory after applying. Use `/hooks` in `agy` to see the group, and `alm doctor --cwd PATH` to check the handler paths and the instruction block.
+Start a new `agy` conversation in a project bound to Living Memory after setup. Use `/hooks` in `agy` to see the group, and `alm doctor --cwd PATH` to check the handler paths and the instruction block.
 
 ## Events
 
@@ -37,4 +36,4 @@ The adapter passes `permissionMode` to the runtime, so plan mode and a prompt th
 
 Use `agy` 1.5.8 or later on Windows: earlier releases did not pass quoted hook commands to `cmd.exe` verbatim. The wire format was verified live with `agy` 1.5.15 on Windows. `scripts/simulate.py --harness antigravity` drives the adapter through the shared scenarios.
 
-Remove the adapter with `setup.py antigravity --uninstall-plan` and apply that plan. It removes the group, the block (and `GEMINI.md` if nothing else is left in it) and the ownership file, and keeps your other hooks and the memory store. See INTEGRATION.md.
+Remove the adapter with `setup.py antigravity --uninstall`. It removes the group, the block (and `GEMINI.md` if nothing else is left in it) and the ownership file, and keeps your other hooks and the memory store. See INTEGRATION.md.

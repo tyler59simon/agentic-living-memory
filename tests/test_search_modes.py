@@ -93,8 +93,8 @@ class Refusals(Fixture):
 
 class RemovedForms(Fixture):
     def test_the_old_commands_are_gone(self):
-        for argv in (('list',),('links',),('recall','x','--session','s'),('doc','search','x'),('plan','delete','demo:x')):
+        for argv in (('list',),('links',),('recall','x','--session','s'),('doc','search','x'),('plan','delete','demo:x'),('apply','x','--expected-digest','y'),('delete-plan','demo:x'),('inspect-plan','x')):
             with self.subTest(argv=argv):self.assertEqual(self.cli(*argv)[0],2)
-        commands=set(self.ok('version')['commands']);self.assertFalse(commands&{'list','links','recall','plan'});self.assertIn('delete-plan',commands)
+        commands=set(self.ok('version')['commands']);self.assertFalse(commands&{'list','links','recall','plan','apply','inspect-plan','delete-plan','merge-plan','retag-plan'});self.assertIn('delete',commands)
 
 if __name__=='__main__':unittest.main()

@@ -97,7 +97,7 @@ def resolve_root(explicit=None):
 
 # bind starts a store in an existing empty folder and the restore commands rebuild one. The journal commands also run on
 # the other journal roots RECOVERY.md names (install folder, harness homes, CODEX_HOME, an Obsidian vault), which hold no bindings.
-STORE_CHECK_SKIPPED = {'bind', 'restore-plan', 'version', 'inspect-plan', 'apply', 'history', 'diff', 'recover', 'undo'}
+STORE_CHECK_SKIPPED = {'bind', 'restore-backup', 'version', 'history', 'diff', 'recover', 'undo'}
 
 
 def require_store(root, command):
@@ -145,7 +145,7 @@ def validate_store(root):
             raise ValueError('Pending operation recovery required before relocation')
     from . import maintenance_state as ms
     if ms.active_runs(root) or ((root / 'maintenance').is_dir() and ms.running(root)):
-        raise ValueError('Automatic maintenance is running or has an unfinished run; wait for it (or run maintenance status), then plan the relocation again')
+        raise ValueError('Automatic maintenance is running or has an unfinished run; wait for it (or run maintenance status), then run setup --location again')
 
 
 DERIVED_INDEX = re.compile(r'(?:search|sources|vectors|docs)\.sqlite3(?:-wal|-shm|-journal)?')
@@ -175,11 +175,32 @@ def _manifest(root):
     return result
 
 
-def relocation_plan(source, destination):
+def _relocations():
+    return config_path().parent / 'relocations'
+
+
+def _pending_relocation(source, destination):
+    """The ID of an interrupted relocation from source to destination, which a rerun of the same command resumes, or None."""
+    for path in sorted(_relocations().glob('*.relocation.json')) if _relocations().is_dir() else []:
+        record = _read(path)
+        if not isinstance(record, dict) or record.get('source') != str(source) or record.get('destination') != str(destination):
+            continue
+        journal = _read(path.with_name(record['id'] + '.journal.json'))
+        if journal and journal.get('state') not in ('committed', 'abandoned'):
+            return record['id']
+    return None
+
+
+def relocate(source, destination):
+    """Move the shared store from source to destination in one direct command: copy, verify, then point the configuration at the
+    copy. The source is kept, marked as relocated. Rerunning the same command resumes an interrupted relocation."""
     from .repository import store_lock
     source, destination = local_path(source), local_path(destination)
     if source == destination or source in destination.parents or destination in source.parents:
         raise ValueError('Source and destination must be separate, non-nested folders')
+    resumed = _pending_relocation(source, destination)
+    if resumed:
+        return _relocate(resumed)
     if destination.exists() and (not destination.is_dir() or any(p.name != '.store.lock' and not is_os_junk(p) for p in destination.iterdir())):
         raise ValueError('Relocation requires an empty destination; stores are never merged')
     with store_lock(source):
@@ -189,33 +210,10 @@ def relocation_plan(source, destination):
              'config_path': str(config_path()), 'config_revision': _hash(config_path()), 'files': manifest,
              'notes': sum(1 for p in manifest if p.endswith('.md') and len(p.split('/')) > 3 and p.split('/')[0] == 'domains' and p.split('/')[2] in ('notes', 'archive'))}
     value['digest'] = _digest(value)
-    _write(config_path().parent / 'relocations' / (value['id'] + '.plan.json'), value)
-    return {'ok': True, 'status': 'approval_required', 'plan_id': value['id'], 'digest': value['digest'],
-            'source': str(source), 'destination': str(destination), 'notes': value['notes'], 'files': len(manifest),
-            'instruction': 'Stop harness sessions, then run setup --apply-plan ID --expected-plan-sha256 DIGEST. Source is retained.'}
-
-
-def inspect_relocation(identity):
-    """Report approval freshness without exposing note contents or changing stores."""
-    if not re.fullmatch('[a-f0-9]{32}', identity or ''):
-        raise ValueError('Invalid relocation plan identity')
-    plan = _read(config_path().parent / 'relocations' / (identity + '.plan.json'))
-    if not plan:
-        raise ValueError('Relocation plan unavailable')
-    if _digest({k: v for k, v in plan.items() if k != 'digest'}) != plan['digest']:
-        raise ValueError('Plan digest mismatch')
-    source = local_path(plan['source'])
-    from .repository import store_lock
-    with store_lock(source, allow_retired=True):
-        current = _manifest(source)
-    previous = plan['files']
-    lists = {'added': sorted(set(current) - set(previous)), 'removed': sorted(set(previous) - set(current)),
-             'changed': sorted(p for p in set(previous) & set(current) if previous[p] != current[p])}
-    result = {'ok': True, 'plan_id': identity, 'digest': plan['digest'],
-              'source': plan['source'], 'destination': plan['destination'],
-              'config_changed': _hash(config_path()) != plan['config_revision'],
-              **lists}
-    return result
+    destination.mkdir(parents=True, exist_ok=True)
+    _write(_relocations() / (value['id'] + '.relocation.json'), value)
+    result = _relocate(value['id'])
+    return {**result, 'notes': value['notes'], 'files': len(manifest), 'next': 'Restart running harness sessions so they use the new folder.'}
 
 
 MAINTENANCE_CONFIG = 'maintenance.json'
@@ -236,47 +234,44 @@ def _disable_maintenance(destination):
             atomic_write(path, canonical_json({**cfg, 'enabled': False}))
 
 
-def _maintenance_matches(source, destination, planned_hash):
-    """The destination's maintenance.json is the approved source configuration with only `enabled` set to false, or an exact copy
+def _maintenance_matches(source, destination, recorded_hash):
+    """The destination's maintenance.json is the recorded source configuration with only `enabled` set to false, or an exact copy
     when the source's is not a valid configuration."""
     from . import maintenance_state as ms
     from .repository import read_json
     src, dest = source / MAINTENANCE_CONFIG, destination / MAINTENANCE_CONFIG
-    if planned_hash is None:
+    if recorded_hash is None:
         return not dest.exists()
-    if not src.is_file() or _hash(src) != planned_hash or not dest.is_file():
+    if not src.is_file() or _hash(src) != recorded_hash or not dest.is_file():
         return False
     try:
         want = {**ms.validate(read_json(src)), 'enabled': False}
     except ValueError:
-        return _hash(dest) == planned_hash
+        return _hash(dest) == recorded_hash
     try:
         return ms.validate(read_json(dest)) == want
     except ValueError:
         return False
 
 
-def _same_files(actual, planned, source, destination):
+def _same_files(actual, recorded, source, destination):
     """Manifests match; the destination's maintenance.json must be the source configuration, disabled."""
     skip = lambda m: {k: v for k, v in m.items() if k != MAINTENANCE_CONFIG}
-    return skip(actual) == skip(planned) and (MAINTENANCE_CONFIG in actual) == (MAINTENANCE_CONFIG in planned) and         _maintenance_matches(source, destination, planned.get(MAINTENANCE_CONFIG))
+    return skip(actual) == skip(recorded) and (MAINTENANCE_CONFIG in actual) == (MAINTENANCE_CONFIG in recorded) and         _maintenance_matches(source, destination, recorded.get(MAINTENANCE_CONFIG))
 
 
-def apply_relocation(identity, expected):
-    """Resume by rerunning the same approved command; pointer changes last."""
+def _relocate(identity):
+    """Copy, verify and publish one recorded relocation; the pointer changes last, so a stop anywhere leaves the old store in use."""
     from .repository import store_lock, reconcile
-    if not re.fullmatch('[a-f0-9]{32}', identity or ''):
-        raise ValueError('Invalid relocation plan identity')
-    directory = config_path().parent / 'relocations'
-    plan = _read(directory / (identity + '.plan.json'))
-    if not plan:
-        raise ValueError('Relocation plan unavailable')
-    unsigned = {k: v for k, v in plan.items() if k != 'digest'}
-    if _digest(unsigned) != expected or plan['digest'] != expected:
-        raise ValueError('Plan digest mismatch')
-    if plan['config_path'] != str(config_path()):
-        raise ValueError('Plan belongs to another configuration location')
-    source, destination = local_path(plan['source']), local_path(plan['destination'])
+    directory = _relocations()
+    record = _read(directory / (identity + '.relocation.json'))
+    if not record:
+        raise ValueError('Relocation record unavailable')
+    if _digest({k: v for k, v in record.items() if k != 'digest'}) != record['digest']:
+        raise ValueError('Relocation record damaged; start the relocation again')
+    if record['config_path'] != str(config_path()):
+        raise ValueError('Relocation belongs to another configuration location')
+    source, destination = local_path(record['source']), local_path(record['destination'])
     journal_path = directory / (identity + '.journal.json')
     with file_lock(config_path().parent / '.setup.lock', timeout=30):
         with ExitStack() as stack:
@@ -286,21 +281,25 @@ def apply_relocation(identity, expected):
             target_config = {'version': 1, 'data_root': str(destination)}
             if journal and journal.get('state') == 'committed':
                 return {'ok': True, 'status': 'committed', 'root': str(destination), 'source_retained': str(source)}
-            if _hash(config_path()) != plan['config_revision'] and _read(config_path()) != target_config:
-                raise ValueError('Stale shared configuration; create a new relocation plan')
-            if _manifest(source) != plan['files']:
-                raise ValueError('Stale source store; create a new relocation plan')
+            # A source or configuration that changed since the record was made: this relocation can never finish, so it is
+            # abandoned and the next run to this destination starts a new one.
+            if _hash(config_path()) != record['config_revision'] and _read(config_path()) != target_config:
+                _write(journal_path, {**(journal or {'relocation_id': identity}), 'state': 'abandoned'})
+                raise ValueError('The shared configuration changed during the relocation; nothing was published. Delete the partial copy in the destination and run setup --location again')
+            if _manifest(source) != record['files']:
+                _write(journal_path, {**(journal or {'relocation_id': identity}), 'state': 'abandoned'})
+                raise ValueError('The source store changed during the relocation; nothing was published. Delete the partial copy in the destination and run setup --location again')
             if not journal:
                 if any(p.name != '.store.lock' and not is_os_junk(p) for p in destination.iterdir()):
                     raise ValueError('Destination conflict: no files were overwritten')
-                journal = {'plan_id': identity, 'state': 'copying'}
+                journal = {'relocation_id': identity, 'state': 'copying'}
                 _write(journal_path, journal)
             if journal['state'] == 'copying':
-                # On resume, only files in the approved manifest may be present.
-                unexpected = set(_manifest(destination)) - set(plan['files'])
+                # On resume, only files in the recorded manifest may be present.
+                unexpected = set(_manifest(destination)) - set(record['files'])
                 if unexpected:
                     raise ValueError(f'Destination conflict: {sorted(unexpected)}')
-                for rel, expected_hash in plan['files'].items():
+                for rel, expected_hash in record['files'].items():
                     dest = destination / rel
                     if dest.exists():
                         if _hash(dest) != expected_hash and not (rel == MAINTENANCE_CONFIG and _maintenance_matches(source, destination, expected_hash)):
@@ -316,7 +315,7 @@ def apply_relocation(identity, expected):
                         for name in ('notes', 'archive'):
                             (destination / 'domains' / domain.name / name).mkdir(parents=True, exist_ok=True)
                 _disable_maintenance(destination)
-                if not _same_files(_manifest(destination), plan['files'], source, destination):
+                if not _same_files(_manifest(destination), record['files'], source, destination):
                     raise ValueError('Destination verification failed; shared location unchanged')
                 validate_store(destination)
                 for log in (source / 'logs').glob('*') if (source / 'logs').is_dir() else []:
@@ -334,7 +333,7 @@ def apply_relocation(identity, expected):
                         reconcile(domain.name, destination, sync_overlay=False)
                 journal['state'] = 'ready'
                 _write(journal_path, journal)
-            for rel, expected_hash in plan['files'].items():
+            for rel, expected_hash in record['files'].items():
                 # Catalogs are regenerated; all other durable bytes must still match.
                 if rel == MAINTENANCE_CONFIG:
                     if not _maintenance_matches(source, destination, expected_hash):
@@ -342,7 +341,7 @@ def apply_relocation(identity, expected):
                 elif _hash(destination / rel) != expected_hash:
                     raise ValueError(f'Destination verification failed: {rel}')
             # The retired marker is durable before publishing the new pointer.
-            marker = {'destination': str(destination), 'plan_id': identity}
+            marker = {'destination': str(destination), 'relocation_id': identity}
             existing = _read(source / '.relocated.json')
             if existing and existing != marker:
                 raise ValueError('Source already relocated by another operation')
@@ -354,8 +353,7 @@ def apply_relocation(identity, expected):
 
 
 def setup(location=None, non_interactive=False, source=None):
-    from .migration import migration_plan
-    from .governance import apply
+    from .migration import migrate_schema
     from .repository import store_lock
     current = None
     try:
@@ -378,16 +376,14 @@ def setup(location=None, non_interactive=False, source=None):
         location = input('Memory folder (Enter accepts suggestion): ').strip() or str(default)
     destination = local_path(location)
     if source:
-        return relocation_plan(source, destination)
+        return relocate(source, destination)
     if destination.exists() and any(p.name != '.store.lock' and not is_os_junk(p) for p in destination.iterdir()):
         with store_lock(destination):
             validate_store(destination)
     else:
         if current and current != destination:
-            return relocation_plan(current, destination)
-        with store_lock(destination):
-            proposal = migration_plan(destination)
-            apply(destination, proposal['plan_id'], proposal['digest'])
+            return relocate(current, destination)
+        migrate_schema(destination)
     with file_lock(config_path().parent / '.setup.lock', timeout=30):
         _write(config_path(), {'version': 1, 'data_root': str(destination)})
     return {'ok': True, 'status': 'configured', 'root': str(destination), 'config_path': str(config_path()),
@@ -397,10 +393,7 @@ def setup(location=None, non_interactive=False, source=None):
 def ensure_setup(location=None):
     """Installer entry: explicit selection or existing store; otherwise prompt."""
     if location:
-        result = setup(location, non_interactive=True)
-        if result['status'] == 'approval_required':
-            raise ValueError('Store relocation requires approval first: ' + json.dumps(result))
-        return Path(result['root'])
+        return Path(setup(location, non_interactive=True)['root'])
     try:
         root, selected_by = resolve_root()
         if selected_by != 'legacy':
@@ -409,7 +402,4 @@ def ensure_setup(location=None):
         # Do not replace invalid shared config as a side effect of adapter installation.
         if config_path().exists():
             raise
-    result = setup()
-    if result['status'] == 'approval_required':
-        raise ValueError('Run setup and approve the relocation before installing an adapter: ' + json.dumps(result))
-    return Path(result['root'])
+    return Path(setup()['root'])

@@ -17,7 +17,6 @@ from . import clock
 from .common import memory_root,atomic_write,load_bindings
 from .paths import is_os_junk,remove_empty_dir
 from .repository import inventory,parse,parse_text,validate,serialize,store_lock,read_json,canonical_json,transaction,digest,confined,now,reconcile,clean_files,clean_commands
-from .governance import plan
 from .note_types import normalize,STALE_DAYS,keep_baseline
 from .notes import slug
 
@@ -90,34 +89,14 @@ def is_managed(vault):
 EDITABLE=('title','tags','type','context','review_by','files','commands','pinned','rule')
 LIFECYCLE={'archived':'archive','resolved':'resolve'}
 DONE={'archive':'Archived','resolve':'Resolved','delete':'Deleted'}
-APPROVAL_LINE=re.compile(r'^\s*[-*]\s*\[[xX]\].*<!--\s*lm:([a-f0-9]{32})\s*-->')
 KEEP_LINE=re.compile(r'^\s*[-*]\s*\[[xX]\].*<!--\s*lm-keep:([0-9a-f-]{36})\s*-->')
 FRONTMATTER=re.compile(r'\A(﻿?---[ \t]*\r?\n)(.*?)(\r?\n---[ \t]*\r?\n)',re.S)
 
 def status_rel(domain):return f'{DASH}/Sync Status - {domain}.md'
 
-def _plan_applied(root,plan_id):
-    journal=read_json(root/'.operations'/plan_id/'journal.json',None)
-    return bool(journal) and journal.get('state')=='committed'
-
 def _ticked(vault,domain,pattern):
     page=_read(confined(vault,status_rel(domain)))
     return [m[1] for m in (pattern.match(line) for line in (page or '').splitlines()) if m]
-
-def _approve_ticked(domain,vault,root,entries):
-    """Apply plans whose checkbox was ticked on this domain's Sync Status page."""
-    ours={e['pending_plan']:(note_id,e) for note_id,e in entries.items() if e.get('pending_plan')}
-    approved=[]
-    from .governance import apply
-    for plan_id in _ticked(vault,domain,APPROVAL_LINE):
-        if plan_id not in ours or _plan_applied(root,plan_id):continue
-        note_id,entry=ours[plan_id];value=read_json(root/'.plans'/(plan_id+'.json'),None)
-        try:
-            if not value:raise ValueError('Plan unavailable')
-            receipt=apply(root,plan_id,value['digest'],sync_overlay=False)
-            approved.append((plan_id,note_id,entry,receipt.get('operation_id',plan_id)))
-        except ValueError as exc:entry['pending_error']='Approval failed: '+str(exc)
-    return approved
 
 def _canonical_changes(note,updated,domain,root):
     """Changes for writing an edited note, including a rename and links that point at it."""
@@ -177,25 +156,17 @@ def sync(domain,vault,root=None,trigger=None):
         state,new_vault=_session_ids(state,vault)
         state['vault']=str(vault);state['vault_id']=vault_id(vault)
         entries=state['entries'];applied_log=state.setdefault('applied',[]);capture_errors={}
-        copied=conflicts=staged=deferred=restored=renamed=0;plans=[];applied=[];view_changes={};staging_changes={};wrote_canonical=False
+        copied=conflicts=staged=deferred=restored=renamed=0;applied=[];view_changes={};staging_changes={};wrote_canonical=False
         owner={}
         def log(action,note_id,title,operation_id):
             applied.append(operation_id);applied_log.append({'action':action,'id':note_id,'title':title,'operation_id':operation_id,'at':now()})
         titles={n['id']:n['title'] for n in inventory(domain,root,retired=True)}
-        approved=[]
-        for plan_id,note_id,entry,operation_id in _approve_ticked(domain,vault,root,entries):
-            approved.append(plan_id);wrote_canonical=True
-            log(DONE.get(str(entry.get('pending_action','')).lower(),'Applied'),note_id,titles.get(note_id,Path(entry.get('overlay','?')).stem),operation_id)
         notes=inventory(domain,root,retired=True);by_id={n['id']:n for n in notes}
-        # Plans applied since the last sync (ticked here or applied elsewhere): let canonical win.
+        # A vault change that waited for an approval before 2026-11-26 (when the user removed plans) is applied directly below:
+        # forget the wait and the copy's hash, so the vault copy counts as the edit it is.
         for note_id,entry in list(entries.items()):
-            if note_id.startswith('capture-') or not entry.get('pending_plan') or not _plan_applied(root,entry['pending_plan']):continue
-            if note_id not in by_id:
-                path=confined(vault,entry['overlay'])
-                if path.exists() and _hash(path)==entry.get('pending_hash'):view_changes[entry['overlay']]=None
-                entries.pop(note_id);copied+=1;continue
-            current=_hash(confined(vault,entry['overlay']))
-            entries[note_id]={'overlay':entry['overlay'],'overlay_hash':current,'canonical_hash':None} if current else {}
+            if note_id.startswith('capture-') or not entry.get('pending_plan'):continue
+            entries[note_id]={k:v for k,v in entry.items() if k not in ('pending_plan','pending_action','pending_hash','overlay_hash')}
         # "Keep my vault version" ticks: put the saved vault copy back so it is applied below as an edit.
         forced=set()
         for note_id in _ticked(vault,domain,KEEP_LINE):
@@ -276,10 +247,12 @@ def sync(domain,vault,root=None,trigger=None):
                 if vault_reset:
                     after_hash=place(note_id,old_rel,rel,source_text,None,None);restored+=1
                 else:
-                    pending=True;staged+=1
-                    proposed=plan(root,{src.relative_to(root).as_posix():None},'overlay_delete',[domain],{'id':note_id,'action':'delete'})
-                    plans.append(proposed);entry.update(pending_plan=proposed['plan_id'],pending_hash='deleted',pending_action='Delete')
-                    entry.pop('pending_error',None)
+                    # Deleted in the vault: the user's intent, applied directly and journaled, so undo brings the note back.
+                    from .notes import _change_set
+                    changes,expected,_=_change_set(note_id,domain,'delete',root,note['revision'],actor='vault')
+                    receipt=transaction(root,changes,'overlay_delete',expected);wrote_canonical=True
+                    log(DONE['delete'],note_id,note['title'],receipt.get('operation_id'))
+                    entries.pop(note_id,None);continue
             elif overlay_hash!=old_overlay and (source_hash!=old_source or not entry) and note_id not in forced:
                 # Changed on both sides. Memory wins in the vault; the vault version is kept and can be restored.
                 conflicts+=1
@@ -319,11 +292,16 @@ def sync(domain,vault,root=None,trigger=None):
                     else:
                         canonical_target,new_text,new_hash=src,source_text,source_hash
                     if wanted!=note.get('status'):
-                        from .notes import change
-                        proposed=change(note_id,domain,LIFECYCLE[wanted],root,plan_only=True,actor='vault')
-                        plans.append(proposed);pending=True;staged+=1
-                        entry={'overlay':old_rel,'overlay_hash':overlay_hash,'canonical_hash':new_hash,'pending_hash':overlay_hash,
-                               'pending_plan':proposed['plan_id'],'pending_action':LIFECYCLE[wanted].capitalize()}
+                        # Archived or resolved in the vault: applied directly and journaled (undo reverses it), and the copy moves to the archive.
+                        from .notes import _change_set
+                        action=LIFECYCLE[wanted]
+                        changes,expected,canonical_target=_change_set(note_id,domain,action,root,actor='vault')
+                        receipt=transaction(root,changes,action,expected);wrote_canonical=True
+                        log(DONE[action],note_id,updated['title'],receipt.get('operation_id'))
+                        new_text=changes[canonical_target.relative_to(root).as_posix()];after_source=digest(new_text.encode())
+                        after_rel=note_rel(domain,canonical_target.name,False)
+                        after_hash=place(note_id,old_rel,after_rel,new_text,overlay_text,overlay_hash);copied+=1
+                        conflict=None;note=dict(note,status=wanted)   # the sync state records the status the note has now
                     else:
                         after_rel=note_rel(domain,canonical_target.name);after_source=new_hash
                         after_hash=place(note_id,old_rel,after_rel,new_text,overlay_text,overlay_hash);copied+=1
@@ -431,7 +409,7 @@ def sync(domain,vault,root=None,trigger=None):
             if value is None:copy_manifest['files'].pop(rel,None)
         view_changes[COPIES]=canonical_json(copy_manifest)
         transaction(vault,view_changes,'overlay_sync',skip_unchanged=True)
-        counts={'copied':copied,'applied':len(applied),'approved':len(approved),'conflicts':conflicts,
+        counts={'copied':copied,'applied':len(applied),'conflicts':conflicts,
                 'deferred':deferred,'restored':restored,'renamed':renamed,'new_vault':new_vault}
         # Only a sync that did something moves the stamp, so a quiet one rewrites and journals nothing.
         if any(counts.values()) or not state.get('last_sync'):state['last_sync']={'at':now(),'trigger':trigger,**counts}
@@ -439,7 +417,7 @@ def sync(domain,vault,root=None,trigger=None):
         transaction(root,staging_changes,'overlay_state',skip_unchanged=True)
         if wrote_canonical:reconcile(domain,root,sync_overlay=False)
         _prune_legacy_dirs(vault)
-        return {'ok':True,'domain':domain,'copied':copied,'staged':staged,'conflicts':conflicts,'plans':plans,'applied':applied,'approved':approved,
+        return {'ok':True,'domain':domain,'copied':copied,'staged':staged,'conflicts':conflicts,'applied':applied,
                 'deferred':deferred+skipped,'restored':restored,'renamed':renamed,'new_vault':new_vault}
 
 def _undo_command(domain,operation_id):
@@ -452,11 +430,9 @@ def _status_page(domain,root,notes,view_conflicts=(),failure=None):
     state=read_json(root/'domains'/domain/'sync-state.json',{'entries':{}});by_id={n['id']:n for n in notes}
     def name(note_id,entry):
         n=by_id.get(note_id);return n['title'] if n else Path(entry.get('overlay','?')).stem
-    waiting=[];errors=[];conflicts=[]
+    errors=[];conflicts=[]
     for note_id,entry in state.get('entries',{}).items():
         if note_id.startswith('capture-'):continue
-        if entry.get('pending_plan') and not _plan_applied(root,entry['pending_plan']):
-            waiting.append(f"- [ ] {entry.get('pending_action','Apply')}: {name(note_id,entry)} <!-- lm:{entry['pending_plan']} -->")
         if entry.get('pending_error'):errors.append(f"- {name(note_id,entry)}: {entry['pending_error']}")
         conflict=entry.get('conflict')
         if isinstance(conflict,dict):
@@ -470,15 +446,14 @@ def _status_page(domain,root,notes,view_conflicts=(),failure=None):
     last=state.get('last_sync') or {}
     if failure:header=f"**Last sync failed** at {now()[:16].replace('T',' ')} UTC: {failure}"
     elif last:
-        parts=[f"{last.get(k)} {label}" for k,label in (('applied','edits saved'),('approved','approvals'),('conflicts','conflicts'),('deferred','still being edited'),('restored','missing copies restored'),('renamed','renamed files given back their memory names')) if last.get(k)]
+        parts=[f"{last.get(k)} {label}" for k,label in (('applied','edits saved'),('conflicts','conflicts'),('deferred','still being edited'),('restored','missing copies restored'),('renamed','renamed files given back their memory names')) if last.get(k)]
         trigger=last.get('trigger')
         header=f"Last change synced: {last['at'][:16].replace('T',' ')} UTC"+(f" ({trigger})" if trigger else '')+(' — '+', '.join(parts) if parts else ' — copies refreshed')
-        if last.get('new_vault'):header+='. This vault was new to memory, so notes were copied and nothing was proposed for deletion.'
+        if last.get('new_vault'):header+='. This vault was new to memory, so notes were copied and nothing was deleted.'
     else:header='Not synced yet.'
     section=lambda title,lines,empty:f'## {title}\n\n'+('\n'.join(lines) if lines else f'_{empty}_')+'\n'
-    return (f'# Sync Status — {domain}\n\n{header}\n\nTick a box to approve it; the change is applied at the next sync (session end). '
-            'Leave it unticked to wait. This page is regenerated whenever a sync changes something.\n\n'
-            +section('Waiting for approval',waiting,'Nothing waiting.')+'\n'
+    return (f'# Sync Status — {domain}\n\n{header}\n\nEdits, archives, resolves and deletions made in the vault are saved at the next sync '
+            '(session end); each one is listed under Recently applied with its undo command. This page is regenerated whenever a sync changes something.\n\n'
             +section("Couldn't save",errors,'No problems.')+'\n'
             +section('Conflicts',conflicts,'No conflicts.')+'\n'
             +section('Recently applied',recent,'Nothing yet.'))
@@ -651,7 +626,7 @@ def sync_all(root=None,trigger='manual',primary=None):
     for domain,vault,_ in targets:
         try:
             r=build_overlay(domain,vault,root,trigger)
-            results.append({'domain':domain,'vault':vault,'ok':True,'applied':len(r['applied']),'approved':len(r['approved']),'conflicts':r['conflicts'],'plans':len(r['plans'])})
+            results.append({'domain':domain,'vault':vault,'ok':True,'applied':len(r['applied']),'conflicts':r['conflicts']})
         except Exception as exc:
             from .logs import swallowed
             swallowed('sync.sync_all',exc,root)
@@ -661,8 +636,13 @@ def sync_all(root=None,trigger='manual',primary=None):
     except OSError:pass
     return summary
 
-def teardown_plan(vault):
-    """A plan that removes what Living Memory put in the vault: the files its manifests list. An edited file is never removed."""
+def teardown(vault):
+    """One direct, journaled write that removes what Living Memory put in the vault: the files its manifests list. An edited file is
+    never removed, and the rest can be generated again with overlay-build."""
+    with store_lock(Path(vault).resolve()):return _teardown(vault)
+
+def _teardown(vault):
+    from .governance import commit
     vault=Path(vault).resolve();manifest={'files':{}};semantic={};changes={}
     for rel in (GENERATED,COPIES,LEGACY_GENERATED,LEGACY_COPIES,VAULT_ID):
         if (vault/rel).exists():
@@ -673,7 +653,7 @@ def teardown_plan(vault):
         if current!=expected and not (rel in semantic and _canvas_key(_read(vault/rel))==semantic[rel]):
             raise ValueError('Modified managed file preserved: '+rel)
         changes[rel]=None
-    return plan(vault,changes,'overlay_teardown',summary={'files':len(changes)})
+    return commit(vault,changes,'overlay_teardown',summary={'files':len(changes)})
 def main(argv=None):
     import argparse
     p=argparse.ArgumentParser();p.add_argument('domain');p.add_argument('vault',type=Path);p.add_argument('--root',type=Path,default=memory_root());a=p.parse_args(argv);print(json.dumps(sync(a.domain,a.vault,a.root)));return 0
