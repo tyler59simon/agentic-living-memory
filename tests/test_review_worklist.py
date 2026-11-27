@@ -169,7 +169,8 @@ class Surfaces(Base):
         for i in range(3):self.cap(f'Old status number {i} with a rather long title that goes on and on and on for a while',f'Green {i}.',type='status',review_by='2020-01-01')
         self.cap('Wiring task','Pending: wire the adapter.')
         line=_review_line('demo',self.root)[0]
-        self.assertIn('4 note(s) due for review (3 due, 1 warned;',line);self.assertEqual(line.count('demo:'),2);self.assertLessEqual(len(line),260)
+        # Advisory warned rows are excluded from the SessionStart headline (REL-U3); still available via `review --kind warned`.
+        self.assertIn('3 note(s) due for review (3 due;',line);self.assertNotIn('warned',line);self.assertEqual(line.count('demo:'),2);self.assertLessEqual(len(line),260)
         self.assertIn(line,render_context(str(self.base/'project'),self.root))
         self.assertEqual(_review_line('demo',self.root,[]),[])   # preloaded notes are used as given
 

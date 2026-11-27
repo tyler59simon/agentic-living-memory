@@ -336,8 +336,8 @@ class Sim:
         detail={}
         if kind=='hook':
             event=record['event']
-            # Claude and Factory answer settled Read/Glob/Grep calls in core/hookfast.py: an empty reply and no log line.
-            fast=event=='pre-tool-use' and not mine and not record.get('reply') and self.harness in {'claude','factory'}
+            # All 5 harnesses answer settled Read/Glob/Grep calls in core/hookfast.py: an empty reply and no log line.
+            fast=event=='pre-tool-use' and not mine and not record.get('reply') and self.harness in {'claude','codex','copilot','factory','antigravity'}
             if 'fast' in expect and expect['fast']!=fast:fail(f"fast: expected {expect['fast']!r}, got {fast!r}")
             if fast:record['fast']=True;return
             if len(mine)!=1 or mine[0].get('event')!=event:fail(f'expected one hook line for {event}, got {[r.get("event") for r in mine]}');return

@@ -133,11 +133,65 @@ def print_next_steps(summary) -> None:
         print(f'Installed. Harness wiring is current ({", ".join(summary["wiring_current"])}); nothing to rerun.', file=sys.stderr)
 
 
+def wire_harnesses(steps, python=None) -> tuple:
+    """Run each setup.py wiring step from next_steps(). Returns (wired_harnesses, errors)."""
+    import shlex
+    wired, errors = [], []
+    setup_path = INSTALL_DIR / "integrations" / "setup.py"
+    exe = python or sys.executable
+    for step in steps:
+        tokens = shlex.split(step, posix=os.name != 'nt')
+        harness = next((t for t in tokens if t in HARNESSES), None)
+        if not harness:
+            continue
+        argv = [exe, str(setup_path), harness, '--hooks']
+        try:
+            done = subprocess.run(argv, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120)
+            if done.returncode == 0:
+                wired.append(harness)
+            else:
+                msg = ((done.stderr or done.stdout).strip().splitlines() or [f'exit {done.returncode}'])[-1]
+                errors.append(f'{harness}: {msg}')
+        except (OSError, subprocess.SubprocessError) as exc:
+            errors.append(f'{harness}: {exc}')
+    return wired, errors
+
+
+def unwire_all(extra_homes=(), folder=None) -> tuple:
+    """Unwire every harness whose config references `folder` (default INSTALL_DIR). Returns (unwired, errors)."""
+    marker = os.path.normcase(str(folder or INSTALL_DIR) + os.sep)
+    setup_path = (folder or INSTALL_DIR) / "integrations" / "setup.py"
+    unwired, errors = [], []
+    for harness, path in harness_configs(extra_homes):
+        try:
+            config = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        if not any(marker in os.path.normcase(text) for text in _strings(config)):
+            continue
+        home = path.parents[len(Path(CONFIG_NAMES[harness]).parts) - 1]
+        argv = [sys.executable, str(setup_path), harness, '--uninstall']
+        if home.resolve() != harness_home(harness).resolve():
+            argv += ['--home', str(home)]
+        try:
+            done = subprocess.run(argv, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120)
+            if done.returncode == 0:
+                unwired.append(f'{harness} ({home})')
+            else:
+                msg = ((done.stderr or done.stdout).strip().splitlines() or [f'exit {done.returncode}'])[-1]
+                errors.append(f'{harness} ({home}): {msg}')
+        except (OSError, subprocess.SubprocessError) as exc:
+            errors.append(f'{harness} ({home}): {exc}')
+    return unwired, errors
+
+
 def main() -> int:
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--location', type=Path, help='Shared memory folder for unattended first-time setup')
-    parser.add_argument('--uninstall', action='store_true', help='Remove the package (unwire each harness first)')
+    parser.add_argument('--wire-all', action='store_true', help='After installing, wire every detected harness that needs wiring')
+    parser.add_argument('--uninstall', action='store_true', help='Remove the package (unwire each harness first, or pass --purge)')
+    parser.add_argument('--purge', action='store_true', help='With --uninstall: unwire every harness pointing at the installed package first')
     parser.add_argument('--retire-legacy', action='store_true', help=f'Remove the old copy in {LEGACY_DIR}')
     parser.add_argument('--home', action='append', default=[], metavar='HARNESS=PATH',
                         help='A harness home set up with setup.py --home PATH; uninstall and retirement check it too (repeatable)')
@@ -158,6 +212,10 @@ def main() -> int:
         homes.append((harness, path))
     if args.uninstall and args.retire_legacy:
         parser.error('--uninstall and --retire-legacy are separate runs')
+    if args.purge and not args.uninstall:
+        parser.error('--purge goes with --uninstall')
+    if args.wire_all and (args.uninstall or args.retire_legacy):
+        parser.error('--wire-all cannot be combined with --uninstall or --retire-legacy')
     if args.plan:
         steps, current = next_steps()   # read-only; the old upgrader shows these from this reply only
         summary = {'files': len(_package_changes(INSTALL_DIR, False)), 'next_steps': steps, 'wiring_current': current}
@@ -173,9 +231,25 @@ def main() -> int:
     if args.retire_legacy:
         result = retire_legacy(homes)
     else:
+        unwired = []
+        if args.uninstall and args.purge:
+            unwired, unwire_errors = unwire_all(homes, INSTALL_DIR)
+            if unwire_errors:
+                raise ValueError('Failed to unwire before uninstall: ' + '; '.join(unwire_errors))
         result = install(args.uninstall, homes)
+        if unwired:
+            result['unwired'] = unwired
         if not args.uninstall:
-            print_next_steps(result.get('summary') or {})
+            summary = result.get('summary') or {}
+            if args.wire_all and summary.get('next_steps'):
+                wired, wire_errors = wire_harnesses(summary['next_steps'])
+                result['wired'] = wired
+                if wire_errors:
+                    result.setdefault('warnings', []).extend('wire failed: ' + e for e in wire_errors)
+                else:
+                    summary['next_steps'] = []
+                    summary['wiring_current'] = sorted(set(summary.get('wiring_current') or []) | set(wired))
+            print_next_steps(summary)
     print(json.dumps(result, separators=(',', ':')))
     return 0
 

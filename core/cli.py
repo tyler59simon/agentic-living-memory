@@ -16,8 +16,8 @@ def _reference(value,domain,root):
     """(domain, full note ID) for a ref, a unique ID prefix, or an exact note title."""
     from .notes import resolve_ref
     from .runtime import scope_domains
-    parents=scope_domains(domain,load_bindings(root)) if domain else []   # parents and children: what search shows can be named back
-    return resolve_ref(value,domain,root,parents)
+    parents=(scope_domains(domain,load_bindings(root)) if domain else [])+_global_names(root)   # parents, children, and global domains
+    return resolve_ref(value,domain,root,list(dict.fromkeys(parents)))
 
 def _need_revision(revision,ref):
     """The revision the caller read. Every write to an existing note needs it, so an edit made since that read is refused, not overwritten."""
@@ -50,15 +50,21 @@ def _session_state(root,session):
     except ValueError:return {}
     return value if isinstance(value,dict) else {}
 
-SESSION_ENV='CLAUDE_CODE_SESSION_ID'   # Claude Code gives every shell command its session ID, the one hooks receive
+SESSION_ENV='CLAUDE_CODE_SESSION_ID'   # Session ID env var when a harness provides it to shell commands
 SWITCH={'off','on','status'}
 # Commands that still run while memory is off for the session: the switch itself and checks that touch no notes.
 OFF_ALLOWED=SWITCH|{'version','doctor','help','housekeep'}
 
-def _switch(root,cmd,session):
-    """alm off / on / status for one session: a flag in the hooks' session state (runtime.session_off)."""
+def _switch(root,cmd,session,domain=None):
+    """alm off / on / status for one session, or a standalone store/domain/wiring summary for bare `alm status`."""
     from .runtime import _pointer,_update,session_hash,env_off
-    if not session:raise ValueError(f'no_session: run it inside a Claude Code session (! alm {cmd}) or pass --session ID')
+    if not session:
+        if cmd=='status':
+            from . import wiring as hook_wiring
+            domains=list_domains(root)['domains']
+            return {'ok':True,'mode':'store','root':str(root),'domain':domain,'domains':len(domains),'memory':'off' if env_off() else 'on',
+                    'reason':'env' if env_off() else None,'wiring':hook_wiring.wiring()}
+        raise ValueError(f'no_session: run it inside a coding agent session or pass --session ID')
     known=_pointer(root,session).exists()
     if cmd=='on' and env_off():raise ValueError('env_off: this session was started with LIVING_MEMORY_OFF=1; start a new session without it')
     if cmd=='off':_update(root,session,lambda s:s.update(off={'at':now()}))
@@ -333,9 +339,9 @@ def _sectioned(args,body='',note_type=None,root=None):
 
 # source-sync writes only the derived knowledge-base index (as search --rebuild does the notes' one), so subagents and viewers may run it
 # (not for a remote source, which it would pull from the network: sources.sync refuses that for them).
-READ_ONLY={'help','config','status','search','read','query','doctor','validate','history','logs','open','stats','timeline','domains','version','projects','systems','types','ask','sources','source-sync','ingest-scan','views','wiki','log','maintenance','rebaseline','recap','proposals','doc'}
+READ_ONLY={'help','config','status','search','read','query','doctor','validate','history','logs','open','stats','timeline','domains','version','projects','systems','types','ask','sources','source-sync','ingest-scan','views','wiki','log','maintenance','rebaseline','recap','proposals','doc','review','taxonomy','diff'}
 # Viewer: a human-facing app browsing the store. Read-only, and its reads are not usage evidence for the diary.
-VIEWER=READ_ONLY|{'taxonomy','review','diff'}
+VIEWER=READ_ONLY
 # Direct journaled writes; `taxonomy add` is the same kind of write under a read command. Refused to subagents, viewers and Hivemind agents.
 DIRECT_WRITES={'archive','rewrite','remap','promote','source','project','system','type'}
 # Direct journaled writes that delete, merge or rewrite many notes at once (plans until 2026-11-26). The harness asks the user
@@ -445,11 +451,11 @@ def _search_scope(root,domain):
 
 # The forms of `search` and the flags each takes besides the query and --limit. A mode flag (--sources, --pages, --transcript, --links) chooses a form; without one,
 # a query or --file is a notes search and nothing else lists notes. Default --limit: 5, pages 10, list 200.
-SEARCH_FLAGS={'notes':{'--file','--scope','--filter','--rebuild','--explain'},'sources':set(),'pages':{'--all-domains'},'transcript':{'--session','--all'},'links':{'--all-domains','--status'},
-              'list':{'--type','--tag','--status','--all-domains','--with-summary','--offset'}}
+SEARCH_FLAGS={'notes':{'--file','--scope','--filter','--rebuild','--explain','--type','--tag','--status','--project','--all-domains'},'sources':set(),'pages':{'--all-domains'},'transcript':{'--session','--all'},'links':{'--all-domains','--status'},
+              'list':{'--type','--tag','--status','--project','--all-domains','--with-summary','--offset'}}
 SEARCH_LIMIT={'notes':5,'sources':5,'pages':10,'transcript':5,'list':200}
 SEARCH_FORM={'notes':'a notes search (a query)','sources':'search --sources','pages':'search --pages','transcript':'search --transcript','links':'search --links','list':'a list of notes (no query)'}
-SEARCH_ALT={'--type':'--filter type=T','--tag':'--filter tag=T','--status':'--filter status=S','--all-domains':'--scope all'}   # what a notes search uses in place
+SEARCH_ALT={}
 
 def _search_form(args):
     """The form of `search` the flags choose: notes, sources, pages, transcript, links or list. A flag that belongs to another form is refused with the right one named; --limit gets its default."""
@@ -458,7 +464,7 @@ def _search_form(args):
     query=bool(args.query.strip())
     form=modes[0] if modes else 'notes' if query or args.file else 'list'
     given={'--file':args.file,'--scope':args.scope,'--filter':args.filter,'--rebuild':args.rebuild,'--explain':args.explain,'--type':args.type,'--tag':args.tag,'--status':args.status,
-           '--all-domains':args.all_domains,'--with-summary':args.with_summary,'--offset':args.offset,'--session':args.session,'--all':args.all}
+           '--project':args.project,'--all-domains':args.all_domains,'--with-summary':args.with_summary,'--offset':args.offset,'--session':args.session,'--all':args.all}
     for flag,value in given.items():
         if (value is None or value is False or value==[]) or flag in SEARCH_FLAGS[form]:continue
         raise ValueError(f"{flag} does not go with {SEARCH_FORM[form]}; it goes with {' or '.join(SEARCH_FORM[f] for f,flags in SEARCH_FLAGS.items() if flag in flags)}"+(f"; a notes search uses {SEARCH_ALT[flag]}" if flag in SEARCH_ALT else ''))
@@ -467,7 +473,11 @@ def _search_form(args):
         if args.status not in (None,'active','any'):raise ValueError('search --links takes --status active or any')
     elif form=='transcript' and not args.session:raise ValueError('search --transcript needs --session SESSION')
     if not query and form in {'sources','pages','transcript'}:raise ValueError('search needs a query'+(f' with --{form}' if form!='sources' else ''))
-    if form=='notes':args.scope=args.scope or 'fallback'
+    if form=='notes':
+        if args.all_domains:
+            if args.scope and args.scope!='all':raise ValueError(f'--all-domains cannot be combined with --scope {args.scope}')
+            args.scope='all'
+        args.scope=args.scope or 'fallback'
     args.limit=args.limit if args.limit is not None else SEARCH_LIMIT.get(form)
     return form
 
@@ -626,7 +636,7 @@ def _propose(root,data,domain,session,to_global,redact=False):
     if found:raise ValueError(f'Potential credential detected ({found[0]} at character {found[1]}); remove it, replace it with a placeholder such as <REDACTED>, or pass --redact')
     from .private import check as private_check
     private_check(_session_state(root,session),data)
-    if not session:raise ValueError('propose needs --session SESSION (Claude Code sets CLAUDE_CODE_SESSION_ID for shell commands)')
+    if not session:raise ValueError('propose needs --session SESSION')
     if to_global:
         from .common import global_domain
         target=global_domain(root)
@@ -684,11 +694,11 @@ def _doc_parsers(p,common):
     ds=p.add_subparsers(dest='doc_action',required=True,metavar='ACTION')
     def dsub(name,text,parent=ds):q=parent.add_parser(name,description=text,help=text);common(q,True);return q
     def folder_page(q):q.add_argument('--file',metavar='PATH',required=True,help='A page of a folder notebook (absolute, or relative to the working folder)')
-    def private(q):q.add_argument('--include-private',action='store_true',help='Hivemind only: include private notebooks')
+    def private(q):q.add_argument('--include-private',action='store_true',help='Include private notebooks (user or local client only; refused to agents)')
     q=dsub('read','Read a page of a folder notebook');folder_page(q);q.add_argument('--max-chars',type=int);private(q)
     q=dsub('propose','Stage an edit of a folder notebook page for the user to review (agents may run it)');folder_page(q);q.add_argument('--base-revision',help='The revision you read; leave out for a new page');q.add_argument('--body-file',type=Path);q.add_argument('--note');q.add_argument('--session');private(q)
     q=dsub('undo','Undo a notebook operation');q.add_argument('operation_id');private(q)
-    q=dsub('folder','Folder notebooks: how far agents reach into them (Hivemind)');fs=q.add_subparsers(dest='folder_action',required=True,metavar='ACTION')
+    q=dsub('folder','Folder notebooks: configure agent visibility and privacy');fs=q.add_subparsers(dest='folder_action',required=True,metavar='ACTION')
     q=dsub('set','Add or change a folder notebook',fs);q.add_argument('path');q.add_argument('--visibility',choices=['hidden','searchable','injectable'],help='Left out: the folder keeps what Living Memory holds for it (a new one is searchable)')
     pv=q.add_mutually_exclusive_group();pv.add_argument('--private',dest='private',action='store_const',const=True);pv.add_argument('--no-private',dest='private',action='store_const',const=False)
     q=dsub('unset','Remove a folder notebook (a hidden or private one stays excluded unless --forget)',fs);q.add_argument('path');q.add_argument('--forget',action='store_true')
@@ -721,20 +731,18 @@ def _proposal_kind(pid):
 
 def _accept_note(parser,args):
     """`proposals accept ID` for a staged note: the code path of `capture --from-proposal ID` with nothing beside it. --rule and --pin go with it."""
-    stray=[flag for flag,given in (('--edited',args.edited),('--body-file',args.body_file),('--expected-revision',args.expected_revision),('--reason',args.reason),('--include-private',args.include_private),('--notebook',args.notebook)) if given]
+    stray=[flag for flag,given in (('--edited',getattr(args,'edited',False)),('--body-file',getattr(args,'body_file',None)),('--expected-revision',getattr(args,'expected_revision',None)),('--reason',getattr(args,'reason',None)),('--include-private',getattr(args,'include_private',False)),('--notebook',getattr(args,'notebook',None))) if given]
     if stray:raise ValueError(', '.join(stray)+' belong to a page edit, not a staged note')
     cap=parser.parse_args(['capture','--from-proposal',args.id])
-    for name in ('root','domain','cwd','json','actor','session','turn','rule','pin'):setattr(cap,name,getattr(args,name))
+    for name in ('root','domain','cwd','json','actor','session','turn','rule','pin'):setattr(cap,name,getattr(args,name,None))
     cap.accepting=True
     return cap
 
 def _proposals(args,root):
     """`proposals list|show|accept|reject` for staged notes (8 hex digits, core/proposals.py) and page edits (12, core/docs.py, folder notebooks)."""
     from . import proposals,docs
-    private=args.include_private
+    private=getattr(args,'include_private',False)
     if args.action=='list':
-        stray=[flag for flag,given in (('an ID',args.id),('--reason',args.reason),('--rule',args.rule),('--pin',args.pin),('--turn',args.turn),('--expected-revision',args.expected_revision),('--body-file',args.body_file),('--edited',args.edited)) if given]
-        if stray:raise ValueError('proposals list takes only --kind, --status, --session, --notebook and --domain, not '+', '.join(stray))
         rows=[]
         if args.kind=='note' and args.notebook:raise ValueError('--notebook belongs to page edits, not staged notes')
         if args.kind in ('note','all') and not args.notebook:
@@ -750,10 +758,9 @@ def _proposals(args,root):
     kind=_proposal_kind(args.id)
     if not kind:raise ValueError('A proposal ID is 8 hexadecimal characters (a staged note) or 12 (a page edit), as proposals list shows it')
     if args.action=='show':
-        if args.reason:raise ValueError('--reason belongs to reject')
         return {'ok':True,'kind':kind,'proposal':proposals.get(root,args.id) if kind=='note' else docs.show_proposal(root,args.id,private)['proposal']}
     if args.action=='accept':   # a note was turned into a capture before this point
-        stray=[flag for flag,given in (('--rule',args.rule),('--pin',args.pin),('--turn',args.turn),('--reason',args.reason)) if given]
+        stray=[flag for flag,given in (('--rule',getattr(args,'rule',False)),('--pin',getattr(args,'pin',False)),('--turn',getattr(args,'turn',None))) if given]
         if stray:raise ValueError(', '.join(stray)+' belong to a staged note, not a page edit')
         if args.body_file and not args.edited:raise ValueError('--body-file goes with --edited')
         return dict(docs.accept(root,args.id,args.expected_revision,private,_doc_body(args,required=True) if args.edited else None),kind='page')
@@ -762,7 +769,7 @@ def _proposals(args,root):
     from .repository import store_lock as _lock
     with _lock(root):row=proposals.settle(root,args.id,'rejected',reason=' '.join(args.reason.split())[:200])
     from .usage import record
-    record(root,'proposal-reject',[None],args.session or os.environ.get(SESSION_ENV))
+    record(root,'proposal-reject',[None],getattr(args,'session',None) or os.environ.get(SESSION_ENV))
     return {'ok':True,'kind':'note','id':row['id'],'status':'rejected'}
 
 
@@ -801,44 +808,58 @@ def build_parser():
     # No help= here, so argparse does not print its own flat list; the epilog lists them by group.
     def sub(name):p=subs.add_parser(name,description=HELP.get(name));common(p,True);return p
     p=sub('setup');p.add_argument('--location',type=Path);p.add_argument('--non-interactive',action='store_true');p.add_argument('--source',type=Path,help='Move the store from this folder (default: the configured store) to --location')
-    p=sub('upgrade')
+    p=sub('upgrade');p.add_argument('--rewire',action='store_true',help='Also run any harness wiring updates reported by the install')
     from .instructions import TOPICS
     p=sub('help');p.add_argument('topic',nargs='?',choices=list(TOPICS))
     p=sub('bind');p.add_argument('name');p.add_argument('prefix',nargs='+')
-    p=sub('config');p.add_argument('action',choices=['get','set']);p.add_argument('key',nargs='?',help='search_scope, repo_aliases, suggest_bind, auto_resolve, auto_rebaseline, cross_project or digest_refresh')
-    p.add_argument('value',nargs='?',help='set: JSON, for example true, false, ["_global"] or {"repo": ["alias"]}; null restores the default')
+    p=sub('config');cs=p.add_subparsers(dest='action',required=True,metavar='ACTION')
+    q=cs.add_parser('get',description='Show store settings or one key',help='Show store settings or one key');common(q,True)
+    q.add_argument('key',nargs='?',help='search_scope, repo_aliases, suggest_bind, auto_resolve, auto_rebaseline, cross_project or digest_refresh')
+    q=cs.add_parser('set',description='Change one store setting',help='Change one store setting');common(q,True)
+    q.add_argument('key',help='search_scope, repo_aliases, suggest_bind, auto_resolve, auto_rebaseline, cross_project or digest_refresh')
+    q.add_argument('value',help='JSON value, for example true, false, ["_global"] or {"repo": ["alias"]}; null restores the default')
     p=sub('unbind');p.add_argument('name',help='A bound domain with no notes left (move them with remap first)')
     p.add_argument('--prefix',help='Remove only this folder from the binding and keep the domain and its notes (after a bound folder moved)')
     # Legacy forms keep working but are left out of help: --tags, --prefix and a third positional (tags).
     def capture_flags(p):
-     p.add_argument('items',nargs='*',metavar='TITLE BODY',help='Title and body; or use --title and --summary');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='',help=argparse.SUPPRESS);p.add_argument('--prefix',help=argparse.SUPPRESS);p.add_argument('--type',type=_type_name,help='Note type (default: knowledge)');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],metavar='REF@REVISION',help="A note this one replaces, with the revision you read; it is retired in the same transaction, and its links and files are carried over (see --drop-links)");p.add_argument('--drop-links',action='store_true',help='With --supersedes: do not carry the links and files of the replaced note over');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk/map/runbook/brief notes get a default');p.add_argument('--pin',action='store_true',help=PIN_HELP);p.add_argument('--rule',action='store_true',help=RULE_HELP)
+     p.add_argument('items',nargs='*',metavar='TITLE BODY',help='Title and body; or use --title and --summary');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file','--body-file',dest='content_file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='',help=argparse.SUPPRESS);p.add_argument('--prefix',help=argparse.SUPPRESS);p.add_argument('--type',type=_type_name,help='Note type (default: knowledge)');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],metavar='REF@REVISION',help="A note this one replaces, with the revision you read; it is retired in the same transaction, and its links and files are carried over (see --drop-links)");p.add_argument('--drop-links',action='store_true',help='With --supersedes: do not carry the links and files of the replaced note over');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk/map/runbook/brief notes get a default');p.add_argument('--pin',action='store_true',help=PIN_HELP);p.add_argument('--rule',action='store_true',help=RULE_HELP)
      for facet in CAPTURE_FACETS:p.add_argument('--'+facet,action='append',default=[])
      p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
      sections_args(p);_file_flags(p)
     p=sub('capture');capture_flags(p)
     p.add_argument('--from-proposal',metavar='ID',help='Save this staged note edited: give the whole note (title and content) beside it. To save it as staged run proposals accept ID')
     p=sub('propose');capture_flags(p)
-    p=sub('proposals');p.add_argument('action',nargs='?',choices=['list','show','accept','reject'],default='list');p.add_argument('id',nargs='?',help='show, accept, reject: the proposal ID (8 hex digits: a staged note; 12: a page edit)')
-    p.add_argument('--kind',choices=['note','page','all'],default='all',help='list: staged notes, page edits or both (default all)')
-    p.add_argument('--status',choices=['pending','accepted','rejected','all'],default='pending',help='list: which proposals (default pending)');p.add_argument('--session',help='list: only this session; accept a note: the session that saves it')
-    p.add_argument('--notebook',help='list: only the page edits of this notebook (--domain narrows them to a domain)')
-    p.add_argument('--reason',help='reject: why, one line (a staged note needs it)')
-    p.add_argument('--rule',action='store_true',help='accept a note: make it a rule');p.add_argument('--pin',action='store_true',help='accept a note: pin it');p.add_argument('--turn',help='accept a note: with --session, the turn it settles')
-    p.add_argument('--expected-revision',help='accept a page edit: the page must be at this revision');p.add_argument('--body-file',type=Path)
-    p.add_argument('--edited',action='store_true',help='accept a page edit: write your merge of it (from --body-file or stdin) instead, against --expected-revision (left out: the page must not exist)')
-    p.add_argument('--include-private',action='store_true',help='Hivemind only: include private notebooks')
+    PRIV_HELP='Include private notebooks (user or local client only; refused to agents)'
+    p=sub('proposals');ps=p.add_subparsers(dest='action',required=True,metavar='ACTION')
+    q=ps.add_parser('list',description='List staged notes and page edits',help='List proposals (default)');common(q,True)
+    q.add_argument('--kind',choices=['note','page','all'],default='all',help='Staged notes, page edits or both (default all)')
+    q.add_argument('--status',choices=['pending','accepted','rejected','all'],default='pending',help='Which proposals (default pending)')
+    q.add_argument('--session',help='Only this session');q.add_argument('--notebook',help='Only page edits of this notebook (--domain narrows them to a domain)')
+    q.add_argument('--include-private',action='store_true',help=PRIV_HELP)
+    q=ps.add_parser('show',description='Show one proposal',help='Show one proposal');common(q,True)
+    q.add_argument('id',help='Proposal ID (8 hex digits: a staged note; 12: a page edit)');q.add_argument('--include-private',action='store_true',help=PRIV_HELP)
+    q=ps.add_parser('accept',description='Accept a staged note or page edit',help='Accept a proposal');common(q,True)
+    q.add_argument('id',help='Proposal ID (8 hex digits: a staged note; 12: a page edit)')
+    q.add_argument('--session',help='Accept a note: the session that saves it');q.add_argument('--rule',action='store_true',help='Accept a note: make it a rule')
+    q.add_argument('--pin',action='store_true',help='Accept a note: pin it');q.add_argument('--turn',help='Accept a note: with --session, the turn it settles')
+    q.add_argument('--expected-revision',help='Accept a page edit: the page must be at this revision');q.add_argument('--body-file',type=Path)
+    q.add_argument('--edited',action='store_true',help='Accept a page edit: write your merge (from --body-file or stdin) instead, against --expected-revision')
+    q.add_argument('--include-private',action='store_true',help=PRIV_HELP)
+    q=ps.add_parser('reject',description='Reject a staged note or page edit',help='Reject a proposal');common(q,True)
+    q.add_argument('id',help='Proposal ID (8 hex digits: a staged note; 12: a page edit)');q.add_argument('--reason',help='Why, one line (a staged note needs it)')
+    q.add_argument('--session',help='Session recording the rejection');q.add_argument('--include-private',action='store_true',help=PRIV_HELP)
     p=sub('search');p.add_argument('query',nargs='?',default='');p.add_argument('--file',help='Notes about this file or folder: listed in their files property, or named in the body');p.add_argument('--scope',choices=['active','fallback','all'],help='Notes: which domains (default fallback)');p.add_argument('--limit',type=int,help='Most results. Default 5 (notes, sources, transcript), 10 (pages), 200 (list); at most 20, 50, 20, 1000');p.add_argument('--filter',action='append',default=[]);p.add_argument('--rebuild',action='store_true',help='Rebuild the search index first');p.add_argument('--sources',action='store_true',help='Source excerpts from the project knowledge base only');p.add_argument('--explain',action='store_true',help='Add why each note was found: backend, scores, gate and the section the prompt hook would deliver')
     p.add_argument('--pages',action='store_true',help='Pages of registered folder notebooks only (with --all-domains: every domain)');p.add_argument('--transcript',action='store_true',help="This session's own transcript, for detail a compaction summarized away; needs --session");p.add_argument('--session',help='--transcript: the session ID');p.add_argument('--all',action='store_true',help='--transcript: search the whole transcript, not only what precedes the latest compaction')
-    p.add_argument('--links',action='store_true',help='The [[Title]] link graph between notes (no query)');p.add_argument('--status',choices=['active','resolved','archived','superseded','any'],help='--links: active or any. A list (no query): default active')
-    p.add_argument('--type',type=_type_name,action='append',help='A list (no query): only this note type (repeatable)');p.add_argument('--tag',action='append',default=[],help='A list (no query): only notes with this tag (repeatable: all must match)');p.add_argument('--all-domains',action='store_true',help='--pages, --links or a list: every domain folder, not only --domain');p.add_argument('--with-summary',action='store_true',help='A list: add summary, files and actions {open, done} to each row');p.add_argument('--offset',type=int,help='A list: skip this many rows')
+    p.add_argument('--links',action='store_true',help='The [[Title]] link graph between notes (no query)');p.add_argument('--status',choices=['active','resolved','archived','superseded','any'],help='Filter by status (--links: active or any; notes/list: default active)')
+    p.add_argument('--type',type=_type_name,action='append',help='Only this note type (repeatable)');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)');p.add_argument('--project',help='Only notes tagged project/SLUG');p.add_argument('--all-domains',action='store_true',help='Search every domain folder, not only --domain');p.add_argument('--with-summary',action='store_true',help='A list: add summary, files and actions {open, done} to each row');p.add_argument('--offset',type=int,help='A list: skip this many rows')
     p=sub('read');p.add_argument('reference');p.add_argument('--max-chars',type=int,default=16000);p.add_argument('--metadata-only',action='store_true');p.add_argument('--section',help='Only this section, by heading (as search evidence and prompt lines name it)')
-    p=sub('update');p.add_argument('reference');p.add_argument('--title');p.add_argument('--body');p.add_argument('--body-file',type=Path);p.add_argument('--tag',action='append');p.add_argument('--type',type=_type_name);p.add_argument('--context');p.add_argument('--review-by');p.add_argument('--expected-revision',help=REV_HELP);p.add_argument('--payload-file',type=Path);p.add_argument('--session');p.add_argument('--turn')
+    p=sub('update');p.add_argument('reference');p.add_argument('--title');p.add_argument('--body');p.add_argument('--body-file','--content-file',dest='body_file',type=Path);p.add_argument('--tag',action='append');p.add_argument('--add-tag',action='append',help='Append a tag without replacing existing tags (repeatable)');p.add_argument('--remove-tag',action='append',help='Remove a tag from existing tags (repeatable)');p.add_argument('--type',type=_type_name);p.add_argument('--context');p.add_argument('--review-by');p.add_argument('--expected-revision',help=REV_HELP);p.add_argument('--payload-file',type=Path);p.add_argument('--session');p.add_argument('--turn')
     pins=p.add_mutually_exclusive_group();pins.add_argument('--pin',dest='pin',action='store_const',const=True,help=PIN_HELP);pins.add_argument('--unpin',dest='pin',action='store_const',const=False,help='Remove retirement protection (a pin change never counts as checking the note)')
     rules=p.add_mutually_exclusive_group();rules.add_argument('--rule',dest='rule',action='store_const',const=True,help=RULE_HELP);rules.add_argument('--no-rule',dest='rule',action='store_const',const=False,help='Stop showing the note in full at every session start (a rule change never counts as checking the note)')
     p.add_argument('--distinct',metavar='REF@REVISION',help='Record that this note and REF (same domain, with the revision you read) are different subjects, so neither replaces the other; needs --why')
     p.add_argument('--why',help='With --distinct: the reason, one line of 8 to 200 characters')
     p.add_argument('--not-distinct',metavar='REF@REVISION',dest='not_distinct',help='Remove the distinct record between this note and REF (kept on either note; with the revision you read), so maintenance may review the pair again')
-    for facet in FACET_FLAGS:p.add_argument('--'+facet,action='append')
+    for facet in CAPTURE_FACETS:p.add_argument('--'+facet,action='append')
     p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
     sections_args(p,update=True);_file_flags(p)
     p=sub('supersede');p.add_argument('reference');p.add_argument('--expected-revision',help=REV_HELP);p.add_argument('--by',required=True,metavar='REF@REVISION',help='The note that replaces it, with the revision you read; its links and files are carried over (see --drop-links)');p.add_argument('--drop-links',action='store_true',help='Do not carry the links and files of the replaced note over');p.add_argument('--session');p.add_argument('--turn')
@@ -859,14 +880,14 @@ def build_parser():
     # A direct write replacing the bodies of several notes (a prose rewrite); titles never change.
     p=sub('rewrite');p.add_argument('--payload-file',type=Path,help='JSON list of {"ref", "revision", "body"}; default: stdin')
     p=sub('merge');p.add_argument('--payload-file',type=Path,help='JSON {"target": "DOMAIN:ID@REVISION", "sources": ["DOMAIN:ID@REVISION", ...], "body": "..."}; default: stdin')
-    p=sub('history');p.add_argument('--note');p.add_argument('--limit',type=int,default=20);p.add_argument('--include-private',action='store_true',help='Hivemind only: show operations on private notebooks');p.add_argument('--markdown',action='store_true',help='Return {ok, rows, markdown} with a dated list a person can read')
+    p=sub('history');p.add_argument('--note');p.add_argument('--limit',type=int,default=20);p.add_argument('--include-private',action='store_true',help=PRIV_HELP);p.add_argument('--markdown',action='store_true',help='Return {ok, rows, markdown} with a dated list a person can read')
     p=sub('recap');p.add_argument('--days',type=int,default=7,help='Days back, 1 to 90');p.add_argument('--project',help='Project slug');p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain')
     p=sub('log');p.add_argument('--project',help='Project slug');p.add_argument('--since',help='ISO date or time');p.add_argument('--until',help='ISO date or time, inclusive');p.add_argument('--note',help='One note (REF or ID, deleted notes too)');p.add_argument('--type',help='Note type or session');p.add_argument('--event',help='created, updated, confirmed, superseded, resolved, archived, reopened, deleted, promoted, moved, undone or session');p.add_argument('--limit',type=int,default=50)
-    p=sub('undo');p.add_argument('operation_id');p.add_argument('--include-private',action='store_true',help='Hivemind only: allow an operation on a private notebook')
+    p=sub('undo');p.add_argument('operation_id');p.add_argument('--include-private',action='store_true',help=PRIV_HELP)
     _doc_parsers(sub('doc'),common)
     p=sub('recover');p.add_argument('operation_id');p.add_argument('--direction',choices=['forward','backward'],default='forward');p.add_argument('--abandon',action='store_true',help='Stop treating the operation as pending; no note file is changed')
-    p.add_argument('--include-private',action='store_true',help='Hivemind only: allow an operation on a private notebook')
-    p=sub('diff');p.add_argument('operation_id');p.add_argument('--include-private',action='store_true',help='Hivemind only: show changes inside private notebooks')
+    p.add_argument('--include-private',action='store_true',help=PRIV_HELP)
+    p=sub('diff');p.add_argument('operation_id');p.add_argument('--include-private',action='store_true',help=PRIV_HELP)
     p=sub('doctor')
     p=sub('backup');p.add_argument('--keep',type=int,default=7)
     p=sub('housekeep')
@@ -877,16 +898,38 @@ def build_parser():
     p=sub('rebuild');p.add_argument('name',nargs='?')
     p=sub('rebaseline');p.add_argument('--dry-run',action='store_true',help='list each stale note and whether its change is relevant, write nothing')
     p.add_argument('--scheduled',action='store_true',help=argparse.SUPPRESS)
-    p=sub('maintenance');p.add_argument('action',choices=['status','preview','run','enable','disable','history'])
-    p.add_argument('--limit',type=int,help='preview, history: at most this many rows (default 10)');p.add_argument('--run',help='history: one run by ID, with its per-note decisions')
-    p.add_argument('--dry-run',action='store_true',help='run: call the model and validate its decisions, but change no notes (still uses the daily allowance; works while disabled)')
-    p.add_argument('--all-domains',action='store_true',help='enable: every configured non-global domain');p.add_argument('--model',help='enable: model alias (default sonnet)')
-    p.add_argument('--max-notes-per-day',type=int,help='enable: notes reviewed per day (default 10)');p.add_argument('--timeout-seconds',type=int,help='enable: run time limit (default 300)')
-    p.add_argument('--daily-budget-usd',help='enable: spending limit per day as a decimal string (default "1.00")');p.add_argument('--scheduled',action='store_true',help=argparse.SUPPRESS)
-    p=sub('semantic');p.add_argument('action',choices=['status','install','remove','rebuild','native']);p.add_argument('value',nargs='?',choices=['on','off'],help='native: on or off');p.add_argument('--model',help='Model to install (default: the recommended one)');p.add_argument('--from',dest='source',type=Path,help='Folder already holding the model files, for an offline install; hashes are still verified')
+    p=sub('maintenance');ms=p.add_subparsers(dest='action',required=True,metavar='ACTION')
+    q=ms.add_parser('status',description='Show maintenance status and budget',help='Show maintenance status');common(q,True)
+    q=ms.add_parser('preview',description='Preview notes eligible for maintenance',help='Preview eligible notes');common(q,True)
+    q.add_argument('--limit',type=int,default=10,help='At most this many rows (default 10)')
+    q=ms.add_parser('run',description='Run automatic maintenance',help='Run maintenance');common(q,True)
+    q.add_argument('--dry-run',action='store_true',help='Call the model and validate decisions without changing notes')
+    q.add_argument('--scheduled',action='store_true',help=argparse.SUPPRESS)
+    q=ms.add_parser('enable',description='Enable automatic maintenance',help='Enable maintenance');common(q,True)
+    q.add_argument('--all-domains',action='store_true',help='Every configured non-global domain')
+    q.add_argument('--model',help='Model alias (default sonnet)')
+    q.add_argument('--max-notes-per-day',type=int,help='Notes reviewed per day (default 10)')
+    q.add_argument('--timeout-seconds',type=int,help='Run time limit (default 300)')
+    q.add_argument('--daily-budget-usd',help='Spending limit per day as a decimal string (default "1.00")')
+    q=ms.add_parser('disable',description='Disable automatic maintenance',help='Disable maintenance');common(q,True)
+    q=ms.add_parser('history',description='Show past maintenance runs',help='Show run history');common(q,True)
+    q.add_argument('--limit',type=int,default=10,help='At most this many runs (default 10)')
+    q.add_argument('--run',help='One run by ID, with its per-note decisions')
+    p=sub('semantic');ss=p.add_subparsers(dest='action',required=True,metavar='ACTION')
+    q=ss.add_parser('status',description='Show semantic search status',help='Show semantic status');common(q,True)
+    q=ss.add_parser('install',description='Install a local semantic embedding model',help='Install embedding model');common(q,True)
+    q.add_argument('--model',help='Model to install (default: the recommended one)')
+    q.add_argument('--from',dest='source',type=Path,help='Folder already holding the model files, for an offline install; hashes are still verified')
+    q=ss.add_parser('remove',description='Remove the semantic embedding model',help='Remove embedding model');common(q,True)
+    q=ss.add_parser('rebuild',description='Rebuild semantic embeddings across domains',help='Rebuild embeddings');common(q,True)
+    q=ss.add_parser('native',description='Show or toggle native sqlite-vec KNN acceleration',help='Toggle native KNN');common(q,True)
+    q.add_argument('value',nargs='?',choices=['on','off'],help='on or off')
     p=sub('validate');p.add_argument('name',nargs='?')
     p=sub('query');p.add_argument('sql')
-    p=sub('taxonomy');p.add_argument('action',nargs='?',choices=['add'],help='add TAG [TAG ...]: register tags (direct, undoable); without it, show the taxonomy');p.add_argument('tags',nargs='*')
+    p=sub('taxonomy');ts=p.add_subparsers(dest='action',required=True,metavar='ACTION')
+    q=ts.add_parser('show',description='Show the tag taxonomy (default)',help='Show the taxonomy (default)');common(q,True)
+    q=ts.add_parser('add',description='Register one or more tags (direct, undoable)',help='Register tags');common(q,True)
+    q.add_argument('tags',nargs='+',metavar='TAG')
     p=sub('project');p.add_argument('action',choices=['create','update','archive']);p.add_argument('--payload-file',type=Path)
     p=sub('projects');p.add_argument('--status',choices=['active','paused','archived','any'],default='any')
     p=sub('system');p.add_argument('action',choices=['create','update','retire']);p.add_argument('--payload-file',type=Path)
@@ -900,11 +943,26 @@ def build_parser():
     p=sub('ingest-scan');p.add_argument('--source',help='One source (a `sources` name); default: all of the domain');p.add_argument('--limit',type=int,default=50);p.add_argument('--changed',action='store_true',help='Only files with no digest yet or a stale one')
     p=sub('ingest-skip');p.add_argument('--payload-file',type=Path)
     p=sub('ask');p.add_argument('query',nargs='+',help='A question about the project');p.add_argument('--limit',type=int,default=5,help='Notes and source excerpts shown, at most, of each')
-    p=sub('views');p.add_argument('action',nargs='?',choices=['list','add','update','remove','render','published'],help='Default: list');p.add_argument('reference',nargs='?',help='The note (REF, ID prefix or exact title); for update and remove of a query view, its ID (q-xxxxxxxx)')
-    p.add_argument('--all-domains',action='store_true',help='list: every domain, not only --domain');p.add_argument('--title',help="add: the view's short title (default: the note title; a query view needs one); update: a new title")
-    p.add_argument('--spec-file',type=Path,help='add (with no REF): a query view from this JSON file; update: replace the query')
-    p.add_argument('--all',action='store_true',help='render: every registered view');p.add_argument('--target',choices=['local','artifact'],default='local',help="render: local (dark, reloads itself) or artifact (follows the viewer's theme)")
-    p.add_argument('--format',choices=['html','json'],default='html',help='render: the page, or the view model as JSON');p.add_argument('--out',type=Path,help='render: write here instead of the standard path');p.add_argument('--url',help='published: where the artifact page lives')
+    p=sub('views');vs=p.add_subparsers(dest='action',required=True,metavar='ACTION')
+    q=vs.add_parser('list',description='List registered views (default)',help='List views (default)');common(q,True)
+    q.add_argument('--all-domains',action='store_true',help='Every domain, not only --domain')
+    q=vs.add_parser('add',description='Register a note view or query view',help='Add a view');common(q,True)
+    q.add_argument('reference',nargs='?',help='The note (REF, ID prefix or exact title); omit with --spec-file for a query view')
+    q.add_argument('--title',help="The view's short title (default: the note title; a query view needs one)")
+    q.add_argument('--spec-file',type=Path,help='With no REF: a query view from this JSON file')
+    q=vs.add_parser('update',description='Update a query view',help='Update a query view');common(q,True)
+    q.add_argument('reference',help='Query view ID (q-xxxxxxxx; views lists them)')
+    q.add_argument('--title',help='New title');q.add_argument('--spec-file',type=Path,help='Replace the query spec')
+    q=vs.add_parser('remove',description='Remove a registered view',help='Remove a view');common(q,True)
+    q.add_argument('reference',help='Note REF/ID/title, or query view ID (q-xxxxxxxx)')
+    q=vs.add_parser('render',description='Render one view or all views',help='Render views');common(q,True)
+    q.add_argument('reference',nargs='?',help='The note (REF, ID prefix or exact title)')
+    q.add_argument('--all',action='store_true',help='Render every registered view')
+    q.add_argument('--target',choices=['local','artifact'],default='local',help="local (dark, reloads itself) or artifact (follows the viewer's theme)")
+    q.add_argument('--format',choices=['html','json'],default='html',help='The page, or the view model as JSON')
+    q.add_argument('--out',type=Path,help='Write here instead of the standard path')
+    q=vs.add_parser('published',description='Record where an artifact view was published',help='Record published URL');common(q,True)
+    q.add_argument('reference',help='The note (REF, ID prefix or exact title)');q.add_argument('--url',required=True,help='Where the artifact page lives')
     p=sub('wiki');p.add_argument('--archived',action='store_true',help='Include retired notes')
     p.add_argument('--format',choices=['html','json'],default='html',help='The page, or the wiki model as JSON (json without --out prints it)');p.add_argument('--out',type=Path,help='Write here instead of <store>/.views/<domain>/wiki.html (agent edition: agent-wiki.html)')
     p.add_argument('--theme',choices=['purple','emerald','emerald-light'],help='The theme the page starts in (default: follow the system); the page has a picker')
@@ -916,8 +974,8 @@ def build_parser():
     p=sub('retag');p.add_argument('--payload-file',type=Path,help='JSON {"OLD_TAG": "NEW_TAG", ...}; default: stdin')
     p=sub('remap');p.add_argument('--payload-file',type=Path)
     p=sub('promote');p.add_argument('refs',nargs='*',metavar='REF@REVISION',help='Project notes to move to the global domain, each with the revision you read');p.add_argument('--suggest',action='store_true',help='List candidates with reasons; writes nothing');p.add_argument('--only',help='With --suggest: one domain instead of all')
-    for name in sorted(SWITCH):p=sub(name);p.add_argument('--session',help='Session ID; default: $CLAUDE_CODE_SESSION_ID, which Claude Code sets for shell commands')
-    p=sub('capture-finalize');p.add_argument('--session',required=True);p.add_argument('--turn',help='Defaults to the latest prompt of the session');p.add_argument('--note',action='append',default=[])
+    for name in sorted(SWITCH):p=sub(name);p.add_argument('--session',help='Session ID (defaults to $CLAUDE_CODE_SESSION_ID when set; bare status shows store status)')
+    p=sub('capture-finalize');p.add_argument('--session',help='Session ID (defaults to $CLAUDE_CODE_SESSION_ID when set)');p.add_argument('--turn',help='Defaults to the latest prompt of the session');p.add_argument('--note',action='append',default=[])
     p=sub('domains')
     p=sub('version')
     p=sub('serve');p.add_argument('--stdio',action='store_true',required=True,help='JSON-lines requests on stdin, one reply line each on stdout')
@@ -928,36 +986,66 @@ def build_parser():
     parser.subs=subs   # main() reads the command names from it
     return parser
 
+_DEFAULT_SUBACTION={'proposals':({'list','show','accept','reject'},'list'),
+                    'views':({'list','add','update','remove','render','published'},'list'),
+                    'taxonomy':({'show','add'},'show')}
+_GLOBAL_VAL_OPTS={'--root','--domain','--cwd','--actor'}
+
+def _normalize_argv(argv):
+    """Insert default sub-actions (`proposals` -> `proposals list`, `views` -> `views list`, `taxonomy` -> `taxonomy show`)
+    when the caller omitted the action and is not asking for parent `--help` (REL-U7)."""
+    tokens=list(argv) if argv is not None else list(sys.argv[1:])
+    i=0
+    while i<len(tokens):
+        tok=tokens[i]
+        if tok in ('-h','--help'):return tokens
+        if tok in _GLOBAL_VAL_OPTS:i+=2;continue
+        if tok=='--json' or any(tok.startswith(o+'=') for o in _GLOBAL_VAL_OPTS):i+=1;continue
+        if tok.startswith('-'):return tokens
+        break
+    if i>=len(tokens) or tokens[i] not in _DEFAULT_SUBACTION:return tokens
+    actions,default=_DEFAULT_SUBACTION[tokens[i]]
+    j=i+1
+    while j<len(tokens):
+        tok=tokens[j]
+        if tok in ('-h','--help'):return tokens
+        if tok in _GLOBAL_VAL_OPTS:j+=2;continue
+        if tok=='--json' or any(tok.startswith(o+'=') for o in _GLOBAL_VAL_OPTS):j+=1;continue
+        if tok in actions:return tokens
+        if tok.startswith('-'):tokens.insert(j,default);return tokens
+        return tokens   # unrecognized positional: let argparse report invalid choice
+    tokens.append(default);return tokens
+
 def main(argv=None):
     for stream in (sys.stdout,sys.stderr):
         if hasattr(stream,'reconfigure') and (stream.encoding or '').lower().replace('-','')!='utf8':
             try:stream.reconfigure(encoding='utf-8')
             except (ValueError,OSError):pass
     parser=build_parser();subs=parser.subs
-    try:args=parser.parse_args(argv)
+    given=list(argv) if argv is not None else list(sys.argv[1:])
+    try:args=parser.parse_args(_normalize_argv(given))
     except _ArgumentError as exc:
-        given=argv if argv is not None else sys.argv[1:]
         # Leftover flags are reported by the top-level parser; name the command's own help.
         command=next((a for a in given if a in subs.choices),None) if exc.prog=='alm' else None
         return report_error(str(exc),'invalid','--json' in given,f'alm {command}' if command else exc.prog)
     cwd=args.cwd or os.getcwd()
-    invocation={'start':time.perf_counter(),'argv':list(argv) if argv is not None else sys.argv[1:]}
+    invocation={'start':time.perf_counter(),'argv':given}
     try:
         # Agents started inside a Hivemind terminal inherit HIVEMIND_SESSION; Hivemind's own backend does not. Every path (batch and serve
         # re-enter main) reaches this point before a governed command runs.
         if os.environ.get('HIVEMIND_SESSION') and (args.command in {'undo','recover','upgrade','setup'}|DIRECT_WRITES|BULK_WRITES|VAULT_SYNCS or (args.command=='taxonomy' and args.action=='add') or (args.command=='config' and args.action=='set') or (args.command=='doc' and args.doc_action in DOC_WRITES)
-                                                    or (args.command=='proposals' and args.action in {'accept','reject'} and _proposal_kind(args.id)=='page')):
+                                                    or (args.command=='proposals' and args.action in {'accept','reject'} and _proposal_kind(getattr(args,'id',None))=='page')):
             from .runtime import HIVEMIND_DENY
             raise ValueError('hivemind: '+HIVEMIND_DENY)
-        # Private notebooks stay out of agent sessions; only Hivemind's own bridge, which has no HIVEMIND_SESSION, asks for them (NS-2A).
+        # Private notebooks stay out of agent sessions; only a user terminal or local client without HIVEMIND_SESSION asks for them (NS-2A).
         if os.environ.get('HIVEMIND_SESSION') and getattr(args,'include_private',False):
-            raise ValueError('hivemind: --include-private is for Hivemind itself; private notebooks are not shown to agent sessions.')
+            raise ValueError('hivemind: --include-private is not available in agent sessions; private notebooks are excluded.')
         # The hook refuses the flag to every agent; the CLI refuses it to a declared subagent too, for hosts without the hook.
         if getattr(args,'actor',None)=='subagent' and getattr(args,'include_private',False):
-            raise ValueError('--include-private is for Hivemind itself; private notebooks are not shown to subagents.')
+            raise ValueError('--include-private is not available to subagents; private notebooks are excluded.')
         if _IN_BATCH[0] and getattr(args,'include_private',False):
             raise ValueError('--include-private is not accepted inside batch: the hook checks only the outer command; run it on its own')
-        if args.command=='proposals' and args.action=='accept' and _proposal_kind(args.id)=='note':args=_accept_note(parser,args)   # one command for both kinds; a note runs as the capture it always was
+        if args.command=='proposals' and args.action=='accept' and _proposal_kind(getattr(args,'id',None))=='note':args=_accept_note(parser,args)   # one command for both kinds; a note runs as the capture it always was
         if args.command=='help':
             from .instructions import help_topic
             _emit(help_topic(args.topic),args);return 0
@@ -968,7 +1056,7 @@ def main(argv=None):
         if args.command=='upgrade':
             if args.actor in {'subagent','viewer'}:raise ValueError('Subagents are read-only' if args.actor=='subagent' else 'Viewers are read-only')
             from .upgrade import run as upgrade
-            _emit(upgrade(),args);return 0
+            _emit(upgrade(rewire=args.rewire),args);return 0
         from .storage import resolve_root
         root=resolve_root(args.root)[0]
         if args.root is not None:
@@ -994,7 +1082,7 @@ def main(argv=None):
             raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' only read notebook pages'+('; stage an edit with doc propose' if args.actor=='subagent' else '')+'; run writes as --actor main')
         if cmd=='doc' and args.doc_action=='propose' and args.actor=='viewer':raise ValueError('Viewers are read-only; run doc propose as --actor main or --actor subagent')
         if args.actor=='viewer' and cmd not in VIEWER:raise ValueError('Viewers are read-only; run changes as --actor main')
-        if cmd=='views' and (args.action or 'list')!='list' and args.actor in {'subagent','viewer'} and not (args.action=='render' and args.format=='json' and not args.out):
+        if cmd=='views' and (args.action or 'list')!='list' and args.actor in {'subagent','viewer'} and not (args.action=='render' and getattr(args,'format',None)=='json' and not getattr(args,'out',None)):
             raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' are read-only: views list and render --format json (no --out) are allowed; run the rest as --actor main')
         if cmd=='wiki':
             stray=[f for f,v in (('--restructure',args.restructure),('--model',args.model),('--budget',args.budget),('--dry-run',args.dry_run),('--progress',args.progress)) if v and not args.build]
@@ -1003,7 +1091,7 @@ def main(argv=None):
             if stray:raise ValueError(', '.join(stray)+(' only applies' if len(stray)==1 else ' only apply')+' with --agent --build')
         if cmd=='wiki' and args.build:
             if args.actor in {'subagent','viewer'}:raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' cannot build the agent wiki (it calls a model and costs money); run it as --actor main')
-            if os.environ.get('HIVEMIND_SESSION'):raise ValueError('hivemind: Building the agent wiki spends money, so the user starts it from Hivemind or a terminal, not an agent session.')
+            if os.environ.get('HIVEMIND_SESSION'):raise ValueError('hivemind: Building the agent wiki spends money, so the user starts it from a terminal or local client, not an agent session.')
             if os.environ.get('LIVING_MEMORY_MAINTENANCE_CHILD'):raise ValueError('The agent wiki cannot be built from inside a model call')
         if cmd=='wiki' and (args.out or args.format!='json') and args.actor in {'subagent','viewer'}:
             raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' are read-only: wiki --format json (no --out) is allowed; run the rest as --actor main')
@@ -1021,18 +1109,14 @@ def main(argv=None):
             if session and _session_state(root,session).get('off'):
                 raise ValueError('memory_off: Living Memory is off for this session; run alm on to use it again')
         if cmd=='serve':return serve(root,cwd,set(subs.choices)-{'serve','setup'})
-        if cmd in SWITCH:result=_switch(root,cmd,session);invocation['result']=result;_emit(result,args);return 0
+        if cmd in SWITCH:result=_switch(root,cmd,session,domain);invocation['result']=result;_emit(result,args);return 0
         if cmd=='bind':
             from .init_domain import init_domain
             init_domain(args.name,args.prefix,root);result={'ok':True,'domain':args.name,'status':'bound'}
         elif cmd=='config':
             from . import settings
-            if args.action=='get':
-                if args.value is not None:raise ValueError('config get takes at most a KEY')
-                result=settings.get(root,args.key)
-            else:
-                if args.key is None or args.value is None:raise ValueError('config set needs KEY and VALUE')
-                result=settings.set_(root,args.key,args.value)
+            if args.action=='get':result=settings.get(root,args.key)
+            else:result=settings.set_(root,args.key,args.value)
         elif cmd=='doc':result=_doc(args,root,domain,cwd)
         elif cmd=='unbind':
             from .init_domain import unbind_domain,unbind_prefix
@@ -1179,7 +1263,8 @@ def main(argv=None):
                 if args.all_domains:domains=[d['name'] for d in list_domains(root)['domains'] if (root/'domains'/d['name']/'notes').is_dir()]
                 elif domain:domains=[domain]
                 else:raise ValueError(UNBOUND)
-                result=dict(note_links(root,domains,args.status or 'active'),mode='links') if form=='links' else list_notes(root,domains,args.status or 'active',args.type or (),args.tag,max(0,args.offset or 0),max(1,min(1000,args.limit)),args.with_summary)
+                list_tags=list(args.tag)+([args.project if args.project.startswith('project/') else 'project/'+args.project] if args.project else [])
+                result=dict(note_links(root,domains,args.status or 'active'),mode='links') if form=='links' else list_notes(root,domains,args.status or 'active',args.type or (),list_tags,max(0,args.offset or 0),max(1,min(1000,args.limit)),args.with_summary)
                 invocation['result']=result;_emit(result,args);return 0
             if form=='pages':
                 if args.all_domains:names=[d['name'] for d in list_domains(root)['domains']]
@@ -1200,8 +1285,21 @@ def main(argv=None):
             from .runtime import scope_domains
             primary=list(dict.fromkeys([domain]+scope_domains(domain,config)+globals_));foreign=scope.get('foreign_domains',[])
             if any('=' not in value for value in args.filter):raise ValueError("Search filters are KEY=VALUE with KEY one of prefix, status, tag, type, file (for example --filter type=decision)")
-            filters=dict(value.split('=',1) for value in args.filter)
+            filters={}
+            def _add_filter(k,v):
+                if k in ('tag','type'):
+                    prev=filters.get(k)
+                    if prev is None:filters[k]=v
+                    elif isinstance(prev,list):prev.append(v)
+                    else:filters[k]=[prev,v]
+                else:filters[k]=v
+            for value in args.filter:
+                k,v=value.split('=',1);_add_filter(k,v)
             if set(filters)-{'prefix','status','tag','type','file'}:raise ValueError('Unsupported search filter: use prefix, status, tag, type or file')
+            for t in args.type or ():_add_filter('type',t)
+            for t in args.tag or ():_add_filter('tag',t)
+            if args.project:_add_filter('tag',args.project if args.project.startswith('project/') else 'project/'+args.project)
+            if args.status:_add_filter('status',args.status)
             if args.file:
                 from .common import domain_prefixes,display_path
                 given=Path(args.file).expanduser()
@@ -1273,7 +1371,8 @@ def main(argv=None):
         elif cmd=='update':
             from .notes import change
             d,n=_reference(args.reference,domain,root)
-            values=_payload(args) if args.payload_file or not any(getattr(args,k) is not None for k in ('title','body','body_file','tag','type','context','review_by','pin','rule','file','files','shell_command','source','subject','concern','platform','technology','distinct','not_distinct')+SECTION_ARGS+AMEND_ARGS+ITEM_ARGS) else {}
+            if args.tag and (args.add_tag or args.remove_tag):raise ValueError('--tag replaces all tags and cannot be combined with --add-tag or --remove-tag')
+            values=_payload(args) if args.payload_file or not any(getattr(args,k) is not None for k in ('title','body','body_file','tag','add_tag','remove_tag','type','context','review_by','pin','rule','file','files','shell_command','source','subject','concern','platform','technology','project','system','distinct','not_distinct')+SECTION_ARGS+AMEND_ARGS+ITEM_ARGS) else {}
             if args.title is not None:values['title']=args.title
             if args.body is not None:values['body']=args.body
             if args.body_file:values['body']=args.body_file.read_text(encoding='utf-8-sig')
@@ -1285,8 +1384,16 @@ def main(argv=None):
                     # Sections given on the command line change only themselves; the rest of the body is kept.
                     values['body']=_update_body(args,values['body'] if 'body' in values else stored,args.type or current.get('type'),root)
                 if isinstance(values.get('body'),str):replaced=_replaced(args,stored,values['body'])
-                tags=(args.tag or [])+_facet_tags(args)
-                if tags:values['tags']=tags
+                facet_tags=_facet_tags(args,CAPTURE_FACETS)
+                if args.add_tag or args.remove_tag or ((args.project or args.system) and not args.tag and not any(getattr(args,f) for f in FACET_FLAGS)):
+                    merged=list(current.get('tags') or [])
+                    for t in (args.add_tag or [])+facet_tags:
+                        if t not in merged:merged.append(t)
+                    drop=set(args.remove_tag or [])
+                    values['tags']=[t for t in merged if t not in drop]
+                else:
+                    tags=(args.tag or [])+facet_tags
+                    if tags:values['tags']=tags
                 for key in ('type','context','review_by'):
                     if getattr(args,key) is not None:values[key]=getattr(args,key)
                 if args.pin is not None:values['pinned']=args.pin
@@ -1367,7 +1474,7 @@ def main(argv=None):
             # Read-only for every actor: the worklist writes no usage rows, so a viewer's browsing is no evidence either.
             found=worklist(root,domains,args.kind or None,max(1,min(100,args.limit)),args.tag,working_tree=True)
             result={'ok':True,'domain':None if args.all_domains else domain,'due':found['total'],'stale_digests':found['counts'].get('stale',0),'kinds':list(KINDS),'counts':found['counts'],'notes':found['items'],
-                    'hint':_maintenance_hint(root)+'Each note lists why (kinds, reason) and an action. Still true -> confirm REF; changed -> update REF; replaced -> supersede REF --by NEW; finished -> resolve REF. A STALE note: read its files, then update REF (or confirm REF if it still holds). '
+                    'hint':_maintenance_hint(root)+'Each note lists why (kinds, reason) and an action (each row carries its revision; pass --expected-revision REV on every write). Still true -> confirm REF --expected-revision REV; changed -> update REF --expected-revision REV; replaced -> supersede REF --expected-revision REV --by NEW@REV; finished -> resolve REF --expected-revision REV. A STALE note: read its files, then update REF --expected-revision REV (or confirm REF --expected-revision REV if it still holds). '
                            'For an obsolete note, archive REF (undo OPERATION reverses it); for a duplicate (pair), merge them (the harness asks the user first; undo OPERATION reverses it). Stale notes come first, never-confirmed notes nobody has read lately lead the due ones.'}
         elif cmd=='open':
             from .notes import open_work,short_ref
@@ -1539,7 +1646,7 @@ def main(argv=None):
                 images=[e.get(side) for e in (pending or {}).get('effects') or [] if isinstance(e,dict) and e.get('path')==REGISTRY for side in ('before','after')] if isinstance(pending,dict) else []
                 reopens=any(loosens(root,base64.b64decode(i).decode('utf-8','replace') if i else None) for i in images)   # either direction may be the one taken
                 if isinstance(pending,dict) and (journal_private(root,pending,authorize=True) or reopens):
-                    raise ValueError(f'not_found: operation {args.operation_id} changed a private notebook; only Hivemind recovers it (--include-private)')
+                    raise ValueError(f'not_found: operation {args.operation_id} changed a private notebook; pass --include-private from a user terminal or local client to recover it')
             if args.abandon:result=abandon(root,args.operation_id)
             else:result=recover(root,args.operation_id,args.direction)
             row=read_json(root/'.operations'/args.operation_id/'journal.json')
@@ -1587,14 +1694,10 @@ def main(argv=None):
             result=rebaseline.scheduled(root) if args.scheduled else rebaseline.sweep(root,[domain] if getattr(args,'domain',None) else None,args.dry_run)
         elif cmd=='maintenance':
             from . import maintenance
-            a=args.action;flags=('limit','run','dry_run','scheduled','all_domains','model','max_notes_per_day','timeout_seconds','daily_budget_usd')
-            takes={'preview':{'limit'},'history':{'limit','run'},'run':{'dry_run','scheduled'},'enable':{'all_domains','model','max_notes_per_day','timeout_seconds','daily_budget_usd'}}.get(a,set())
-            extra=[k for k in flags if getattr(args,k) not in (None,False) and k not in takes]
-            if extra:raise ValueError(f"maintenance {a} does not take "+', '.join('--'+k.replace('_','-') for k in extra))
-            limit=10 if args.limit is None else args.limit
+            a=args.action
             if a=='status':result=maintenance.status(root)
-            elif a=='preview':result=maintenance.preview(root,limit,domains=[domain] if domain else None)
-            elif a=='history':result=maintenance.history(root,limit,args.run)
+            elif a=='preview':result=maintenance.preview(root,args.limit,domains=[domain] if domain else None)
+            elif a=='history':result=maintenance.history(root,args.limit,args.run)
             elif a=='run':
                 result=maintenance.run(root,args.dry_run,allow_disabled=args.dry_run,domains=[domain] if domain else None)
                 maintenance.log_run(root,result,args.scheduled)
@@ -1611,9 +1714,7 @@ def main(argv=None):
                 result=maintenance.enable(root,list(dict.fromkeys(names)),bool(args.domain),settings)
         elif cmd=='semantic':
             from . import semantic
-            if args.value and args.action!='native':raise ValueError('on/off applies to semantic native only')
             if args.action=='install':result=semantic.install(root,args.model or semantic.DEFAULT_MODEL,args.source)
-            elif args.model or args.source:raise ValueError('--model and --from apply to install only')
             elif args.action=='native':
                 from . import vectors
                 if args.value:vectors.set_enabled(root,args.value=='on')
@@ -1669,31 +1770,32 @@ def main(argv=None):
         elif cmd=='views':
             from . import views
             action=args.action or 'list'
+            ref=getattr(args,'reference',None)
+            spec_file=getattr(args,'spec_file',None)
             if action=='list':
                 if not domain and not args.all_domains:raise ValueError(UNBOUND)
                 result=views.listing(root,None if args.all_domains else domain)
             elif action=='render' and args.all:
-                if args.reference:raise ValueError('Name one note or pass --all, not both')
+                if ref:raise ValueError('Name one note or pass --all, not both')
                 if args.out:raise ValueError('--out needs exactly one view')
                 rows=views.render(root,views.note_rows(root),args.target,None,args.format)
                 result={'ok':True,'count':len(rows),**({'models':[r['model'] for r in rows]} if args.format=='json' else {'rendered':rows})}
-            elif args.spec_file and not (action=='update' or action=='add' and not args.reference):raise ValueError('--spec-file belongs to views add (with no REF) and views update')
-            elif action=='update' or action=='add' and not args.reference:
+            elif action=='update' or (action=='add' and not ref):
                 if action=='add':
-                    if not args.spec_file or not args.title:raise ValueError('views add without a note needs --spec-file FILE and --title T')
-                    result=views.add_query(root,args.title,_spec_file(args.spec_file))
-                elif not args.reference or not views.QUERY_ID.fullmatch(args.reference):raise ValueError('views update needs a query view ID (q-xxxxxxxx; views lists them)')
-                else:result=views.update_query(root,args.reference,_spec_file(args.spec_file) if args.spec_file else None,args.title)
-            elif args.reference and views.QUERY_ID.fullmatch(args.reference) and action in {'remove','render'}:
-                if action=='render':raise ValueError('query_views_run_in_hivemind: a query view is run by Hivemind over its own index; ALM only stores it')
-                result=views.remove(root,args.reference)
+                    if not spec_file or not args.title:raise ValueError('views add without a note needs --spec-file FILE and --title T')
+                    result=views.add_query(root,args.title,_spec_file(spec_file))
+                elif not ref or not views.QUERY_ID.fullmatch(ref):raise ValueError('views update needs a query view ID (q-xxxxxxxx; views lists them)')
+                else:result=views.update_query(root,ref,_spec_file(spec_file) if spec_file else None,args.title)
+            elif ref and views.QUERY_ID.fullmatch(ref) and action in {'remove','render'}:
+                if action=='render':raise ValueError('query_views_run_in_hivemind: a query view is evaluated by an external UI client; ALM stores its spec')
+                result=views.remove(root,ref)
             else:
-                if not args.reference:raise ValueError(f'views {action} needs a note: REF, ID prefix or exact title')
-                try:d,n=_reference(args.reference,domain,root)
+                if not ref:raise ValueError(f'views {action} needs a note: REF, ID prefix or exact title')
+                try:d,n=_reference(ref,domain,root)
                 except ValueError:
                     # A view whose note was deleted can still be removed by its registered ID, or an 8+ character prefix of it.
                     import re
-                    prefix=args.reference.split(':')[-1].lower()
+                    prefix=ref.split(':')[-1].lower()
                     orphan=[v for v in views.note_rows(root) if v['note'].startswith(prefix)] if action=='remove' and re.fullmatch(r'[0-9a-f][0-9a-f-]{7,}',prefix) else []
                     if len(orphan)!=1 or views._find(orphan[0],root):raise
                     d,n=orphan[0]['domain'],orphan[0]['note']
@@ -1724,10 +1826,8 @@ def main(argv=None):
             else:result=wiki.export(domain,root,args.archived,args.out,args.format,args.theme)
         elif cmd=='taxonomy' and args.action=='add':
             from .tag_taxonomy import add_tags
-            if not args.tags:raise ValueError('taxonomy add takes one or more tags, for example concern/security')
             result=add_tags(args.tags,root)
         elif cmd=='taxonomy':
-            if args.tags:raise ValueError('Add tags with: taxonomy add TAG [TAG ...]')
             result=read_json(root/'tag_taxonomy.json',{'tags':[]})
         elif cmd=='batch':
             import contextlib,io
@@ -1765,7 +1865,9 @@ def main(argv=None):
             else:result=promote(root,[ref+'@'+revision for ref,revision in (_with_revision(r,'promote') for r in args.refs)])
         elif cmd=='capture-finalize':
             from .capture import finalize
-            result=finalize(args.session,_turn(root,args.session,args.turn),[':'.join(_reference(n,domain,root)) for n in args.note],root)
+            fin_session=args.session or os.environ.get(SESSION_ENV)
+            if not fin_session:raise ValueError('capture-finalize needs --session SESSION')
+            result=finalize(fin_session,_turn(root,fin_session,args.turn),[':'.join(_reference(n,domain,root)) for n in args.note],root)
         elif cmd=='overlay-sync-all':
             from .sync import sync_all
             result=sync_all(root,'manual',args.primary)

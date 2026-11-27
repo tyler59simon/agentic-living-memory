@@ -439,10 +439,10 @@ REVIEW_LINE_MAX=260
 REVIEW_TITLE=40
 
 def _review_line(domain,root,notes=None,shown=2):
-    """One line from the review worklist (worklist.py, without the duplicate scan): counts by kind and the first `shown` notes. notes are the
-    active domain's notes already loaded, each carrying its domain. Fails open."""
-    from .worklist import worklist
-    try:found=worklist(root,[domain],limit=shown,cheap=True,notes=notes)
+    """One line from the review worklist (worklist.py, without the duplicate scan or advisory warned rows): counts by kind and the first `shown` notes.
+    notes are the active domain's notes already loaded, each carrying its domain. Fails open."""
+    from .worklist import worklist,KINDS
+    try:found=worklist(root,[domain],kinds=[k for k in KINDS if k not in ('duplicate','warned')],limit=shown,cheap=True,notes=notes)
     except Exception as exc:
         from .logs import swallowed
         swallowed('session_start.review_line',exc,root);return []

@@ -187,7 +187,7 @@ def undo(root,operation_id,include_private=False,revert_files=True):
     with store_lock(root):
         from .folder_policy import REGISTRY,loosens
         if not include_private and (journal_private(root,value,authorize=True) or (REGISTRY in changes and loosens(root,changes[REGISTRY]))):
-            raise ValueError(f'not_found: operation {operation_id} changed a private notebook; only Hivemind undoes it (--include-private)')
+            raise ValueError(f'not_found: operation {operation_id} changed a private notebook; requires --include-private (user or local client)')
         for effect in value['effects']:
             p=confined(root,effect['path']);current=digest(p.read_bytes()) if p.exists() else None
             if current!=effect['after_hash']:raise ValueError('Undo conflicts with later edits')

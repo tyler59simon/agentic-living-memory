@@ -247,6 +247,10 @@ def handle(event, payload):
     from core.storage import resolve_root
 
     base = {'session_id': session, 'cwd': str(cwd)}
+    # Pass Antigravity's artifact/scratch directory so scratch writes are not counted as project mutations (REL-U5).
+    scratch = payload.get('artifactDirectoryPath') or payload.get('scratchpad_dir') or payload.get('scratchpadDir')
+    if isinstance(scratch, str) and scratch:
+        base['scratchpad_dir'] = scratch
     # Pass every mode, not only plan, so the runtime sees a prompt that leaves plan mode.
     if isinstance(payload.get('permissionMode'), str) and payload['permissionMode']:
         base['permission_mode'] = payload['permissionMode']

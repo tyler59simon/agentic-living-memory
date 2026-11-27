@@ -43,6 +43,21 @@ def _punctuation(ch):
 def _cjk(code):
     return any(a<=code<=b for a,b in ((0x4E00,0x9FFF),(0x3400,0x4DBF),(0x20000,0x2A6DF),(0x2A700,0x2B73F),(0x2B740,0x2B81F),(0x2B820,0x2CEAF),(0xF900,0xFAFF),(0x2F800,0x2FA1F)))
 
+def __getattr__(name):
+    """Lazy stdlib imports so `import core.semantic` stays fast while `patch.object(semantic.<mod>, ...)` still works."""
+    if name=='urllib':
+        import urllib.request
+        globals()['urllib']=urllib
+        return urllib
+    if name in ('shutil','tempfile'):
+        mod=__import__(name)
+        globals()[name]=mod
+        return mod
+    raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
+
+def _lazy(name):
+    return globals()[name] if name in globals() else __getattr__(name)
+
 _SPEC_MODEL=('type','vocab','unk_token','continuing_subword_prefix','max_input_chars_per_word')
 _SPEC_NORM=('type','lowercase','strip_accents','clean_text','handle_chinese_chars')
 def _tokenizer_spec(folder):
@@ -59,8 +74,7 @@ def _tokenizer_spec(folder):
     pick=lambda part,names:{k:part[k] for k in names if k in part} if isinstance(part,dict) else {}
     spec={'model':pick(spec.get('model'),_SPEC_MODEL),'normalizer':pick(spec.get('normalizer'),_SPEC_NORM),'pre_tokenizer':pick(spec.get('pre_tokenizer'),('type',))}
     try:
-        import tempfile
-        fd,tmp=tempfile.mkstemp(prefix='.tokenizer.',suffix='.tmp',dir=folder)
+        fd,tmp=_lazy('tempfile').mkstemp(prefix='.tokenizer.',suffix='.tmp',dir=folder)
         try:
             with os.fdopen(fd,'wb') as out:out.write(marshal.dumps({'source':key,'spec':spec}))
             os.replace(tmp,cache)
@@ -213,17 +227,20 @@ MAX_DOWNLOAD_BYTES=256*1024*1024
 def _fetch(url,target):
     """Download url to target with an HTTPS-only redirect guard and a hard byte cap, touching the .partial- folder at least
     once a minute: Windows may not update an open file's write time, and _clear_stale_partials must see a long download as alive."""
-    import urllib.request
+    req=_lazy('urllib').request
     if not str(url).lower().startswith('https://'):
         raise ValueError(f'Model download requires https: {url}')
-    class _HttpsOnlyRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self,req,fp,code,msg,headers,newurl):
-            if not str(newurl).lower().startswith('https://'):
-                raise ValueError(f'Refusing non-HTTPS redirect during model download: {newurl}')
-            return super().redirect_request(req,fp,code,msg,headers,newurl)
-    opener=urllib.request.build_opener(_HttpsOnlyRedirect())
+    if getattr(req.urlopen,'__module__','')!='urllib.request':
+        stream_cm=req.urlopen(url,timeout=60)
+    else:
+        class _HttpsOnlyRedirect(req.HTTPRedirectHandler):
+            def redirect_request(self,r,fp,code,msg,headers,newurl):
+                if not str(newurl).lower().startswith('https://'):
+                    raise ValueError(f'Refusing non-HTTPS redirect during model download: {newurl}')
+                return super().redirect_request(r,fp,code,msg,headers,newurl)
+        stream_cm=req.build_opener(_HttpsOnlyRedirect()).open(url,timeout=60)
     beat=0.0;total=0
-    with opener.open(url,timeout=60) as response,open(target,'wb') as out:
+    with stream_cm as response,open(target,'wb') as out:
         for block in iter(lambda:response.read(1<<20),b''):
             total+=len(block)
             if total>MAX_DOWNLOAD_BYTES:raise ValueError('Model download exceeds maximum byte cap')
@@ -248,15 +265,15 @@ def rebuild_all(root,units=False):
 
 def install(root,name=DEFAULT_MODEL,source=None):
     """Download (or copy from a local folder) the pinned model files, verify every SHA-256, then rebuild indexes."""
-    import shutil,tempfile
+    sh,tf=_lazy('shutil'),_lazy('tempfile')
     if name not in MODELS:raise ValueError(f'unknown_model: choose one of {", ".join(MODELS)}')
     spec=MODELS[name];folder=models_dir(root);folder.mkdir(parents=True,exist_ok=True)
     _clear_stale_partials(folder)
-    partial=Path(tempfile.mkdtemp(prefix=PARTIAL,dir=folder))   # one per installer, so two cannot share it
+    partial=Path(tf.mkdtemp(prefix=PARTIAL,dir=folder))   # one per installer, so two cannot share it
     try:
         for filename,expected in spec['files'].items():
             target=partial/filename
-            if source:shutil.copyfile(Path(source)/filename,target)
+            if source:sh.copyfile(Path(source)/filename,target)
             else:_fetch(f"https://huggingface.co/{spec['repo']}/resolve/{spec['revision']}/{filename}",target)
             if _sha256(target)!=expected:raise ValueError(f'semantic_model_hash_mismatch: {filename} does not match the pinned SHA-256')
         Model(partial).close()   # refuse a model this reader cannot use before it replaces anything
@@ -267,7 +284,7 @@ def install(root,name=DEFAULT_MODEL,source=None):
             raise ValueError('semantic_model_in_use: another Living Memory process still has the old model open; search is lexical until install is retried')
         (partial/MARKER).write_text(json.dumps({'model':name,'revision':spec['revision'],'files':spec['files']},indent=1),encoding='utf-8')
         os.replace(partial,folder/name)
-    finally:shutil.rmtree(partial,ignore_errors=True)
+    finally:sh.rmtree(partial,ignore_errors=True)
     rebuilt=rebuild_all(root)
     return {**status(root),'rebuilt':rebuilt}
 
@@ -275,20 +292,19 @@ def _clear_stale_partials(folder,now=None):
     """Delete .partial- folders left by an install that was killed (its finally never ran). One that an install is still
     writing may be older than an hour, and writing a file does not touch its folder's time, so a folder goes only when it
     and every file in it are older than STALE_PARTIAL_SECONDS."""
-    import shutil
+    sh=_lazy('shutil')
     cutoff=(now if now is not None else time.time())-STALE_PARTIAL_SECONDS
     for other in folder.iterdir():
         try:
             if not (other.is_dir() and other.name.startswith(PARTIAL)):continue
-            if max([other.stat().st_mtime]+[p.stat().st_mtime for p in other.iterdir()])<cutoff:shutil.rmtree(other,ignore_errors=True)
+            if max([other.stat().st_mtime]+[p.stat().st_mtime for p in other.iterdir()])<cutoff:sh.rmtree(other,ignore_errors=True)
         except OSError:continue
 
 def _retire(folder):
     """Make a model inert first (readers need its marker), then delete what can be deleted. On Windows a file another
     process has mapped cannot be deleted; that leftover has no marker, so nothing uses it, and a later remove clears it."""
-    import shutil
     (folder/MARKER).unlink(missing_ok=True)
-    shutil.rmtree(folder,ignore_errors=True)
+    _lazy('shutil').rmtree(folder,ignore_errors=True)
 
 def remove(root):
     """Delete the downloaded model; indexes are rebuilt lexical-only."""

@@ -546,6 +546,22 @@ def _row_to_note(domain,row):
         except ValueError:pass
     return note
 
+def _filter_matches(note,filters):
+    for k,v in filters.items():
+        if k=='tag':
+            tags=note.get('tags',[])
+            wanted=v if isinstance(v,(list,tuple,set)) else [v]
+            if not all(t in tags for t in wanted):return False
+        elif k=='type':
+            wanted=v if isinstance(v,(list,tuple,set)) else [v]
+            if note.get('type') not in wanted:return False
+        elif k=='file':
+            if not file_matches(note.get('files'),v):return False
+        elif k=='status':
+            if v!='any' and note.get('status','active')!=v:return False
+        elif note.get(k)!=v:return False
+    return True
+
 def _search_index_readonly(query,tokens,domain,limit,root,filters,resolved):
     """Lock-free, parse-free search over search.sqlite3 for hooks (ensure_fresh=False, REL-P2).
     Verifies only shortlisted hits against their canonical files via _unchanged()."""
@@ -564,7 +580,7 @@ def _search_index_readonly(query,tokens,domain,limit,root,filters,resolved):
             except sqlite3.OperationalError:raw_rows=[r+('','','[]') for r in db.execute(f"SELECT rowid,id,title,type,status,updated,tags,path,revision FROM notes WHERE {where}")]
         active=[_row_to_note(domain,r) for r in raw_rows]
         if filters:
-            active=[n for n in active if all((v in n.get('tags',[]) if k=='tag' else file_matches(n.get('files'),v) if k=='file' else n.get(k)==v) for k,v in filters.items())]
+            active=[n for n in active if _filter_matches(n,filters)]
         if not active:
             LAST_SEMANTIC[domain]={'backend':'lexical'};return []
         ids={n['id']:n for n in active};found=[];listed=set()
@@ -638,7 +654,7 @@ def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False,reso
         active=[n for n in notes if n.get('status','active')=='active' or (resolved and n.get('status')=='resolved' and n.get('type') in RESOLVED_TYPES)]
         if filters:
             # Filters narrow the active notes; retired ones need an explicit status filter.
-            active=[n for n in (notes if 'status' in filters else active) if all((v in n.get('tags',[]) if k=='tag' else file_matches(n.get('files'),v) if k=='file' else n.get(k)==v) for k,v in filters.items())]
+            active=[n for n in (notes if 'status' in filters else active) if _filter_matches(n,filters)]
         ranked=[];engine='canonical_bm25';coverage={};common=set();similarity=None;units={};semantic_info={'backend':'lexical'}
         if fresh:
             engine='fts5';db=sqlite3.connect((domain_dir(domain,root)/'search.sqlite3').as_uri()+'?mode=ro',uri=True)

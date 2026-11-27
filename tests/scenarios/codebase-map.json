@@ -13,7 +13,7 @@
   {"hook": "user-prompt", "payload": {"prompt": "another suite plugin change"}, "expect": {"context_excludes": ["Codebase map for suite-plugin"]}},
   {"hook": "pre-tool-use", "payload": {"tool_name": "Read", "tool_input": {"file_path": "{project}/suite-plugin/runtime/cli.py"}}, "expect": {"context_excludes": ["Codebase map"]}},
   {"hook": "pre-tool-use", "payload": {"tool_name": "Grep", "tool_input": {"pattern": "def main", "path": "{project}/suite-plugin"}},
-   "expect_by_harness": {"claude": {"fast": true}, "factory": {"fast": true}, "codex": {"fast": false}, "copilot": {"fast": false}}},
+   "expect_by_harness": {"claude": {"fast": true}, "factory": {"fast": true}, "codex": {"fast": true}, "copilot": {"fast": true}}},
   {"hook": "stop", "expect": {"stop_reason": "no_change", "reminder": null}},
   {"hook": "user-prompt", "payload": {"prompt": "explore the hivemind app"}, "expect": {"context_contains": ["hivemind has no codebase map yet"]}},
   {"hook": "pre-tool-use", "payload": {"tool_name": "Read", "tool_input": {"file_path": "{project}/hivemind/app.py"}}},

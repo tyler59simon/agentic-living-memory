@@ -7,6 +7,12 @@ TRAILER=('hint','warnings','quality_warnings','rule_warning','pin_warning')
 
 def _s(v):return v if isinstance(v,str) else json.dumps(v,ensure_ascii=False)
 def _wrap(text,indent='   '):return textwrap.wrap(' '.join(str(text).split()),WIDTH,initial_indent=indent,subsequent_indent=indent)
+def _ts(value):
+    text=str(value or '')
+    return text[:16].replace('T',' ') if 'T' in text else text[:10]
+def _rev(row):
+    rev=str(row.get('revision') or '')
+    return f'rev {rev[:12]}' if rev else ''
 def _ref(row):
     ref=row.get('short_ref') or row.get('ref') or (f"{row.get('domain') or ''}:{row['id']}" if row.get('id') else '')
     domain,_,note=ref.rpartition(':')
@@ -17,7 +23,9 @@ def _row(row,n):
     name=row.get('title') or row.get('path') or row.get('file') or row.get('source') or _ref(row)
     if row.get('label')=='notebook page':name=f"{name}  ({row.get('domain')}/{row.get('notebook')}/{row.get('path')}:{row.get('line_start')})"
     meta=', '.join(str(row[k])[:10] if k in ('updated','date') else str(row[k]) for k in ('type','updated','date','status') if row.get(k))
-    lines=[head+str(name or json.dumps(row,ensure_ascii=False))+(f'  [{meta}]' if meta else '')+(f'  {_ref(row)}' if row.get('title') and _ref(row) else '')]
+    rev=_rev(row)
+    tail='  '.join(p for p in (f'[{meta}]' if meta else '',_ref(row) if row.get('title') and _ref(row) else '',rev) if p)
+    lines=[head+str(name or json.dumps(row,ensure_ascii=False))+(f'  {tail}' if tail else '')]
     if row.get('item'):lines+=_wrap(f"#{row['index']} {row['item']}" if 'index' in row else row['item'])   # open: the action item itself
     for key in ('summary','snippet','excerpt','text','reason','action'):
         if row.get(key):lines+=_wrap(row[key])
@@ -43,9 +51,13 @@ def _direct(r):
     rest={k:v for k,v in r.items() if k not in ('ok','operation_id','state','kind','undo','idempotent')+TRAILER}
     return [f"Done ({r.get('kind') or 'change'}), operation {r['operation_id']}"]+_kv(rest,1)
 
-NOTE_HEAD=('ok','title','type','status','updated','tags','id','domain','body','truncated','stale','currency')
+NOTE_HEAD=('ok','title','type','status','updated','tags','id','domain','body','truncated','stale','currency','revision')
 def _read(r):
-    lines=[str(r['title']),'  '+'  '.join(str(r[k]) for k in ('type','status') if r.get(k))+(f"  updated {r['updated']}" if r.get('updated') else '')+f"  {_ref(r)}"]
+    parts=[str(r[k]) for k in ('type','status') if r.get(k)]
+    if r.get('updated'):parts.append(f"updated {_ts(r['updated'])}")
+    if _ref(r):parts.append(_ref(r))
+    if _rev(r):parts.append(_rev(r))
+    lines=[str(r['title']),'  '+'  '.join(parts)]
     if r.get('tags'):lines.append('  tags: '+', '.join(r['tags']))
     if r.get('stale'):lines.append('  '+str(r['stale']))
     elif isinstance(r.get('currency'),dict) and r['currency'].get('state') not in (None,'current'):lines.append(f"  source: {r['currency']['state']}")
@@ -92,6 +104,77 @@ def _upgrade(r):
     if r.get('restart'):lines+=['',r['restart']]
     return lines
 
+def _review(r):
+    counts=', '.join(f'{c} {k}' for k,c in (r.get('counts') or {}).items() if c)
+    lines=[f"Review: {r.get('due',0)} note(s) due"+(f' ({counts})' if counts else '')]
+    if not r.get('notes'):return lines+['Nothing due for review.']
+    for row in r['notes']:
+        badges=' '.join(f'[{k}]' for k in row.get('kinds') or [])
+        head='  '.join(p for p in (badges,_ref(row),_rev(row),row.get('title')) if p)
+        lines.append('- '+head)
+        if row.get('reason'):lines+=_wrap(row['reason'])
+        if row.get('action'):lines.append(f"   next: {row['action']}")
+    return lines
+
+def _doctor(r):
+    status='OK' if r.get('ok') else 'ISSUES FOUND'
+    lines=[f"Living Memory doctor: {status}"]
+    if r.get('warnings'):
+        lines.append('Warnings:')
+        for w in r['warnings']:lines+=_wrap('- '+str(w),indent='  ')
+    lines.append(f"Store: {r.get('root')}  (domain: {r.get('domain') or 'unbound'}, index: {r.get('index')})")
+    sem=r.get('semantic') or {}
+    lines.append(f"Python: {r.get('python')}  FTS5: {'yes' if r.get('fts5') else 'no'}  Semantic: {sem.get('backend','lexical')}"+(f" ({sem['model']})" if sem.get('model') else ''))
+    if isinstance(r.get('notes'),dict) and r['notes']:
+        lines.append('Notes: '+', '.join(f'{d}={c}' for d,c in sorted(r['notes'].items())))
+    wiring=(r.get('hooks') or {}).get('wiring') or {}
+    if isinstance(wiring,dict) and wiring:
+        wired=[f"{h} ({'ok' if not (v.get('problems') if isinstance(v,dict) else []) else 'needs attention'})" for h,v in sorted(wiring.items()) if isinstance(v,dict)]
+        if wired:lines.append('Hooks: '+', '.join(wired))
+    return lines
+
+def _domains(r):
+    rows=r.get('domains') or []
+    if not rows:return ['No domains bound yet.']
+    lines=['Domains:']
+    for d in rows:
+        state='bound' if d.get('bound') else 'folder only'
+        lines.append(f"- {d['name']}  ({state}, {d.get('active',0)} active, {d.get('archived',0)} archived)")
+        for p in d.get('prefixes') or []:lines.append(f'   {p}')
+    return lines
+
+def _named_list(r,key):
+    rows=r.get(key) or []
+    if not rows:return [f'No {key}.']
+    lines=[f'{key.capitalize()}:']
+    for item in rows:
+        meta=', '.join(str(item[k]) for k in ('status','domain','kind') if item.get(k))
+        label=item.get('slug') or item.get('id') or item.get('title') or ''
+        title=item.get('name') or item.get('title') or item.get('path') or ''
+        head=f"{label}  {title}" if title and title!=label else str(label or title)
+        lines.append(f"- {head}"+(f'  [{meta}]' if meta else ''))
+        if item.get('repos'):lines.append('   repos: '+', '.join(map(str,item['repos'])))
+    return lines
+
+def _logs(r):
+    entries=r.get('entries') or []
+    lines=[f"Logs (level={r.get('level_setting')}, matched={r.get('matched',len(entries))}):"]
+    if not entries:return lines+['No log entries.']
+    for e in entries:
+        ts=_ts(e.get('ts') or e.get('at') or e.get('t'))
+        lines.append(f"- {(ts+' ') if ts else ''}[{e.get('level','')}] {e.get('kind','')}/{e.get('event','')}"+(f" ({e['ms']}ms)" if e.get('ms') is not None else ''))
+    return lines
+
+def _maintenance_status(r):
+    state='enabled' if r.get('enabled') else 'disabled'
+    limits=r.get('limits') or {};acc=r.get('accounting') or {}
+    lines=[f"Maintenance: {state}"+(f"  (domains: {', '.join(r.get('domains') or [])})" if r.get('domains') else '')]
+    if limits.get('model'):lines.append(f"  model: {limits['model']}  daily budget: ${limits.get('daily_budget_usd','?')}  max notes/day: {limits.get('max_notes_per_day','?')}")
+    if acc:lines.append(f"  today ({acc.get('day','?')}): reviewed={acc.get('reviewed',0)}  charged=${acc.get('charged_usd','0.00')}")
+    if r.get('last_run'):lines.append(f"  last run: {_ts(r['last_run'])}")
+    if r.get('skip_reason'):lines.append(f"  status: {r['skip_reason']}")
+    return lines
+
 def render(result):
     """One result as text: by shape (note, receipt, rows), else indented key: value."""
     if isinstance(result,list):
@@ -99,10 +182,21 @@ def render(result):
             lines=[]
             for x in result:lines+=[f"exit code {x['exit_code']}"]+(render(x['result']).splitlines() if x.get('result') is not None else [])+([x['error']] if x.get('error') else [])
             return '\n'.join(lines)
+        if result and all(isinstance(x,dict) and 'event' in x and 'time' in x for x in result):
+            return '\n'.join(f"- {_ts(x['time'])} {x['event']}  {_ref(x)}  {x.get('title') or ''}".rstrip()+(f" ({x['actor']})" if x.get('actor') else '') for x in result)
         return '\n'.join(' '.join(f'{k}={_s(v)}' for k,v in x.items() if not isinstance(v,(dict,list))) if isinstance(x,dict) else _s(x) for x in result) or 'Nothing.'
     if not isinstance(result,dict):return _s(result)
     if isinstance(result.get('markdown'),str):lines=[result['markdown'].rstrip()]   # recap, history --markdown: already written for a person
     elif result.get('status') in ('current','upgraded') and 'branch' in result and 'source' in result:lines=_upgrade(result)
+    elif 'fts5' in result and 'hooks' in result and 'warnings' in result:lines=_doctor(result)
+    elif 'due' in result and 'counts' in result and isinstance(result.get('notes'),list):lines=_review(result)
+    elif 'enabled' in result and 'domains' in result and 'limits' in result and 'accounting' in result:lines=_maintenance_status(result)
+    elif isinstance(result.get('domains'),list) and 'aliases' in result:lines=_domains(result)
+    elif isinstance(result.get('entries'),list) and 'level_setting' in result:lines=_logs(result)
+    elif isinstance(result.get('views'),list):lines=_named_list(result,'views')
+    elif isinstance(result.get('projects'),list):lines=_named_list(result,'projects')
+    elif isinstance(result.get('systems'),list):lines=_named_list(result,'systems')
+    elif isinstance(result.get('proposals'),list):lines=_named_list(result,'proposals')
     elif result.get('operation_id') and result.get('undo') and isinstance(result.get('summary'),dict):lines=_direct(result)   # a direct write (governance.commit)
     elif 'title' in result and ('body' in result or 'type' in result):lines=_read(result)
     elif result.get('memory') in {'on','off'} and 'session' in result:   # alm off / on / status
@@ -118,5 +212,6 @@ def render(result):
     elif result.get('operation_id') and result.get('undo'):lines+=['',f"Undo it with: alm {result['undo']}"]
     if result.get('pages_stale'):lines+=['','Notebook pages: the index was not fully brought up to date in time; run the command again for complete results.']
     for key in TRAILER:
+        if key=='warnings' and 'fts5' in result:continue   # _doctor already rendered warnings at the top
         for item in result.get(key) if isinstance(result.get(key),list) else [result[key]] if result.get(key) else []:lines+=_wrap(f'{key}: {item}',indent='')
     return '\n'.join(lines)

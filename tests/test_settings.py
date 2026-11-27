@@ -67,10 +67,10 @@ class Config(StoreFixture):
             if Path(path).name=='bindings.json':raise KeyboardInterrupt   # the journal is durable, bindings.json is not written yet
             return real(path,data)
         with patch.object(repo,'_write',crash),self.assertRaises(KeyboardInterrupt):set_(self.root,'suggest_bind','false')
-        self.assertTrue(list((self.root/'.operations').glob('*/pending')));self.assertNotIn('suggest_bind',self.bindings())
+        self.assertTrue(list((self.root/'.operations').glob('.pending/*')));self.assertNotIn('suggest_bind',self.bindings())
         self.ok('set','cross_project','false')
         self.assertEqual((self.bindings().get('suggest_bind'),self.bindings().get('cross_project')),(False,False))   # both changes kept
-        self.assertFalse(list((self.root/'.operations').glob('*/pending')))
+        self.assertFalse(list((self.root/'.operations').glob('.pending/*')))
 
     def interrupted_set(self):
         from unittest.mock import patch
@@ -94,7 +94,7 @@ class Config(StoreFixture):
         self.assertIs(self.bindings().get('suggest_bind'),False)
         self.ok('set','suggest_bind','null');self.interrupted_set();unbind_domain('other',self.root)
         self.assertIs(self.bindings().get('suggest_bind'),False);self.assertNotIn('other',self.bindings()['domains'])
-        self.assertFalse(list((self.root/'.operations').glob('*/pending')))
+        self.assertFalse(list((self.root/'.operations').glob('.pending/*')))
 
     def test_undo_restores_the_previous_file(self):
         before=(self.root/'bindings.json').read_text(encoding='utf-8')

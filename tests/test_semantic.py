@@ -146,8 +146,9 @@ class SemanticCase(StoreFixture):
         self.assertEqual([n['id'] for n,_ in _fuse([(b,2.0),(a,1.0)],{'a':0.9,'b':0.8},{'a':a,'b':b})],['b','a'])
 
     def test_without_a_model_the_fingerprint_is_the_schema_version_and_the_notes(self):
+        from core.search import INDEX_VERSION
         self.note();notes=inventory('demo',self.root,retired=True)
-        earlier=hashlib.sha256(json.dumps([4,[(n.get('id'),n['revision']) for n in notes]],sort_keys=True).encode()).hexdigest()
+        earlier=hashlib.sha256(json.dumps([INDEX_VERSION,[(n.get('id'),n['revision']) for n in notes]],sort_keys=True).encode()).hexdigest()
         self.assertEqual(_fingerprint(notes),earlier);self.assertNotEqual(_fingerprint(notes,'tiny'),earlier)
 
     def test_a_model_another_process_holds_open_is_left_inert(self):

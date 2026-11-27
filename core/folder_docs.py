@@ -110,7 +110,7 @@ def propose_file(root,file,body,cwd=None,base_revision=None,note=None,session=No
                'session':hashlib.sha256(session.encode()).hexdigest()[:16] if session else None}
         rel=_rel(domain,nb,pid)
         receipt=docs._commit(root,{rel:docs._proposal_text(value)},'doc_propose',_meta(domain,nb),{'domain':domain,'notebook':nb,'path':hit['rel'],'proposal':pid},{rel:None})
-        receipt.update(id=pid,status='proposed',next=f"The user reviews it in Hivemind (proposals accept {pid} or proposals reject {pid})")
+        receipt.update(id=pid,status='proposed',next=f"The user reviews it with proposals accept {pid} or proposals reject {pid} (or in a connected UI)")
         if warnings:receipt.setdefault('warnings',[]).extend(warnings)
         return receipt
 
@@ -273,13 +273,13 @@ def revert_accept(root,journal,include_private=False):
     if not isinstance(new_record,dict):return None
     check_visible(root,new_record,include_private)
     folder,_=folder_of(root,new_record)
-    if folder is None:raise ValueError(f"not_found: the folder notebook {new_record.get('folder')} is no longer registered, so its page cannot be put back; restore it from Hivemind file history")
+    if folder is None:raise ValueError(f"not_found: the folder notebook {new_record.get('folder')} is no longer registered, so its page cannot be put back; restore it from backups or version history")
     rel=_page(new_record,strict=False);path=_safe(folder,rel)
     if path is None:raise ValueError('Links and junctions are not allowed inside a notebook')
     old_hash,old_bytes=_old_state(new_record);revision=new_record.get('revision');current=_sha(_bytes(path))
     if current==old_hash:return None   # the accept never wrote it, or it was put back already
-    if current!=revision:raise ValueError(f'{rel} changed since the accept, so it is not put back; restore it from Hivemind file history')
-    if old_hash is not None and old_bytes is None:raise ValueError(f'{rel} was too large to keep, so it cannot be put back here; restore it from Hivemind file history')
+    if current!=revision:raise ValueError(f'{rel} changed since the accept, so it is not put back; restore it from backups or version history')
+    if old_hash is not None and old_bytes is None:raise ValueError(f'{rel} was too large to keep, so it cannot be put back here; restore it from backups or version history')
     accepted=_bytes(path)
-    if not _put(folder,rel,old_bytes,revision):raise ValueError(f'{rel} changed since the accept, so it is not put back; restore it from Hivemind file history')
+    if not _put(folder,rel,old_bytes,revision):raise ValueError(f'{rel} changed since the accept, so it is not put back; restore it from backups or version history')
     return lambda:_put(folder,rel,accepted,old_hash)

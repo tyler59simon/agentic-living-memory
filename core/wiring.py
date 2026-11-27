@@ -97,12 +97,22 @@ def _current(harness,config,setup,root=None):
 
 def check(harness,setup):
     """One harness's wiring, or None when it has no hook handlers of ours."""
-    from .repository import read_json
+    import json
     home=harness_home(harness)
     path=home/setup.CONFIG[harness]
     expected=harness=='antigravity' and (home/setup.ANTIGRAVITY_OWNERSHIP).is_file()
     if not path.is_file() and not expected:return None
-    try:config=read_json(path,{})
+    try:
+        raw=path.read_text(encoding='utf-8-sig')
+        config=json.loads(raw) if raw.strip() else {}
+    except FileNotFoundError:
+        config={}
+    except PermissionError:
+        return {'config':str(path),'wired':expected,'config_ok':False,
+                'problems':[f'{path} cannot be read (permission denied)']}
+    except OSError as exc:
+        return {'config':str(path),'wired':expected,'config_ok':False,
+                'problems':[f'{path} cannot be read ({exc})']}
     except ValueError:
         return {'config':str(path),'wired':expected,'config_ok':False,
                 'problems':[f'{path} is not valid JSON, so the harness cannot load its hooks']}

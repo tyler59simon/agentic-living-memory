@@ -143,7 +143,7 @@ class FolderGuard(StoreFixture):
                           ('Write',{'file_path':str(self.nb/'new'/'page.md')})):
             with self.subTest(tool=tool,args=args):
                 deny=self.hook(tool,args)['deny']
-                self.assertIn('doc read --file',deny);self.assertIn('doc propose --file',deny);self.assertIn('--base-revision',deny);self.assertIn('Inbox',deny)
+                self.assertIn('doc read --file',deny);self.assertIn('doc propose --file',deny);self.assertIn('--base-revision',deny);self.assertIn('proposals accept|reject',deny)
                 self.assertIn(self.nb.resolve().as_posix(),deny)
 
     def test_every_session_is_covered_bound_or_not_and_subagents_too(self):

@@ -243,7 +243,7 @@ h1,h2,h3{line-height:1.2}
 .sidebar{position:sticky;top:0;height:100vh;background:var(--bg-sidebar);color:var(--fg);border-right:1px solid var(--border-soft);display:flex;flex-direction:column;gap:.4rem;padding:1rem .6rem .9rem;overflow-y:auto;z-index:30}
 .brand-block{display:flex;align-items:center;gap:.7rem;padding:0 .6rem 1rem;font-size:1.45rem;font-weight:700;letter-spacing:-.01em}
 .brand-block .close{display:none;margin-left:auto}
-.logo{width:2.9rem;height:2.9rem;flex:none;background:url("data:image/png;base64,@@LOGO@@") center/contain no-repeat}
+.logo{width:2.9rem;height:2.9rem;flex:none;background:url("@@LOGO@@") center/contain no-repeat}
 .switcher{display:flex;align-items:center;gap:.75rem;padding:0 .8rem;height:2.75rem;border:1px solid var(--switcher-border);border-radius:.45rem;background:var(--switcher-bg);font-weight:600;font-size:1.05rem;margin:0 .1rem .6rem}
 .switcher .muted{font-weight:500;margin-left:auto;font-size:.9rem}
 .tree{display:flex;flex-direction:column;gap:.1rem}
@@ -924,7 +924,7 @@ paint();window.addEventListener('hashchange',function(){q.value='';route()});rou
 '''
 
 def _css():
-    from .views import _asset
+    from .views import _asset,ALM_LOGO_SVG
     face=('@font-face{font-family:"Plus Jakarta Sans Variable";font-style:normal;font-display:swap;font-weight:200 800;'
           'src:url(data:font/woff2;base64,'+_asset('plus-jakarta-sans-latin-wght-normal.woff2.b64')+') format("woff2")}')
     # Without a picked theme the page follows the host's data-theme, else the system. The picker (and --theme) sets data-hm, which comes
@@ -936,7 +936,7 @@ def _css():
            ':root[data-hm="emerald-light"]{'+LIGHT+'}:root[data-hm="emerald-light"] .sidebar{'+DARK+SIDEBAR_LIGHT+'}'
            ':root[data-hm="purple"],:root[data-hm="purple"] .sidebar{'+PURPLE+'}')
     types=''.join(f'.type-{t}{{color:var(--t-{t})}}' for t in NOTE_TYPES)
-    return face+theme+CSS.replace('@@LOGO@@',_asset('hivemind-logo.png.b64')).replace('@@TYPES@@',types)
+    return face+theme+CSS.replace('@@LOGO@@',ALM_LOGO_SVG).replace('@@TYPES@@',types)
 
 def render_html(model,document=True,theme=None):
     """One self-contained page for the model. document=False leaves out the doctype, html, head and body wrapper (a
@@ -951,7 +951,7 @@ def render_html(model,document=True,theme=None):
     picker='<div class="themes" role="group" aria-label="Theme">'+''.join(f'<button type="button" data-t="{k}" aria-label="{l}" title="{l}"><i class="sw sw-{k}"></i><span>{l}</span></button>' for k,l in THEMES)+'</div>'
     content=(f'<title>{esc(title)}</title><meta name="claude:viewport-fit-sides" content="cover"><style>{_css()}</style>'
              '<div class="shell" id="shell"><aside class="sidebar" id="sidebar" aria-label="Wiki pages">'
-             f'<div class="brand-block"><span class="logo" aria-hidden="true"></span><span>Hivemind</span><button type="button" class="icon-button close" id="close" aria-label="Close navigation">{_svg("x")}</button></div>'
+             f'<div class="brand-block"><span class="logo" aria-hidden="true"></span><span>Living Memory</span><button type="button" class="icon-button close" id="close" aria-label="Close navigation">{_svg("x")}</button></div>'
              f'<div class="switcher">{_svg("book")}<span>{esc(domain)}</span><span class="muted">{"agent wiki" if agent else "wiki"}</span></div>'
              '<nav class="tree" id="tree"></nav>'
              f'<div class="sidebar-foot">{len(pages)} pages. Generated <span class="nowrap">{esc(model["generated"])}</span> from Living Memory.</div></aside>'

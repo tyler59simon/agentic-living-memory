@@ -131,7 +131,7 @@ def folder_deny(path,entry,cmd):
     if entry.get('effective_level')=='private' or level_of(entry.get('visibility'),bool(entry.get('private')))=='private':
         return f'Living Memory: {path} is a page of a private folder notebook; agents may not change it. Tell the user.'
     return (f'Living Memory: {path} is a page of folder notebook {entry.get("path")}. Read it with {cmd} doc read --file "{path}", then stage your edit with '
-            f'{cmd} doc propose --file "{path}" --base-revision R --body-file F; the user reviews it in Hivemind\'s Inbox.')
+            f'{cmd} doc propose --file "{path}" --base-revision R --body-file F; the user reviews it with proposals accept|reject (or in a connected UI).')
 
 def protected_rule(path,cwd,root):
     """Which canonical location a path falls in: 'domains', 'config' or 'vault'; None when it is not protected."""
@@ -302,7 +302,7 @@ HIVEMIND_DENY=('Undo, setup, upgrade, the direct writes (archive, rewrite, remap
 DOC_WRITE_ACTIONS={'undo','folder'}
 # What agents may run. Anything else after `doc`, an unknown word included, counts as a write.
 DOC_AGENT_ACTIONS={'read','propose'}
-PRIVATE_DENY='Living Memory: private notebooks are for Hivemind itself; agents do not see them, so --include-private is not available here.'
+PRIVATE_DENY='Living Memory: private notebooks are excluded from agent sessions, so --include-private is not available here.'
 def _names_memory(tokens):
     return any(t.lower().endswith(('living_memory.py','living_memory')) or re.split(r'[\\/]',t)[-1].lower() in ('alm','alm.exe','alm.cmd') for t in tokens)
 
@@ -2256,8 +2256,8 @@ def _process(harness,event,payload,root=None,info=None):
                 _update(root,session,lambda s:s.update(bind_hint=True));result['context']=hint
         return result
     if event=='session-start':
-        # Codex has no SessionEnd: its session start schedules the end-of-session housekeeping in the background.
-        if harness=='codex':_sync_vaults(root,'session start',SESSION_START_SYNC_SECONDS);detail['housekeeping']=schedule_housekeeping(root)
+        # Harnesses without SessionEnd (Codex, Copilot, Factory, Antigravity) run throttled vault sync and background housekeeping at session start (REL-U5).
+        if harness!='claude':_sync_vaults(root,'session start',SESSION_START_SYNC_SECONDS);detail['housekeeping']=schedule_housekeeping(root)
         from .session_start import build_context,BUDGET,MIN_BUDGET,HARD_CAP,_cap
         # A harness with a SESSION_LIMITS entry gets rules that leave room for the session marker after them.
         limit=SESSION_LIMITS.get(harness);marker=f'\nLiving Memory session={session}\n'
@@ -2513,12 +2513,13 @@ def _process(harness,event,payload,root=None,info=None):
         detail['steered']=bool(result.get('instructions'))
     elif event=='subagent-start':
         # A subagent's context has no CMD, so this is the whole command; PowerShell needs the call operator before a quoted path.
+        from .note_types import NOTE_TYPES
         cmd=command(root,domain);call='; Bash: as written, PowerShell: put & in front' if os.name=='nt' and not cmd.startswith('alm ') else ''
         # Its one write is a draft for the main agent (core/proposals.py), so the evidence it found survives the hand-back
         # while notes still come only from the main agent.
         result['context']=('Living Memory: subagents may only search/read via scripts, plus one staging write. To keep a verified finding a future '
                            f"session needs (a cause with its evidence, an exact command, a constraint), run {cmd} propose"+(f' --session {session}' if session!='unknown' else '')+
-                           " --type TYPE --title 'Title' --summary 'The fact' [--section 'Heading' 'Text'] [--detail 'Fact']"+call+
+                           f" --type TYPE ({', '.join(NOTE_TYPES)}) --title 'Title' --summary 'The fact' [--section 'Heading' 'Text'] [--detail 'Fact']"+call+
                            '. Include file:line evidence and exact commands; skip progress and guesses. Name each returned proposal ID in your report; '
                            'the main agent saves or rejects it. Do not capture, update or confirm notes.')
         # Maps of the repos this session works in, so a subagent starts from them instead of exploring from scratch.
@@ -2738,10 +2739,10 @@ def map_sentence(key,kind,data,session):
     if kind=='stale':
         paths=data['paths'];names=', '.join(paths[:2])+(f' and {len(paths)-2} more' if len(paths)>2 else '');short=data['short']
         return (f"{data['what']} {short} is stale ({names} changed since it was written): CMD read {short}, then CMD update {short} --session {session} "
-                f"--set-detail '{'**Conventions:**' if data['what']=='map' else '**Key decisions:**'} ...' for each bullet that changed.")
+                f"--set-detail '{'**Conventions:**' if data['what']=='map' else '**Key decisions:**'} ...' --expected-revision REV for each bullet that changed.")
     ref,names=data;short=short_ref(*ref.split(':',1))
     return (f"new top-level paths in {name} ({', '.join(names)}): if they change its layout, update map {short} "
-            f"(CMD read {short}, then CMD update {short} --session {session} --set-detail '**Layout:** ...' for each bullet that changed).")
+            f"(CMD read {short}, then CMD update {short} --session {session} --set-detail '**Layout:** ...' --expected-revision REV for each bullet that changed).")
 
 # Per-turn state a Stop clears (reminded keeps `touched` for a capture that answers it).
 TURN_STATE=('open_turns','mutating','signal','signal_hash','signal_hashes','signal_words','touched','unlooked','docs','shell','shell_started','shell_repos','turn_started','heads')
@@ -3084,23 +3085,24 @@ def _stop_part(kind,data,session):
         return (f"A command failed and then passed after an edit (`{data['command']}`). If the cause was not obvious, "
                 f"capture a bug or knowledge note with Cause and Fix: CMD capture --session {session} --type bug --title '...' --summary '...' --section Cause '...' --section Fix '...'.")
     if kind=='doc':
-        text=(f"You changed {data['path']}. Record its load-bearing decision as a concise note pointing to it "
+        text=(f"You changed {data['path']}. Record its decision "
               f"(CMD capture --session {session} --type decision --title '...' --summary '...' --link '{data['path']}')")
         named=data['notes']
-        if named:text+=(', or update the note it changes: '+'; '.join(f"{n['short']} {n['title']}" for n in named)
-                        +f" (CMD update {named[0]['short']} --session {session} --set-detail '**Label:** ...')")
+        if named:text+=(', or update: '+'; '.join(f"{n['short']} {n['title']}" for n in named)
+                        +f" (CMD update {named[0]['short']} --session {session} --set-detail '**Label:** ...' --expected-revision REV)")
         return text+'.'
     if kind=='follows':   # several notes about edited files in one sentence instead of one per note
         what='files whose digests may be outdated' if all(d.get('digest') for d in data) else 'files that notes cover'
         text=(f"You edited {what}: {', '.join(d['short']+' ('+d['path']+')' for d in data)}. "
-              f"For each: still true, CMD confirm REF --session {session}; changed, CMD update REF --session {session} --set-detail '**Label:** ...'.")
-        if any(d.get('type')=='bug' for d in data):text+=f" If one fixed a bug: CMD update REF --session {session} --set-detail '**Fix:** ...' then CMD resolve REF."
+              f"For each: still true, CMD confirm REF --session {session} --expected-revision REV; changed, CMD update REF --session {session} --set-detail '**Label:** ...' --expected-revision REV.")
+        if any(d.get('type')=='bug' for d in data):text+=f" If one fixed a bug: CMD update REF --session {session} --set-detail '**Fix:** ...' then CMD resolve REF --expected-revision REV."
         return text
     if kind=='follow':
-        s=data['short']
-        text=(f"You edited {data['path']}, which note {s} {data['title']} covers. Still true: CMD confirm {s} --session {session}; "
-              f"changed: CMD update {s} --session {session} --set-detail '**Label:** ...'.")
-        if data.get('type')=='bug':text+=f" If this fixed it: CMD update {s} --session {session} --set-detail '**Fix:** ...' then CMD resolve {s}."
+        s=data['short'];sec=data.get('type') in {'decision','runbook','research','knowledge'}
+        edit="--set-detail '**Label:** ...' (or --section 'Heading' '...')" if sec else "--set-detail '**Label:** ...'"
+        text=(f"You edited {data['path']}, which note {s} {data['title']} covers. Still true: CMD confirm {s} --session {session} --expected-revision REV; "
+              f"changed: CMD update {s} --session {session} {edit} --expected-revision REV.")
+        if data.get('type')=='bug':text+=f" If this fixed it: CMD update {s} --session {session} --set-detail '**Fix:** ...' then CMD resolve {s} --expected-revision REV."
         return text
     if kind=='proposals':
         # A title is subagent text: one line, quoted and cut, so it reads as data and never as a hook instruction of its own.
@@ -3110,11 +3112,10 @@ def _stop_part(kind,data,session):
     if kind=='unbriefed':
         return (f"{data['name']} has no project brief: "
                 f"CMD capture --session {session} --type brief --file '{data['dir']}' --title '{data['name']} project brief' --summary '...' "
-                "--detail '**Goals and scope:** ...'. "
-                "Write what you know now and mark unknowns as unknown; the brief is updated as the project moves.")
+                "--detail '**Goals and scope:** ...'. Write what you know now and mark unknowns as unknown.")
     if kind=='brief':
         return (f"a decision was made or recorded this turn: if project brief {data['short']} no longer matches it, "
-                f"CMD update {data['short']} --session {session} --set-detail '**Key decisions:** ...' (or Team and ownership, Current phase, status and blockers).")
+                f"CMD update {data['short']} --session {session} --set-detail '**Key decisions:** ...' --expected-revision REV (or Team and ownership, Current phase, status and blockers).")
     return map_sentence(data[0],kind,data[1],session)
 
 HEADLESS_TEXT="This is a non-interactive run and only your last message is returned: after saving, end with your answer to the task repeated in full."

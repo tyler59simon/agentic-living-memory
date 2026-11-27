@@ -105,6 +105,12 @@ def resolve_ref(value,domain=None,root=None,search_domains=()):
         found=_by_id(lookup[1],inventory(lookup[0],root,retired=True))
         if len(found)>1:raise _ambiguous(lookup[0],found)
         if found:return lookup[0],found[0]['id']
+    # Bare 8-char IDs/prefixes also search scoped domains (global, parent, child) when absent from the active domain (REL-U2).
+    if not sep and ID_PREFIX.fullmatch(value) and search_domains:
+        scoped=[(d,n) for d in dict.fromkeys(search_domains) if d and d!=domain
+                for n in _by_id(value,inventory(d,root,retired=True))]
+        if len(scoped)>1:raise ValueError('ambiguous_ref: '+', '.join(f"{d}:{n['id']} \"{n['title']}\"" for d,n in scoped[:10]))
+        if scoped:return scoped[0][0],scoped[0][1]['id']
     if sep and ID_PREFIX.fullmatch(tail.strip()):
         # IDs are unique across the store, and a promoted or remapped note keeps its ID while its domain
         # changes, so an older DOMAIN:ID still finds it wherever it now lives.
@@ -328,9 +334,9 @@ def unconfirmed(note):
 QUALITY_CHECKS=(
     (re.compile(r'(?i)scratchpad|[\\/]temp[\\/]|/tmp/|appdata[\\/]local[\\/]temp'),
      'mentions a temporary or scratchpad path that will not exist in a later session'),
-    (re.compile(r'(?i)\b(?:pending|awaiting|not yet (?:run|done|implemented)|nothing implemented yet|next steps?:|todo)\b'),
+    (re.compile(r'(?i)(?:\b(?:still\s+pending|awaiting|not yet (?:run|done|implemented)|nothing implemented yet|next steps?:|todo)\b|\bpending\s*:)'),
      'describes an unfinished state; update this note when the outcome is known instead of capturing another'),
-    (re.compile(r'(?i)\b\d+\s+(?:tests?|passed)\b|\b(?:tests?|suite)\s+(?:pass(?:es|ed)?|green)\b'),
+    (re.compile(r'(?i)(?<![.\d])\b\d+\s+(?:tests?\b(?!\s+(?:job|file|case|script|module|fixture|helper|env|mode))|passed\b)|\b(?:tests?|suite)\s+(?:pass(?:es|ed)?|green)\b'),
      'test counts go stale; keep the outcome or the gotcha, not the count'),
     (re.compile(r'(?i)\bcommits?\s+[0-9a-f]{7,40}\b|\bplan\s+[0-9a-f]{32}\b'),
      'commit and plan identifiers are already recorded by git and the journal'),
@@ -340,12 +346,13 @@ QUALITY_CHECKS=(
 def quality_checks(note):
     """The content checks of QUALITY_CHECKS that a note trips (no style checks); the review worklist recomputes these."""
     title=note.get('title','');body=without_mermaid(note.get('body',''))
+    settled=any(not INTERIM.search(m[1]) for m in RESOLUTION.finditer(body))
     found=[]
     for pattern,message in QUALITY_CHECKS:
         unfinished=message.startswith('describes an unfinished')
         if unfinished and note.get('type')=='plan':continue
-        # A hypothesis already labelled as one (**Hypothesis:** ...) is what the check asks for.
-        if message.startswith('this reads as an interim') and (note.get('type') not in INTERIM_TYPES or HYPOTHESIS.search(body)):continue
+        # A hypothesis already labelled as one (**Hypothesis:** ...), or already settled by a Root cause/Fix/Outcome, does not warn.
+        if message.startswith('this reads as an interim') and (note.get('type') not in INTERIM_TYPES or HYPOTHESIS.search(body) or settled):continue
         # Open steps belong in a bug or risk note's action items; elsewhere they are a passing state.
         text=title+'\n'+(without_actions(body) if unfinished and note_takes_actions(note) else body)
         if pattern.search(text):found.append(message)

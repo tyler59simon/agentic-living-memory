@@ -216,7 +216,7 @@ pre code{background:none;border:none;padding:0}
 .page{max-width:62rem;margin:0 auto;padding:1.5rem 16px 3rem;display:flex;flex-direction:column;gap:1.3rem;min-width:0}
 .page>*{flex-shrink:0;min-width:0}
 .brand{display:flex;align-items:center;gap:.7rem;font-size:1.45rem;font-weight:700;letter-spacing:-.01em}
-.brand-logo{display:block;width:2.6rem;height:2.6rem;background:url("data:image/png;base64,@@LOGO@@") center/contain no-repeat}
+.brand-logo{display:block;width:2.6rem;height:2.6rem;background:url("@@LOGO@@") center/contain no-repeat}
 .page-head{display:flex;align-items:flex-start;justify-content:space-between;gap:1.5rem}
 .page-title{min-width:0}
 .page-head h1{margin:0;font-size:2.55rem;font-weight:700;letter-spacing:-.015em;line-height:1.1;overflow-wrap:anywhere}
@@ -447,13 +447,20 @@ def _asset(name):
     if name not in _assets:_assets[name]=(Path(__file__).resolve().parent.parent/'assets'/name).read_text(encoding='ascii').strip()
     return _assets[name]
 
+# Standalone Living Memory emblem (inline base64 SVG data URI; keeps views/wiki independent of Hivemind branding and free of http:// xmlns text).
+_ALM_LOGO_BYTES=(b"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 36 36' fill='none'>"
+                 b"<rect x='2' y='2' width='32' height='32' rx='8' fill='#0c3835' stroke='#7ecf1c' stroke-width='2'/>"
+                 b"<path d='M11 12h14M11 18h10M11 24h7' stroke='#f5f5f5' stroke-width='2.2' stroke-linecap='round'/>"
+                 b"<circle cx='25' cy='24' r='3' fill='#7ecf1c'/></svg>")
+ALM_LOGO_SVG="data:image/svg+xml;base64,"+base64.b64encode(_ALM_LOGO_BYTES).decode("ascii")
+
 def _css(target):
     face=('@font-face{font-family:"Plus Jakarta Sans Variable";font-style:normal;font-display:swap;font-weight:200 800;'
           'src:url(data:font/woff2;base64,'+_asset('plus-jakarta-sans-latin-wght-normal.woff2.b64')+') format("woff2")}')
     if target=='local':theme=':root{'+DARK+'}'
     else:theme=(':root{'+LIGHT+'}@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){'+DARK+'}}'
                 ':root[data-theme="dark"]{'+DARK+'}')
-    return face+theme+CSS.replace('@@LOGO@@',_asset('hivemind-logo.png.b64'))
+    return face+theme+CSS.replace('@@LOGO@@',ALM_LOGO_SVG)
 
 def _banner(model):
     status=model['status'];name=model.get('superseded_by')
@@ -480,7 +487,7 @@ def render_html(model,target='local'):
     script=JS.replace('@@RELOAD@@',str(RELOAD_SECONDS*1000))
     return (f'<!doctype html>\n<html lang="en" data-target="{target}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<title>{esc(short)}</title><style>{_css(target)}</style></head><body><main class="page">'
-            f'<div class="brand"><span class="brand-logo" aria-hidden="true"></span><span>Hivemind</span></div>'
+            f'<div class="brand"><span class="brand-logo" aria-hidden="true"></span><span>Living Memory</span></div>'
             f'<header class="page-head"><div class="page-title"><div class="eyebrow">{esc(eyebrow)}</div><h1>{esc(model["title"] or short)}</h1>'
             +(f'<p class="page-sub" id="summary">{esc(model["summary"])}</p>' if model['summary'] else '')+'</div>'
             +(f'<div class="page-date muted small">Updated {esc(updated)}</div>' if updated else '')+'</header>'

@@ -115,7 +115,7 @@ class Commands(Base):
         for argv in (['status', '--limit', '3'], ['run', '--run', 'x'], ['enable', '--dry-run'], ['history', '--model', 'sonnet'], ['disable', '--all-domains']):
             code, result = self.cli('maintenance', *argv)
             self.assertEqual(code, 2, argv)
-            self.assertIn('does not take', result['error']['message'])
+            self.assertIn('unrecognized arguments', result['error']['message'])
 
     def test_scheduled_is_a_hidden_flag(self):
         self.assertNotIn('--scheduled', build_parser().subs.choices['maintenance'].format_help())

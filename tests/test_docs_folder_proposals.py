@@ -163,7 +163,7 @@ class Settle(Folder):
     def test_undo_is_refused_after_a_later_change_to_the_page(self):
         self.put('a.md',b'one');pid=self.propose('a.md',b'two')['id'];done=self.ok('proposals','accept',pid)
         self.put('a.md',b'edited later')
-        code,text=self.fails('undo',done['operation_id']);self.assertIn('Hivemind file history',text)
+        code,text=self.fails('undo',done['operation_id']);self.assertIn('backups or version history',text)
         self.assertEqual(self.nb.joinpath('a.md').read_bytes(),b'edited later');self.assertEqual(self.record(pid)['status'],'accepted')
 
     def test_an_accept_that_stopped_before_the_write_is_finished_by_running_it_again(self):

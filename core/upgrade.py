@@ -37,7 +37,12 @@ def _install(python,source,*args):
         raise ValueError(f'{" ".join(["install.py",*args])} failed in {source}: '+(lines[-1] if lines else f'exit {code}'))
     return result
 
-def run():
+def _rewire(python,steps):
+    """Run each setup.py --hooks step reported by install.next_steps(); returns (rewired_harnesses, errors)."""
+    import install
+    return install.wire_harnesses(steps,python=python)
+
+def run(rewire=False):
     stamp=installed_stamp()
     if not stamp or not stamp.get('source') or not stamp.get('commit'):
         raise ValueError('upgrade works from an installed copy made from a git checkout; this copy records none. Run install.py from your checkout instead.')
@@ -52,17 +57,29 @@ def run():
     if code:raise ValueError(f'git pull --ff-only failed in {source}: '+((err or out).strip().splitlines() or [f'exit {code}'])[-1])
     new=_git(source,'rev-parse','HEAD')
     if not new:raise ValueError(f'Cannot read HEAD in {source} after the pull')
+    python=stamp.get('interpreter') if stamp.get('interpreter') and Path(stamp['interpreter']).is_file() else sys.executable
     result={'ok':True,'source':source,'branch':branch,'from':old[:12],'to':new[:12]}
     if new==old:
         import install   # the installed copy's own install.py: its next_steps() checks wiring against this copy
-        result['next_steps'],result['wiring_current']=install.next_steps()
+        steps,current=install.next_steps()
+        result['next_steps'],result['wiring_current']=steps,current
+        if rewire and steps:
+            wired,errors=_rewire(python,steps)
+            result['rewired']=wired
+            if errors:result['warnings']=['rewire failed: '+e for e in errors]
+            else:result['next_steps']=[];result['wiring_current']=sorted(set(current)|set(wired))
         return {**result,'status':'current','commits':0}
     count=_git(source,'rev-list','--count',f'{old}..{new}')
     result['commits']=int(count) if count and count.isdigit() else None
-    python=stamp.get('interpreter') if stamp.get('interpreter') and Path(stamp['interpreter']).is_file() else sys.executable
     receipt=_install(python,source);summary=receipt.get('summary') or {}
-    result.update(files=summary.get('files'),next_steps=summary.get('next_steps') or [],wiring_current=summary.get('wiring_current') or [],
+    steps=summary.get('next_steps') or [];current=summary.get('wiring_current') or []
+    result.update(files=summary.get('files'),next_steps=steps,wiring_current=current,
                   operation_id=receipt.get('operation_id'),undo=receipt.get('undo'))
     for key in ('warnings','notice'):
         if receipt.get(key):result[key]=receipt[key]
+    if rewire and steps:
+        wired,errors=_rewire(python,steps)
+        result['rewired']=wired
+        if errors:result.setdefault('warnings',[]).extend('rewire failed: '+e for e in errors)
+        else:result['next_steps']=[];result['wiring_current']=sorted(set(current)|set(wired))
     return {**result,'status':'upgraded','restart':RESTART}

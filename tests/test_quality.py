@@ -30,7 +30,7 @@ class Quality(StoreFixture):
     def test_mermaid_state_names_are_not_an_unfinished_state(self):
         diagram = 'The job moves through three states.\n\n```mermaid\nstateDiagram-v2\n  Pending --> Running --> Done\n  Running --> todo\n```'
         self.assertEqual(quality_warnings({'type': 'knowledge', 'title': 'Job states', 'body': diagram}), [])
-        self.assertTrue(any('unfinished' in w for w in quality_warnings({'type': 'knowledge', 'title': 'Job states', 'body': 'Pending --> Running'})))
+        self.assertTrue(any('unfinished' in w for w in quality_warnings({'type': 'knowledge', 'title': 'Job states', 'body': 'Pending: Running'})))
 
     def test_a_diagram_state_does_not_make_a_note_interim(self):
         from core.notes import is_interim

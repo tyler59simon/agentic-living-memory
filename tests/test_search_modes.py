@@ -73,16 +73,24 @@ class Limits(Fixture):
 class Refusals(Fixture):
     def test_flags_of_another_form_are_refused_with_the_right_one_named(self):
         self.note()
-        for argv,said in ((('search','cache','--type','decision'),'--filter type=T'),(('search','cache','--tag','x'),'--filter tag=T'),(('search','cache','--status','any'),'--filter status=S'),
-                          (('search','cache','--all-domains'),'--scope all'),(('search','cache','--with-summary'),'list'),(('search','cache','--offset','1'),'list'),
+        for argv,said in ((('search','cache','--with-summary'),'list'),(('search','cache','--offset','1'),'list'),
                           (('search','cache','--session','s'),'--transcript'),(('search','cache','--all'),'--transcript'),
                           (('search','--scope','all'),'notes search'),(('search','--explain'),'notes search'),(('search','--filter','type=decision'),'notes search'),
                           (('search','cache','--sources','--scope','all'),'search --sources'),(('search','cache','--sources','--file','a.py'),'search --sources'),
                           (('search','cache','--pages','--filter','type=decision'),'search --pages'),(('search','cache','--pages','--type','plan'),'search --pages'),
                           (('search','--links','--tag','x'),'search --links'),(('search','--links','--scope','all'),'search --links'),(('search','cache','--transcript','--session','s','--rebuild'),'search --transcript'),(('search','cache','--pages','--rebuild'),'search --pages'),
-                          (('search','cache','--links'),'takes no query'),(('search','--links','--status','resolved'),'active or any')):
+                          (('search','cache','--links'),'takes no query'),(('search','--links','--status','resolved'),'active or any'),
+                          (('search','cache','--scope','active','--all-domains'),'cannot be combined')):
             with self.subTest(argv=argv):
                 code,error=self.cli(*argv);self.assertEqual(code,2,error);self.assertIn(said,error['error']['message'])
+
+    def test_filter_flags_work_directly_on_notes_search(self):
+        n=self.note()
+        self.assertEqual(self.ok('search','cache','--type','decision')['results'],[])
+        self.assertEqual([r['id'] for r in self.ok('search','cache','--tag','concern/architecture')['results']],[n['id']])
+        self.assertEqual([r['id'] for r in self.ok('search','cache','--status','any')['results']],[n['id']])
+        all_dom=self.ok('search','cache','--all-domains')
+        self.assertEqual(all_dom['mode'],'all');self.assertEqual([r['id'] for r in all_dom['results']],[n['id']])
 
     def test_mode_flags_exclude_each_other_and_need_what_they_work_on(self):
         for argv,said in ((('search','cache','--sources','--pages'),'each choose a search'),(('search','--pages','--links'),'each choose a search'),(('search','cache','--transcript','--links'),'each choose a search'),
