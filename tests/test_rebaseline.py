@@ -63,6 +63,16 @@ class Assess(unittest.TestCase):
     def test_paths_and_links_are_not_identifiers(self):
         names=rebaseline.identifiers('See `core/maps.py` and [[Some_note]] in session_start.py; `build_context` calls _open_lines.')
         self.assertEqual(names,{'build_context','_open_lines'})
+    def test_plain_words_of_a_backticked_command_or_call_are_not_identifiers(self):
+        # Seen on 2026-11-27: `git add -N`, `cargo test --lib ...` and `item_fields(text)` kept notes STALE over edits that only
+        # mentioned git, lib or text.
+        names=rebaseline.identifiers('Run `git add -N` and `cargo test --lib live_chat`; `item_fields(text)` and `core.rebaseline._spawn`.')
+        self.assertEqual(names,{'live_chat','item_fields','_spawn'})
+        self.assertEqual(rebaseline.identifiers('`save`, `Job::end` and `main()`.'),{'save','end','main'})
+        self.assertIn('text',rebaseline.identifiers('`item_fields(text)`',['text']))   # a symbol the file defines still counts
+    def test_a_changed_line_sharing_only_a_command_word_is_irrelevant(self):
+        v=self.verdict('`gamma` subtracts one; check with `git diff --stat` (mod.py:14-15).',MOD.replace('"""A module."""','"""A module.\n\ngit is not used here."""'))
+        self.assertFalse(v['relevant'],v['reason'])
 
     # -- Codex review of 7980f44
     def test_a_change_to_a_member_of_a_cited_class_is_relevant(self):

@@ -35,6 +35,7 @@ NAMED_BEFORE=80   # how far before a `line N` its file's name is looked for
 QUALIFIES=re.compile(r'\s*[(,]?\s*(?:at\s+|on\s+)?')   # what may stand between a file name and the `line N` it qualifies
 IDENT=re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
 TICKED=re.compile(r'`([^`\n]{1,200})`')
+ONE_NAME=re.compile(r'[A-Za-z_]\w*(?:(?:\.|::)[A-Za-z_]\w*)*(?:\(\))?')   # a backticked span that is one name: `db`, `Job::end`, `main()`
 PATHLIKE=re.compile(r'[\\/]|^[\w.-]+\.[A-Za-z]\w{0,9}$')
 NOISE=re.compile(r'\[\[[^\]]*\]\]|https?://\S+|(?:[\w.-]+[/\\])+[\w.-]+|[\w.-]+\.[A-Za-z]\w{0,9}(?=[:\s),;]|$)')
 
@@ -181,15 +182,17 @@ def citations(body,tracked):
     return out
 
 def identifiers(body,symbols=()):
-    """Names the note mentions that code would contain: words inside backticks (not paths), snake_case, CamelCase and
-    UPPER_CASE words, and any word equal to a symbol the file defines. File names and links are left out."""
-    names=set()
+    """Names the note mentions that code would contain: a name alone in backticks (any length, so `ID` and `db` count; of a dotted or
+    `::` path, its last part), snake_case and CamelCase words, and any word equal to a symbol the file defines. The other words of a
+    backticked command or call are prose (`git add -N` and `item_fields(text)` do not name `git` or `text`). File names and links are left out."""
+    names=set();words=IDENT.findall(NOISE.sub(' ',TICKED.sub(' ',body)))
     for span in TICKED.findall(body):
-        if PATHLIKE.search(span.strip()):continue
-        names.update(IDENT.findall(span))   # named explicitly: any length, so `ID` and `db` count
-    plain=NOISE.sub(' ',TICKED.sub(' ',body))
+        span=span.strip()
+        if PATHLIKE.search(span):continue
+        if ONE_NAME.fullmatch(span):names.add(IDENT.findall(span)[-1])   # named explicitly
+        words+=IDENT.findall(span)
     defined={s.rsplit('.',1)[-1] for s in symbols if s}
-    for w in IDENT.findall(plain):
+    for w in words:
         if w in defined:names.add(w)
         elif len(w)>=3 and (('_' in w.strip('_')) or re.search(r'[a-z][A-Z]',w)):names.add(w)
     return names
