@@ -4,7 +4,8 @@ Living Memory never calls a model; this script does the calling, one batch of fi
 its digests through the normal LM CLI (`capture ... --source PATH`, so each digest records the file's hash and reads STALE
 when the file changes). Only new and stale files are sent (--all adds current and skipped ones), and test files are left out (--kinds adds them); a file the agent skips as trivial is
 remembered (ingest-skip, a sidecar in the domain folder) until its content changes. Reruns are idempotent: a digest's capture key is digest:<path>:<sha256>, so a file whose content
-was already digested is left alone, and a changed file's new digest replaces the old one.
+was already digested is left alone. For a changed file the agent reads the old digest first and makes the smallest change that makes it true again: confirm it
+(nothing it says changed), update the wrong bullets in place (the rest, hand-added ones included, stay), or capture a new digest that replaces it.
 
     py -3.15 scripts/ingest_run.py --domain demo --batch 8 --max-batches 5 --budget-usd 3 [--all] [--kinds KIND,...|all] [--dry-run]
     ... --command-json '["claude","-p","{prompt}","--model","{model}","--output-format","json","--allowedTools","Read","Bash"]'
@@ -16,7 +17,8 @@ bound folder, with one budget for all of them, under a try-once lock (hooks/dige
 The agent argv template takes {prompt} and {model}; without {prompt} the prompt goes to the agent's stdin. No shell is used.
 The default template is `claude -p {prompt} --model MODEL --output-format json --permission-mode acceptEdits --allowedTools ...`
 (files to read, the LM CLI to run); on Windows a .cmd shim gets the prompt on stdin instead, as it cannot carry a multi-line argument.
-Each agent ends with one JSON object, {"digested": [paths], "skipped": [{"path", "reason"}], "failed": [{"path", "reason"}]}
+Each agent ends with one JSON object, {"digested": [paths], "confirmed": [paths], "skipped": [{"path", "reason"}], "failed": [{"path", "reason"}]}
+("digested" is a file whose digest was captured or updated, "confirmed" one whose old digest was confirmed unchanged)
 ("failed" is a file whose capture was refused or errored; it is never remembered as a skip, and neither is any skip of a batch in which Claude reported
 permission denials); cost is read from the agent's own JSON
 (total_cost_usd or cost_usd) and is the agent's claim. A run log (JSON lines) goes to the store's logs/ folder, or --log. The summary
@@ -48,12 +50,17 @@ Read each of these {count} files (the location after "read:"), then write ONE di
 - Give each bullet its own flag (--detail '...' --detail '...'); a second value after one --detail is refused. Leave the dollar sign out of note text (write COPILOT_HOME, not $env:COPILOT_HOME): a command containing $ needs approval and is blocked.
 - Skip a trivial file (empty, boilerplate, generated, a few lines): capture nothing, give a one-line reason. "skipped" is only for trivial files.
 - If a capture of a file fails (the command is refused or errors, or a permission prompt blocks it), do not retry it in another way and never report it as skipped: list it under "failed" with the reason.
-- A file marked "stale" has an old digest: capture the new one anyway and it replaces the old one. If a capture is refused as a possible duplicate, read the note it names and update it instead.
+- A file marked "stale" has an old digest, named on the "old digest:" line under it. Read it first ({cmd} read REF prints its revision), then read the file and make the smallest change that makes the digest true again:
+  - Every fact and every cited path:line still holds: {cmd} confirm REF --expected-revision REV. Confirm only after checking each bullet and its cited line against the file; report the file under "confirmed".
+  - Some facts or line numbers are wrong: {cmd} update REF --expected-revision REV --set-detail '**Label:** corrected fact (path:line)' for each wrong bullet (same bold label replaces it), plus --summary or --title if those are wrong. Leave the other bullets alone: some were added by people and cannot be re-derived from the file.
+  - Most of the digest is wrong (the file was largely rewritten): capture a new digest as for a new file; it replaces the old one. Carry over every fact from the old digest that the file does not contradict.
+  - If a write is refused as stale, read the note again and redo the change. If a capture is refused as a possible duplicate, read the note it names and update it instead.
 - Run each LM command as its own Bash call that starts with the quoted interpreter path: no shell functions, variables, `&&` chains or multi-line scripts (the permission rule only matches that form).
 Files:
 {files}
 After the files: if this batch changed what the project brief or the codebase map should say, update them (find them with {cmd} search --type brief and {cmd} search --type map, then {cmd} update REF --set-detail '**Label:** ...'); otherwise leave them alone.
-Finish with exactly one JSON object as the last thing you print: {{"digested": ["path", ...], "skipped": [{{"path": "...", "reason": "..."}}], "failed": [{{"path": "...", "reason": "..."}}]}}"""
+Finish with exactly one JSON object as the last thing you print: {{"digested": ["path", ...], "confirmed": ["path", ...], "skipped": [{{"path": "...", "reason": "..."}}], "failed": [{{"path": "...", "reason": "..."}}]}}
+("digested": captured or updated; "confirmed": an old digest confirmed unchanged)"""
 
 
 def lm(args, *argv, check=True, stdin=None):
@@ -75,6 +82,8 @@ def prompt_for(args, items):
     for number, item in enumerate(items, 1):
         notes = f"{item['kind']}, {item['size']} bytes, {item['status']}" + ('' if item.get('file') else ', no --file')
         lines.append(f"{number}. {json.dumps(item['path'])} ({notes}) read: {item['abs']}")
+        if item['status'] == 'stale' and item.get('digest'):
+            lines.append(f"   old digest: {item['digest']} (read it first)")
     return PROMPT.format(cmd=command_line(args), count=len(items), types=TYPES, files='\n'.join(lines))
 
 
@@ -108,13 +117,14 @@ def last_json(text, keys=()):
 
 
 def read_report(stdout):
-    """(cost, digested paths, skipped rows, failed rows, permission denials, denied calls) from an agent's stdout: Claude's `--output-format json` wraps the agent's last message in
+    """(cost, digested paths, confirmed paths, skipped rows, failed rows, permission denials, denied calls) from an agent's stdout: Claude's `--output-format json` wraps the agent's last message in
     {"result": "...", "total_cost_usd": ...}; a plain agent prints the report itself."""
     outer = last_json(stdout) or {}
-    inner = last_json(str(outer.get('result') or ''), ('digested', 'skipped', 'failed')) if isinstance(outer.get('result'), str) else None
-    report = inner or (outer if {'digested', 'skipped', 'failed'} & set(outer) else {})
+    inner = last_json(str(outer.get('result') or ''), ('digested', 'confirmed', 'skipped', 'failed')) if isinstance(outer.get('result'), str) else None
+    report = inner or (outer if {'digested', 'confirmed', 'skipped', 'failed'} & set(outer) else {})
     cost = next((v for v in (outer.get('total_cost_usd'), outer.get('cost_usd'), report.get('cost_usd')) if isinstance(v, (int, float))), 0.0)
     digested = [p for p in report.get('digested') or [] if isinstance(p, str)]
+    confirmed = [p for p in report.get('confirmed') or [] if isinstance(p, str)]
     skipped = [s for s in report.get('skipped') or [] if isinstance(s, dict) and isinstance(s.get('path'), str)]
     failed = [s for s in report.get('failed') or [] if isinstance(s, dict) and isinstance(s.get('path'), str)]
     denials = outer.get('permission_denials')
@@ -127,19 +137,19 @@ def read_report(stdout):
         tool_input = d.get('tool_input') if isinstance(d, dict) else None
         text = tool_input.get('command') if isinstance(tool_input, dict) and tool_input.get('command') else json.dumps(tool_input)
         denied.append({'tool': d.get('tool_name') if isinstance(d, dict) else None, 'input': redact(str(text))[0][:200]})
-    return float(cost), digested, skipped, failed, len(denials), denied
+    return float(cost), digested, confirmed, skipped, failed, len(denials), denied
 
 
 def run_batch(args, number, items):
     prompt = prompt_for(args, items)
     argv, stdin = agent_argv(args, prompt)
     started = time.perf_counter()
-    row = {'batch': number, 'paths': [i['path'] for i in items], 'cost_usd': 0.0, 'digested': [], 'skipped': [], 'failed': [], 'permission_denials': 0, 'denied': []}
+    row = {'batch': number, 'paths': [i['path'] for i in items], 'cost_usd': 0.0, 'digested': [], 'confirmed': [], 'skipped': [], 'failed': [], 'permission_denials': 0, 'denied': []}
     try:
         done = subprocess.run(argv, input=stdin, capture_output=True, text=True, encoding='utf-8', timeout=args.timeout, cwd=args.cwd, env=dict(os.environ, PYTHONUTF8='1', LIVING_MEMORY_HEADLESS='1'))
         row.update(returncode=done.returncode, stderr=done.stderr[-500:])
         if done.returncode == 0:
-            row['cost_usd'], row['digested'], row['skipped'], row['failed'], row['permission_denials'], row['denied'] = read_report(done.stdout)
+            row['cost_usd'], row['digested'], row['confirmed'], row['skipped'], row['failed'], row['permission_denials'], row['denied'] = read_report(done.stdout)
             if row['permission_denials']:   # a blocked capture may have been reported as a skip: remember none of this batch's skips
                 row['failed'], row['skipped'] = row['failed'] + row['skipped'], []
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -265,12 +275,12 @@ def run(args):
                     lm(args, 'ingest-skip', stdin=json.dumps({'skipped': row['skipped']}), check=False)
                 out.write(json.dumps(row, ensure_ascii=False) + '\n')
                 out.flush()
-                print(f"batch {row['batch']}: {len(row['digested'])} digested, {len(row['skipped'])} skipped, {len(row['failed'])} failed, ${row['cost_usd']:.2f}"
+                print(f"batch {row['batch']}: {len(row['digested'])} digested, {len(row['confirmed'])} confirmed, {len(row['skipped'])} skipped, {len(row['failed'])} failed, ${row['cost_usd']:.2f}"
                       + (f", {row['permission_denials']} permission denials" if row['permission_denials'] else '') + (f", agent exit {row['returncode']}" if row['returncode'] else ''), file=sys.stderr)
         ran = {p for r in rows for p in r['paths']}
         after = {i['path']: i['status'] for i in lm(args, 'ingest-scan', '--limit', '1000000', *(['--source', args.source] if args.source else []))['items']} if rows else {}
         summary = {'ok': not failed, 'domain': scan['domain'], 'batches_run': len(rows), 'batches_planned': len(batches), 'files_digested': len({p for r in rows for p in r['digested']}),
-                   'files_skipped': len({s['path'] for r in rows for s in r['skipped']}), 'files_failed': len({s['path'] for r in rows for s in r['failed']}), 'cost_usd': round(spent, 4),
+                   'files_confirmed': len({p for r in rows for p in r['confirmed']}),                    'files_skipped': len({s['path'] for r in rows for s in r['skipped']}), 'files_failed': len({s['path'] for r in rows for s in r['failed']}), 'cost_usd': round(spent, 4),
                    'verified': {'current': sum(after.get(p) == 'current' for p in ran), 'skipped': sum(after.get(p) == 'skipped' for p in ran), 'still_open': sum(after.get(p) in ('new', 'stale') for p in ran)},
                    'batches_failed': failed, 'log': str(log)}
         out.write(json.dumps({'summary': summary}) + '\n')

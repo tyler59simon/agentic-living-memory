@@ -1,5 +1,5 @@
 """The daily digest refresh: SessionStart starts `scripts/ingest_run.py --every-domain --stale-only` detached, at most once a day, so digests
-whose files changed are rewritten by a headless agent instead of piling up in the review queue (USE-1, 2026-11-27).
+whose files changed are refreshed by a headless agent (confirmed, updated in place or replaced) instead of piling up in the review queue (USE-1, 2026-11-27).
 
 Off by default. It spends money, so the user turns it on with a daily budget:
     alm config set digest_refresh '{"daily_budget_usd": "1.00", "model": "haiku"}'

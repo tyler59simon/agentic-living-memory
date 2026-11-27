@@ -17,11 +17,22 @@ cost=float(options[options.index('--cost')+1]) if '--cost' in options else 0.5
 prompt=sys.stdin.read()
 with open(calls,'a',encoding='utf-8') as f:f.write(json.dumps(prompt)+'\\n')
 if '--fail' in options:sys.exit(3)
-digested,skipped,failed=[],[],[]
+digested,confirmed,skipped,failed,items=[],[],[],[],[]
 for line in prompt.splitlines():
+    old=re.match(r'^   old digest: (\\S+) ',line)
+    if old and items:items[-1][-1]=old[1];continue
     found=re.match(r'^\\d+\\. ("(?:[^"\\\\]|\\\\.)*") \\((\\w+), (\\d+) bytes, (\\w+)(, no --file)?\\) read: (.+)$',line)
-    if not found:continue
+    if found:items.append([found,None])
+def lm(*argv):
+    done=subprocess.run([sys.executable,cli,'--root',root,'--domain','demo','--cwd',cwd,*argv],capture_output=True,text=True,encoding='utf-8')
+    if done.returncode:print(done.stdout,done.stderr,file=sys.stderr);sys.exit(4)
+    return json.loads(done.stdout)
+for found,ref in items:
     path=json.loads(found[1]);kind=found[2];status=found[4];abs_=found[6]
+    if ref and '--confirm-stale' in options:
+        lm('confirm',ref,'--expected-revision',lm('read',ref,'--metadata-only')['revision']);confirmed.append(path);continue
+    if ref and '--update-stale' in options:
+        lm('update',ref,'--expected-revision',lm('read',ref,'--metadata-only')['revision'],'--set-detail',f'**Facts:** {path} was updated in place ({path}:1).');digested.append(path);continue
     if '--skip-util' in options and path.endswith('util.py'):skipped.append({'path':path,'reason':'trivial'});continue
     if '--fail-util' in options and path.endswith('util.py'):failed.append({'path':path,'reason':'capture blocked'});continue
     wording=len(Path(abs_).read_text(encoding='utf-8'))
@@ -32,7 +43,7 @@ for line in prompt.splitlines():
     done=subprocess.run(args,capture_output=True,text=True,encoding='utf-8')
     if done.returncode:print(done.stdout,done.stderr,file=sys.stderr);sys.exit(4)
     digested.append(path)
-report={'digested':digested,'skipped':skipped,**({'failed':failed} if '--no-failed-key' not in options else {})}
+report={'digested':digested,**({'confirmed':confirmed} if confirmed else {}),'skipped':skipped,**({'failed':failed} if '--no-failed-key' not in options else {})}
 denials=[{'tool_name':'PowerShell','tool_input':{'command':'Remove-Item '+'x'*300}}] if '--denials' in options else []
 if '--wrap' in options:print(json.dumps({'type':'result','is_error':False,'total_cost_usd':cost,'permission_denials':denials,'result':'Done.\\n'+json.dumps(report)}))
 else:print(json.dumps({**report,'cost_usd':cost}))
@@ -61,7 +72,7 @@ class Batches(IngestRun):
         out=self.run_script('--batch','3','--dry-run')
         self.assertTrue(out['dry_run']);self.assertEqual(out['files'],self.total());self.assertEqual(len(out['batches']),-(-self.total()//3))
         first=out['batches'][0];self.assertEqual(first['paths'],['kb/docs/adr/0003-use-event-sourcing.md','kb/README.md','kb/docs/guide.md'])
-        for text in ('capture --type TYPE','--source','--file','300-1,200 characters','decision for decision records','project brief','codebase map','"digested"','read: ','starts with the quoted interpreter path: no shell functions, variables'):self.assertIn(text,first['prompt'])
+        for text in ('capture --type TYPE','--source','--file','300-1,200 characters','decision for decision records','project brief','codebase map','"digested"','"confirmed"','smallest change that makes the digest true again','read: ','starts with the quoted interpreter path: no shell functions, variables'):self.assertIn(text,first['prompt'])
         self.assertFalse(self.calls.exists());self.assertEqual(self.active(),[])
 
     def test_files_go_to_the_agent_in_ranked_batches_and_get_digests(self):
@@ -151,6 +162,30 @@ class Refresh(IngestRun):
         out=self.run_script('--stale-only');self.assertEqual([self.listed(p) for p in self.prompts()],[['kb/README.md']])
         self.assertEqual(out['files_digested'],1)
         self.assertEqual({i['path']:i['status'] for i in self.cli('ingest-scan','--limit','100')[1]['items']}['kb/docs/ops.md'],'new')
+    def readme(self):return [n for n in self.active() if n['sources'][0]['path']=='kb/README.md']
+    def test_the_prompt_names_the_old_digest_under_a_stale_file_only(self):
+        ref='demo:'+self.readme()[0]['id']
+        prompt=self.run_script('--dry-run')['batches'][0]['prompt'];lines=prompt.splitlines()
+        stale=next(i for i,l in enumerate(lines) if l[:1].isdigit() and '"kb/README.md"' in l)
+        new=next(i for i,l in enumerate(lines) if l[:1].isdigit() and '"kb/docs/ops.md"' in l)
+        self.assertEqual(lines[stale+1],f'   old digest: {ref} (read it first)');self.assertNotIn('old digest',lines[new+1])
+        self.assertEqual(prompt.count('   old digest: '),1)
+    def test_a_confirmed_stale_digest_keeps_its_note_and_reads_current(self):
+        old=self.readme()[0]
+        out=self.run_script('--stale-only',agent=('--confirm-stale',));self.assertEqual((out['files_confirmed'],out['files_digested']),(1,0))
+        self.assertEqual(out['verified'],{'current':1,'skipped':0,'still_open':0})
+        self.assertEqual([n['id'] for n in self.readme()],[old['id']]);self.assertEqual(self.readme()[0]['body'],old['body'])
+        self.assertFalse([n for n in inventory('demo',self.root,retired=True) if n.get('status')=='superseded'])
+        self.assertEqual(json.loads(self.log.read_text(encoding='utf-8').splitlines()[-2])['confirmed'],['kb/README.md'])   # the last batch row, before the summary
+    def test_an_updated_stale_digest_keeps_its_note_and_a_hand_added_bullet(self):
+        old=self.readme()[0]
+        self.assertEqual(self.cli('update','demo:'+old['id'],'--expected-revision',old['revision'],'--add-detail','**Windows:** slow on network drives, see bug 12.')[0],0)
+        put(self.repo/'README.md',self.repo.joinpath('README.md').read_text(encoding='utf-8')+'## Retries\n\nThree.\n');sources.sync(self.root,'demo')   # the hand edit rehashed it: change the file again
+        out=self.run_script('--stale-only',agent=('--update-stale',));self.assertEqual((out['files_digested'],out['files_confirmed']),(1,0))
+        self.assertEqual(out['verified']['current'],1)
+        [note]=self.readme();self.assertEqual(note['id'],old['id'])
+        self.assertIn('slow on network drives, see bug 12.',note['body']);self.assertIn('was updated in place',note['body'])
+        self.assertFalse([n for n in inventory('demo',self.root,retired=True) if n.get('status')=='superseded'])
     def test_stale_only_and_all_are_refused_together(self):
         done=subprocess.run([sys.executable,str(SCRIPT),'--root',str(self.root),'--stale-only','--all','--dry-run'],capture_output=True,text=True,encoding='utf-8')
         self.assertEqual(done.returncode,2);self.assertIn('cannot be combined',done.stderr)
@@ -194,7 +229,7 @@ class Agent(IngestRun):
     def test_the_default_allowlist_matches_the_typed_command(self):
         module=self.script();seen=[]
         def fake(args,number,items):
-            seen.append(args.allowed_tools);return {'batch':number,'paths':[],'cost_usd':0.0,'digested':[],'skipped':[],'failed':[],'permission_denials':0,'denied':[],'returncode':0}
+            seen.append(args.allowed_tools);return {'batch':number,'paths':[],'cost_usd':0.0,'digested':[],'confirmed':[],'skipped':[],'failed':[],'permission_denials':0,'denied':[],'returncode':0}
         with unittest.mock.patch.object(module,'run_batch',fake),unittest.mock.patch('sys.stdout',io.StringIO()),unittest.mock.patch('sys.stderr',io.StringIO()):
             module.main(['--root',str(self.root),'--domain','demo','--cwd',str(self.project),'--log',str(self.log),'--max-batches','1'])
         py,cli=sys.executable,str(CLI)
@@ -205,12 +240,12 @@ class Agent(IngestRun):
         self.assertEqual(row['permission_denials'],1);self.assertEqual(row['denied'],[{'tool':'PowerShell','input':'Remove-Item '+'x'*188}])
     def test_a_denial_without_a_command_records_its_input_as_json(self):
         reply=json.dumps({'total_cost_usd':0.1,'result':'{}','permission_denials':[{'tool_name':'Read','tool_input':{'file_path':'a.py'}},{'tool_name':'Bash'}]})
-        cost,digested,skipped,failed,count,denied=self.script().read_report(reply)
+        cost,digested,confirmed,skipped,failed,count,denied=self.script().read_report(reply)
         self.assertEqual(count,2);self.assertEqual(denied,[{'tool':'Read','input':'{"file_path": "a.py"}'},{'tool':'Bash','input':'null'}])
     def test_a_credential_in_a_denied_call_is_redacted_before_it_is_logged(self):
         token='ghp_'+'a1B2'*9
         reply=json.dumps({'total_cost_usd':0.1,'result':'{}','permission_denials':[{'tool_name':'Bash','tool_input':{'command':'export GITHUB_TOKEN='+token}}]})
-        denied=self.script().read_report(reply)[5]
+        denied=self.script().read_report(reply)[6]
         self.assertNotIn(token,json.dumps(denied));self.assertIn("<redacted type='GitHub token'/>",denied[0]['input'])
 
 class Skips(IngestRun):
