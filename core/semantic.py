@@ -130,7 +130,7 @@ class Model:
         # Fast path for plain ASCII text without control characters (REL-P6): avoids unicodedata NFD & category loops.
         if text.isascii():
             if self.clean:
-                text=''.join(' ' if ch in '\t\n\r\x0b\x0c' else ch for ch in text if ord(ch)>=32 and ord(ch)!=127 or ch in '\t\n\r\x0b\x0c')
+                text=''.join(' ' if ch in '\t\n\r' else ch for ch in text if (ord(ch)>=32 and ord(ch)!=127) or ch in '\t\n\r')
             return text.lower() if self.lower else text
         import unicodedata
         out=[]

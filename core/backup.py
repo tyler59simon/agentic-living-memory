@@ -97,10 +97,19 @@ def backup(root,keep=KEEP):
         try:
             files=canonical_files(root)
             manifest={'version':3,'notes':True}
+            max_member=0
+            total_bytes=0
             with zipfile.ZipFile(temp,'w',zipfile.ZIP_DEFLATED) as archive:
-                for rel in files:archive.writestr(rel,(root/rel).read_bytes())
-                archive.writestr(MANIFEST,canonical_json(manifest))
-            unreadable=verify(temp)
+                for rel in files:
+                    raw=(root/rel).read_bytes()
+                    max_member=max(max_member,len(raw))
+                    total_bytes+=len(raw)
+                    archive.writestr(rel,raw)
+                manifest_bytes=canonical_json(manifest).encode('utf-8')
+                max_member=max(max_member,len(manifest_bytes))
+                total_bytes+=len(manifest_bytes)
+                archive.writestr(MANIFEST,manifest_bytes)
+            unreadable=verify(temp,max_member_bytes=max(_member_cap(),max_member),max_total_bytes=max(_total_cap(),total_bytes))
             retry_sharing(lambda:os.replace(temp,target))
         finally:
             if temp.exists():retry_sharing(temp.unlink)
@@ -130,23 +139,45 @@ MAX_MEMBERS=50000
 MAX_MEMBER_BYTES=16*1024*1024
 MAX_TOTAL_BYTES=256*1024*1024
 
-def _read_zip_member(archive,info,remaining):
+def _cap_value(env_name,default,override=None):
+    if override is not None:
+        return int(override)
+    raw=os.environ.get(env_name)
+    if raw is not None and raw.strip():
+        try:
+            parsed=int(raw.strip())
+            if parsed>0:
+                return parsed
+        except ValueError:
+            pass
+    return default
+
+def _member_cap(override=None):
+    return _cap_value('LIVING_MEMORY_BACKUP_MAX_MEMBER_BYTES',MAX_MEMBER_BYTES,override)
+
+def _total_cap(override=None):
+    return _cap_value('LIVING_MEMORY_BACKUP_MAX_TOTAL_BYTES',MAX_TOTAL_BYTES,override)
+
+def _read_zip_member(archive,info,remaining,member_cap):
     """Read one ZIP member with hard per-member and total uncompressed byte caps (never trusting spoofable info.file_size)."""
-    cap=min(MAX_MEMBER_BYTES,remaining)
+    cap=min(member_cap,remaining)
     with archive.open(info) as handle:
         data=handle.read(cap+1)
-    if len(data)>MAX_MEMBER_BYTES:raise ValueError(f'Backup member exceeds size cap: {info.filename}')
-    if len(data)>remaining:raise ValueError('Backup uncompressed size exceeds total cap')
+    if len(data)>member_cap:
+        raise ValueError(f'Backup member exceeds size cap ({member_cap} bytes): {info.filename}; set LIVING_MEMORY_BACKUP_MAX_MEMBER_BYTES for larger valid snapshots')
+    if len(data)>remaining:
+        raise ValueError('Backup uncompressed size exceeds total cap; set LIVING_MEMORY_BACKUP_MAX_TOTAL_BYTES for larger valid snapshots')
     return data
 
-def verify(path):
+def verify(path,max_member_bytes=None,max_total_bytes=None):
     """[{member, problem}] for members that are not readable: a note that is not UTF-8 or has no parseable frontmatter, a page
     that is not UTF-8, invalid JSON, an attachment over the size cap. Raises ValueError for a member outside the canonical set."""
     import zipfile
     from .paths import name_key
     found=[]
     seen={}
-    remaining=MAX_TOTAL_BYTES
+    member_cap=_member_cap(max_member_bytes)
+    remaining=_total_cap(max_total_bytes)
     with zipfile.ZipFile(path) as archive:
         infos=archive.infolist()
         if len(infos)>MAX_MEMBERS:raise ValueError('Backup has too many members')
@@ -157,7 +188,7 @@ def verify(path):
             seen[key]=info.filename
         for info in infos:
             if LEGACY_NOTEBOOK.fullmatch(info.filename):continue   # dropped by a restore: not read
-            data=_read_zip_member(archive,info,remaining)
+            data=_read_zip_member(archive,info,remaining,member_cap)
             remaining-=len(data)
             if info.filename.startswith('ledger/'):
                 try:
@@ -212,26 +243,27 @@ def staleness_warning(root,notes=None):
     if hours>STALE_HOURS:return f'newest backup {found[0].name} is {int(hours)} hours old; {advice}'
     return None
 
-def restore_backup(root,source):
+def restore_backup(root,source,max_member_bytes=None,max_total_bytes=None):
     """One direct, journaled write that makes the canonical set match a snapshot, read and written under one store lock.
     Notes in domains the snapshot does not contain are left alone; `undo OPERATION` reverses it like any operation."""
     with store_lock(Path(root).resolve()):
-        return _restore_backup(root,source)
+        return _restore_backup(root,source,max_member_bytes=max_member_bytes,max_total_bytes=max_total_bytes)
 
-def _restore_backup(root,source):
+def _restore_backup(root,source,max_member_bytes=None,max_total_bytes=None):
     import zipfile
     from .governance import commit
     root=Path(root).resolve()
     source=Path(source)
     # Members that were unreadable when the snapshot was taken are neither restored nor a reason to delete
     # the file that is there now: a damaged copy must not replace, or remove, a possibly good one.
-    skipped={problem['member'] for problem in verify(source)}
-    remaining=MAX_TOTAL_BYTES
+    skipped={problem['member'] for problem in verify(source,max_member_bytes=max_member_bytes,max_total_bytes=max_total_bytes)}
+    member_cap=_member_cap(max_member_bytes)
+    remaining=_total_cap(max_total_bytes)
     wanted={}
     with zipfile.ZipFile(source) as archive:
         for info in archive.infolist():
             if info.filename in skipped or LEGACY_NOTEBOOK.fullmatch(info.filename):continue
-            raw=_read_zip_member(archive,info,remaining)
+            raw=_read_zip_member(archive,info,remaining,member_cap)
             remaining-=len(raw)
             wanted[info.filename]=raw.decode('utf-8')
     wanted.pop(MANIFEST,None)

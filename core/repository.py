@@ -877,12 +877,27 @@ def roll_forward_pending(root):
             pending_ids = []
     else:
         # One-time migration from legacy .operations/*/pending layout.
+        # Populate a staging directory with all legacy pending markers and rename it into .pending/
+        # atomically so a crash or conflict during recovery never hides unrecovered legacy journals.
         try:
+            import shutil
             for e in os.scandir(ops_dir):
-                if e.name != PENDING_DIR and e.is_dir(follow_symlinks=False) and (Path(e.path) / PENDING).exists():
+                if e.name not in (PENDING_DIR, PENDING_DIR + ".migrating") and e.is_dir(follow_symlinks=False) and (Path(e.path) / PENDING).exists():
                     pending_ids.append(e.name)
             pending_ids.sort()
-            pending_dir.mkdir(exist_ok=True)
+            staging_dir = ops_dir / (PENDING_DIR + ".migrating")
+            if staging_dir.exists():
+                shutil.rmtree(staging_dir, ignore_errors=True)
+            staging_dir.mkdir(exist_ok=True)
+            for op_id in pending_ids:
+                atomic_write(staging_dir / op_id, "")
+            try:
+                os.rename(staging_dir, pending_dir)
+            except OSError:
+                shutil.rmtree(staging_dir, ignore_errors=True)
+                if pending_dir.is_dir():
+                    for op_id in pending_ids:
+                        atomic_write(pending_dir / op_id, "")
         except OSError:
             pass
     results = []

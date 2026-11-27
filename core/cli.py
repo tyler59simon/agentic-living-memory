@@ -422,12 +422,12 @@ def _note_hits(root,domain,query,scope,limit,rebuild,filters,config,globals_,pri
     from .search import search_domains
     from .runtime import relevance_gate,scope_domains,parent_domains,child_domains
     candidates=[] if explain else None
-    parents=parent_domains(domain,config)
-    children=child_domains(domain,config)
+    parents=parent_domains(domain,config) if domain else []
+    children=child_domains(domain,config) if domain else []
     gate=relevance_gate(query,root,candidates)
     gated=True
     # As for prompts: global notes rank like the project's own, a parent's or child's count half.
-    weights={**{g:2 for g in globals_},domain:2,**{p:1 for p in scope_domains(domain,config) if p!=domain}}
+    weights={**{g:2 for g in globals_},**({domain:2,**{p:1 for p in scope_domains(domain,config) if p!=domain}} if domain else {})}
     def run(domains):
         # Relevance is judged within each domain before the merge, as for prompts, so weak local hits
         # cannot bury a strong match in a parent or global domain. An explicit search still answers:
@@ -439,7 +439,11 @@ def _note_hits(root,domain,query,scope,limit,rebuild,filters,config,globals_,pri
             return hits
         gated=False
         return search_domains(query,domains,limit,root,filters or None,rebuild,weights=weights)
-    domains=list(dict.fromkeys(sorted(load_bindings(root).get('domains',{}))+globals_)) if scope=='all' else primary
+    if scope=='all':
+        disk_domains=[d['name'] for d in list_domains(root)['domains'] if (root/'domains'/d['name']/'notes').is_dir()]
+        domains=list(dict.fromkeys(disk_domains+sorted(load_bindings(root).get('domains',{}))+globals_))
+    else:
+        domains=primary
     hits=run(domains)
     fallback=False
     if not hits and scope=='fallback' and foreign:
@@ -452,7 +456,7 @@ def _note_hits(root,domain,query,scope,limit,rebuild,filters,config,globals_,pri
         if hit.get('withheld'):hit['snippet']=hit['stale']
         elif hit.get('stale'):hit['snippet']=f"{hit['stale']} — {hit.get('snippet','')}"
     for hit in hits:
-        hit['sourceScope']='active' if hit['domain']==domain else 'global' if hit['domain'] in globals_ else 'parent' if hit['domain'] in parents else 'child' if hit['domain'] in children else 'foreign'
+        hit['sourceScope']='active' if domain and hit['domain']==domain else 'global' if hit['domain'] in globals_ else 'parent' if hit['domain'] in parents else 'child' if hit['domain'] in children else 'foreign'
         hit.pop('path',None)
     decisions={}
     if explain:
@@ -1414,9 +1418,10 @@ def main(argv=None):
         logs.use(root)
         invocation['root']=root
         cmd=args.command
+        session=getattr(args,'session',None) or os.environ.get(SESSION_ENV)
         _check_type_args(args,root)
         try:
-            domain=args.domain or _session_domain(root,getattr(args,'session',None)) or resolve_domain(cwd,load_bindings(root))
+            domain=args.domain or _session_domain(root,session) or resolve_domain(cwd,load_bindings(root))
             if domain:domain=canonical_domain(domain,root)
             invocation['domain']=domain
         except ValueError:
@@ -1722,22 +1727,25 @@ def _cmd_search(args,root,domain,cwd,session,subs):
         else:
             raise ValueError(UNBOUND)
         return {'ok':True,'mode':'pages','query':args.query,'domains':names,'pages':_page_hits(root,names,args.query,max(1,min(50,args.limit)))}
-    if not domain:
-        raise ValueError(UNBOUND)
     if form=='sources':
+        if not domain:
+            raise ValueError(UNBOUND)
         from . import sources
         result={'ok':True,'mode':'sources','domain':domain,'results':sources.search(root,domain,args.query,max(1,min(20,args.limit))),'knowledge_base':sources.state(root,domain)}
         each=_each_question(args.query,max(1,min(20,args.limit)),lambda q,n:{'results':sources.search(root,domain,q,n)})
         if each:
             result['questions']=each
         return result
+    if not domain and not args.all_domains:
+        raise ValueError(UNBOUND)
     config=load_bindings(root)
     scope=config.get('search_scope',{})
     globals_=scope.get('global_domains',['_global'])
     globals_=[canonical_domain(g,root) for g in globals_]
     globals_=[g for g in globals_ if (root/'domains'/g).exists()]
     from .runtime import scope_domains
-    primary=list(dict.fromkeys([domain]+scope_domains(domain,config)+globals_))
+    primary=list(dict.fromkeys(([domain]+scope_domains(domain,config) if domain else [])+globals_))
+    page_domains=[d['name'] for d in list_domains(root)['domains']] if args.all_domains else primary
     foreign=scope.get('foreign_domains',[])
     if any('=' not in value for value in args.filter):
         raise ValueError("Search filters are KEY=VALUE with KEY one of prefix, status, tag, type, file (for example --filter type=decision)")
@@ -1769,14 +1777,18 @@ def _cmd_search(args,root,domain,cwd,session,subs):
     if args.file:
         from .common import domain_prefixes,display_path
         given=Path(args.file).expanduser()
-        wanted=(display_path(given.resolve(),domain_prefixes(domain,config)) or args.file) if given.is_absolute() else args.file
+        wanted=(display_path(given.resolve(),domain_prefixes(domain,config)) or args.file) if domain and given.is_absolute() else args.file
         from .runtime import child_domains,child_path
-        kids_of=child_domains(domain,config)
+        kids_of=child_domains(domain,config) if domain else []
         if not args.query.strip():
             if filters:
                 raise ValueError('--filter needs a query; with --file alone, use --scope to choose domains')
             from .search import file_notes
-            domains=list(dict.fromkeys(sorted(config.get('domains',{}))+globals_)) if args.scope=='all' else primary
+            if args.scope=='all':
+                disk_domains=[d['name'] for d in list_domains(root)['domains'] if (root/'domains'/d['name']/'notes').is_dir()]
+                domains=list(dict.fromkeys(disk_domains+sorted(config.get('domains',{}))+globals_))
+            else:
+                domains=primary
             n=max(1,min(100,args.limit))
             kids=kids_of
             hits=file_notes(wanted,[d for d in domains if d not in kids],root,n)
@@ -1799,8 +1811,8 @@ def _cmd_search(args,root,domain,cwd,session,subs):
         filters['file']={'*':wanted,**{k:child_path(wanted,domain,k,config) for k in kids_of}} if kids_of else wanted
     result=_note_hits(root,domain,args.query,args.scope,args.limit,args.rebuild,filters,config,globals_,primary,foreign,args.explain)
     if not filters:
-        result['pages']=_page_hits(root,primary,args.query,max(1,min(20,args.limit)))
-    each=None if filters else _each_question(args.query,max(1,min(20,args.limit)),lambda q,n:dict({k:v for k,v in _note_hits(root,domain,q,args.scope,n,args.rebuild,filters,config,globals_,primary,foreign).items() if k in {'results','relevant'}},pages=_page_hits(root,primary,q,n)))
+        result['pages']=_page_hits(root,page_domains,args.query,max(1,min(20,args.limit)))
+    each=None if filters else _each_question(args.query,max(1,min(20,args.limit)),lambda q,n:dict({k:v for k,v in _note_hits(root,domain,q,args.scope,n,args.rebuild,filters,config,globals_,primary,foreign).items() if k in {'results','relevant'}},pages=_page_hits(root,page_domains,q,n)))
     if each:
         result['questions']=each
     return result

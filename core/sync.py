@@ -567,18 +567,27 @@ def sync(domain,vault,root=None,trigger=None):
         for rel,value in view_changes.items():
             if value is None:copy_manifest['files'].pop(rel,None)
         view_changes[COPIES]=canonical_json(copy_manifest)
+        # Persist new/updated conflict and draft copies before overwriting vault files or publishing sync-state.json:
+        # a crash mid-sync must never overwrite a user's vault edit or mark a conflict handled without its staged copy on disk.
+        for rel,content in sorted(staging_changes.items()):
+            if content is None:
+                continue
+            target=confined(root,rel)
+            if _text(target)!=content:
+                atomic_write(target,content)
         transaction(vault,view_changes,'overlay_sync',skip_unchanged=True)
         counts={'copied':copied,'applied':len(applied),'conflicts':conflicts,
                 'deferred':deferred,'restored':restored,'renamed':renamed,'new_vault':new_vault}
         # Only a sync that did something moves the stamp, so a quiet one rewrites nothing.
-        if any(counts.values()) or not state.get('last_sync'):state['last_sync']={'at':now(),'trigger':trigger,**counts}
+        if any(counts.values()) or not state.get('last_sync'):
+            state['last_sync']={'at':now(),'trigger':trigger,**counts}
         # sync-state.json and staged conflict/draft copies are derived bookkeeping, not canonical notes: write atomically without creating .operations/ journals (REL-P1).
         state_bytes=canonical_json(state)
-        if _text(state_path)!=state_bytes:atomic_write(state_path,state_bytes)
+        if _text(state_path)!=state_bytes:
+            atomic_write(state_path,state_bytes)
         for rel,content in sorted(staging_changes.items()):
-            target=confined(root,rel)
-            if content is None:target.unlink(missing_ok=True)
-            elif _text(target)!=content:atomic_write(target,content)
+            if content is None:
+                confined(root,rel).unlink(missing_ok=True)
         if wrote_canonical:reconcile(domain,root,sync_overlay=False)
         _prune_legacy_dirs(vault)
         result={'ok':True,'domain':domain,'copied':copied,'staged':staged,'conflicts':conflicts,'applied':applied,

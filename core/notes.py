@@ -60,26 +60,51 @@ def _by_id(note_id,notes):
 def _ambiguous(domain,matches):
     return ValueError('ambiguous_ref: '+', '.join(f"{domain}:{n['id']} \"{n['title']}\"" for n in matches[:10]))
 
+def _confined_note_path(raw_path,domain,root):
+    """Confine an indexed note path to domains/<domain>/{notes,archive} without following symlinks or junctions."""
+    from .repository import confined
+    root_p=Path(root or memory_root()).resolve()
+    candidate=Path(raw_path)
+    rel=None
+    for base in (root_p,Path(root or memory_root())):
+        try:
+            rel=candidate.relative_to(base)
+            break
+        except ValueError:
+            continue
+    if rel is None or len(rel.parts)<4 or rel.parts[:2]!=('domains',domain) or rel.parts[2] not in ('notes','archive'):
+        return None
+    try:
+        return confined(root_p,rel)
+    except (ValueError,OSError):
+        return None
+
 def _find_note_index(note_id,domain,root):
     """O(log N) lookup via search.sqlite3; returns (Path, parsed note) on unique verified hit, else None (caller falls back to inventory)."""
     import sqlite3
     try:
         from .search import domain_dir
         db_path=domain_dir(domain,root)/'search.sqlite3'
-        if not db_path.exists():return None
+        if not db_path.exists():
+            return None
         db=sqlite3.connect(db_path.as_uri()+'?mode=ro',uri=True)
         try:
             rows=db.execute('SELECT id,path FROM notes WHERE id=?',(note_id,)).fetchall()
             if not rows and ID_PREFIX.fullmatch(note_id):
                 rows=db.execute('SELECT id,path FROM notes WHERE lower(id) LIKE ? LIMIT 2',(note_id.lower()+'%',)).fetchall()
-        finally:db.close()
-        if len(rows)!=1:return None
+        finally:
+            db.close()
+        if len(rows)!=1:
+            return None
         found_id,raw_path=rows[0]
-        path=Path(raw_path)
-        if not path.is_file():return None
+        path=_confined_note_path(raw_path,domain,root)
+        if path is None or not path.is_file():
+            return None
         note=parse(path)
-        if note and note.get('id')==found_id:return path,note
-    except (ValueError,OSError,sqlite3.Error):pass
+        if note and note.get('id')==found_id:
+            return path,note
+    except (ValueError,OSError,sqlite3.Error):
+        pass
     return None
 
 def find_note(note_id,domain,root=None):
@@ -580,26 +605,37 @@ def build_note(title,body,tags,domain,root,note_type='knowledge',context='',key=
     return path,note,serialize(note)
 
 def _active_titles(domain,root):
-    """Lightweight active note headers ({id, title, type, path}) from search.sqlite3, falling back to inventory()."""
+    """Lightweight active note headers ({id, title, type, path}) from search.sqlite3, falling back to inventory() when dirty or unavailable."""
     import sqlite3
     try:
         from .search import domain_dir
-        db_path=domain_dir(domain,root)/'search.sqlite3'
-        if db_path.exists():
+        ddir=domain_dir(domain,root)
+        db_path=ddir/'search.sqlite3'
+        if db_path.exists() and not (ddir/'.derived-dirty').exists():
             db=sqlite3.connect(db_path.as_uri()+'?mode=ro',uri=True)
-            try:rows=db.execute("SELECT id,title,type,path FROM notes WHERE status='active'").fetchall()
-            finally:db.close()
+            try:
+                rows=db.execute("SELECT id,title,type,path FROM notes WHERE status='active'").fetchall()
+            finally:
+                db.close()
             return [{'id':i,'title':t,'type':k,'path':p,'status':'active','_light':True} for i,t,k,p in rows]
-    except (ValueError,sqlite3.Error):pass
+    except (ValueError,sqlite3.Error):
+        pass
     return [n for n in inventory(domain,root) if n.get('status','active')=='active']
 
 def _hydrate(note,domain,root):
-    if not note.get('_light'):return note
-    path=Path(note['path'])
-    if path.is_file():
+    """Load the live canonical active note for a lightweight index row; returns None if deleted, archived, or non-canonical."""
+    if not note.get('_light'):
+        return note if note.get('status','active')=='active' else None
+    path=_confined_note_path(note['path'],domain,root)
+    if path is not None and path.is_file():
         parsed=parse(path)
-        if parsed and parsed.get('id')==note['id']:return parsed
-    return find_note(note['id'],domain,root)[1]
+        if parsed and parsed.get('id')==note['id']:
+            return parsed if parsed.get('status','active')=='active' else None
+    try:
+        _,parsed=find_note(note['id'],domain,root)
+    except ValueError:
+        return None
+    return parsed if parsed.get('status','active')=='active' else None
 
 def _cross_domain(title,body,domain,root):
     """An exact copy of a new note outside its own domain, as (action, domain, note), or None.
@@ -617,12 +653,17 @@ def _cross_domain(title,body,domain,root):
     wanted_body=body.strip()
     for other in sorted(others,key=order):
         notes=_active_titles(other,root)
-        if not notes:continue
+        if not notes:
+            continue
         visible=other in globals_ or related(other,domain,root)
         for cand in notes:
-            if cand['title'].strip().casefold()!=wanted:continue
+            if cand['title'].strip().casefold()!=wanted:
+                continue
             full=_hydrate(cand,other,root)
-            if full['body'].strip()==wanted_body:return ('duplicate' if visible else 'promote'),other,full
+            if full is None:
+                continue
+            if full['title'].strip().casefold()==wanted and full['body'].strip()==wanted_body:
+                return ('duplicate' if visible else 'promote'),other,full
     return None
 
 def _cross_similar(title,body,note_type,domain,root):
@@ -634,11 +675,22 @@ def _cross_similar(title,body,note_type,domain,root):
     for other in sorted((d for d in domain_folders(root) if d!=domain),key=order):
         notes=[n for n in _active_titles(other,root) if not (note_type in KEYED_TYPES and effective_type(n)==note_type)]
         similar=similar_title(title,notes) if notes else None
-        if not similar:continue
+        if not similar:
+            continue
         full=_hydrate(similar,other,root)
-        if other in globals_ or related(other,domain,root):return 'visible',other,full
-        if to_global:return ('supersede' if effective_type(full)==note_type else 'promotable'),other,full
-        if near_identical(title,body,note_type,full,TitleScorer(notes)):return 'promote',other,full
+        if full is None or full['title'].strip().casefold()!=similar['title'].strip().casefold() or (note_type in KEYED_TYPES and effective_type(full)==note_type):
+            # Stale index row (deleted, archived, renamed, or retyped): re-evaluate against live canonical inventory.
+            live=[n for n in inventory(other,root) if n.get('status','active')=='active' and not (note_type in KEYED_TYPES and effective_type(n)==note_type)]
+            full=similar_title(title,live) if live else None
+            if not full:
+                continue
+            notes=live
+        if other in globals_ or related(other,domain,root):
+            return 'visible',other,full
+        if to_global:
+            return ('supersede' if effective_type(full)==note_type else 'promotable'),other,full
+        if near_identical(title,body,note_type,full,TitleScorer(notes)):
+            return 'promote',other,full
         return 'promotable',other,full
     return None
 
