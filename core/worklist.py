@@ -2,7 +2,7 @@
 
 Kinds, in this order: stale (a hashed file or a map's cited file changed or is missing), due (review date or age), interim (an unconfirmed
 belief left for INTERIM_DAYS), duplicate (a same-type note with a similar title or body), warned (a content check of
-notes.QUALITY_CHECKS), noisy (retrieved often, never used). The worklist only proposes: it writes nothing and runs no git
+notes.QUALITY_CHECKS), noisy (retrieved often, never used). The worklist only proposes: it writes no note (only the derived quality cache, see _quality) and runs no git
 (maps and briefs are judged from the currency cache SessionStart and prompts keep, while its fingerprint and the git head still match;
 only the explicit `review` path, working_tree=True, runs one bounded `git diff HEAD` per map for uncommitted edits to cited files). A merge and an archive are direct, undoable commands; the harness asks the user before a merge."""
 from __future__ import annotations
@@ -15,7 +15,7 @@ KINDS=('stale','due','interim','duplicate','warned','noisy')
 INTERIM_DAYS=14
 DUPLICATE_TITLE=0.6       # the lower bound of the capture-time `similar` list
 STEM_CAP=40               # a word in more notes than this (per domain and type) does not pair notes up
-NOISE_DAYS=30
+NOISE_DAYS=30             # also the window of read or used notes the due order counts (one diary read serves both)
 
 def _ref(note):return f"{note['domain']}:{note['id']}"
 
@@ -87,10 +87,12 @@ def _stale(pool,root,bindings,working_tree=False,infos=None):
     from .digests import stale_note
     from .note_types import KEYED_TYPES
     from .maps import stale_clause
-    found={};cache=None
+    from .folder_policy import Policy
+    found={};cache=None;policy=None
     for note in pool:
         if note.get('sources') or note.get('file_hashes'):
-            text=stale_note(note,root,bindings)
+            policy=policy or Policy(root)   # one per scan: it caches the folders it has judged
+            text=stale_note(note,root,bindings,policy)
             if text:found[_ref(note)]=text
         elif note.get('type') in KEYED_TYPES:
             if cache is None:cache=_cache(root)
@@ -99,10 +101,10 @@ def _stale(pool,root,bindings,working_tree=False,infos=None):
             if info['changed']:found[_ref(note)]=stale_clause(note,{'changed':info['changed']},note['type'])
     return found
 
-def _due(pool,root,domain,today=None):
+def _due(pool,root,domain,today=None,rows=None):
     from .note_types import review_due,review_order,effective_date
     from .usage import used_refs
-    due=review_order([n for n in pool if review_due(n,today,root)],used_refs(root,today=today),domain,today)
+    due=review_order([n for n in pool if review_due(n,today,root)],used_refs(root,NOISE_DAYS,today,rows),domain,today)
     found={}
     for n in due:
         review=str(n.get('review_by') or '')[:10]
@@ -119,20 +121,59 @@ def _interim(pool,today):
             found[_ref(n)]=f"still an unconfirmed belief, unchanged since {known}: confirm it, record the cause, or say it is still a hypothesis"
     return found
 
-def _warned(pool):
+QUALITY_CACHE_MAX=5000
+
+def _code_stamp():
+    """A hash of the name, size and mtime of every core module: a kept quality result is reused only while the code that made it is unchanged."""
+    import hashlib,os
+    rows=[]
+    for path in sorted(Path(__file__).parent.glob('*.py')):
+        try:st=os.stat(path);rows.append(f'{path.name}:{st.st_size}:{st.st_mtime_ns}')
+        except OSError:pass
+    return hashlib.sha256('\n'.join(rows).encode()).hexdigest()[:16]
+
+def _quality(pool,root):
+    """{ref: messages} of notes.quality_checks for the pool. A note's result depends only on its file, so results are kept by note revision in
+    the store's derived .cache/quality-checks.json (QUALITY_CACHE_MAX entries, the newest kept) while the core code is unchanged; a damaged or
+    unwritable cache only costs a recompute."""
+    import json
     from .notes import quality_checks
-    found={}
+    path=Path(root)/'.cache'/'quality-checks.json';code=_code_stamp()
+    try:held=json.loads(path.read_text(encoding='utf-8'))
+    except (OSError,ValueError):held=None
+    kept=held['results'] if isinstance(held,dict) and held.get('code')==code and isinstance(held.get('results'),dict) else {}
+    out={};seen={};added=False
     for n in pool:
-        messages=quality_checks(n)
+        rev=str(n.get('revision') or '');hit=kept.get(rev) if rev else None
+        if not (isinstance(hit,list) and all(isinstance(m,str) for m in hit)):hit=quality_checks(n);added=added or bool(rev)
+        if rev:seen[rev]=hit
+        out[_ref(n)]=hit
+    if added and Path(root).is_dir():
+        results={k:v for k,v in kept.items() if k not in seen};results.update(seen)   # this pool's notes last, so the cap drops others first
+        while len(results)>QUALITY_CACHE_MAX:results.pop(next(iter(results)))
+        try:
+            from .common import atomic_write
+            atomic_write(path,json.dumps({'code':code,'results':results},separators=(',',':')))
+        except Exception as exc:
+            from .logs import swallowed
+            swallowed('worklist.quality_cache',exc,root)
+    return out
+
+def _warned(pool,root=None):
+    """root: the store whose quality cache to use; without one every note is checked."""
+    from .notes import quality_checks
+    found={};checked=_quality(pool,root) if root is not None else {_ref(n):quality_checks(n) for n in pool}
+    for n in pool:
+        messages=checked[_ref(n)]
         if messages and not _confirmed_since(n,n.get('updated')):
             found[_ref(n)]=messages[0].replace('REF','this note')+(f' (+{len(messages)-1} more)' if len(messages)>1 else '')
     return found
 
-def _noisy(pool,root,domains,today=None):
+def _noisy(pool,root,domains,today=None,rows=None):
     from . import usage
     notes={_ref(n):n for n in pool}
     return {ref:f"shown {c['inject']} times in {NOISE_DAYS} days and never read, updated or confirmed: a sharper title or summary may help, or confirm it"
-            for ref,c in usage.noisy(usage.events(root,NOISE_DAYS,today),domains) if ref in notes}
+            for ref,c in usage.noisy(usage.events(root,NOISE_DAYS,today) if rows is None else rows,domains) if ref in notes}
 
 SKETCH=4   # smallest shingle hashes kept per body: two notes with 70% of their shingles in common share one almost always
 
@@ -201,7 +242,7 @@ def worklist(root,domains,kinds=None,limit=100,tags=None,cheap=False,notes=None,
     `pair`. kinds limits what is computed; cheap skips the duplicate scan. notes are already loaded active notes carrying their `domain`
     (SessionStart has them); tags keeps notes with all of these tags. today is the local date the due, interim and noisy rules count from.
     Each row of a note that tracks files, digest sources or a repo carries `currency` (currency_of; not with cheap). working_tree=True
-    (the explicit `review`) also looks for uncommitted edits to the files a map cites. Read-only: no usage rows, and git only for working_tree."""
+    (the explicit `review`) also looks for uncommitted edits to the files a map cites. Writes no note and no usage rows (only the derived quality cache), and runs git only for working_tree."""
     from .repository import inventory
     from .common import load_bindings
     root=Path(root);today=today or clock.today();domains=list(dict.fromkeys(domains))
@@ -218,19 +259,21 @@ def worklist(root,domains,kinds=None,limit=100,tags=None,cheap=False,notes=None,
         if ref not in by_ref:return
         if ref not in found:found[ref]={'kinds':[],'reasons':[],'extra':{}};order.append(ref)
         found[ref]['kinds'].append(kind);found[ref]['reasons'].append(reason);found[ref]['extra'].update(extra)
+    from . import usage
+    rows=usage.events(root,NOISE_DAYS,today) if 'due' in wanted or 'noisy' in wanted else None   # one read of the diary for both
     if 'stale' in wanted:
         for ref,text in _stale(pool,root,load_bindings(root),working_tree,infos).items():add('stale',ref,text,stale=text)
     if 'due' in wanted:
         # One review order over the active domain first, like `review` before: its own notes lead.
-        for ref,text in _due(pool,root,domains[0] if len(domains)==1 else None,today):add('due',ref,text)
+        for ref,text in _due(pool,root,domains[0] if len(domains)==1 else None,today,rows):add('due',ref,text)
     if 'interim' in wanted:
         for ref,text in _interim(pool,today).items():add('interim',ref,text)
     if 'duplicate' in wanted:
         for ref,row in _duplicates(pool).items():add('duplicate',ref,row['reason'],pair={k:row[k] for k in ('ref','title','score')},_same=row['same'])
     if 'warned' in wanted:
-        for ref,text in _warned(pool).items():add('warned',ref,text)
+        for ref,text in _warned(pool,root).items():add('warned',ref,text)
     if 'noisy' in wanted:
-        for ref,text in _noisy(pool,root,domains,today).items():add('noisy',ref,text)
+        for ref,text in _noisy(pool,root,domains,today,rows).items():add('noisy',ref,text)
     from .note_types import last_confirmed
     rank=lambda ref:min(KINDS.index(k) for k in found[ref]['kinds'])
     # Stable: within a kind the order each computation gave (review order for due) stays.

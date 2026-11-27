@@ -91,6 +91,20 @@ class Worklist(Base):
         change(made['id'],'demo','update',self.root,body='Still pending: wire the adapter later.')   # a new update is a new look
         self.assertEqual(self.rows()[self.ref(made)]['kinds'],['warned'])
 
+    def test_warned_results_are_kept_by_revision_until_the_note_or_the_code_changes(self):
+        from unittest.mock import patch
+        from core import worklist as wl
+        made=self.cap('Wiring task','Pending: wire the adapter.',type='knowledge')
+        self.assertEqual(self.rows()[self.ref(made)]['kinds'],['warned'])
+        with patch('core.notes.quality_checks',side_effect=AssertionError('recomputed')):
+            self.assertEqual(self.rows()[self.ref(made)]['kinds'],['warned'])   # PERF-5: served from .cache/quality-checks.json
+        change(made['id'],'demo','update',self.root,body='The adapter is wired to the bus.')
+        self.assertNotIn(self.ref(made),self.rows())   # a new revision is checked again
+        with patch.object(wl,'_code_stamp',return_value='changed'),patch('core.notes.quality_checks',return_value=['checked again']) as check:
+            self.assertEqual(self.rows()[self.ref(made)]['reason'],'checked again');self.assertEqual(check.call_count,1)
+        (self.root/'.cache'/'quality-checks.json').write_text('{damaged',encoding='utf-8')
+        self.assertNotIn(self.ref(made),self.rows())   # a damaged cache only costs a recompute
+
     def test_confirm_edit_confirm_on_one_day_dismisses_the_warned_row_again(self):
         made=self.cap('Wiring task','Pending: wire the adapter.',type='knowledge')
         confirm(made['id'],'demo',self.root);change(made['id'],'demo','update',self.root,body='Still pending: wire the adapter later.')

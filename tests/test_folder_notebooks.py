@@ -155,6 +155,12 @@ class ReachB2(test_sources_notebooks.Notebooks):
 
     def counts(self,name='kb'):return next((r['files'],r['chunks']) for r in sources.listing(self.root,'demo')['sources'] if r['name']==name)
 
+    def test_PERF5_one_policy_shared_across_notes_withholds_only_the_note_from_the_closed_folder(self):
+        page=digests.describe(self.root,'demo',str(self.nb/'Runbook.md'));plain=digests.describe(self.root,'demo',str(self.repo/'docs'/'plain.md'))
+        self.set(self.nb,'searchable','--private');policy=folder_policy.Policy(self.root)
+        notes=[{'domain':'demo','id':i,'sources':[s]} for i,s in (('a',plain),('b',page),('c',plain))]
+        self.assertEqual([digests.stale_note(n,self.root,policy=policy) for n in notes],['',digests.CLOSED,''])
+
     def test_R01_a_digest_of_a_deleted_page_or_a_dropped_notebook_source_is_withheld(self):
         described=digests.describe(self.root,'demo',str(self.nb/'Runbook.md'))
         self.set(self.nb,'searchable','--private');(self.nb/'Runbook.md').unlink()

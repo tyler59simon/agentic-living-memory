@@ -303,7 +303,7 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
     open_header,open_lines,open_items=_open_lines(active,root,bindings,project)
     brief=_brief_line(cwd,root,bindings,currency)
 
-    flagged={}
+    flagged={};policy=[]
     def flag(n):
         """`STALE: a.md changed since this digest — ` before the title of a digest whose source file changed, or `since this note` for a note
         whose hashed file changed (core/digests.py), then `UNCONFIRMED (as of date): ` for a note still holding an unconfirmed belief; '' for any other note."""
@@ -311,7 +311,9 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
         key=(n['domain'],n['id'])
         if key not in flagged:
             from .digests import stale_note
-            text=stale_note(n,root,bindings);flagged[key]=text+' — ' if text else ''
+            from .folder_policy import Policy
+            if not policy:policy.append(Policy(root))   # one for every line flagged
+            text=stale_note(n,root,bindings,policy[0]);flagged[key]=text+' — ' if text else ''
         return flagged[key]+unconfirmed(n)
     def opening(psummary=True,with_brief=True,ubrief=2):
         return [header]+([_project_line(project,root,psummary)] if project else here)+([user_brief_block(user,summary_only=ubrief==1) if ubrief else user_brief_pointer(user)] if user else [])+([brief] if brief and with_brief else [])+last

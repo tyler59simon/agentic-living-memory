@@ -153,12 +153,13 @@ def _probe(root,domain,path,bindings,specs):
     return [prefix/path for prefix in domain_prefixes(domain,bindings)]
 
 
-def states(listed,domain,root,bindings=None):
+def states(listed,domain,root,bindings=None,policy=None):
     """{path: state} for the sources or file_hashes of a note: `current` (the file matches the recorded hash), `changed` (read, and it
     differs), `missing` (the bound folder or source is readable and the file is not there), `unavailable` (the folder is not bound or
     the file cannot be read, so nothing can be said), `unchecked` (no hash recorded) or `closed` (the file is in a folder notebook
-    made hidden or private since: the note's text came from it, so it is withheld until the user reviews the note)."""
-    bindings=bindings if bindings is not None else load_bindings(root);specs=None;out={};policy=None
+    made hidden or private since: the note's text came from it, so it is withheld until the user reviews the note).
+    policy: a folder_policy.Policy to reuse (one per scan over many notes); built here when not given."""
+    bindings=bindings if bindings is not None else load_bindings(root);specs=None;out={}
     for s in listed or []:
         if NAMED.match(s['path']) and specs is None:specs=_specs(root,domain,bindings)
         path,known=locate(root,domain,s['path'],bindings,specs)
@@ -187,12 +188,13 @@ def stale_text(paths,what='digest',missing=()):
     parts=([f'{names(paths)} changed since this {what}'] if paths else [])+([f"{names(missing)} {'is' if len(missing)==1 else 'are'} missing"] if missing else [])
     return 'STALE: '+'; '.join(parts) if parts else ''
 
-def stale_note(note,root,bindings=None):
-    """stale_text for a note dict with `sources` (a digest) or `file_hashes` and `domain` ('' when it has neither or they are unchanged); never raises."""
+def stale_note(note,root,bindings=None,policy=None):
+    """stale_text for a note dict with `sources` (a digest) or `file_hashes` and `domain` ('' when it has neither or they are unchanged); never raises.
+    policy: as for states."""
     listed=(note.get('sources') or [])+(note.get('file_hashes') or [])
     if not listed:return ''
     try:
-        found=states(listed,note['domain'],root,bindings)
+        found=states(listed,note['domain'],root,bindings,policy)
         if any(v=='closed' for v in found.values()):return CLOSED
         return stale_text([p for p,v in found.items() if v=='changed'],'digest' if note.get('sources') else 'note',[p for p,v in found.items() if v=='missing'])
     except Exception as exc:

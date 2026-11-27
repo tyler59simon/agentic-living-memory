@@ -94,9 +94,9 @@ def strength_map(root,domains,today=None):
             ref=f"{domain}:{note['id']}";found[ref]=strength(note,uses.get(ref,()),today)
     return found
 
-def used_refs(root,days=30,today=None):
-    """Refs the diary saw read or used in the window."""
-    return {row['ref'] for row in events(root,days,today) if row['e'] in USE and isinstance(row.get('ref'),str)}
+def used_refs(root,days=30,today=None,rows=None):
+    """Refs the diary saw read or used in the window. rows: events(root, days, today) already read."""
+    return {row['ref'] for row in (events(root,days,today) if rows is None else rows) if row['e'] in USE and isinstance(row.get('ref'),str)}
 
 def _tally(rows,domains):
     """({ref: counts per event}, sessions with injections) for the notes of these domains."""
