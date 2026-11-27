@@ -2244,6 +2244,9 @@ def _process(harness,event,payload,root=None,info=None):
         # Diff-aware staleness (core/rebaseline.py): a detached sweep, at most hourly, re-baselines notes a file change did not touch.
         from . import rebaseline
         detail['rebaseline']=rebaseline.schedule(root,bindings,subagent=_subagent(payload),plan=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()=='plan',compact=source=='compact')
+        # The daily digest refresh (core/digest_refresh.py): off unless the user set digest_refresh with a budget.
+        from . import digest_refresh
+        detail['digest_refresh']=digest_refresh.schedule(root,bindings,subagent=_subagent(payload),plan=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()=='plan',compact=source=='compact')
         # Prompts and tool hints read the index without checking it: bring a stale one (older schema, notes edited outside the scripts) up to date now.
         try:
             from .search import refresh_stale

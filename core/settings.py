@@ -2,19 +2,20 @@
 
 `set` validates the value, then writes bindings.json through one journaled transaction (kind config_set), so `undo`
 reverts it. Domain bindings and aliases are not settings: bind, unbind and remap own them."""
-import json
+import json,re
 from pathlib import Path
 from .common import load_bindings,safe_domain
 from .repository import canonical_json,digest,read_json,roll_forward_pending,store_lock,transaction
 
 DEFAULTS={'search_scope':{'global_domains':['_global'],'foreign_domains':[]},'repo_aliases':{},
-          'suggest_bind':True,'auto_resolve':True,'auto_rebaseline':True,'cross_project':True}
+          'suggest_bind':True,'auto_resolve':True,'auto_rebaseline':True,'cross_project':True,'digest_refresh':None}
 HELP={'search_scope':'global_domains and foreign_domains: the domains search adds beyond the active, parent and child ones',
       'repo_aliases':'{"REPO_FOLDER_NAME": ["alias", ...]}: other names a prompt may use for a repo',
       'suggest_bind':'false stops the one-line hint to bind an unbound git repo at session start',
       'auto_resolve':'false stops SessionStart resolving finished work notes',
       'auto_rebaseline':'false stops the hourly re-baselining of notes a file change did not touch',
-      'cross_project':'false stops the sibling-domain lookup when no local note matches strongly'}
+      'cross_project':'false stops the sibling-domain lookup when no local note matches strongly',
+      'digest_refresh':'{"daily_budget_usd": "1.00", "model": "haiku"} rewrites stale digests with a headless agent once a day (spends money; off by default)'}
 
 def _key(key):
     if key not in DEFAULTS:raise ValueError(f"unknown_setting: {key!r}; settings are {', '.join(DEFAULTS)}")
@@ -36,6 +37,15 @@ def validate(key,value):
         scope={k:_names(value.get(k,DEFAULTS['search_scope'][k]),f'search_scope.{k}') for k in ('global_domains','foreign_domains')}
         if not scope['global_domains']:raise ValueError('invalid_value: search_scope.global_domains needs at least one domain')
         return scope
+    if key=='digest_refresh':
+        if not isinstance(value,dict) or set(value)-{'daily_budget_usd','model'} or 'daily_budget_usd' not in value:
+            raise ValueError('invalid_value: digest_refresh takes daily_budget_usd and an optional model, for example {"daily_budget_usd": "1.00", "model": "haiku"}')
+        try:budget=float(str(value['daily_budget_usd']))
+        except ValueError:budget=-1.0
+        if isinstance(value['daily_budget_usd'],bool) or not 0<budget<=50:raise ValueError('invalid_value: digest_refresh.daily_budget_usd is a dollar amount above 0 and at most 50')
+        model=value.get('model','haiku')
+        if not isinstance(model,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}',model):raise ValueError('invalid_value: digest_refresh.model is a model alias such as haiku or sonnet')
+        return {'daily_budget_usd':f'{budget:.2f}','model':model}
     if not isinstance(value,dict) or not all(isinstance(k,str) and k.strip() for k in value):raise ValueError('invalid_value: repo_aliases maps repo folder names to lists of aliases')
     for repo,aliases in value.items():
         if not isinstance(aliases,list) or not all(isinstance(a,str) and a.strip() for a in aliases):raise ValueError(f'invalid_value: repo_aliases.{repo} must be a list of aliases')

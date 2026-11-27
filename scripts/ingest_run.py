@@ -8,6 +8,10 @@ was already digested is left alone, and a changed file's new digest replaces the
 
     py -3.15 scripts/ingest_run.py --domain demo --batch 8 --max-batches 5 --budget-usd 3 [--all] [--kinds KIND,...|all] [--dry-run]
     ... --command-json '["claude","-p","{prompt}","--model","{model}","--output-format","json","--allowedTools","Read","Bash"]'
+    py -3.15 scripts/ingest_run.py --every-domain --stale-only --model haiku --budget-usd 1   # the daily digest refresh (core/digest_refresh.py)
+
+--stale-only sends only files whose digest is out of date, never new ones. --every-domain runs each bound domain in turn, in its first
+bound folder, with one budget for all of them, under a try-once lock (hooks/digest-refresh.lock): a second run started meanwhile does nothing.
 
 The agent argv template takes {prompt} and {model}; without {prompt} the prompt goes to the agent's stdin. No shell is used.
 The default template is `claude -p {prompt} --model MODEL --output-format json --permission-mode acceptEdits --allowedTools ...`
@@ -164,6 +168,8 @@ def main(argv=None):
     parser.add_argument('--log', type=Path, help="Run log (JSON lines; default: the store's logs/ folder)")
     parser.add_argument('--cli', type=Path, default=CLI, help='living_memory.py to use (default: this repository\'s)')
     parser.add_argument('--dry-run', action='store_true', help='Print the batches and their prompts; run no agent')
+    parser.add_argument('--stale-only', action='store_true', help='Only files whose digest is out of date, never new ones')
+    parser.add_argument('--every-domain', action='store_true', help='Each bound domain in turn, in its bound folder, sharing --budget-usd (ignores --domain and --cwd)')
     args = parser.parse_args(argv)
     if args.command_json:
         template = json.loads(args.command_json)
@@ -176,23 +182,72 @@ def main(argv=None):
         kinds = set(KINDS)
     if not kinds or kinds - set(KINDS):
         parser.error(f"--kinds takes {', '.join(KINDS)} or all, not {args.kinds!r}")
-    if args.root is None:
+    if args.stale_only and args.all:
+        parser.error('--stale-only and --all cannot be combined')
+    args.kinds = kinds
+    if str(REPO) not in sys.path:
         sys.path.insert(0, str(REPO))
+    if args.root is None:
         from core.storage import resolve_root
         args.root = resolve_root(None)[0]
     args.root, args.cwd = Path(args.root).resolve(), str(Path(args.cwd).resolve())
+    if args.every_domain:
+        return every_domain(args)
+    summary = run(args)
+    return 0 if summary.get('dry_run') else (1 if summary['batches_failed'] else 0)
+
+
+def every_domain(args):
+    """run() for each bound domain, in its first bound folder that exists, while the shared budget lasts; a summary per domain."""
+    from contextlib import ExitStack
+    from core.common import file_lock, load_bindings, _entries, domain_prefixes
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(file_lock(args.root / 'hooks' / 'digest-refresh.lock', timeout=0))
+        except (TimeoutError, OSError):
+            print(json.dumps({'ok': True, 'skipped': 'already_running'}))
+            return 0
+        bindings, budget, out, failed = load_bindings(args.root), args.budget_usd, [], 0
+        for name in dict.fromkeys(name for name, _, _ in _entries(bindings)):
+            folders = [p for p in reversed(domain_prefixes(name, bindings)) if p.is_dir()]   # shortest first: the repo root over a subfolder
+            if not folders:
+                continue
+            if budget is not None and budget <= 0:
+                out.append({'domain': name, 'skipped': 'budget_reached'})
+                continue
+            one = argparse.Namespace(**{**vars(args), 'domain': name, 'cwd': str(folders[0]), 'budget_usd': budget})
+            summary = run(one)
+            out.append(summary)
+            failed += bool(summary.get('batches_failed'))
+            if budget is not None:
+                budget -= summary.get('cost_usd', 0.0)
+        print(json.dumps({'ok': not failed, 'domains': out}, indent=1))
+        return 1 if failed else 0
+
+
+def run(args):
+    """One domain: send its new and stale files (or only stale ones) to agents in batches; the summary, also printed."""
+    kinds = args.kinds
     if args.allowed_tools is None:
         # A rule matches the command as typed, up to its first `*` (https://code.claude.com/docs/en/permissions), so it quotes the way command_line() does.
         # Checked live on 2026-11-13 with hooks off: this Bash rule allows the command; PowerShell rules for a quoted path (with or without `&`,
         # `*` or `:*`) did not, so the prompt asks for the Bash tool and a PowerShell call is left to the Living Memory hook's auto-allow.
         args.allowed_tools = ['Read', 'Glob', 'Grep', f'Bash("{sys.executable}" "{args.cli}" *)']
     scan = lm(args, 'ingest-scan', '--limit', '1000000', *(['--source', args.source] if args.source else []), *([] if args.all else ['--changed']))
-    items = [i for i in scan['items'] if i['kind'] in kinds and (args.all or i['status'] in ('new', 'stale'))]
+    wanted = ('stale',) if args.stale_only else ('new', 'stale')
+    items = [i for i in scan['items'] if i['kind'] in kinds and (args.all or i['status'] in wanted)]
     batches = [items[i:i + args.batch] for i in range(0, len(items), args.batch)][:args.max_batches]
     if args.dry_run:
-        print(json.dumps({'ok': True, 'dry_run': True, 'domain': scan['domain'], 'files': sum(map(len, batches)), 'counts': scan['counts'],
-                          'batches': [{'batch': n, 'paths': [i['path'] for i in b], 'prompt': prompt_for(args, b)} for n, b in enumerate(batches, 1)]}, indent=1))
-        return 0
+        summary = {'ok': True, 'dry_run': True, 'domain': scan['domain'], 'files': sum(map(len, batches)), 'counts': scan['counts'],
+                   'batches': [{'batch': n, 'paths': [i['path'] for i in b], 'prompt': prompt_for(args, b)} for n, b in enumerate(batches, 1)]}
+        if not args.every_domain:
+            print(json.dumps(summary, indent=1))
+        return summary
+    if not batches:
+        summary = {'ok': True, 'domain': scan['domain'], 'batches_run': 0, 'batches_planned': 0, 'cost_usd': 0.0, 'batches_failed': 0}
+        if not args.every_domain:
+            print(json.dumps(summary, indent=1))
+        return summary
     log = args.log or args.root / 'logs' / f"ingest-run-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.jsonl"
     log.parent.mkdir(parents=True, exist_ok=True)
     spent, rows, failed = 0.0, [], 0
@@ -219,8 +274,9 @@ def main(argv=None):
                    'verified': {'current': sum(after.get(p) == 'current' for p in ran), 'skipped': sum(after.get(p) == 'skipped' for p in ran), 'still_open': sum(after.get(p) in ('new', 'stale') for p in ran)},
                    'batches_failed': failed, 'log': str(log)}
         out.write(json.dumps({'summary': summary}) + '\n')
-    print(json.dumps(summary, indent=1))
-    return 1 if failed else 0
+    if not args.every_domain:
+        print(json.dumps(summary, indent=1))
+    return summary
 
 
 if __name__ == '__main__':

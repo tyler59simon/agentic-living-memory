@@ -801,7 +801,7 @@ def build_parser():
     from .instructions import TOPICS
     p=sub('help');p.add_argument('topic',nargs='?',choices=list(TOPICS))
     p=sub('bind');p.add_argument('name');p.add_argument('prefix',nargs='+')
-    p=sub('config');p.add_argument('action',choices=['get','set']);p.add_argument('key',nargs='?',help='search_scope, repo_aliases, suggest_bind, auto_resolve or cross_project')
+    p=sub('config');p.add_argument('action',choices=['get','set']);p.add_argument('key',nargs='?',help='search_scope, repo_aliases, suggest_bind, auto_resolve, auto_rebaseline, cross_project or digest_refresh')
     p.add_argument('value',nargs='?',help='set: JSON, for example true, false, ["_global"] or {"repo": ["alias"]}; null restores the default')
     p=sub('unbind');p.add_argument('name',help='A bound domain with no notes left (move them with remap first)')
     p.add_argument('--prefix',help='Remove only this folder from the binding and keep the domain and its notes (after a bound folder moved)')

@@ -135,6 +135,41 @@ class Reruns(IngestRun):
         retired={n['id']:n for n in inventory('demo',self.root,retired=True)}[old['id']];self.assertEqual(retired['status'],'superseded');self.assertEqual(retired['superseded_by'],active[0]['id'])
         self.assertEqual(self.cli('ingest-scan','--changed','--limit','100')[1]['counts']['stale'],0)
 
+class Refresh(IngestRun):
+    """--stale-only and --every-domain: the daily digest refresh (core/digest_refresh.py) rewrites only digests that went stale."""
+    def setUp(self):
+        super().setUp()
+        self.run_script('--batch','100');self.calls.unlink()
+        put(self.repo/'README.md',self.repo.joinpath('README.md').read_text(encoding='utf-8')+'## Timeouts\n\nFive seconds.\n')
+        put(self.repo/'docs'/'ops.md','# On-call\n\nPage the billing team.\n');sources.sync(self.root,'demo')
+    def every(self,*extra):
+        command=[sys.executable,str(self.agent/'fake_agent.py'),str(self.root),str(CLI),str(self.project),str(self.calls)]
+        done=subprocess.run([sys.executable,'-X','utf8',str(SCRIPT),'--root',str(self.root),'--every-domain','--stale-only','--log',str(self.log),
+                             '--command-json',json.dumps(command),*extra],capture_output=True,text=True,encoding='utf-8',timeout=300)
+        self.assertEqual(done.returncode,0,done.stdout+done.stderr);return json.loads(done.stdout)
+    def test_stale_only_sends_the_stale_file_and_not_the_new_one(self):
+        out=self.run_script('--stale-only');self.assertEqual([self.listed(p) for p in self.prompts()],[['kb/README.md']])
+        self.assertEqual(out['files_digested'],1)
+        self.assertEqual({i['path']:i['status'] for i in self.cli('ingest-scan','--limit','100')[1]['items']}['kb/docs/ops.md'],'new')
+    def test_stale_only_and_all_are_refused_together(self):
+        done=subprocess.run([sys.executable,str(SCRIPT),'--root',str(self.root),'--stale-only','--all','--dry-run'],capture_output=True,text=True,encoding='utf-8')
+        self.assertEqual(done.returncode,2);self.assertIn('cannot be combined',done.stderr)
+    def test_every_domain_runs_each_bound_domain_in_its_folder(self):
+        out=self.every('--budget-usd','2')
+        self.assertEqual([d['domain'] for d in out['domains']],['demo']);self.assertEqual(out['domains'][0]['files_digested'],1)
+        self.assertEqual([self.listed(p) for p in self.prompts()],[['kb/README.md']])
+    def test_every_domain_does_nothing_while_another_refresh_holds_the_lock(self):
+        from core.common import file_lock
+        with file_lock(self.root/'hooks'/'digest-refresh.lock',timeout=0):out=self.every()
+        self.assertEqual(out,{'ok':True,'skipped':'already_running'});self.assertFalse(self.calls.exists())
+    def test_every_domain_shares_one_budget(self):
+        module=Agent.script(self);budgets=[]
+        def fake(args):budgets.append(args.budget_usd);return {'domain':args.domain,'cost_usd':0.75,'batches_failed':0}
+        bindings={'domains':{'one':{'prefixes':[str(self.project)]},'two':{'prefixes':[str(self.project)]},'three':{'prefixes':[str(self.project)]}}}
+        with unittest.mock.patch.object(module,'run',fake),unittest.mock.patch('core.common.load_bindings',lambda root:bindings),unittest.mock.patch('sys.stdout',io.StringIO()) as printed:
+            module.main(['--root',str(self.root),'--every-domain','--stale-only','--budget-usd','1.5'])
+        self.assertEqual(budgets,[1.5,0.75]);self.assertEqual(json.loads(printed.getvalue())['domains'][2],{'domain':'three','skipped':'budget_reached'})
+
 class Failures(IngestRun):
     UTIL='kb/src/util.py'
     def skip_sidecar(self):return json.loads(p.read_text(encoding='utf-8')) if (p:=self.root/'domains'/'demo'/'.ingest-skips.json').exists() else {}
