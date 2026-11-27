@@ -55,7 +55,7 @@ def _base_url(value):
     parts=urllib.parse.urlsplit(value.strip())
     if parts.username or parts.password or parts.query or parts.fragment or '@' in parts.netloc:raise ValueError('base_url must not carry a user, password, query or fragment')
     if not parts.hostname:raise ValueError('base_url must name a host')
-    if parts.scheme!='https' and not (parts.scheme=='http' and parts.hostname in LOCAL_HOSTS):raise ValueError('base_url must use https (http only for 127.0.0.1 or localhost)')
+    if parts.scheme!='https' and not (parts.scheme=='http' and parts.hostname in LOCAL_HOSTS and os.environ.get('LIVING_MEMORY_ALLOW_HTTP_LOCALHOST')=='1'):raise ValueError('base_url must use https (http only for 127.0.0.1 or localhost when LIVING_MEMORY_ALLOW_HTTP_LOCALHOST=1)')
     return urllib.parse.urlunsplit((parts.scheme,parts.netloc,parts.path.rstrip('/'),'',''))
 
 def validate(kind,payload,strict=True):
@@ -266,15 +266,17 @@ def _notion_title(page):
 
 def _children(client,base,block_id,depth,count):
     """The blocks under one block or page, following next_cursor and recursing into children up to MAX_DEPTH levels and MAX_BLOCKS blocks."""
+    bid=str(block_id or '').strip()
+    if not bid:return []
     blocks=[];cursor=None
     while True:
-        data=client.get(f"{base}/v1/blocks/{block_id}/children?page_size=100"+(f'&start_cursor={urllib.parse.quote(cursor)}' if cursor else ''))
+        data=client.get(f"{base}/v1/blocks/{urllib.parse.quote(bid,safe='')}/children?page_size=100"+(f'&start_cursor={urllib.parse.quote(cursor)}' if cursor else ''))
         for b in data.get('results') or []:
             if not isinstance(b,dict):continue
             count[0]+=1
             if count[0]>MAX_BLOCKS:
                 blocks.append({'type':'paragraph','paragraph':{'rich_text':[{'plain_text':f'[page cut here: more than {MAX_BLOCKS} blocks]'}]}});return blocks
-            if b.get('has_children') and depth<MAX_DEPTH and b.get('type') not in {'child_page','child_database'}:b['children']=_children(client,base,b['id'],depth+1,count)
+            if b.get('has_children') and depth<MAX_DEPTH and b.get('type') not in {'child_page','child_database'} and b.get('id'):b['children']=_children(client,base,b['id'],depth+1,count)
             blocks.append(b)
         if not data.get('has_more') or not data.get('next_cursor'):return blocks
         cursor=data['next_cursor']
@@ -309,6 +311,15 @@ def _render(page,kind,content):
     if kind=='notion':return f"# {page['title']}\n\n{content}\n"
     return f"<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>{html.escape(page['title'])}</title></head><body>\n{content}\n</body></html>\n"
 
+def _safe_cache_unlink(folder,rel):
+    """Unlink a relative cache path only if it stays confined inside folder (REL-S6)."""
+    if not isinstance(rel,str) or not rel:return
+    p=Path(rel)
+    if p.is_absolute() or '..' in p.parts:return
+    from .paths import is_within
+    target=folder/p
+    if is_within(target,folder,resolve=False):target.unlink(missing_ok=True)
+
 def pull(root,spec,full=False):
     """Fetch one remote source into its cache and return what changed: {name, fetched, unchanged, removed, skipped, missing, truncated, pages, error}.
     Only pages whose version differs are fetched in full and rewritten (full: all of them); with a complete listing, cached pages that are
@@ -318,29 +329,33 @@ def pull(root,spec,full=False):
     result={'name':name,'fetched':0,'unchanged':0,'removed':0,'skipped':0,'missing':[],'truncated':False,'redacted':0,'error':None}
     try:
         with file_lock(Path(root)/'hooks'/f'sources-pull-{name}.lock',timeout=0):
-            old=manifest(root,name);pages=dict(old.get('pages') or {});skipped={};seen=set();complete=False;folder.mkdir(parents=True,exist_ok=True)
+            old=manifest(root,name);pages=dict(old.get('pages') or {});skipped={};seen=set();complete=False;folder.mkdir(parents=True,exist_ok=True);client=None
             try:
                 fields=validate(kind,spec,strict=False);work=dict(spec,**fields);client=Client(work,time.monotonic()+BUDGET)
                 for page in (_confluence if kind=='confluence' else _notion)(client,work):
                     if len(seen)>=MAX_PAGES:result['truncated']=True;break
                     pid=page['id'];seen.add(pid);rel=_file(page,kind);prev=pages.get(pid)
+                    clean_title=redact_text(str(page['title']))[0]
+                    clean_anc=[redact_text(str(a))[0] for a in (page.get('ancestors') or [])]
                     if prev and not full and prev.get('version')==page['version'] and prev.get('path')==rel and (folder/rel).is_file():
-                        pages[pid]=dict(prev,title=page['title'],url=page['url'],modified=page['modified']);result['unchanged']+=1;continue
+                        pages[pid]=dict(prev,title=clean_title,url=page['url'],modified=page['modified']);result['unchanged']+=1;continue
                     text,redacted=redact_text(_render(page,kind,page['body'] if 'body' in page else page['load']()))
-                    if prev and prev.get('path')!=rel:(folder/prev['path']).unlink(missing_ok=True)
+                    if prev and prev.get('path')!=rel:_safe_cache_unlink(folder,prev.get('path'))
                     if len(text.encode())>MAX_PAGE_BYTES:
-                        skipped[pid]={'title':page['title'],'reason':f'larger than {MAX_PAGE_BYTES>>20} MB'};result['skipped']+=1
-                        if prev:(folder/prev['path']).unlink(missing_ok=True);pages.pop(pid,None)
+                        skipped[pid]={'title':clean_title,'reason':f'larger than {MAX_PAGE_BYTES>>20} MB'};result['skipped']+=1
+                        if prev:_safe_cache_unlink(folder,prev.get('path'));pages.pop(pid,None)
                         continue
                     atomic_write(folder/rel,text);result['redacted']+=redacted;result['fetched']+=1
-                    pages[pid]={'title':page['title'],'version':page['version'],'modified':page['modified'],'url':page['url'],'path':rel,'ancestors':page['ancestors']}
+                    pages[pid]={'title':clean_title,'version':page['version'],'modified':page['modified'],'url':page['url'],'path':rel,'ancestors':clean_anc}
                 else:complete=True
                 result['missing']=work.get('missing',[])
             except ConnectorError as exc:result['error']=str(exc)
-            except (OSError,ValueError) as exc:result['error']=f'{type(exc).__name__}: {exc}'[:300]
+            except (OSError,ValueError) as exc:
+                msg=f'{type(exc).__name__}: {exc}'
+                result['error']=(client.scrub(msg) if client else msg)[:300]
             if complete and not result['truncated']:   # the whole listing was seen: what it no longer has is gone upstream
                 for pid in [p for p in pages if p not in seen]:
-                    (folder/pages[pid]['path']).unlink(missing_ok=True);del pages[pid];result['removed']+=1
+                    _safe_cache_unlink(folder,pages[pid].get('path'));del pages[pid];result['removed']+=1
             failed=result['error']
             atomic_write(folder/'manifest.json',canonical_json({'version':1,'source':name,'kind':kind,'synced':old.get('synced') if failed else now(),'attempted':now(),
                          'error':{'at':now(),'message':failed} if failed else None,'truncated':result['truncated'],'pages':dict(sorted(pages.items())),'skipped':skipped}))

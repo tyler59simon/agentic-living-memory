@@ -362,7 +362,8 @@ def build_plan(target: str | Path, source: str | Path | None = None, uninstall: 
     requested_target = Path(os.path.abspath(Path(target).expanduser()))
     # Ancestors resolved once (macOS /var and /tmp are links to /private/...); the target itself stays as named, so a link there is refused.
     target_root = Path(os.path.realpath(requested_target.parent)) / requested_target.name
-    if os.path.islink(target_root) or getattr(os.path, "isjunction", lambda p: False)(target_root):
+    from .paths import is_link_or_junction
+    if is_link_or_junction(target_root):
         raise PathSafetyError("Installation target is a symbolic link")
     # Overlap checks use the target's real path: an existing leaf may be a short (8.3) or other alias of the store.
     target_real = Path(os.path.realpath(target_root))

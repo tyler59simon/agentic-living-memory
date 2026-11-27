@@ -154,9 +154,10 @@ DERIVED_INDEX = re.compile(r'(?:search|sources|vectors|docs)\.sqlite3(?:-wal|-sh
 
 def _manifest(root):
     """Preserve durable state and unknown files; omit only known transient data."""
+    from .paths import is_link_or_junction
     result = {}
     for path in sorted(root.rglob('*')):
-        if path.is_symlink() or (hasattr(path, 'is_junction') and path.is_junction()):
+        if is_link_or_junction(path):
             raise ValueError(f'Links in a store require manual review: {path}')
         if not path.is_file():
             continue
@@ -265,6 +266,7 @@ def relocate(source, destination, config_revision=False):
 
 
 MAINTENANCE_CONFIG = 'maintenance.json'
+BINDINGS_CONFIG = 'bindings.json'
 
 
 def _disable_maintenance(destination):
@@ -280,6 +282,38 @@ def _disable_maintenance(destination):
             return  # a malformed configuration already reads as disabled; _maintenance_matches then requires an exact copy
         if cfg['enabled']:
             atomic_write(path, canonical_json({**cfg, 'enabled': False}))
+
+
+def _disable_digest_refresh(destination):
+    """The destination never inherits enabled paid digest refresh in bindings.json (REL-S5)."""
+    from .repository import canonical_json, read_json
+    path = destination / BINDINGS_CONFIG
+    if path.is_file():
+        try:
+            cfg = read_json(path)
+        except ValueError:
+            return
+        if isinstance(cfg, dict) and isinstance(cfg.get('digest_refresh'), dict) and cfg['digest_refresh'].get('enabled'):
+            atomic_write(path, canonical_json({**cfg, 'digest_refresh': {**cfg['digest_refresh'], 'enabled': False}}))
+
+
+def _bindings_matches(source, destination, recorded_hash):
+    """The destination's bindings.json is either an exact copy or the recorded source with digest_refresh.enabled set to false."""
+    from .repository import read_json
+    src, dest = source / BINDINGS_CONFIG, destination / BINDINGS_CONFIG
+    if recorded_hash is None:
+        return not dest.exists()
+    if not src.is_file() or _hash(src) != recorded_hash or not dest.is_file():
+        return False
+    if _hash(dest) == recorded_hash:
+        return True
+    try:
+        scfg, dcfg = read_json(src), read_json(dest)
+    except ValueError:
+        return False
+    if not (isinstance(scfg, dict) and isinstance(dcfg, dict) and isinstance(scfg.get('digest_refresh'), dict) and scfg['digest_refresh'].get('enabled')):
+        return False
+    return dcfg == {**scfg, 'digest_refresh': {**scfg['digest_refresh'], 'enabled': False}}
 
 
 def _maintenance_matches(source, destination, recorded_hash):
@@ -303,9 +337,13 @@ def _maintenance_matches(source, destination, recorded_hash):
 
 
 def _same_files(actual, recorded, source, destination):
-    """Manifests match; the destination's maintenance.json must be the source configuration, disabled."""
-    skip = lambda m: {k: v for k, v in m.items() if k != MAINTENANCE_CONFIG}
-    return skip(actual) == skip(recorded) and (MAINTENANCE_CONFIG in actual) == (MAINTENANCE_CONFIG in recorded) and         _maintenance_matches(source, destination, recorded.get(MAINTENANCE_CONFIG))
+    """Manifests match; the destination's maintenance.json and bindings.json digest_refresh must be disabled."""
+    skip = lambda m: {k: v for k, v in m.items() if k not in (MAINTENANCE_CONFIG, BINDINGS_CONFIG)}
+    return (skip(actual) == skip(recorded)
+            and (MAINTENANCE_CONFIG in actual) == (MAINTENANCE_CONFIG in recorded)
+            and (BINDINGS_CONFIG in actual) == (BINDINGS_CONFIG in recorded)
+            and _maintenance_matches(source, destination, recorded.get(MAINTENANCE_CONFIG))
+            and _bindings_matches(source, destination, recorded.get(BINDINGS_CONFIG)))
 
 
 def _relocate(identity):
@@ -350,7 +388,9 @@ def _relocate(identity):
                 for rel, expected_hash in record['files'].items():
                     dest = destination / rel
                     if dest.exists():
-                        if _hash(dest) != expected_hash and not (rel == MAINTENANCE_CONFIG and _maintenance_matches(source, destination, expected_hash)):
+                        if (_hash(dest) != expected_hash
+                                and not (rel == MAINTENANCE_CONFIG and _maintenance_matches(source, destination, expected_hash))
+                                and not (rel == BINDINGS_CONFIG and _bindings_matches(source, destination, expected_hash))):
                             raise ValueError(f'Destination conflict: {rel}')
                         continue
                     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -363,6 +403,7 @@ def _relocate(identity):
                         for name in ('notes', 'archive'):
                             (destination / 'domains' / domain.name / name).mkdir(parents=True, exist_ok=True)
                 _disable_maintenance(destination)
+                _disable_digest_refresh(destination)
                 if not _same_files(_manifest(destination), record['files'], source, destination):
                     raise ValueError('Destination verification failed; shared location unchanged')
                 validate_store(destination)
@@ -385,6 +426,9 @@ def _relocate(identity):
                 # Catalogs are regenerated; all other durable bytes must still match.
                 if rel == MAINTENANCE_CONFIG:
                     if not _maintenance_matches(source, destination, expected_hash):
+                        raise ValueError(f'Destination verification failed: {rel}')
+                elif rel == BINDINGS_CONFIG:
+                    if not _bindings_matches(source, destination, expected_hash):
                         raise ValueError(f'Destination verification failed: {rel}')
                 elif _hash(destination / rel) != expected_hash:
                     raise ValueError(f'Destination verification failed: {rel}')

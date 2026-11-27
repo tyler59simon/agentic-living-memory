@@ -90,7 +90,7 @@ class Wiki(StoreFixture):
         self.thread=threading.Thread(target=self.server.serve_forever,daemon=True);self.thread.start()
         self.addCleanup(lambda:(self.server.shutdown(),self.server.server_close(),self.thread.join()))
         self.url=f'http://127.0.0.1:{self.server.server_port}'
-        env=patch.dict(os.environ,{'WIKI_TOKEN':TOKEN});env.start();self.addCleanup(env.stop)
+        env=patch.dict(os.environ,{'WIKI_TOKEN':TOKEN,'LIVING_MEMORY_ALLOW_HTTP_LOCALHOST':'1'});env.start();self.addCleanup(env.stop)
         self.sleeps=[];sleep=patch.object(connectors,'_sleep',self.sleeps.append);sleep.start();self.addCleanup(sleep.stop)
         self.fake.pages={'100':{'id':'100','title':'Refund Policy','version':1,'html':'<h1>Refund Policy</h1><p>Customers get a pelican refund within 45 days.</p><table><tr><td>EUR</td><td>same day</td></tr></table>'},
                          '101':{'id':'101','title':'On-call Rota','version':1,'html':'<h2>Rota</h2><p>The wombat rotation changes every Monday.</p>'},

@@ -8,7 +8,7 @@ Limit: macOS folding assumes the default case-insensitive volume. On a case-sens
 differ only in case get one key, so a lookup can find the other folder's entry. Standard library only: the fast read hook
 imports this module."""
 from __future__ import annotations
-import os,sys,unicodedata
+import os,stat,sys,unicodedata
 
 JUNK_NAMES=frozenset({'.DS_Store','.localized'})
 
@@ -16,6 +16,21 @@ JUNK_NAMES=frozenset({'.DS_Store','.localized'})
 def _caseless(text):
     """Unicode canonical caseless form (NFD, casefold, NFD): equal for the NFC and NFD spellings of one name in any case."""
     return unicodedata.normalize('NFD',unicodedata.normalize('NFD',text).casefold())
+
+
+def name_key(text):
+    """Canonical case- and normalization-folded key for collision checks across Windows and macOS."""
+    return _caseless(str(text))
+
+
+def is_link_or_junction(path):
+    """True for a symbolic link or an NTFS junction (Python 3.10+ safe). Other reparse points (OneDrive placeholders, dedup) are ordinary files."""
+    try:
+        info=os.lstat(path)
+    except (FileNotFoundError,NotADirectoryError,OSError):
+        return False
+    tags={getattr(stat,'IO_REPARSE_TAG_MOUNT_POINT',0xA0000003),getattr(stat,'IO_REPARSE_TAG_SYMLINK',0xA000000C)}
+    return stat.S_ISLNK(info.st_mode) or getattr(info,'st_reparse_tag',0) in tags
 
 
 def fold(text):
@@ -77,7 +92,7 @@ def is_os_junk(path):
 
 
 def _is_link(path):
-    return os.path.islink(path) or bool(getattr(os.path,'isjunction',lambda p:False)(path))
+    return is_link_or_junction(path)
 
 
 def remove_empty_dir(path):

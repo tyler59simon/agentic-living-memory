@@ -941,7 +941,7 @@ def main(argv=None):
     try:
         # Agents started inside a Hivemind terminal inherit HIVEMIND_SESSION; Hivemind's own backend does not. Every path (batch and serve
         # re-enter main) reaches this point before a governed command runs.
-        if os.environ.get('HIVEMIND_SESSION') and (args.command in {'undo','recover','upgrade','setup'}|DIRECT_WRITES|BULK_WRITES|VAULT_SYNCS or (args.command=='taxonomy' and args.action=='add') or (args.command=='doc' and args.doc_action in DOC_WRITES)
+        if os.environ.get('HIVEMIND_SESSION') and (args.command in {'undo','recover','upgrade','setup'}|DIRECT_WRITES|BULK_WRITES|VAULT_SYNCS or (args.command=='taxonomy' and args.action=='add') or (args.command=='config' and args.action=='set') or (args.command=='doc' and args.doc_action in DOC_WRITES)
                                                     or (args.command=='proposals' and args.action in {'accept','reject'} and _proposal_kind(args.id)=='page')):
             from .runtime import HIVEMIND_DENY
             raise ValueError('hivemind: '+HIVEMIND_DENY)
@@ -1730,8 +1730,9 @@ def main(argv=None):
             batch=_payload(args)
             if not isinstance(batch,list) or not 1<=len(batch)<=20:raise ValueError('Batch requires 1..20 argv objects')
             result=[]
+            from .runtime import _subcommand
             for item in batch:
-                if set(item)!={'argv'} or not isinstance(item['argv'],list) or any(not isinstance(v,str) for v in item['argv']) or not item['argv'] or item['argv'][0]=='batch':raise ValueError('Invalid batch command')
+                if set(item)!={'argv'} or not isinstance(item['argv'],list) or any(not isinstance(v,str) for v in item['argv']) or not item['argv'] or _subcommand(item['argv']) in {'batch','serve'}:raise ValueError('Invalid batch command')
                 out=io.StringIO();error=io.StringIO()
                 prefix=['--root',str(root),'--cwd',str(cwd),'--actor',args.actor]+(['--domain',domain] if domain else [])
                 with contextlib.redirect_stdout(out),contextlib.redirect_stderr(error):

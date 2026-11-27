@@ -450,7 +450,8 @@ class Hooks(Base):
         self.assertNotIn('maintenance', runtime.MUTATING_SUBCOMMANDS)
         for action in ('status', 'preview', 'history', 'run', 'enable', 'disable'):
             payload = {'cwd': str(self.project), 'session_id': 'h', 'tool_name': 'Bash', 'tool_input': {'command': f'{base} {action}'}}
-            self.assertIn('allow', runtime.process('claude', 'pre-tool-use', payload, self.root), action)
+            main_reply = runtime.process('claude', 'pre-tool-use', payload, self.root)
+            self.assertEqual('allow' in main_reply, action not in ('run', 'enable'), action)
             reply = runtime.process('claude', 'pre-tool-use', {**payload, 'agent_id': 'sub-1'}, self.root)
             self.assertEqual('deny' in reply, action in ('run', 'enable', 'disable'), action)
         flagged = {'cwd': str(self.project), 'session_id': 'h', 'tool_name': 'Bash', 'tool_input': {'command': f'{base} run --dry-run'}}

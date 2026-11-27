@@ -95,7 +95,7 @@ When a run has finished that the session has not been told about, SessionStart a
 
 ## Permissions
 
-The main agent may run `maintenance run`, `enable` and `disable` without a permission prompt (the user chose this on 2026-11-14); the interval and daily limits still apply to every run. Subagents and viewers may only read: `status`, `preview` and `history`. Archiving is also a direct, undoable command for the main agent (`archive REF`); maintenance only archives within its policy and records why. Merge, delete and bulk retag are bulk writes the harness asks the user about, and maintenance never runs them.
+The main agent may run `maintenance status`, `preview`, `history` and `disable` without a permission prompt; `maintenance enable` and `maintenance run` spend model budget and leave the decision to the harness's own permission prompt (like `wiki --agent --build` and remote `source-sync`), while the interval and daily limits still apply to every run. Subagents and viewers may only read: `status`, `preview` and `history`. Archiving is also a direct, undoable command for the main agent (`archive REF`); maintenance only archives within its policy and records why. Merge, delete and bulk retag are bulk writes the harness asks the user about, and maintenance never runs them.
 
 ## Discovery by other tools
 

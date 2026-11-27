@@ -36,24 +36,27 @@ def backup_dir(root):return Path(root)/'backups'
 
 def canonical_files(root):
     """Store-relative POSIX paths of the canonical set."""
+    from .paths import is_link_or_junction
     root=Path(root)
-    found=[name for name in TOP_LEVEL if (root/name).is_file()]
-    if (root/'ledger').is_dir() and not (root/'ledger').is_symlink():found+=sorted(p.relative_to(root).as_posix() for p in (root/'ledger').glob('sessions-*.jsonl') if LEDGER.fullmatch(p.relative_to(root).as_posix()) and p.is_file() and not p.is_symlink())
+    found=[name for name in TOP_LEVEL if (root/name).is_file() and not is_link_or_junction(root/name)]
+    if (root/'ledger').is_dir() and not is_link_or_junction(root/'ledger'):found+=sorted(p.relative_to(root).as_posix() for p in (root/'ledger').glob('sessions-*.jsonl') if LEDGER.fullmatch(p.relative_to(root).as_posix()) and p.is_file() and not is_link_or_junction(p))
     found+=_maintenance_files(root)
-    for domain in sorted((root/'domains').iterdir()) if (root/'domains').is_dir() else []:
+    for domain in sorted((root/'domains').iterdir()) if (root/'domains').is_dir() and not is_link_or_junction(root/'domains') else []:
+        if is_link_or_junction(domain):continue
         for folder in ('notes','archive'):
             base=domain/folder
-            if base.is_dir() and not base.is_symlink():
-                found+=sorted(p.relative_to(root).as_posix() for p in base.rglob('*.md') if p.is_file() and not p.is_symlink() and not is_os_junk(p))
+            if base.is_dir() and not is_link_or_junction(base):
+                found+=sorted(p.relative_to(root).as_posix() for p in base.rglob('*.md') if p.is_file() and not is_link_or_junction(p) and not is_os_junk(p))
     return found
 
 def _maintenance_files(root):
     """maintenance.json, the accounting checkpoint and the run records; never worker.lock."""
+    from .paths import is_link_or_junction
     found=[]
-    if (root/'maintenance.json').is_file() and not (root/'maintenance.json').is_symlink():found.append('maintenance.json')
+    if (root/'maintenance.json').is_file() and not is_link_or_junction(root/'maintenance.json'):found.append('maintenance.json')
     base=root/'maintenance'
-    if base.is_dir() and not base.is_symlink():
-        found+=sorted(rel for rel in (p.relative_to(root).as_posix() for p in base.rglob('*.json') if p.is_file() and not p.is_symlink()) if MAINT.fullmatch(rel))
+    if base.is_dir() and not is_link_or_junction(base):
+        found+=sorted(rel for rel in (p.relative_to(root).as_posix() for p in base.rglob('*.json') if p.is_file() and not is_link_or_junction(p)) if MAINT.fullmatch(rel))
     return found
 
 def _allowed(name):
@@ -113,19 +116,35 @@ def backup(root,keep=KEEP):
     if warnings:result['warning']='; '.join(warnings)
     return result
 
+MAX_MEMBERS=50000
+MAX_MEMBER_BYTES=16*1024*1024
+MAX_TOTAL_BYTES=256*1024*1024
+
+def _read_zip_member(archive,info,remaining):
+    """Read one ZIP member with hard per-member and total uncompressed byte caps (never trusting spoofable info.file_size)."""
+    cap=min(MAX_MEMBER_BYTES,remaining)
+    with archive.open(info) as handle:
+        data=handle.read(cap+1)
+    if len(data)>MAX_MEMBER_BYTES:raise ValueError(f'Backup member exceeds size cap: {info.filename}')
+    if len(data)>remaining:raise ValueError('Backup uncompressed size exceeds total cap')
+    return data
+
 def verify(path):
     """[{member, problem}] for members that are not readable: a note that is not UTF-8 or has no parseable frontmatter, a page
     that is not UTF-8, invalid JSON, an attachment over the size cap. Raises ValueError for a member outside the canonical set."""
-    found=[];seen={}
+    from .paths import name_key
+    found=[];seen={};remaining=MAX_TOTAL_BYTES
     with zipfile.ZipFile(path) as archive:
         infos=archive.infolist()
+        if len(infos)>MAX_MEMBERS:raise ValueError('Backup has too many members')
         for info in infos:
             if info.is_dir() or not _allowed(info.filename):raise ValueError(f'Backup member outside the canonical set: {info.filename}')
-            if info.filename in seen:raise ValueError(f'Backup members {seen[info.filename]} and {info.filename} name the same file')
-            seen[info.filename]=info.filename
+            key=name_key(info.filename)
+            if key in seen:raise ValueError(f'Backup members {seen[key]} and {info.filename} name the same file')
+            seen[key]=info.filename
         for info in infos:
             if LEGACY_NOTEBOOK.fullmatch(info.filename):continue   # dropped by a restore: not read
-            data=archive.read(info)
+            data=_read_zip_member(archive,info,remaining);remaining-=len(data)
             if info.filename.startswith('ledger/'):
                 try:
                     for line in data.decode('utf-8').splitlines():
@@ -187,8 +206,12 @@ def _restore_backup(root,source):
     # Members that were unreadable when the snapshot was taken are neither restored nor a reason to delete
     # the file that is there now: a damaged copy must not replace, or remove, a possibly good one.
     skipped={problem['member'] for problem in verify(source)}
+    remaining=MAX_TOTAL_BYTES;wanted={}
     with zipfile.ZipFile(source) as archive:
-        wanted={info.filename:archive.read(info).decode('utf-8') for info in archive.infolist() if info.filename not in skipped and not LEGACY_NOTEBOOK.fullmatch(info.filename)}
+        for info in archive.infolist():
+            if info.filename in skipped or LEGACY_NOTEBOOK.fullmatch(info.filename):continue
+            raw=_read_zip_member(archive,info,remaining);remaining-=len(raw)
+            wanted[info.filename]=raw.decode('utf-8')
     wanted.pop(MANIFEST,None)
     for rel in LEGACY:wanted.pop(rel,None)
     for rel in wanted:confined(root,rel)
@@ -199,6 +222,20 @@ def _restore_backup(root,source):
     try:saved=read_json_bytes(wanted['bindings.json'].encode('utf-8')).get('domains',{}) if 'bindings.json' in wanted else {}
     except (ValueError,AttributeError):saved={}
     covered|={name for name in saved if isinstance(name,str) and re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9._-]*',name)}
+    if 'bindings.json' in wanted:   # restored stores never inherit enabled paid digest refresh (REL-S5)
+        try:
+            bcfg=read_json_bytes(wanted['bindings.json'].encode('utf-8'))
+            if isinstance(bcfg,dict) and isinstance(bcfg.get('digest_refresh'),dict) and bcfg['digest_refresh'].get('enabled'):
+                bcfg['digest_refresh']=dict(bcfg['digest_refresh'],enabled=False)
+                wanted['bindings.json']=canonical_json(bcfg)
+        except ValueError:pass
+    elif (root/'bindings.json').is_file():
+        try:
+            bcfg=read_json_bytes((root/'bindings.json').read_bytes())
+            if isinstance(bcfg,dict) and isinstance(bcfg.get('digest_refresh'),dict) and bcfg['digest_refresh'].get('enabled'):
+                bcfg['digest_refresh']=dict(bcfg['digest_refresh'],enabled=False)
+                wanted['bindings.json']=canonical_json(bcfg)
+        except (OSError,ValueError):pass
     if 'notebook-folders.json' in wanted:   # a restore never reopens a folder notebook the user made hidden or private since
         from .folder_policy import merge_registry
         wanted['notebook-folders.json']=merge_registry(root,wanted['notebook-folders.json'])

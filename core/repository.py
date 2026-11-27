@@ -157,14 +157,7 @@ def store_lock(root, allow_retired=False, timeout=None):
             _locks.held = held
 
 
-def is_link_or_junction(path):
-    """True for a symbolic link or an NTFS junction. Other reparse points (OneDrive placeholders, dedup) are ordinary files."""
-    try:
-        info = os.lstat(path)
-    except (FileNotFoundError, NotADirectoryError):
-        return False
-    tags = {getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003), getattr(stat, "IO_REPARSE_TAG_SYMLINK", 0xA000000C)}
-    return stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0) in tags
+from .paths import is_link_or_junction
 
 
 def confined(root, relative):
@@ -175,7 +168,7 @@ def confined(root, relative):
     path = root / rel
     cursor = path
     while cursor != root:
-        if cursor.is_symlink():
+        if is_link_or_junction(cursor):
             raise ValueError("Symbolic links are not allowed in the store")
         cursor = cursor.parent
     path.resolve().relative_to(root)
@@ -425,7 +418,7 @@ def _note_files(root, directory):
         confined(root, current.relative_to(root))
         with os.scandir(current) as entries:
             for entry in entries:
-                if entry.is_symlink():
+                if entry.is_symlink() or is_link_or_junction(entry.path):
                     raise ValueError("Symbolic links are not allowed in the store")
                 if entry.is_dir(follow_symlinks=False):
                     pending.append(Path(entry.path))
@@ -436,7 +429,7 @@ def _note_files(root, directory):
 
 def _remembered(directory, files):
     """[(path, note or None)] for these files, parsing only those not already read at this size and time."""
-    import time
+    import copy, time
     known = _PARSED.get(str(directory), {})
     current = {}
     notes = []
@@ -450,8 +443,8 @@ def _remembered(directory, files):
             note = parse(path)
             if time.time_ns() - stat.st_mtime_ns > SETTLE_NS:
                 current[key] = (stat.st_mtime_ns, stat.st_size, note)
-        # Callers change the notes they are given, so each gets its own copy.
-        notes.append((path, {k: (v.copy() if isinstance(v, (list, dict)) else v) for k, v in note.items()} if note is not None else None))
+        # Callers change the notes they are given (including nested sources/file_hashes), so each gets a deep copy.
+        notes.append((path, copy.deepcopy(note) if note is not None else None))
     _PARSED[str(directory)] = current
     return notes
 
@@ -468,7 +461,7 @@ def _scan(domain, root=None, retired=False):
         directories.append(root / "domains" / name / "archive")
     seen = {}
     for directory in directories:
-        if directory.is_symlink():
+        if is_link_or_junction(directory):
             raise ValueError("Canonical directory cannot be a symbolic link")
         if not directory.is_dir():
             continue

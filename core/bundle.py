@@ -17,8 +17,9 @@ MAX_NOTES=5000
 def export(root,domain,out,types=(),tags=(),retired=False):
     """Write a bundle of the domain's notes (active, or all with retired) that match every filter."""
     from .repository import inventory,canonical_json
+    from .paths import is_within
     root=Path(root).resolve();out=Path(out).expanduser().resolve()
-    if out.is_relative_to(root/'domains'):raise ValueError('Write the bundle outside the store domains')
+    if is_within(out,root/'domains'):raise ValueError('Write the bundle outside the store domains')
     if out.exists():raise ValueError(f'{out} already exists; choose a new file')
     # Retired notes only on request.
     notes=[n for n in inventory(domain,root,retired=True) if (retired or n.get('status','active')=='active') and (not types or n.get('type') in types) and all(t in n.get('tags',[]) for t in tags)]
@@ -39,19 +40,30 @@ def export(root,domain,out,types=(),tags=(),retired=False):
         if temp.exists():temp.unlink()
     return {'ok':True,'bundle':str(out),'domain':domain,'notes':len(entries),'tags':sorted(used)}
 
+MAX_TOTAL=128*1024*1024
+
 def _read(source):
     """(manifest, {member: bytes}) after checking every member against the manifest."""
     import json
+    from .paths import name_key
     with zipfile.ZipFile(source) as archive:
         infos=archive.infolist()
         if len(infos)>MAX_NOTES+1:raise ValueError('Bundle has too many members')
-        members={}
+        members={};seen={};remaining=MAX_TOTAL
         for info in infos:
             name=info.filename
             if info.is_dir() or (name!='manifest.json' and not MEMBER.fullmatch(name)) or '..' in name.split('/'):
                 raise ValueError(f'Bundle member outside the bundle layout: {name}')
-            if info.file_size>MAX_MEMBER:raise ValueError(f'Bundle member too large: {name}')
-            members[name]=archive.read(info)
+            key=name_key(name)
+            if key in seen:raise ValueError(f'Bundle members {seen[key]} and {name} name the same file')
+            seen[key]=name
+            cap=min(MAX_MEMBER,remaining)
+            with archive.open(info) as handle:
+                data=handle.read(cap+1)
+            if len(data)>MAX_MEMBER:raise ValueError(f'Bundle member too large: {name}')
+            if len(data)>remaining:raise ValueError('Bundle uncompressed size exceeds total cap')
+            remaining-=len(data)
+            members[name]=data
     if 'manifest.json' not in members:raise ValueError('Bundle has no manifest.json')
     try:manifest=json.loads(members.pop('manifest.json').decode('utf-8'))
     except (UnicodeError,ValueError) as exc:raise ValueError('Bundle manifest is not valid JSON') from exc

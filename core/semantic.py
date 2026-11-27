@@ -195,12 +195,25 @@ def _sha256(path):
         for block in iter(lambda:handle.read(1<<20),b''):digest.update(block)
     return digest.hexdigest()
 
+MAX_DOWNLOAD_BYTES=256*1024*1024
+
+class _HttpsOnlyRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self,req,fp,code,msg,headers,newurl):
+        if not str(newurl).lower().startswith('https://'):
+            raise ValueError(f'Refusing non-HTTPS redirect during model download: {newurl}')
+        return super().redirect_request(req,fp,code,msg,headers,newurl)
+
 def _fetch(url,target):
-    """Download url to target, touching the .partial- folder at least once a minute: Windows may not update an open file's
-    write time, and _clear_stale_partials must see a long download as alive."""
-    beat=0.0
-    with urllib.request.urlopen(url,timeout=60) as response,open(target,'wb') as out:
+    """Download url to target with an HTTPS-only redirect guard and a hard byte cap, touching the .partial- folder at least
+    once a minute: Windows may not update an open file's write time, and _clear_stale_partials must see a long download as alive."""
+    if not str(url).lower().startswith('https://'):
+        raise ValueError(f'Model download requires https: {url}')
+    opener=urllib.request.build_opener(_HttpsOnlyRedirect())
+    beat=0.0;total=0
+    with opener.open(url,timeout=60) as response,open(target,'wb') as out:
         for block in iter(lambda:response.read(1<<20),b''):
+            total+=len(block)
+            if total>MAX_DOWNLOAD_BYTES:raise ValueError('Model download exceeds maximum byte cap')
             out.write(block)
             if time.time()-beat>=HEARTBEAT_SECONDS:os.utime(target.parent);beat=time.time()
 

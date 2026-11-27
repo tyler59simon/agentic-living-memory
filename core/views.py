@@ -11,7 +11,7 @@ turns into elements with textContent only. Note text is agent-written, so it is 
 from __future__ import annotations
 import base64,html,json,re,textwrap,uuid
 from pathlib import Path
-from .common import atomic_write
+from .common import atomic_write,safe_domain
 from .repository import read_json,canonical_json,store_lock,transaction,now
 
 # Bump when the page changes, so views rendered by an older version count as stale.
@@ -32,7 +32,11 @@ def _kind(v):return v.get('kind','note')
 
 def _valid(v):
     if not isinstance(v,dict):return False
-    if _kind(v)=='note':return isinstance(v.get('note'),str) and isinstance(v.get('domain'),str)
+    if _kind(v)=='note':
+        if not (isinstance(v.get('note'),str) and isinstance(v.get('domain'),str)):return False
+        try:safe_domain(v['domain'])
+        except ValueError:return False
+        return True
     return _kind(v)=='query' and isinstance(v.get('id'),str) and bool(QUERY_ID.fullmatch(v['id'])) and isinstance(v.get('title'),str) and isinstance(v.get('spec'),dict)
 
 def load(root):
@@ -100,8 +104,9 @@ def _write_cache(root,data):atomic_write(_cache_path(root),json.dumps(data,sort_
 def view_path(root,entry,target='local'):
     """<store>/.views/<domain>/<slug>-<id8>.html (the artifact copy: <slug>-<id8>.artifact.html). The slug comes from the view's own title, so it stays put when the note is renamed."""
     from .notes import slug
+    domain=safe_domain(entry['domain'])
     name=f"{slug(entry.get('title') or entry['note'])}-{entry['note'][:8]}"
-    return Path(root)/'.views'/entry['domain']/(name+('.artifact' if target=='artifact' else '')+'.html')
+    return Path(root)/'.views'/domain/(name+('.artifact' if target=='artifact' else '')+'.html')
 
 # ---- the view model ----
 
@@ -515,8 +520,9 @@ def _ids_in(root,domain):
 def _out_path(root,out):
     """An --out destination: anywhere outside the store, or under its .views folder. Inside the store it would overwrite
     canonical files (notes, registries) with no revision check or journal."""
+    from .paths import is_within
     path=Path(out).resolve()
-    if path.is_relative_to(root) and not path.is_relative_to(root/'.views'):raise ValueError('--out must be outside the memory store (or under its .views folder)')
+    if is_within(path,root) and not is_within(path,root/'.views'):raise ValueError('--out must be outside the memory store (or under its .views folder)')
     return path
 
 def refresh(domain,root):

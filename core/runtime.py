@@ -74,9 +74,9 @@ def _custom_types_line(root):
 
 def protocol(root,domain=None,harness='',session='SESSION',room=None):
     """SessionStart context (re-fires after compaction). When the harness's instruction file carries the
-    current static block, only per-session data is injected; otherwise the shorter fallback protocol (it fits Codex's
-    4,000-character hook limit), so the agent never sees zero copies or two differing copies of the rules.
-    room: the characters the rules may take (Codex's limit less the session marker that follows them). Past it, the custom
+    current static block, only per-session data is injected; otherwise the shorter fallback protocol, so the agent never
+    sees zero copies or two differing copies of the rules.
+    room: the characters the rules may take (SESSION_LIMITS less the session marker that follows them). Past it, the custom
     types line and then the tag summary give way to the command that lists them."""
     cmd=command(root,domain)
     head=f'CMD = {cmd}'+('' if cmd.startswith('alm ') else '   (Bash: CMD as is; PowerShell: & CMD ...)')
@@ -140,7 +140,7 @@ def protected_rule(path,cwd,root):
         from .storage import config_path
         from .paths import is_within,path_key
         if is_within(p,root/'domains'):return 'domains'
-        if is_within(p,root/'ledger') or is_within(p,root/'.views') or is_within(p,root/'maintenance'):return 'config'
+        if any(is_within(p,root/part) for part in ('ledger','.views','maintenance','.operations','backups','.turns')):return 'config'
         if path_key(p) in {path_key(x) for x in (root/'bindings.json',root/'tag_taxonomy.json',root/'projects.json',root/'systems.json',root/'sources.json',root/'note_types.json',root/'maintenance.json',root/'views.json',root/'.relocated.json',
                  root/'notebook-folders.json',config_path())}:return 'config'
         # Vault edits, archives and deletions are applied at sync, so agents must not write there either.
@@ -224,7 +224,8 @@ def _words(rest,grammar):
         elif ch=='\\' and not ps:
             if nxt in ('','\n','\r'):return None
             word=(word or '')+nxt;i+=1
-        elif ch in SHELL_META or (ps and ch in POWERSHELL_META):return None
+        elif ch=='#' and word is None:return None
+        elif ch in SHELL_META or (ps and ch in POWERSHELL_META and word is None):return None
         elif ch.isspace():
             if word is not None:words.append(word);word=None
         else:word=(word or '')+ch
@@ -439,6 +440,22 @@ def page_settle(text,grammar):
     """True when an exact `proposals` command accepts or rejects a page edit: only the user settles those, so the harness's own prompt decides."""
     return any(_subcommand(words)=='proposals' and _settles_page(words) for words in _parsed(text,grammar) or [])
 
+def _subcommand_rest(words,name):
+    """Argument words following subcommand `name`, skipping global options and their values via _option_width, else None."""
+    index=0
+    while index<len(words):
+        token=words[index]
+        if token.startswith('-'):index+=_option_width(token);continue
+        return words[index+1:] if token==name else None
+    return None
+
+def config_write(text,grammar):
+    """True when a `config` command writes (`config set`); `config get` only reads."""
+    for words in _parsed(text,grammar) or []:
+        rest=_subcommand_rest(words,'config')
+        if rest is not None and 'set' in rest:return True
+    return False
+
 def hivemind_governed(text,grammar):
     """True when a shell command undoes an operation or makes a direct or bulk write: undo, recover, setup, taxonomy add, archive, delete, merge and the other HIVEMIND_GOVERNED verbs. Exact invocations are read by
     word; text that cannot be parsed (chained, redirected, expanded) is refused when it names living_memory or a standalone `alm`
@@ -446,14 +463,16 @@ def hivemind_governed(text,grammar):
     parsed=_parsed(text,grammar)
     subs=[_subcommand(words) for words in parsed or []]
     if parsed and all(sub and not sub.startswith('-') for sub in subs):   # an option in the subcommand slot (--domain=x, --dom x) is not a subcommand: read the tokens
-        return any(sub in HIVEMIND_GOVERNED or (sub=='taxonomy' and 'add' in words)
+        return any(sub in HIVEMIND_GOVERNED or (sub=='taxonomy' and 'add' in (_subcommand_rest(words,'taxonomy') or ()))
+                   or (sub=='config' and 'set' in (_subcommand_rest(words,'config') or ()))
                    or (sub=='doc' and _doc_action(words) not in DOC_AGENT_ACTIONS) or (sub=='proposals' and _settles_page(words)) for sub,words in zip(subs,parsed))
     tokens=[t for t in re.split(r'''[\s;&|()"'`{}<>=,]+''',text) if t]
     return _names_memory(tokens) and (any(t in HIVEMIND_GOVERNED for t in tokens) or ('taxonomy' in tokens and 'add' in tokens)
+                                      or ('config' in tokens and 'set' in tokens)
                                       or ('doc' in tokens and any(t in DOC_WRITE_ACTIONS for t in tokens)) or ('proposals' in tokens and _settles_page(tokens)))
 
 # Options that read a file into a note. Auto-approval covers only files the session could already see.
-FILE_OPTIONS=('--content-file','--body-file','--payload-file')
+FILE_OPTIONS=('--content-file','--body-file','--payload-file','--spec-file')
 
 def _option_values(words,names):
     """Values given to these options as `--opt VALUE` or `--opt=VALUE`, including argparse abbreviations (--content)."""
@@ -474,18 +493,16 @@ def remote_sync(text,grammar,root):
         remote={s['name'] for s in sources.load(root)['sources'] if s.get('kind') in sources.REMOTE}
     except (ValueError,OSError):remote=set()   # without a readable registry no remote source resolves either
     for words in parsed:
-        index=0
-        while index<len(words) and words[index]!='source-sync':index+=2 if words[index] in GLOBAL_OPTIONS else 1
-        for word in words[index+1:]:
+        rest=_subcommand_rest(words,'source-sync')
+        if rest is None:continue
+        for word in rest:
             if word in remote or (word.startswith('--a') and '--all-remote'.startswith(word.split('=')[0])):return True
     return False
 
 def views_write(text,grammar):
     """True when a `views` command writes: add, update, remove, published, or render except `--format json` with no --out."""
     for words in _parsed(text,grammar) or []:
-        index=0
-        while index<len(words) and words[index]!='views':index+=2 if words[index] in GLOBAL_OPTIONS else 1
-        rest=words[index+1:]
+        rest=_subcommand_rest(words,'views')
         if not rest:continue
         action=next((w for w in rest if not w.startswith('-')),'list')
         if action in {'add','update','remove','published'}:return True
@@ -499,44 +516,46 @@ def _json_format(words):
 def wiki_build(text,grammar):
     """True when a `wiki` command is `--agent --build`, or an argparse abbreviation of --build: it calls a model and costs money."""
     for words in _parsed(text,grammar) or []:
-        index=0
-        while index<len(words) and words[index]!='wiki':index+=2 if words[index] in GLOBAL_OPTIONS else 1
-        if any(len(name)>=4 and '--build'.startswith(name) for name in (w.partition('=')[0] for w in words[index+1:] if w.startswith('--'))):return True
+        rest=_subcommand_rest(words,'wiki')
+        if rest is None:continue
+        if any(len(name)>=4 and '--build'.startswith(name) for name in (w.partition('=')[0] for w in rest if w.startswith('--'))):return True
     return False
 
 def wiki_write(text,grammar):
     """True when a `wiki` command writes a file or spends money: anything but `--format json` with no --out, and any --build."""
     if wiki_build(text,grammar):return True
     for words in _parsed(text,grammar) or []:
-        index=0
-        while index<len(words) and words[index]!='wiki':index+=2 if words[index] in GLOBAL_OPTIONS else 1
-        if index>=len(words):continue
-        rest=words[index+1:]
+        rest=_subcommand_rest(words,'wiki')
+        if rest is None:continue
         if _option_values(rest,('--out',)) or not _json_format(rest):return True
     return False
 
 def maintenance_write(text,grammar):
     """True when a `maintenance` command runs or changes maintenance: run, enable or disable (status, preview and history only read)."""
     for words in _parsed(text,grammar) or []:
-        index=0
-        while index<len(words) and words[index]!='maintenance':index+=2 if words[index] in GLOBAL_OPTIONS else 1
-        if {'run','enable','disable'}&set(words[index+1:]):return True   # any word, so an option value before the action cannot hide it
+        rest=_subcommand_rest(words,'maintenance')
+        if rest is not None and {'run','enable','disable'}&set(rest):return True   # any word, so an option value before the action cannot hide it
+    return False
+
+def maintenance_paid(text,grammar):
+    """True when a `maintenance` command enables or triggers paid model runs (`enable` or `run`): the harness's own permission prompt decides."""
+    for words in _parsed(text,grammar) or []:
+        rest=_subcommand_rest(words,'maintenance')
+        if rest is not None and {'run','enable'}&set(rest):return True
     return False
 
 def rebaseline_write(text,grammar):
     """True when a `rebaseline` command may write (anything but --dry-run)."""
     for words in _parsed(text,grammar) or []:
-        index=0
-        while index<len(words) and words[index]!='rebaseline':index+=2 if words[index] in GLOBAL_OPTIONS else 1
-        if '--dry-run' not in words[index+1:]:return True
+        rest=_subcommand_rest(words,'rebaseline')
+        if rest is not None and '--dry-run' not in rest:return True
     return False
 
 def proposals_write(text,grammar):
     """True when a `proposals` command settles one (accept or reject); list and show only read."""
     for words in _parsed(text,grammar) or []:
-        index=0
-        while index<len(words) and words[index]!='proposals':index+=2 if words[index] in GLOBAL_OPTIONS else 1
-        if {'accept','reject'}&set(words[index+1:]):return True   # any word, as in maintenance_write
+        rest=_subcommand_rest(words,'proposals')
+        if rest is not None and {'accept','reject'}&set(rest):return True   # any word, as in maintenance_write
     return False
 
 SUBAGENT_DENY='Living Memory: subagents are read-only. Stage the finding with propose for the main agent instead of running '
@@ -544,27 +563,46 @@ SUBAGENT_DENY='Living Memory: subagents are read-only. Stage the finding with pr
 def taxonomy_write(text,grammar):
     """True when a `taxonomy` command adds tags (`taxonomy add`); plain `taxonomy` only reads."""
     for words in _parsed(text,grammar) or []:
-        index=0
-        while index<len(words) and words[index]!='taxonomy':index+=2 if words[index] in GLOBAL_OPTIONS else 1
-        if 'add' in words[index+1:]:return True   # any word, as in maintenance_write
+        rest=_subcommand_rest(words,'taxonomy')
+        if rest is not None and 'add' in rest:return True   # any word, as in maintenance_write
     return False
 
 def memory_write(subcommand,text,grammar):
     """True when a memory command writes anything a subagent may not: MUTATING_SUBCOMMANDS, or the writing forms of views,
-    maintenance, wiki, proposals and doc. propose and doc propose are the subagent's writes and are not counted."""
+    maintenance, wiki, proposals, config, taxonomy, rebaseline and doc. propose and doc propose are the subagent's writes and are not counted."""
     if not subcommand:return False
     return (subcommand in MUTATING_SUBCOMMANDS or (subcommand=='views' and views_write(text,grammar))
             or (subcommand=='maintenance' and maintenance_write(text,grammar)) or (subcommand=='wiki' and wiki_write(text,grammar))
             or (subcommand=='proposals' and proposals_write(text,grammar)) or (subcommand=='taxonomy' and taxonomy_write(text,grammar))
+            or (subcommand=='config' and config_write(text,grammar))
             or (subcommand=='rebaseline' and rebaseline_write(text,grammar)) or (subcommand=='doc' and doc_write(text,grammar)))
+
+def subagent_write_verb(text,grammar):
+    """The mutating subcommand a subagent shell command attempts (exact or chained/unparseable fail-closed), else None."""
+    sub=memory_subcommand(text,grammar)
+    if sub:return sub if memory_write(sub,text,grammar) else None
+    tokens=[t for t in re.split(r'''[\s;&|()"'`{}<>=,]+''',text) if t]
+    if not _names_memory(tokens):return None
+    for t in tokens:
+        if t in MUTATING_SUBCOMMANDS:return t
+    if 'taxonomy' in tokens and 'add' in tokens:return 'taxonomy'
+    if 'config' in tokens and 'set' in tokens:return 'config'
+    if 'proposals' in tokens and {'accept','reject'}&set(tokens):return 'proposals'
+    if 'maintenance' in tokens and {'run','enable','disable'}&set(tokens):return 'maintenance'
+    if 'views' in tokens and {'add','update','remove','published','render'}&set(tokens):return 'views'
+    if 'wiki' in tokens:return 'wiki'
+    if 'rebaseline' in tokens:return 'rebaseline'
+    if 'doc' in tokens and any(t in DOC_WRITE_ACTIONS for t in tokens):return 'doc'
+    return None
 
 def auto_allowed(text,grammar,root,cwd,scratch=None):
     """True when an allow-listed memory command may skip the permission prompt: it uses the hook's own store
     and reads input files only from the working directory or the session scratchpad. Anything else is left to
     the harness's normal permission prompt (this never denies)."""
     parsed=_parsed(text,grammar)
-    if not parsed or wiki_build(text,grammar):return False   # a build costs money: the harness's own permission prompt decides
+    if not parsed or wiki_build(text,grammar) or maintenance_paid(text,grammar):return False   # paid model calls: the harness's own permission prompt decides
     try:
+        from .paths import is_within
         store=Path(root).resolve();bases=[Path(cwd).resolve()]+([Path(scratch).resolve()] if scratch else [])
         for words in parsed:
             for value in _option_values(words,('--root',)):
@@ -574,7 +612,7 @@ def auto_allowed(text,grammar,root,cwd,scratch=None):
                 if not value:return False
                 path=Path(os.path.expandvars(value)).expanduser()
                 path=(path if path.is_absolute() else bases[0]/path).resolve()
-                if not any(path.is_relative_to(base) for base in bases):return False
+                if not any(is_within(path,base) for base in bases):return False
         return True
     except (OSError,ValueError,RuntimeError):return False   # RuntimeError: ~user with no such user
 
@@ -1428,7 +1466,7 @@ def _titled(root,refs):
     return [f"{short_ref(*r.split(':',1))} {_title(titles[r])}" for r in refs if r in titles]
 
 # The SessionStart additionalContextLimit integrations/setup.py gives a harness that applies one to the whole hook context.
-SESSION_LIMITS={'codex':4000}
+SESSION_LIMITS={'codex':9000}
 RULES_STEER='- Keep these rules verbatim:'
 RULES_STEER_MAX=600
 
@@ -2041,6 +2079,48 @@ def process(harness,event,payload,root=None):
     logs.write(level,'hook',event,root,**fields(),outcome=outcome,context_chars=len(context) if isinstance(context,str) else None,**extra(result))
     return result
 
+def _parse_tool(payload):
+    """(lowered tool name, decoded args, shell command text, shell grammar) from a pre-tool-use payload."""
+    name=str(payload.get('tool_name') or payload.get('toolName') or '').lower()
+    args=payload.get('tool_input',payload.get('toolArgs',payload.get('toolArguments',{})))
+    if isinstance(args,str):
+        try:args=json.loads(args)
+        except json.JSONDecodeError:pass
+    text=shell_command(args) if name in SHELL_TOOLS else ''
+    return name,args,text,shell_grammar(name)
+
+def _pre_tool_guards(name,args,text,grammar,cwd,root,domain,state,payload,detail):
+    """All security/governance pre-tool-use denials; runs before both off-mode and unbound-directory returns (REL-S1)."""
+    rule=next((r for r in (protected_rule(p,cwd,root) for p in raw_paths(args)) if r),None) if name not in READ_TOOLS and name not in SHELL_TOOLS else None
+    if rule:
+        detail.update(tool=name,decision='deny:protected:'+rule)
+        return {'deny':STORE_WRITE_DENY}
+    if os.environ.get('HIVEMIND_SESSION') and text and hivemind_governed(text,grammar):
+        detail.update(tool=name,decision='deny:hivemind')
+        return {'deny':HIVEMIND_DENY}
+    if text and include_private(text,grammar):
+        detail.update(tool=name,decision='deny:private')
+        return {'deny':PRIVATE_DENY}
+    if text and serve_command(text,grammar):   # G8: its requests could carry --include-private past this check
+        detail.update(tool=name,decision='deny:serve')
+        return {'deny':SERVE_DENY}
+    if name in EDIT_TOOLS and (FOLDER_GUARD=='all' or (FOLDER_GUARD=='hivemind' and os.environ.get('HIVEMIND_SESSION'))):
+        for raw in raw_paths(args):
+            entry=folder_rule(raw,cwd,root)
+            if entry:
+                detail.update(tool=name,decision='deny:folder')
+                return {'deny':folder_deny(raw,entry,hint_command(root,state,domain))}
+    if _subagent(payload) and text:
+        verb=subagent_write_verb(text,grammar)
+        if verb:
+            detail.update(tool=name,subcommand=verb,decision='deny:subagent')
+            return {'deny':SUBAGENT_DENY+verb+'.'}
+        sub=memory_subcommand(text,grammar)
+        if sub=='source-sync' and remote_sync(text,grammar,root):
+            detail.update(tool=name,subcommand=sub,network=True,decision='deny:subagent')
+            return {'deny':'Living Memory: syncing a remote source reaches the network and is not run by subagents; ask the main agent to run source-sync.'}
+    return None
+
 def _process(harness,event,payload,root=None,info=None):
     info=info if info is not None else {}
     detail=info.setdefault('detail',{})  # why this hook did what it did: refs, numbers and reason codes only
@@ -2052,6 +2132,10 @@ def _process(harness,event,payload,root=None,info=None):
     pinned=state.get('domain')
     domain=pinned if pinned and pinned in bindings.get('domains',{}) else resolve_domain(cwd,bindings)
     info['domain']=domain
+    tool_info=_parse_tool(payload) if event=='pre-tool-use' else None
+    if tool_info is not None:
+        denied=_pre_tool_guards(*tool_info,cwd,root,domain,state,payload,detail)
+        if denied is not None:return denied
     off=session_off(state)
     if off:
         info['off']=True;detail['reason']='off';detail['off']=off
@@ -2060,16 +2144,6 @@ def _process(harness,event,payload,root=None,info=None):
             _sync_vaults(root,'session end');detail['housekeeping']={'worker':schedule_housekeeping(root)}
             return {}
         if event=='pre-tool-use':
-            # The protected-path guard keeps the store intact whether or not memory is on.
-            args=payload.get('tool_input',payload.get('toolArgs',payload.get('toolArguments',{})))
-            if isinstance(args,str):
-                try:args=json.loads(args)
-                except json.JSONDecodeError:pass
-            name=str(payload.get('tool_name') or payload.get('toolName') or '').lower()
-            rule=next((r for r in (protected_rule(p,cwd,root) for p in raw_paths(args)) if r),None) if name not in READ_TOOLS and name not in SHELL_TOOLS else None
-            if rule:
-                detail['decision']='deny:protected:'+rule
-                return {'deny':STORE_WRITE_DENY}
             return {}
         if off=='switch' and session!='unknown' and not _subagent(payload):
             # The session saw the protocol before `alm off`: say once that it no longer applies (again after a compaction).
@@ -2143,47 +2217,6 @@ def _process(harness,event,payload,root=None,info=None):
         synced=_sync_vaults(root,'session end');worker=schedule_housekeeping(root)
         detail['housekeeping']={'synced':len(synced.get('results',[])) if isinstance(synced,dict) else None,'worker':worker}
         return {}
-    if event=='pre-tool-use' and os.environ.get('HIVEMIND_SESSION'):
-        # Before the unbound-project return: an agent in a Hivemind terminal may not undo or make a governed write whatever its working directory.
-        args=payload.get('tool_input',payload.get('toolArgs',payload.get('toolArguments',{})))
-        if isinstance(args,str):
-            try:args=json.loads(args)
-            except json.JSONDecodeError:pass
-        name=str(payload.get('tool_name') or payload.get('toolName') or '').lower();text=shell_command(args) if name in SHELL_TOOLS else ''
-        if text and hivemind_governed(text,shell_grammar(name)):
-            detail['tool']=name;detail['decision']='deny:hivemind'
-            result['deny']=HIVEMIND_DENY
-            return result
-    if event=='pre-tool-use':
-        # Before the unbound-project return as well: private notebooks are never shown to an agent, wherever it runs.
-        args=payload.get('tool_input',payload.get('toolArgs',payload.get('toolArguments',{})))
-        if isinstance(args,str):
-            try:args=json.loads(args)
-            except json.JSONDecodeError:pass
-        name=str(payload.get('tool_name') or payload.get('toolName') or '').lower();text=shell_command(args) if name in SHELL_TOOLS else ''
-        if text and include_private(text,shell_grammar(name)):
-            detail.update(tool=name,decision='deny:private');result['deny']=PRIVATE_DENY
-            return result
-        if text and serve_command(text,shell_grammar(name)):   # G8: its requests could carry --include-private past this check
-            detail.update(tool=name,decision='deny:serve');result['deny']=SERVE_DENY
-            return result
-        if name in EDIT_TOOLS and (FOLDER_GUARD=='all' or (FOLDER_GUARD=='hivemind' and os.environ.get('HIVEMIND_SESSION'))):
-            for raw in raw_paths(args):
-                entry=folder_rule(raw,cwd,root)
-                if entry:
-                    detail.update(tool=name,decision='deny:folder');result['deny']=folder_deny(raw,entry,hint_command(root,state,domain))
-                    return result
-    if event=='pre-tool-use' and not domain and _subagent(payload):
-        # Before the unbound-project return too: from an unbound folder a subagent could still capture --global or settle a proposal.
-        args=payload.get('tool_input',payload.get('toolArgs',payload.get('toolArguments',{})))
-        if isinstance(args,str):
-            try:args=json.loads(args)
-            except json.JSONDecodeError:pass
-        name=str(payload.get('tool_name') or payload.get('toolName') or '').lower();text=shell_command(args) if name in SHELL_TOOLS else ''
-        subcommand=memory_subcommand(text,shell_grammar(name)) if text else None
-        if memory_write(subcommand,text,shell_grammar(name)):
-            detail.update(tool=name,subcommand=subcommand,decision='deny:subagent');result['deny']=SUBAGENT_DENY+subcommand+'.'
-            return result
     if not domain:
         if event=='stop':detail['reason']='unbound'
         if event=='session-start' and session!='unknown':
@@ -2195,7 +2228,7 @@ def _process(harness,event,payload,root=None,info=None):
         # Codex has no SessionEnd: its session start schedules the end-of-session housekeeping in the background.
         if harness=='codex':_sync_vaults(root,'session start',SESSION_START_SYNC_SECONDS);detail['housekeeping']=schedule_housekeeping(root)
         from .session_start import build_context,BUDGET,MIN_BUDGET,HARD_CAP,_cap
-        # Codex keeps only the first 4,000 characters: the rules leave room for the session marker after them.
+        # A harness with a SESSION_LIMITS entry gets rules that leave room for the session marker after them.
         limit=SESSION_LIMITS.get(harness);marker=f'\nLiving Memory session={session}\n'
         rules=protocol(root,domain,harness,session,room=None if limit is None else limit-len(marker))
         # The fallback protocol stands in for the instruction block, which BUDGET does not count either: without this the briefing got only
@@ -2463,37 +2496,18 @@ def _process(harness,event,payload,root=None,info=None):
         if named:result['context']+=(f"\nCodebase maps for the repos this session is working in (read the one for your repo before exploring it: "
                                      f"{cmd} read REF"+call+"): "+'; '.join(named))
     elif event=='pre-tool-use':
-        name=str(payload.get('tool_name') or payload.get('toolName') or '').lower()
-        args=payload.get('tool_input',payload.get('toolArgs',payload.get('toolArguments',{})))
-        if isinstance(args,str):
-            try:args=json.loads(args)
-            except json.JSONDecodeError:pass
+        name,args,text,grammar=tool_info
         detail['tool']=name
         if _subagent(payload):detail['subagent']=True   # who ran a command (for evaluations that count subagent propose calls)
-        # Shell text is not regex-checked: a regex over commands is trivially bypassed and blocks harmless reads. The one narrow exception
-        # is the Hivemind guard below, which reuses memory_subcommand() and fails closed on text it cannot parse.
-        rule=next((r for r in (protected_rule(p,cwd,root) for p in raw_paths(args)) if r),None) if name not in READ_TOOLS and name not in SHELL_TOOLS else None
-        if rule:
-            detail['decision']='deny:protected:'+rule
-            result['deny']=STORE_WRITE_DENY
-            return result
-        text=shell_command(args) if name in SHELL_TOOLS else '';grammar=shell_grammar(name)
         subcommand=memory_subcommand(text,grammar) if text else None;detail['subcommand']=subcommand
         # The call operator is PowerShell's: Bash would background the command. Say so, with the command that works.
         if subcommand and grammar=='posix' and re.match(r'\s*&',text):
             detail['decision']='deny:call-operator'
             result['deny']='In Bash, drop the leading &: '+re.sub(r'^\s*&\s*','',text)
             return result
-        if _subagent(payload) and memory_write(subcommand,text,grammar):
-            detail['decision']='deny:subagent';result['deny']=SUBAGENT_DENY+subcommand+'.'
-            return result
         # A remote source sync reaches the network (the only command that does): the user approves it, it is never auto-allowed.
         networked=subcommand=='source-sync' and remote_sync(text,grammar,root)
         if networked:detail['network']=True
-        if networked and _subagent(payload):
-            detail['decision']='deny:subagent'
-            result['deny']='Living Memory: syncing a remote source reaches the network and is not run by subagents; ask the main agent to run source-sync.'
-            return result
         if subcommand in ALLOWED_SUBCOMMANDS and not networked and not (subcommand=='taxonomy' and taxonomy_write(text,grammar)) and not (subcommand=='doc' and doc_write(text,grammar)) and not (subcommand=='proposals' and page_settle(text,grammar)):   # `taxonomy add`, `doc` writes and settling a page edit keep the normal prompt
             # Another store, or an input file from outside the project, is the user's call: no auto-approval.
             if auto_allowed(text,grammar,root,cwd,payload.get('scratchpad_dir') or payload.get('scratchpadDir')):
