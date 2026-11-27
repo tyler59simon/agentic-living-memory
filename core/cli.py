@@ -423,6 +423,10 @@ def _note_hits(root,domain,query,scope,limit,rebuild,filters,config,globals_,pri
         # The sections that matched best, by heading and line span; `read REF --section HEADING` shows one.
         units=hit.pop('units',None)
         if units:hit['evidence']=[{k:u[k] for k in ('heading','role','lines','similarity')} for u in units if u['role']!='overview'][:2]
+        if not explain:
+            # Trim internal ranking/gate telemetry unless --explain is passed; keeps every field Hivemind's SearchHit reads (REL-P7).
+            for k in ('coverage','titleOverlap','titleTerms','queryTerms','similarityScored','backend','backendReason','gate'):
+                hit.pop(k,None)
     result={'ok':True,'mode':scope,'domains':domains,'fallback':fallback,'relevant':gated,'results':hits}
     if explain:
         from .search import LAST_SEMANTIC,_vector_identity
@@ -1230,7 +1234,7 @@ def main(argv=None):
         elif cmd=='read':
             from .notes import find_note
             d,n=_reference(args.reference,domain,root);path,note=find_note(n,d,root)
-            result={k:v for k,v in note.items() if k not in {'body','path','digest'}}
+            result={k:v for k,v in note.items() if k not in {'body','path','digest','file_hashes'}}
             from .digests import stale_note
             stale=stale_note(note,root)   # a digest's source file, or a hashed file the note lists, changed since it was written
             if stale:result['stale']=stale

@@ -109,7 +109,7 @@ class Cache(Log):
                 if state['n']==2:raise KeyboardInterrupt   # dies after the first file, so the operation stays unfinished
                 return real(path,data)
             with patch.object(repo,'_write',crash),self.assertRaises(KeyboardInterrupt):capture(title,'Body two.',TAGS,'demo',self.root,supersedes='demo:'+n['id'])
-            return next((self.root/'.operations').glob('*/pending')).parent.name
+            return next((self.root/'.operations'/'.pending').glob('*')).name
         op=interrupted('Cache policy two');recover(self.root,op,'backward');self.assertEqual([r['event'] for r in self.rows()],['created'])
         op=interrupted('Cache policy three');recover(self.root,op,'forward');self.assertEqual([r['event'] for r in self.rows()],['superseded','created','created'])
 

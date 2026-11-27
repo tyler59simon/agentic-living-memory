@@ -24,7 +24,7 @@ EXCERPTS = 5                   # files with evidence per note: as many as a note
 RUN_ID_ROOM = 100
 EXCERPT_CHARS = 1200
 FILE_EXCERPT_CHARS = 16000     # a file up to this size is sent whole
-FILE_WITH_DIFF_CHARS = 48000   # ...and up to this size when its diff since the note was verified is sent too
+FILE_WITH_DIFF_CHARS = 26000   # cap whole-file context alongside a diff (reduced from 48 KB, REL-P7)
 DIFF_CHARS = 24000             # a larger diff is not sent
 DIFF_LOOKUP_SECONDS = 10       # git history lookups of the versions to diff against, per packet
 OUTLINE_CHARS = 3000           # the outline of a larger file
@@ -550,6 +550,7 @@ def packet(root, cands, run_id):
                 successor_refs[pref] = pair['revision']
                 successors.append({'evidence_id': sid, 'ref': pref, 'revision': pair['revision'], 'title': pair.get('title'), 'type': _type(pair), 'created': pair.get('created'),
                                    'updated': pair.get('updated'), 'body': pair.get('body', '')})
+            text_cache = {}
             for f in cand['files'][:EXCERPTS]:
                 base = recorded.get(f['path']) if f['state'] == 'changed' else None
                 share = (cand['domain'], f['path'], f['sha256'], base)
@@ -561,7 +562,12 @@ def packet(root, cands, run_id):
                 fid = new_id()
                 record = {'candidate': ref, 'kind': 'file', 'path': f['path'], 'state': f['state'], 'sha256': f['sha256'], 'abs': f['abs'], 'lines': None}
                 entry = {'id': fid, 'kind': 'file', 'path': f['path'], 'state': f['state']}
-                text = _read_text(f['abs']) if f['abs'] and f['state'] in ('current', 'changed') else None
+                if f['abs'] and f['state'] in ('current', 'changed'):
+                    if f['abs'] not in text_cache:
+                        text_cache[f['abs']] = _read_text(f['abs'])
+                    text = text_cache[f['abs']]
+                else:
+                    text = None
                 if text is not None and base and whole_ok:   # the compact retry leaves diffs out, so a note too large with them still fits
                     change = _diff(root, f['abs'], base, f['sha256'], text, lookup_until)
                     if change is not None:

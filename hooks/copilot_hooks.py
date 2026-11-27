@@ -22,7 +22,13 @@ def handle(event,payload):
 
 def main():
     event=sys.argv[1] if len(sys.argv)>1 else ''
-    try:out=handle(event,read_payload())
+    try:
+        payload=read_payload()
+        if EVENTS.get(event,event)=='pre-tool-use':
+            from core.hookfast import quick
+            fast=quick(payload)
+            if fast is not None:emit(fast);return 0
+        out=handle(event,payload)
     except Exception as exc:  # Never break the host; context-bearing events show the failure on stderr.
         if event in ('sessionStart','userPromptTransformed'):sys.stderr.write('Living Memory unavailable: '+str(exc)[:300]+'\n')
         out={}

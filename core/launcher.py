@@ -1,6 +1,6 @@
 """The `alm` launcher: a console .exe (Windows, pip's distlib stub plus a zip) or an sh script that runs living_memory.py."""
 from __future__ import annotations
-import functools,io,os,platform,shlex,sys,zipfile
+import functools,os,sys
 from pathlib import Path
 NAME='alm'
 MARK='# agentic-living-memory launcher'
@@ -9,7 +9,10 @@ FILE=NAME+'.exe' if os.name=='nt' else NAME
 def tail(python,script):
     """What the launcher ends with: the whole sh script, or the shebang line plus a zip holding __main__.py (fixed timestamp, stored: the bytes depend only on the two paths)."""
     python,script=str(python),str(script)
-    if os.name!='nt':return f'#!/bin/sh\n{MARK}\nexec {shlex.quote(python)} {shlex.quote(script)} "$@"\n'.encode()
+    if os.name!='nt':
+        import shlex
+        return f'#!/bin/sh\n{MARK}\nexec {shlex.quote(python)} {shlex.quote(script)} "$@"\n'.encode()
+    import io,zipfile
     main=f'{MARK}\nimport runpy,sys\nsys.path.insert(0,{str(Path(script).parent)!r})\nsys.argv[0]={script!r}\nrunpy.run_path({script!r},run_name="__main__")\n'
     buf=io.BytesIO()
     with zipfile.ZipFile(buf,'w',zipfile.ZIP_STORED) as z:z.writestr(zipfile.ZipInfo('__main__.py',(1980,1,1,0,0,0)),main.encode())
@@ -17,7 +20,7 @@ def tail(python,script):
 
 def _stub():
     """pip's console stub for this machine (found without importing pip), or None."""
-    import importlib.util
+    import importlib.util,platform
     try:spec=importlib.util.find_spec('pip')
     except (ImportError,ValueError):return None
     for base in (spec.submodule_search_locations or []) if spec else []:

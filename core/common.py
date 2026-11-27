@@ -1,6 +1,6 @@
 """Shared paths, domain resolution and small safety primitives."""
 from __future__ import annotations
-import json, os, re, sys, tempfile, time
+import copy, json, os, re, sys, time
 from pathlib import Path
 from contextlib import contextmanager
 
@@ -8,13 +8,30 @@ def memory_root() -> Path:
     from .storage import resolve_root
     return resolve_root()[0]
 
+_BINDINGS_CACHE: dict[str, tuple[int, int, dict]] = {}
+
 def load_bindings(root: Path|None=None) -> dict:
     path=(root or memory_root())/"bindings.json"
+    key=str(path)
+    try:
+        st=os.stat(path)
+    except FileNotFoundError:
+        _BINDINGS_CACHE.pop(key,None)
+        return {}
+    except OSError as exc:
+        raise ValueError(f"Invalid bindings preserved: {path}") from exc
+    hit=_BINDINGS_CACHE.get(key)
+    if hit is not None and hit[0]==st.st_mtime_ns and hit[1]==st.st_size:
+        return copy.deepcopy(hit[2])
     try:
         data=json.loads(retry_sharing(lambda:path.read_text(encoding="utf-8-sig")))
         if not isinstance(data,dict) or ('domains' in data and not isinstance(data['domains'],dict)):raise ValueError(f'Invalid bindings preserved: {path}')
-        return data
-    except FileNotFoundError: return {}
+        if len(_BINDINGS_CACHE)>32:_BINDINGS_CACHE.clear()
+        _BINDINGS_CACHE[key]=(st.st_mtime_ns,st.st_size,data)
+        return copy.deepcopy(data)
+    except FileNotFoundError:
+        _BINDINGS_CACHE.pop(key,None)
+        return {}
     except (OSError,json.JSONDecodeError) as exc:
         raise ValueError(f"Invalid bindings preserved: {path}") from exc
 
@@ -249,12 +266,14 @@ def retry_sharing(operation):
             if attempt==RETRY_ATTEMPTS-1:raise
             time.sleep(.02*(attempt+1))
 
-def atomic_write(path: Path, text: str):
+def atomic_write(path: Path, text: str, fsync: bool = True):
+    import tempfile
     path.parent.mkdir(parents=True,exist_ok=True)
     fd,tmp=tempfile.mkstemp(prefix="."+path.name+".",dir=path.parent)
     try:
         with os.fdopen(fd,"w",encoding="utf-8",newline="\n") as out:
-            out.write(text);out.flush();os.fsync(out.fileno())
+            out.write(text);out.flush()
+            if fsync:os.fsync(out.fileno())
         retry_sharing(lambda:os.replace(tmp,path))
     except BaseException:
         try: os.unlink(tmp)

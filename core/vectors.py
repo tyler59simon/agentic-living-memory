@@ -12,7 +12,7 @@ The caller (search.py) falls back to note-level vectors in search.sqlite3 when t
 to FTS5 alone without a model. Hooks only read this file; it is written under the store lock by rebuild_index.
 """
 from __future__ import annotations
-import array,heapq,importlib.util,json,os,sqlite3,sys,tempfile,time
+import array,heapq,importlib.util,json,operator,os,sqlite3,sys,tempfile,time
 from pathlib import Path
 
 VERSION=1
@@ -37,7 +37,6 @@ def _vector(blob):
     return vector
 
 def _dot(a,b):
-    import operator
     return sum(map(operator.mul,a,b))
 
 # --- the optional extension -------------------------------------------------------------------------------------
@@ -180,7 +179,8 @@ def _sync(db,notes,model,dim,root,fingerprint,fresh=False,known=None):
                     rowid=db.execute('INSERT INTO unit(note_id,note_revision,role,heading,line_start,line_end,sha,excerpt,unit_id) VALUES(?,?,?,?,?,?,?,?,?)',values+(unit['unit_id'],)).lastrowid
                     touched.add(rowid)
             for rowid,_ in old.values():db.execute('DELETE FROM unit WHERE rowid=?',(rowid,));removed.add(rowid)
-        db.execute('DELETE FROM blob WHERE sha NOT IN (SELECT sha FROM unit)')
+        if removed or extracted:
+            db.execute('DELETE FROM blob WHERE sha NOT IN (SELECT sha FROM unit)')
         if native:
             if resync:
                 db.execute('DELETE FROM unit_knn')
@@ -232,11 +232,15 @@ class Index:
         A note's score is its best unit's, never a sum, so a long note gains nothing from its length."""
         if self.backend=='native':
             try:
-                owner=dict(self.db.execute('SELECT rowid,note_id FROM unit'))
+                owner={}
                 k=min(self.vectors,K_START,K_MAX);probe=_blob(query)
                 while k:
                     # vec0 takes exactly its own `ORDER BY distance`; ties are broken by rowid here.
                     rows=sorted(self.db.execute('SELECT rowid,distance FROM unit_knn WHERE embedding MATCH ? AND k=? ORDER BY distance',(probe,k)),key=lambda r:(r[1],r[0]))
+                    missing=[rid for rid,_ in rows if rid not in owner]
+                    for i in range(0,len(missing),500):
+                        chunk=missing[i:i+500]
+                        owner.update(self.db.execute(f"SELECT rowid,note_id FROM unit WHERE rowid IN ({','.join('?'*len(chunk))})",chunk).fetchall())
                     best={}
                     for rowid,distance in rows:
                         note_id=owner.get(rowid)

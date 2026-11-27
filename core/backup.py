@@ -4,7 +4,7 @@ Journals make every script operation reversible; snapshots cover what journals c
 mangled store folder (an external sync tool, a bad manual edit). Indexes, turn state, journals
 and staged files are derived or transient and are not included."""
 from __future__ import annotations
-import json,os,re,zipfile
+import json,os,re
 from datetime import datetime,timezone
 from pathlib import Path
 from .common import atomic_write,parse_iso,retry_sharing
@@ -72,6 +72,7 @@ def snapshots(root):
     return sorted((p for p in folder.glob('lm-*.zip') if NAME.fullmatch(p.name)),key=order,reverse=True)
 
 def _note_count(path):
+    import zipfile
     try:
         with zipfile.ZipFile(path) as archive:return sum(1 for name in archive.namelist() if MEMBER.fullmatch(name))
     except (OSError,zipfile.BadZipFile):return 0
@@ -79,6 +80,7 @@ def _note_count(path):
 def backup(root,keep=KEEP):
     """Write and verify a snapshot, then keep the newest `keep`. A note that cannot be read as a note is still
     saved byte for byte and reported under `unreadable`: one damaged file must not stop every backup."""
+    import zipfile
     root=Path(root).resolve();folder=backup_dir(root);folder.mkdir(parents=True,exist_ok=True)
     # Naming, writing, verification, publication and pruning all hold the store lock, so two sessions
     # backing up in the same second cannot share or delete each other's files.
@@ -132,6 +134,7 @@ def _read_zip_member(archive,info,remaining):
 def verify(path):
     """[{member, problem}] for members that are not readable: a note that is not UTF-8 or has no parseable frontmatter, a page
     that is not UTF-8, invalid JSON, an attachment over the size cap. Raises ValueError for a member outside the canonical set."""
+    import zipfile
     from .paths import name_key
     found=[];seen={};remaining=MAX_TOTAL_BYTES
     with zipfile.ZipFile(path) as archive:
@@ -201,6 +204,7 @@ def restore_backup(root,source):
         return _restore_backup(root,source)
 
 def _restore_backup(root,source):
+    import zipfile
     from .governance import commit
     root=Path(root).resolve();source=Path(source)
     # Members that were unreadable when the snapshot was taken are neither restored nor a reason to delete

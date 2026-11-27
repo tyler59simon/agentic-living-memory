@@ -210,6 +210,36 @@ def handle(event, payload):
     cwd = _working_directory(payload)
     if session is None or cwd is None or os.environ.get('LIVING_MEMORY_MAINTENANCE_CHILD') == '1':
         return neutral
+    # Fast short-circuits before importing core.runtime or taking .antigravity.lock (REL-P3).
+    if event == 'PreInvocation':
+        invocation = payload.get('invocationNum')
+        steps = payload.get('initialNumSteps')
+        if type(invocation) is not int or invocation != 0 or type(steps) is not int or steps < 0:
+            return {}
+    if event == 'PreToolUse':
+        tool = payload.get('toolCall')
+        if not isinstance(tool, dict) or not isinstance(tool.get('name'), str):
+            return {'decision': 'allow'}
+        native = tool['name']
+        if native not in TOOLS or not isinstance(tool.get('args'), dict):
+            return {'decision': 'allow'}
+        name, key, target = TOOLS[native]
+        if name in {'read', 'glob', 'grep'}:
+            from core.hookfast import quick
+            args = tool['args']
+            value = args.get(key)
+            if target == 'path' and not isinstance(value, str):
+                value = next((args[k] for k in ('FilePath', 'TargetFile', 'AbsolutePath', 'Path')
+                              if isinstance(args.get(k), str)), None)
+            normalized = {target: value} if isinstance(value, str) else {}
+            if native == 'find_by_name' and isinstance(args.get('Pattern'), str):
+                normalized['pattern'] = args['Pattern']
+            fast_payload = {'session_id': session, 'cwd': str(cwd), 'tool_name': name, 'tool_input': normalized}
+            aid = payload.get('agentId') or payload.get('agent_id')
+            if aid:
+                fast_payload['agent_id'] = aid
+            if quick(fast_payload) is not None:
+                return {'decision': 'allow'}
 
     from core.common import file_lock
     from core.repository import read_json

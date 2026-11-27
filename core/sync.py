@@ -466,10 +466,15 @@ def sync(domain,vault,root=None,trigger=None):
         transaction(vault,view_changes,'overlay_sync',skip_unchanged=True)
         counts={'copied':copied,'applied':len(applied),'conflicts':conflicts,
                 'deferred':deferred,'restored':restored,'renamed':renamed,'new_vault':new_vault}
-        # Only a sync that did something moves the stamp, so a quiet one rewrites and journals nothing.
+        # Only a sync that did something moves the stamp, so a quiet one rewrites nothing.
         if any(counts.values()) or not state.get('last_sync'):state['last_sync']={'at':now(),'trigger':trigger,**counts}
-        staging_changes[state_path.relative_to(root).as_posix()]=canonical_json(state)
-        transaction(root,staging_changes,'overlay_state',skip_unchanged=True)
+        # sync-state.json and staged conflict/draft copies are derived bookkeeping, not canonical notes: write atomically without creating .operations/ journals (REL-P1).
+        state_bytes=canonical_json(state)
+        if _text(state_path)!=state_bytes:atomic_write(state_path,state_bytes)
+        for rel,content in sorted(staging_changes.items()):
+            target=confined(root,rel)
+            if content is None:target.unlink(missing_ok=True)
+            elif _text(target)!=content:atomic_write(target,content)
         if wrote_canonical:reconcile(domain,root,sync_overlay=False)
         _prune_legacy_dirs(vault)
         result={'ok':True,'domain':domain,'copied':copied,'staged':staged,'conflicts':conflicts,'applied':applied,
@@ -573,7 +578,8 @@ def forget_page_mirror(domain,root):
     plain files now and stay where they are. A failure is logged, not raised: notes are synced already."""
     rel=f'domains/{domain}/notebook-sync.json'
     try:
-        if (Path(root)/rel).is_file():transaction(root,{rel:None},'overlay_state')
+        target=Path(root)/rel
+        if target.is_file():target.unlink(missing_ok=True)
     except (OSError,ValueError,TimeoutError) as exc:
         from .logs import swallowed
         swallowed('sync.forget_page_mirror',exc,root)

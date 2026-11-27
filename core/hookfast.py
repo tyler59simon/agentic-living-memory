@@ -33,7 +33,10 @@ def quick(payload):
         repos=state.get('repos') if isinstance(state,dict) else None
         if not isinstance(repos,dict):return None
         cwd=payload.get('cwd') or payload.get('workingDirectory') or os.getcwd()
-        args=payload.get('tool_input')
+        args=payload.get('tool_input',payload.get('toolArgs',payload.get('toolArguments')))
+        if isinstance(args,str):
+            try:args=json.loads(args)
+            except ValueError:return None
         args=args if isinstance(args,dict) else {}
         found=[]
         for key in PATH_KEYS:
@@ -53,6 +56,7 @@ def quick(payload):
         here=Path(cwd).resolve()
         if name!='read' and not any(args.get(k) for k in PATH_KEYS) and (is_within(here,root) or is_within(root,here)):return None
         agent=str(payload.get('agent_id') or payload.get('agentId') or '')
+        if not agent and state.get('antigravity_subagent'):agent=session
         for repo in dict.fromkeys(r for r in found if r):
             done=(repos.get(repo.as_posix()) or {}).get('done') or []
             if '*' not in done and agent not in done:return None

@@ -274,13 +274,19 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
     notes runtime.auto_resolve just resolved; they get a tail line of their own."""
     root=(root or memory_root()).resolve();bindings=load_bindings(root);active=resolve_domain(cwd,bindings)
     if not active:return None,[],False
-    notes=[];scope=_scope(active,root,bindings)
+    notes=[];active_problems=None;scope=_scope(active,root,bindings)
+    from .repository import _scan
     for domain in scope:
         if not (root/'domains'/domain).is_dir():continue
-        try:notes.extend(dict(n,domain=domain) for n in inventory(domain,root))
+        try:
+            if domain==active:
+                scanned,active_problems=_scan(domain,root,retired=False)
+                notes.extend(dict(n,domain=domain) for n in scanned)
+            else:
+                notes.extend(dict(n,domain=domain) for n in inventory(domain,root))
         except (OSError,ValueError):continue
     project,here=_project_context(cwd,active,root,bindings)
-    tail=_resolved_line(resolved)+_finished_line(notes)+_review_line(active,root,[n for n in notes if n['domain']==active])+_coverage_line(active,root,session)+_problem_line(active,root)+_backup_line(root)+_install_line(root)
+    tail=_resolved_line(resolved)+_finished_line(notes)+_review_line(active,root,[n for n in notes if n['domain']==active])+_coverage_line(active,root,session)+_problem_line(active,root,active_problems)+_backup_line(root)+_install_line(root)
     last=_last_session_line(active,root,session,notes)
     notes=_collapse([n for n in notes if n.get('id') and n.get('title')])
     from . import usage
@@ -313,31 +319,45 @@ def build_context(cwd: str,root: Path|None=None,budget: int=BUDGET,session: str|
             from .digests import stale_note
             from .folder_policy import Policy
             if not policy:policy.append(Policy(root))   # one for every line flagged
-            text=stale_note(n,root,bindings,policy[0]);flagged[key]=text+' — ' if text else ''
+            text=stale_note(n,root,bindings,policy[0],flush=False);flagged[key]=text+' — ' if text else ''
         return flagged[key]+unconfirmed(n)
+    # Pre-compute per-note lines and project charter once outside the degrade loop (REL-P4).
+    proj_full=_project_line(project,root,True) if project else None
+    proj_short=_project_line(project,root,False) if project else None
+    ub_lines={2:user_brief_block(user,summary_only=False),1:user_brief_block(user,summary_only=True),0:user_brief_pointer(user)} if user else {}
     def opening(psummary=True,with_brief=True,ubrief=2):
-        return [header]+([_project_line(project,root,psummary)] if project else here)+([user_brief_block(user,summary_only=ubrief==1) if ubrief else user_brief_pointer(user)] if user else [])+([brief] if brief and with_brief else [])+last
+        return [header]+([proj_full if psummary else proj_short] if project else here)+([ub_lines[ubrief]] if user else [])+([brief] if brief and with_brief else [])+last
     # Under a harness limit (Codex cuts the whole hook context), the block fits what the opening lines leave, so it ends inside the limit; the
     # sections after it are cut by the harness as before. It is sized again whenever the degrade loop shortens the opening.
     def rules_for(psummary=True,with_brief=True,ubrief=2):
         lines,full=_rules_block(rules,flag,None if limit is None else limit-len('\n'.join(opening(psummary,with_brief,ubrief)))-2)
         return lines,full,len('\n'.join(lines))+1 if lines else 0   # reserved: outside the budget, like the instruction block
     rule_lines,full_rules,reserved=rules_for()
+    guidance_heads=[f"- [{str(n.get('type','note')).upper()} {_updated(n)[:10]}] {short_ref(n['domain'],n['id'])} {flag(n)}{_title(n['title'])}" for n in guidance]
+    gotcha_heads=[f"- [{str(n.get('type','note')).upper()} {_updated(n)[:10]}] {short_ref(n['domain'],n['id'])} {flag(n)}{_title(n['title'])}" for n in gotchas]
+    snip_cache={}
+    def _snip(n,width):
+        k=(id(n),width)
+        if k not in snip_cache:snip_cache[k]=snippet(n.get('body',''),[],width)
+        return snip_cache[k]
+    index_plain=[f"- {str(n.get('type','note')).upper()} {_updated(n)[:10]} {short_ref(n['domain'],n['id'])} {flag(n)}{_title(n['title'])} (~{_cost(n)}t)" for n in index]
+    index_gists=[f"- {str(n.get('type','note')).upper()} {_updated(n)[:10]} {short_ref(n['domain'],n['id'])} {flag(n)}{_title(n['title'])}"+(f' — {g}' if (g:=gist(n)) else '')+f" (~{_cost(n)}t)" for n in index] if small else index_plain
+    if flagged:
+        from .digests import flush_hashes
+        flush_hashes(root)
 
     def render(listed,opened,width,search,titles_only,with_tail=True,psummary=True,with_brief=True,gcount=0,gsnip=True,summaries=False,ubrief=2,block=None):
         """The context text; block: these Rules lines instead of the current ones."""
         lines=opening(psummary,with_brief,ubrief)+(rule_lines if block is None else block)
-        for n in guidance:
-            line=f"- [{str(n.get('type','note')).upper()} {_updated(n)[:10]}] {short_ref(n['domain'],n['id'])} {flag(n)}{_title(n['title'])}"
-            lines.append(line if titles_only else line+' — '+snippet(n.get('body',''),[],width))
+        for n,line in zip(guidance,guidance_heads):
+            lines.append(line if titles_only else line+' — '+_snip(n,width))
         if gcount:
             lines.append('Known gotchas (pitfalls met before; check them before repeating the mistake):')
-            for n in gotchas[:gcount]:
-                line=f"- [{str(n.get('type','note')).upper()} {_updated(n)[:10]}] {short_ref(n['domain'],n['id'])} {flag(n)}{_title(n['title'])}"
-                lines.append(line+' — '+snippet(n.get('body',''),[],width) if gsnip else line)
+            for n,line in zip(gotchas[:gcount],gotcha_heads[:gcount]):
+                lines.append(line+' — '+_snip(n,width) if gsnip else line)
         if listed:
             lines.append('Other notes ('+('summaries' if summaries else 'titles only')+'; read one when it bears on the task):')
-            lines+=[f"- {str(n.get('type','note')).upper()} {_updated(n)[:10]} {short_ref(n['domain'],n['id'])} {flag(n)}{_title(n['title'])}"+(f' — {gist(n)}' if summaries and gist(n) else '')+f" (~{_cost(n)}t)" for n in index[:listed]]
+            lines+=(index_gists if summaries else index_plain)[:listed]
         # Section C: unchecked action items, so "where were we?" has an answer before any search.
         if open_header and (opened or open_items):lines+=[open_header]+open_lines[:opened]
         if listed or guidance or opened:lines.append(FOOTER_READ+(FOOTER_SEARCH if search else ''))
@@ -448,10 +468,11 @@ def _coverage_line(domain,root,session):
     except OSError:pass
     try:
         from .usage import capture_coverage
-        found=capture_coverage(root,[domain],COVERAGE_DAYS)
-        if found['mutating']<COVERAGE_MIN_SESSIONS or found['ratio']>=COVERAGE_MAX_RATIO:return []
         from .common import atomic_write
-        atomic_write(marker,today+'\n')
+        found=capture_coverage(root,[domain],COVERAGE_DAYS)
+        # Write the daily marker even when healthy so healthy users do not re-read the session ledger on every SessionStart (REL-P4).
+        atomic_write(marker,today+'\n',fsync=False)
+        if found['mutating']<COVERAGE_MIN_SESSIONS or found['ratio']>=COVERAGE_MAX_RATIO:return []
     except Exception as exc:
         from .logs import swallowed
         swallowed('session_start.coverage_line',exc,root);return []
@@ -505,9 +526,10 @@ def _install_line(root):
         swallowed('session_start.install_line',exc,root);return []
     return [f'Living Memory install: the source checkout ({branch} at {head[:12]}) is not what is installed ({commit[:12]}); the user can update with alm upgrade.']
 
-def _problem_line(domain,root):
-    from .repository import problems
-    try:found=problems(domain,root)
-    except (OSError,ValueError):return []
+def _problem_line(domain,root,found=None):
+    if found is None:
+        from .repository import problems
+        try:found=problems(domain,root)
+        except (OSError,ValueError):return []
     if not found:return []
     return [f"{len(found)} note file(s) in '{domain}' could not be read and are excluded from memory; run doctor."]

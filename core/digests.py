@@ -60,7 +60,7 @@ def flush_hashes(root):
     if str(root) not in _DIRTY:return
     _DIRTY.discard(str(root))
     try:
-        if Path(root).is_dir():atomic_write(_hash_file(root),json.dumps(_hash_cache(root),separators=(',',':')))
+        if Path(root).is_dir():atomic_write(_hash_file(root),json.dumps(_hash_cache(root),separators=(',',':')),fsync=False)
     except Exception as exc:
         from .logs import swallowed
         swallowed('digests.flush_hashes',exc,root)
@@ -153,7 +153,7 @@ def _probe(root,domain,path,bindings,specs):
     return [prefix/path for prefix in domain_prefixes(domain,bindings)]
 
 
-def states(listed,domain,root,bindings=None,policy=None):
+def states(listed,domain,root,bindings=None,policy=None,flush=True):
     """{path: state} for the sources or file_hashes of a note: `current` (the file matches the recorded hash), `changed` (read, and it
     differs), `missing` (the bound folder or source is readable and the file is not there), `unavailable` (the folder is not bound or
     the file cannot be read, so nothing can be said), `unchecked` (no hash recorded) or `closed` (the file is in a folder notebook
@@ -174,7 +174,7 @@ def states(listed,domain,root,bindings=None,policy=None):
         if path is None:out[s['path']]='missing' if known else 'unavailable'
         else:
             sha=cached_sha256(path,root);out[s['path']]='unavailable' if sha is None else 'current' if sha==s['sha256'] else 'changed'
-    flush_hashes(root)
+    if flush:flush_hashes(root)
     return out
 
 def changed(sources,domain,root,bindings=None):
@@ -188,13 +188,13 @@ def stale_text(paths,what='digest',missing=()):
     parts=([f'{names(paths)} changed since this {what}'] if paths else [])+([f"{names(missing)} {'is' if len(missing)==1 else 'are'} missing"] if missing else [])
     return 'STALE: '+'; '.join(parts) if parts else ''
 
-def stale_note(note,root,bindings=None,policy=None):
+def stale_note(note,root,bindings=None,policy=None,flush=True):
     """stale_text for a note dict with `sources` (a digest) or `file_hashes` and `domain` ('' when it has neither or they are unchanged); never raises.
     policy: as for states."""
     listed=(note.get('sources') or [])+(note.get('file_hashes') or [])
     if not listed:return ''
     try:
-        found=states(listed,note['domain'],root,bindings,policy)
+        found=states(listed,note['domain'],root,bindings,policy,flush=flush)
         if any(v=='closed' for v in found.values()):return CLOSED
         return stale_text([p for p,v in found.items() if v=='changed'],'digest' if note.get('sources') else 'note',[p for p,v in found.items() if v=='missing'])
     except Exception as exc:
@@ -207,15 +207,19 @@ CLOSED='WITHHELD: a file this note was made from is now in a hidden or private n
 def mark(hits,root,bindings=None):
     """Give each hit that is a digest with a changed source, or a note with a changed hashed file, a `stale` text, and drop `sources` and `file_hashes` from all of them.
     A hit made from a file now in a hidden or private notebook keeps no text of its own: its snippet, summary and excerpt become that notice."""
+    from .folder_policy import Policy
+    policy=None;hashed=False
     for hit in hits:
-        sources=hit.pop('sources',None);hashed=hit.pop('file_hashes',None)
-        if sources or hashed:
-            text=stale_note(dict(hit,sources=sources,file_hashes=hashed),root,bindings)
+        sources=hit.pop('sources',None);file_hashes=hit.pop('file_hashes',None)
+        if sources or file_hashes:
+            policy=policy or Policy(root);hashed=True
+            text=stale_note(dict(hit,sources=sources,file_hashes=file_hashes),root,bindings,policy,flush=False)
             if text:hit['stale']=text
             if text==CLOSED:
                 hit['withheld']=True;hit['title']='Withheld note'   # its title came from the file too
                 for key in ('snippet','summary','excerpt','body','text','units'):
                     if key in hit:hit[key]=[] if isinstance(hit[key],list) else ''
+    if hashed:flush_hashes(root)
 
 # ---- skip markers: files an agent judged not worth a digest ---------------------------------------------------------
 SKIPS='.ingest-skips.json'   # domains/<D>/: {path: {sha256, reason, at}}; a non-canonical sidecar (not validated, not backed up), like .signals-seen.json

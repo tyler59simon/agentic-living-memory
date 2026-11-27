@@ -20,7 +20,12 @@ def handle(event,payload):
     if out or event=='stop':emit(out)
 def main():
     event=sys.argv[1] if len(sys.argv)>1 else ''
-    try:handle(event,read_payload())
+    try:
+        payload=read_payload()
+        if event=='pre-tool-use':
+            from core.hookfast import quick
+            if quick(payload) is not None:return 0
+        handle(event,payload)
     except Exception as exc:  # A memory failure must never break the host session.
         if event in REPORTING:emit({'systemMessage':'Living Memory unavailable: '+str(exc)[:300]})
         elif event=='stop':emit({})

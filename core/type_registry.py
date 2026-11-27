@@ -265,6 +265,36 @@ def type_write(root, action, payload):
         return commit(root, {REGISTRY: _registry(others + [entry])}, 'type_' + action, [], {'name': name, 'fields': sorted(values), 'files': 1})
 
 
+def _custom_type_counts(root):
+    """{type: count} for notes whose type is neither built-in nor legacy, reading search.sqlite3 per domain and falling back to inventory() only when an index is absent."""
+    import sqlite3
+    counts = {}
+    for domain in _domains(root):
+        db_path = Path(root) / 'domains' / domain / 'search.sqlite3'
+        if db_path.is_file():
+            try:
+                db = sqlite3.connect(db_path.as_uri() + '?mode=ro', uri=True)
+                try:
+                    rows = db.execute('SELECT type, count(*) FROM notes GROUP BY type').fetchall()
+                finally:
+                    db.close()
+                for kind, count in rows:
+                    if isinstance(kind, str) and kind and kind not in NOTE_TYPES and kind not in LEGACY_TYPES:
+                        counts[kind] = counts.get(kind, 0) + count
+                continue
+            except sqlite3.Error:
+                pass
+        from .repository import inventory
+        try:
+            for note in inventory(domain, root, retired=True):
+                kind = note.get('type')
+                if isinstance(kind, str) and kind and kind not in NOTE_TYPES and kind not in LEGACY_TYPES:
+                    counts[kind] = counts.get(kind, 0) + 1
+        except (OSError, ValueError):
+            continue
+    return counts
+
+
 def listing(root, include_retired=False):
     """Every type with its definition: the built-ins, then custom types (retired ones only with include_retired), and warnings
     for notes whose type is not registered."""
@@ -277,6 +307,6 @@ def listing(root, include_retired=False):
             row.update({k: entry[k] for k in ('created', 'updated') if k in entry})
             rows.append(row)
     registered = set(custom_types(root))
-    warnings = [f'{len(notes)} note(s) use type {name}, which is not registered; register it with type create or retype them'
-                for name, notes in sorted(notes_by_type(root).items(), key=lambda kv: str(kv[0])) if name not in registered]
+    warnings = [f'{count} note(s) use type {name}, which is not registered; register it with type create or retype them'
+                for name, count in sorted(_custom_type_counts(root).items(), key=lambda kv: str(kv[0])) if name not in registered]
     return {'ok': True, 'types': rows, 'warnings': warnings}

@@ -28,19 +28,50 @@ def _path(root,when):return Path(root)/'.turns'/f'usage-{when:%Y-%m-%d}.jsonl'
 
 def record(root,event,refs=(None,),session=None,kind=None,levels=None):
     """Append one line per ref. levels: ref -> delivery level, stored as 'l'. Never raises."""
+    record_many(root,[(event,refs,kind,levels)],session)
+
+def record_many(root,items,session=None):
+    """Append multiple (event, refs, kind, levels) entries under a single file lock and write (REL-P5). Never raises."""
     try:
         from .common import file_lock
         from .runtime import session_hash
         when=clock.now();path=_path(root,when)
         s=session_hash(session) if session and session!='unknown' else None
-        row=lambda ref:{'t':when.isoformat(timespec='seconds'),'e':event,'ref':ref,'s':s,'k':kind,**({'l':levels[ref]} if levels and ref in levels else {})}
-        lines=''.join(json.dumps(row(ref),separators=(',',':'))+'\n' for ref in refs)
-        if not lines:return
+        stamp=when.isoformat(timespec='seconds')
+        chunks=[]
+        for event,refs,kind,levels in items:
+            for ref in refs:
+                row={'t':stamp,'e':event,'ref':ref,'s':s,'k':kind}
+                if levels and ref in levels:row['l']=levels[ref]
+                chunks.append(json.dumps(row,separators=(',',':'))+'\n')
+        if not chunks:return
         with file_lock(path.with_suffix('.lock'),timeout=LOCK_SECONDS):
-            with path.open('a',encoding='utf-8',newline='\n') as out:out.write(lines)
+            with path.open('a',encoding='utf-8',newline='\n') as out:out.write(''.join(chunks))
     except Exception as exc:
         from .logs import swallowed
         swallowed('usage.record',exc,root)
+
+_EVENTS_CACHE={}   # str(path) -> (mtime_ns, size, [parsed valid rows])
+
+def _file_events(path):
+    import os
+    key=str(path)
+    try:st=os.stat(path)
+    except OSError:
+        _EVENTS_CACHE.pop(key,None);return []
+    hit=_EVENTS_CACHE.get(key)
+    if hit is not None and hit[0]==st.st_mtime_ns and hit[1]==st.st_size:return hit[2]
+    rows=[]
+    try:
+        with path.open('r',encoding='utf-8') as handle:
+            for line in handle:
+                try:row=json.loads(line)
+                except ValueError:continue
+                if isinstance(row,dict) and row.get('e') in EVENTS:rows.append(row)
+    except OSError:return []
+    if len(_EVENTS_CACHE)>64:_EVENTS_CACHE.clear()
+    _EVENTS_CACHE[key]=(st.st_mtime_ns,st.st_size,rows)
+    return rows
 
 def events(root,days=30,today=None):
     """Diary rows from the last `days` days before `today` (a date; default: now), oldest first; unreadable lines are skipped."""
@@ -48,12 +79,8 @@ def events(root,days=30,today=None):
     for path in sorted((Path(root)/'.turns').glob('usage-*.jsonl')):
         try:
             if datetime.strptime(path.stem[6:],'%Y-%m-%d').date()<cutoff:continue
-            text=path.read_text(encoding='utf-8')
-        except (OSError,ValueError):continue
-        for line in text.splitlines():
-            try:row=json.loads(line)
-            except ValueError:continue
-            if isinstance(row,dict) and row.get('e') in EVENTS:rows.append(row)
+        except ValueError:continue
+        rows.extend(_file_events(path))
     return rows
 
 # Reinforcement (#9): ACT-R-style base-level activation, ln(1 + sum of w * age_days^-DECAY), where each

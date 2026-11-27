@@ -192,9 +192,9 @@ class Integrity(StoreFixture):
         # New file written first, so the note is never missing; the duplicate is reported.
         self.assertEqual(len(repo.inventory('demo', self.root)), 1)
         self.assertIn('duplicate id', repo.problems('demo', self.root)[0]['problem'])
-        self.assertTrue(list((self.root / '.operations').glob('*/pending')))
+        self.assertTrue(list((self.root / '.operations' / '.pending').glob('*')))
         self.note('Unrelated', 'Next write finishes the rename first.')
-        self.assertFalse(list((self.root / '.operations').glob('*/pending')))
+        self.assertFalse(list((self.root / '.operations' / '.pending').glob('*')))
         self.assertEqual(find_note(n['id'], 'demo', self.root)[1]['title'], 'Renamed cache')
         self.assertEqual(repo.problems('demo', self.root), [])
 
@@ -211,7 +211,7 @@ class Integrity(StoreFixture):
 
         with patch.object(repo, '_write', crash), self.assertRaises(KeyboardInterrupt):
             change(n['id'], 'demo', 'rename', self.root, title='Renamed cache')
-        operation = next((self.root / '.operations').glob('*/pending')).parent.name
+        operation = next((self.root / '.operations' / '.pending').glob('*')).name
         Path(n['path']).write_text(Path(n['path']).read_text(encoding='utf-8') + '\nUser edit.\n', encoding='utf-8')
         self.assertFalse(repo.roll_forward_pending(self.root)[0]['ok'])
         result = repo.abandon(self.root, operation)
@@ -237,7 +237,7 @@ class Governance(StoreFixture):
             return real(path, data)
         with patch.object(repo, '_write', crash), self.assertRaises(KeyboardInterrupt):
             change(n['id'], 'demo', 'rename', self.root, title='Renamed cache')
-        return next((self.root / '.operations').glob('*/pending')).parent.name
+        return next((self.root / '.operations' / '.pending').glob('*')).name
 
     def test_marker_is_written_before_the_journal_and_a_failed_journal_write_leaves_a_clearable_marker(self):
         real = repo.atomic_write
@@ -248,8 +248,8 @@ class Governance(StoreFixture):
             return real(path, data, *a, **k)
         with patch('core.repository.atomic_write', failing), self.assertRaises(OSError):
             self.note('Never journaled', 'No journal exists for this note.')
-        marker = next((self.root / '.operations').glob('*/pending'))
-        self.assertFalse(marker.with_name('journal.json').exists())
+        marker = next((self.root / '.operations' / '.pending').glob('*'))
+        self.assertFalse((self.root / '.operations' / marker.name / 'journal.json').exists())
         self.note('Next write', 'The next write clears the orphan marker.')
         self.assertFalse(marker.exists())
         self.assertEqual(validate_domain('demo', self.root), [])

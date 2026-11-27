@@ -1060,10 +1060,11 @@ def _semantic_rows(db,root,query,limit=SEMANTIC_TOP):
         if wanted is None:return []
         size=model.dim*4;native=vectors.enabled(root) and vectors.load(db)[0];floor=semantic.threshold(root)
         if native:
-            near=[r for (r,) in db.execute('SELECT rowid FROM vec WHERE length(vec)=? ORDER BY vec_distance_cosine(vec,?),rowid LIMIT ?',(size,vectors._blob(wanted),limit))]
-            if floor is not None and near:
-                blobs=dict(db.execute(f"SELECT rowid,vec FROM vec WHERE rowid IN ({','.join('?'*len(near))})",near).fetchall())
-                near=[r for r in near if blobs.get(r) and semantic.cosine(wanted,semantic.from_blob(blobs[r]))>=floor]
+            probe=vectors._blob(wanted)
+            if floor is not None:
+                near=[r for r,dist in db.execute('SELECT rowid,vec_distance_cosine(vec,?) AS d FROM vec WHERE length(vec)=? ORDER BY d,rowid LIMIT ?',(probe,size,limit)) if 1.0-dist>=floor]
+            else:
+                near=[r for (r,) in db.execute('SELECT rowid FROM vec WHERE length(vec)=? ORDER BY vec_distance_cosine(vec,?),rowid LIMIT ?',(size,probe,limit))]
         else:
             scored=((-semantic.cosine(wanted,semantic.from_blob(b)),r) for r,b in db.execute('SELECT rowid,vec FROM vec WHERE length(vec)=?',(size,)))
             near=[r for _,r in heapq.nsmallest(limit,(x for x in scored if floor is None or -x[0]>=floor))]
@@ -1086,5 +1087,6 @@ def _fuse_vectors(db,root,query,rows,lexical=None):
         similar=sorted((r for r in rows if blobs.get(r[0])),key=lambda r:-semantic.cosine(wanted,semantic.from_blob(blobs[r[0]])))
         fused={r[0]:(1/(60+k) if k<=lexical else 0.0) for k,r in enumerate(rows,1)}
         for k,r in enumerate(similar,1):fused[r[0]]+=1/(60+k)
-        return sorted(rows,key=lambda r:(-round(fused[r[0]],12),rows.index(r)))
+        pos={r[0]:i for i,r in enumerate(rows)}
+        return sorted(rows,key=lambda r:(-round(fused[r[0]],12),pos[r[0]]))
     except Exception:return rows

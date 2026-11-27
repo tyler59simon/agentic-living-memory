@@ -196,8 +196,9 @@ def command_notes(text,domains,root=None,limit=2):
     """Active notes whose recorded commands match this command line: exact before related, bug/runbook/knowledge before
     other types, newest first. Read-only like search.file_notes: a missing or older index gives nothing, and a note
     whose file changed since the index was built is skipped."""
-    sigs=signature(text)
+    sigs=[s for s in signature(text) if not _ignored(s.program)]
     if not sigs:return []
+    progs=sorted({s.program for s in sigs})
     root=Path(root or search.memory_root()).resolve();ranked=[]
     for domain in dict.fromkeys(domains):
         try:db_path=search.domain_dir(domain,root)/'search.sqlite3'
@@ -205,8 +206,12 @@ def command_notes(text,domains,root=None,limit=2):
         if not db_path.exists():continue
         try:
             db=sqlite3.connect(db_path.as_uri()+'?mode=ro',uri=True)
-            try:rows=db.execute("SELECT id,title,type,updated,commands,body,path,revision,sources,file_hashes FROM notes WHERE status='active' AND commands<>'[]' AND commands<>''").fetchall()
-            except sqlite3.OperationalError:rows=[r+('','') for r in db.execute("SELECT id,title,type,updated,commands,body,path,revision FROM notes WHERE status='active' AND commands<>'[]' AND commands<>''")]   # an index from before file hashes
+            try:
+                marks=','.join('?'*len(progs))
+                rows=db.execute(f"SELECT id,title,type,updated,commands,body,path,revision,sources,file_hashes FROM notes WHERE status='active' AND id IN (SELECT note_id FROM note_commands WHERE program IN ({marks}))",progs).fetchall()
+            except sqlite3.OperationalError:
+                try:rows=db.execute("SELECT id,title,type,updated,commands,body,path,revision,sources,file_hashes FROM notes WHERE status='active' AND commands<>'[]' AND commands<>''").fetchall()
+                except sqlite3.OperationalError:rows=[r+('','') for r in db.execute("SELECT id,title,type,updated,commands,body,path,revision FROM notes WHERE status='active' AND commands<>'[]' AND commands<>''")]   # an index from before file hashes
             finally:db.close()
         except sqlite3.Error:continue
         if not rows:continue

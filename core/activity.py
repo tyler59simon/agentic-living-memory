@@ -192,15 +192,22 @@ def _cached(root):
 def _entries(root):
     """The cache entry of every final journal, by operation ID. Journals already in the cache are not opened: a run after the first only lists and stats the folder."""
     root=Path(root);cached=_cached(root);found={};fresh=False
-    for path in sorted(root.glob('.operations/*/journal.json')):
-        op=path.parent.name;hit=cached.get(op)
-        if isinstance(hit,dict) and isinstance(hit.get('rows'),list) and hit.get('sig')==_sig(path):found[op]=hit;continue
-        entry=_read(path)
-        if entry is not None:found[op]=entry;fresh=True
+    ops_dir=root/'.operations'
+    if ops_dir.is_dir():
+        try:entries=sorted((e.name,e.path) for e in os.scandir(ops_dir) if e.name!='.pending' and e.is_dir(follow_symlinks=False))
+        except OSError:entries=[]
+        for op,folder in entries:
+            path=Path(folder)/'journal.json'
+            sig=_sig(path)
+            if sig is None:continue
+            hit=cached.get(op)
+            if isinstance(hit,dict) and isinstance(hit.get('rows'),list) and hit.get('sig')==sig:found[op]=hit;continue
+            entry=_read(path)
+            if entry is not None:found[op]=entry;fresh=True
     if fresh or set(found)!=set(cached):
         try:
             from .common import atomic_write
-            atomic_write(_cache_file(root),json.dumps({'version':CACHE_VERSION,'ops':found},separators=(',',':'),ensure_ascii=False))
+            atomic_write(_cache_file(root),json.dumps({'version':CACHE_VERSION,'ops':found},separators=(',',':'),ensure_ascii=False),fsync=False)
         except OSError:pass   # derived: a cache that cannot be written only costs a rebuild
     return found
 

@@ -74,7 +74,7 @@ def query_terms(text,vocab=None):
 
 def domain_dir(domain,root=None):return Path(root or memory_root())/'domains'/canonical_domain(domain,Path(root or memory_root()))
 # Bump when the index schema changes, so an index built by older code counts as stale and is rebuilt.
-INDEX_VERSION=4
+INDEX_VERSION=5
 # What stored vectors were made from: the model and how a note becomes embedding text. Separate from INDEX_VERSION,
 # so a schema change rebuilds the index without re-embedding every note.
 EMBED_VERSION=2
@@ -162,15 +162,20 @@ def _file_hits(paths,domains,root,limit,ensure_fresh,resolved=False):
                     except sqlite3.OperationalError:rows=[r[:8]+('','',r[8]) for r in db.execute(f"SELECT id,title,type,updated,files,body,path,revision,status FROM notes WHERE {live}")]   # an index from before digests
             finally:db.close()
         except sqlite3.Error:continue
+        norm_paths=[(path,normalize_file(path).casefold()) for path in paths]
         for note_id,title,kind,updated,files,body,note_path,revision,digested,hashed,state in rows:
-            try:listed=json.loads(files or '[]');digest_sources=json.loads(digested or '[]');file_hashes=json.loads(hashed or '[]')
+            try:
+                listed=json.loads(files) if files and files!='[]' else []
+                digest_sources=json.loads(digested) if digested and digested!='[]' else []
+                file_hashes=json.loads(hashed) if hashed and hashed!='[]' else []
             except ValueError:listed=[];digest_sources=[];file_hashes=[]
-            entries=listed+[s['path'] for s in digest_sources+file_hashes];plain=None;intact=None
-            for path in paths:
-                if file_matches(entries,path):group=0
+            entries=[normalize_file(f).casefold() for f in listed+[s['path'] for s in digest_sources+file_hashes]]
+            plain=None;intact=None
+            for path,wanted_cf in norm_paths:
+                if (not wanted_cf and bool(entries)) or (wanted_cf and any(e==wanted_cf or e.startswith(wanted_cf+'/') for e in entries)):group=0
                 else:
                     plain=body.replace('\\','/').casefold() if plain is None else plain
-                    group=1 if normalize_file(path).casefold() in plain and mentions_file(body,path) else None
+                    group=1 if wanted_cf in plain and mentions_file(body,path) else None
                 if group is None:continue
                 if not ensure_fresh:
                     intact=_unchanged(note_path,revision) if intact is None else intact
@@ -222,12 +227,23 @@ def note_commands(note):
         swallowed('search.note_commands',exc,None);return explicit
 
 def _index_note(db,domain,n,model,kept,reuse,fresh):
-    """Insert one note into a new search index (row, full-text row and vector); return its stems for the vocabulary."""
+    """Insert one note into a new search index (row, full-text row, lookup tables and vector); return its stems for the vocabulary."""
     from . import semantic
-    values=(domain,n['id'],n.get('prefix','NOTE'),n['title'],n.get('type','knowledge'),n.get('status','active'),n.get('created'),n.get('updated'),n.get('review_by'),n.get('context',''),json.dumps(n.get('tags',[])),n['body'],n['path'],n['digest'],n['revision'],n.get('schema_version',1),json.dumps(n.get('files') or []),json.dumps(note_commands(n)),n.get('repo') or '',json.dumps(n.get('sources') or []),json.dumps(n.get('file_hashes') or []),n.get('checked') or '')
+    cmds=note_commands(n)
+    values=(domain,n['id'],n.get('prefix','NOTE'),n['title'],n.get('type','knowledge'),n.get('status','active'),n.get('created'),n.get('updated'),n.get('review_by'),n.get('context',''),json.dumps(n.get('tags',[])),n['body'],n['path'],n['digest'],n['revision'],n.get('schema_version',1),json.dumps(n.get('files') or []),json.dumps(cmds),n.get('repo') or '',json.dumps(n.get('sources') or []),json.dumps(n.get('file_hashes') or []),n.get('checked') or '')
     cursor=db.execute('INSERT INTO notes VALUES('+','.join('?'*22)+')',values)
     words=stems(n['title']+' '+n['body']) if n.get('status','active')=='active' else []
     db.execute('INSERT INTO notes_fts(rowid,title,tags,body) VALUES(?,?,?,?)',(cursor.lastrowid,n['title'],' '.join(n.get('tags',[])),n['body']))
+    # Secondary lookup tables for O(log N) file and command matching (REL-P2).
+    fpaths=set()
+    for raw in list(n.get('files') or [])+[s['path'] for s in (n.get('sources') or [])+(n.get('file_hashes') or []) if isinstance(s,dict) and s.get('path')]:
+        nf=normalize_file(raw).casefold()
+        if nf:fpaths.add(nf)
+    if fpaths:db.executemany('INSERT INTO note_files(path_cf,note_id) VALUES(?,?)',[(p,n['id']) for p in sorted(fpaths)])
+    if cmds:
+        from .commands import signature
+        progs=sorted({sig.program for c in cmds for sig in signature(c) if sig.program})
+        if progs:db.executemany('INSERT INTO note_commands(program,note_id) VALUES(?,?)',[(p,n['id']) for p in progs])
     if not model:return words
     blob=kept.get((n['id'],n['revision']))
     if blob is None:
@@ -238,6 +254,13 @@ def _index_note(db,domain,n,model,kept,reuse,fresh):
         blob=semantic.to_blob(vector) if vector else None
     if blob:db.execute('INSERT INTO vectors VALUES(?,?)',(cursor.lastrowid,blob))
     return words
+
+def _unlink_wal(path):
+    for suffix in ('-wal','-shm'):
+        side=Path(str(path)+suffix)
+        try:
+            if side.exists():side.unlink()
+        except OSError:pass
 
 def rebuild_index(domain,root=None,skipped=None):
     """Rebuild the domain's search index; returns how many notes it holds. A note it cannot hold is left out and,
@@ -252,7 +275,16 @@ def rebuild_index(domain,root=None,skipped=None):
         fd,name=tempfile.mkstemp(prefix='.search-',suffix='.sqlite3',dir=directory);os.close(fd)
         db=sqlite3.connect(name)
         try:
-            db.execute('CREATE TABLE notes(domain TEXT,id TEXT,prefix TEXT,title TEXT,type TEXT,status TEXT,created TEXT,updated TEXT,review_by TEXT,context TEXT,tags TEXT,body TEXT,path TEXT,sha256 TEXT,revision TEXT,schema_version INTEGER,files TEXT,commands TEXT,repo TEXT,sources TEXT,file_hashes TEXT,checked TEXT,PRIMARY KEY(domain,id))')
+            db.execute('PRAGMA journal_mode=WAL')
+            db.execute('PRAGMA synchronous=NORMAL')
+            db.execute('CREATE TABLE notes(domain TEXT,id TEXT PRIMARY KEY,prefix TEXT,title TEXT,type TEXT,status TEXT,created TEXT,updated TEXT,review_by TEXT,context TEXT,tags TEXT,body TEXT,path TEXT,sha256 TEXT,revision TEXT,schema_version INTEGER,files TEXT,commands TEXT,repo TEXT,sources TEXT,file_hashes TEXT,checked TEXT)')
+            db.execute('CREATE INDEX notes_status_type ON notes(status,type)')
+            db.execute('CREATE TABLE note_files(path_cf TEXT NOT NULL,note_id TEXT NOT NULL)')
+            db.execute('CREATE INDEX note_files_path ON note_files(path_cf)')
+            db.execute('CREATE INDEX note_files_note ON note_files(note_id)')
+            db.execute('CREATE TABLE note_commands(program TEXT NOT NULL,note_id TEXT NOT NULL)')
+            db.execute('CREATE INDEX note_commands_prog ON note_commands(program)')
+            db.execute('CREATE INDEX note_commands_note ON note_commands(note_id)')
             db.execute('CREATE TABLE vocab(stem TEXT PRIMARY KEY,df INTEGER NOT NULL)')
             db.execute("CREATE VIRTUAL TABLE notes_fts USING fts5(title,tags,body,tokenize='porter unicode61')")
             db.execute('CREATE TABLE metadata(fingerprint TEXT,vectors TEXT)')
@@ -273,10 +305,15 @@ def rebuild_index(domain,root=None,skipped=None):
             db.executemany('INSERT INTO vocab VALUES(?,?)',df.items())
             db.execute(f'PRAGMA user_version={INDEX_VERSION}')   # update_index changes only an index this code built
             fingerprint=_fingerprint(notes,_vector_identity(root))
-            db.execute('INSERT INTO metadata VALUES(?,?)',(fingerprint,identity));db.commit();db.close();os.replace(name,directory/'search.sqlite3')
+            db.execute('INSERT INTO metadata VALUES(?,?)',(fingerprint,identity));db.commit();db.close()
+            target=directory/'search.sqlite3'
+            from .common import retry_sharing
+            _unlink_wal(target)
+            retry_sharing(lambda:os.replace(name,target))
         finally:
             db.close();reuse.close()   # before the unit index update, which may replace that file
             if os.path.exists(name):os.unlink(name)
+            _unlink_wal(name)
         # The unit index follows the note index; a failure costs section-level matches, never the write.
         try:
             from . import vectors
@@ -288,10 +325,9 @@ def rebuild_index(domain,root=None,skipped=None):
 
 def update_index(domain,root=None,skipped=None):
     """Bring the domain's search index in line with the notes by re-indexing only the notes whose file, revision or path
-    changed, and dropping rows for notes that are gone. A write changes one note, and rebuilding every row cost most of its
-    time (PERF-3). The change is made on a copy that then replaces the index, as rebuild_index does. An index built by
-    other code (user_version), with another model, or unreadable is rebuilt in full instead. Returns how many notes it holds."""
-    import shutil
+    changed, and dropping rows for notes that are gone. Updates in place inside a WAL transaction under store_lock without
+    copying the whole database or loading bodies of unchanged rows (REL-P2). An index built by other code (user_version),
+    with another model, or unreadable is rebuilt in full instead. Returns how many notes it holds."""
     from . import semantic
     root=Path(root or memory_root()).resolve();directory=domain_dir(domain,root);path=directory/'search.sqlite3'
     with store_lock(root):
@@ -302,12 +338,12 @@ def update_index(domain,root=None,skipped=None):
             db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)
             try:
                 version=db.execute('PRAGMA user_version').fetchone()[0];stored,stored_identity=db.execute('SELECT fingerprint,vectors FROM metadata').fetchone()
-                rows={r[0]:r[1:] for r in db.execute('SELECT id,rowid,sha256,revision,path,status,title,body FROM notes')}
+                rows={r[0]:r[1:] for r in db.execute('SELECT id,rowid,sha256,revision,path,status FROM notes')}
                 tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             finally:db.close()
         except (sqlite3.Error,TypeError,ValueError):return rebuild_index(domain,root,skipped)
         # A damaged index (a table missing) is rebuilt, as every write did before update_index, rather than failing each write.
-        if version!=INDEX_VERSION or not {'notes','notes_fts','vocab','metadata'}<=tables or ('vectors' in tables)!=bool(stored_identity):
+        if version!=INDEX_VERSION or not {'notes','notes_fts','vocab','metadata','note_files','note_commands'}<=tables or ('vectors' in tables)!=bool(stored_identity):
             return rebuild_index(domain,root,skipped)
         current={n['id']:n for n in notes}
         changed=[n for n in notes if n['id'] not in rows or rows[n['id']][1:4]!=(n['digest'],n['revision'],n['path'])]
@@ -318,19 +354,31 @@ def update_index(domain,root=None,skipped=None):
         if identity!=stored_identity:return rebuild_index(domain,root,skipped)   # another model (or none): every stored vector is stale
         from . import vectors
         reuse=vectors.reuse(domain,root,identity);fresh={};kept={}
-        fd,name=tempfile.mkstemp(prefix='.search-',suffix='.sqlite3',dir=directory);os.close(fd)
         db=None;listed=len(skipped) if skipped is not None else 0
         try:
-            shutil.copyfile(path,name)
-            db=sqlite3.connect(name);df=Counter();db.execute('BEGIN')
-            for note_id in gone:
-                rowid,_,revision,_,status,title,body=rows[note_id]
-                if model:
-                    blob=db.execute('SELECT vec FROM vectors WHERE rowid=?',(rowid,)).fetchone()
-                    if blob:kept[(note_id,revision)]=blob[0]   # a moved note keeps its vector
-                    db.execute('DELETE FROM vectors WHERE rowid=?',(rowid,))
-                db.execute('DELETE FROM notes_fts WHERE rowid=?',(rowid,));db.execute('DELETE FROM notes WHERE rowid=?',(rowid,))
-                if status=='active':df.subtract(stems(title+' '+body))
+            db=sqlite3.connect(path,timeout=5)
+            db.execute('PRAGMA journal_mode=WAL')
+            db.execute('PRAGMA synchronous=NORMAL')
+            df=Counter();db.execute('BEGIN')
+            if gone:
+                # Fetch title and body ONLY for notes being removed or replaced, never for unchanged notes.
+                gone_rowids=[rows[nid][0] for nid in gone]
+                gone_text={}
+                for i in range(0,len(gone_rowids),500):
+                    chunk=gone_rowids[i:i+500]
+                    for rid,t,b in db.execute(f"SELECT rowid,title,body FROM notes WHERE rowid IN ({','.join('?'*len(chunk))})",chunk):
+                        gone_text[rid]=(t,b)
+                for note_id in gone:
+                    rowid,_,revision,_,status=rows[note_id]
+                    if model:
+                        blob=db.execute('SELECT vec FROM vectors WHERE rowid=?',(rowid,)).fetchone()
+                        if blob:kept[(note_id,revision)]=blob[0]   # a moved note keeps its vector
+                        db.execute('DELETE FROM vectors WHERE rowid=?',(rowid,))
+                    db.execute('DELETE FROM note_files WHERE note_id=?',(note_id,))
+                    db.execute('DELETE FROM note_commands WHERE note_id=?',(note_id,))
+                    db.execute('DELETE FROM notes_fts WHERE rowid=?',(rowid,));db.execute('DELETE FROM notes WHERE rowid=?',(rowid,))
+                    if status=='active' and rowid in gone_text:
+                        t,b=gone_text[rowid];df.subtract(stems(t+' '+b))
             for n in changed:
                 db.execute('SAVEPOINT note')
                 try:words=_index_note(db,domain,n,model,kept,reuse,fresh)
@@ -346,21 +394,20 @@ def update_index(domain,root=None,skipped=None):
             db.execute('UPDATE metadata SET fingerprint=?',(fingerprint,))
             held={r[0] for r in db.execute('SELECT id FROM notes')}
             db.commit();db.close();db=None
-            from .common import retry_sharing
-            retry_sharing(lambda:os.replace(name,path))
         except sqlite3.DatabaseError as exc:
-            # Damage the checks above cannot see: the copy is dropped and the index rebuilt from the notes.
+            # Damage the checks above cannot see: roll back and rebuild from the notes.
             from .logs import swallowed
             swallowed('search.update_index',exc,root)
             if skipped is not None:del skipped[listed:]
-            if db is not None:db.close();db=None
+            if db is not None:
+                try:db.rollback()
+                except sqlite3.Error:pass
+                db.close();db=None
             reuse.close();reuse=None
-            if os.path.exists(name):os.unlink(name)
             return rebuild_index(domain,root,skipped)
         finally:
             if db is not None:db.close()
             if reuse is not None:reuse.close()   # before the unit index update, which may replace that file
-            if os.path.exists(name):os.unlink(name)
         indexed=[n for n in notes if n['id'] in held]
         try:vectors.update(domain,root,indexed,model,identity,fingerprint,fresh)   # the unit index already changes only what changed
         except Exception as exc:
@@ -405,10 +452,29 @@ def _fallback(tokens,notes):
         if score:result.append((note,score))
     return sorted(result,key=lambda item:item[1],reverse=True)
 
-def _coverage_fts(db,tokens):
+def _coverage_fts(db,tokens,candidate_rowids=None):
     """(rowid -> informative query terms found in title or body, informative terms, common terms).
 
-    Porter-stemmed like the index; tags are excluded because every note carries generic ones."""
+    Porter-stemmed like the index; tags are excluded because every note carries generic ones.
+    When candidate_rowids is given and the vocab table exists, filters common terms via one batched
+    vocab query and runs FTS checks only for informative terms over shortlisted candidates (REL-P2)."""
+    if candidate_rowids is not None:
+        cands=sorted(set(candidate_rowids))
+        try:
+            total=db.execute("SELECT count(*) FROM notes WHERE status='active'").fetchone()[0]
+            ask=sorted({v for t in tokens for v in (stem(t),stem(t)[:-1] if stem(t).endswith('e') else stem(t)+'e')})
+            vdf=dict(db.execute(f"SELECT stem,df FROM vocab WHERE stem IN ({','.join('?'*len(ask))})",ask).fetchall()) if ask else {}
+            common={t for t in tokens if total>=COMMON_MIN_NOTES and df_of(vdf,t)>COMMON_SHARE*total}
+            informative=[t for t in tokens if t not in common]
+            found=Counter()
+            if cands and informative:
+                marks=','.join('?'*len(cands))
+                for t in informative:
+                    for (rowid,) in db.execute(f'SELECT rowid FROM notes_fts WHERE rowid IN ({marks}) AND notes_fts MATCH ?',[*cands,'{title body} : "'+t+'"']):
+                        found[rowid]+=1
+            return found,informative,common
+        except sqlite3.OperationalError:
+            pass   # older index without vocab table: fall back to full FTS scan
     total=db.execute('SELECT count(*) FROM notes_fts').fetchone()[0]
     matches={t:{rowid for (rowid,) in db.execute('SELECT rowid FROM notes_fts WHERE notes_fts MATCH ?',('{title body} : "'+t+'"',))} for t in tokens}
     common={t for t,rows in matches.items() if total>=COMMON_MIN_NOTES and len(rows)>COMMON_SHARE*total}
@@ -464,11 +530,106 @@ def vocabulary(domains,root=None,wanted=None):
         total+=count;df.update(dict(rows))
     return total,dict(df)
 
-def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False,resolved=False):
+def _row_to_note(domain,row):
+    rowid,nid,title,kind,status,updated,tags,note_path,revision,digested,hashed,files=row
+    try:tag_list=json.loads(tags) if tags and tags!='[]' else []
+    except ValueError:tag_list=[]
+    note={'id':nid,'domain':domain,'title':title,'type':kind or 'knowledge','status':status or 'active','updated':updated,'tags':tag_list,'path':note_path,'revision':revision,'_rowid':rowid}
+    if digested and digested!='[]':
+        try:note['sources']=json.loads(digested)
+        except ValueError:pass
+    if hashed and hashed!='[]':
+        try:note['file_hashes']=json.loads(hashed)
+        except ValueError:pass
+    if files and files!='[]':
+        try:note['files']=json.loads(files)
+        except ValueError:pass
+    return note
+
+def _search_index_readonly(query,tokens,domain,limit,root,filters,resolved):
+    """Lock-free, parse-free search over search.sqlite3 for hooks (ensure_fresh=False, REL-P2).
+    Verifies only shortlisted hits against their canonical files via _unchanged()."""
+    from .notes import is_interim
+    try:db_path=domain_dir(domain,root)/'search.sqlite3'
+    except ValueError:return []
+    if not db_path.exists():return []
+    try:
+        db=sqlite3.connect(db_path.as_uri()+'?mode=ro',uri=True)
+    except sqlite3.Error:return []
+    try:
+        where="1=1" if (filters and 'status' in filters) else ("status='active' OR (status='resolved' AND type IN ('bug','risk'))" if resolved else "status='active'")
+        try:raw_rows=db.execute(f"SELECT rowid,id,title,type,status,updated,tags,path,revision,sources,file_hashes,files FROM notes WHERE {where}").fetchall()
+        except sqlite3.OperationalError:
+            try:raw_rows=[r[:9]+('','',r[9]) for r in db.execute(f"SELECT rowid,id,title,type,status,updated,tags,path,revision,files FROM notes WHERE {where}")]
+            except sqlite3.OperationalError:raw_rows=[r+('','','[]') for r in db.execute(f"SELECT rowid,id,title,type,status,updated,tags,path,revision FROM notes WHERE {where}")]
+        active=[_row_to_note(domain,r) for r in raw_rows]
+        if filters:
+            active=[n for n in active if all((v in n.get('tags',[]) if k=='tag' else file_matches(n.get('files'),v) if k=='file' else n.get(k)==v) for k,v in filters.items())]
+        if not active:
+            LAST_SEMANTIC[domain]={'backend':'lexical'};return []
+        ids={n['id']:n for n in active};found=[];listed=set()
+        for joiner in (' AND ',' OR '):
+            match=joiner.join('"'+t+'"' for t in tokens)
+            batch=db.execute('SELECT n.id,bm25(notes_fts,5.0,3.0,1.0),n.rowid FROM notes_fts JOIN notes n ON n.rowid=notes_fts.rowid WHERE notes_fts MATCH ? ORDER BY bm25(notes_fts,5.0,3.0,1.0)',(match,)).fetchall()
+            found+=[row for row in batch if row[0] in ids and row[0] not in listed];listed|={row[0] for row in batch}
+            if sum(ids[r[0]].get('status','active')=='active' for r in found)>=limit or len(tokens)==1:break
+        ranked=[(ids[note_id],-score) for note_id,score,_ in found]
+        similarity,units,semantic_info=_semantic(db,query,ids,root,domain,[note_id for note_id,_,_ in found])
+        engine='fts5'
+        if similarity is not None:
+            engine='fts5+semantic';ranked=_fuse(ranked,similarity,ids)
+        room=max(1,min(100,limit))
+        if resolved:
+            spent={'active':0,'resolved':0};kept=[]
+            for note,score in ranked:
+                kind='resolved' if note.get('status','active')=='resolved' else 'active'
+                if spent[kind]<room+5:spent[kind]+=1;kept.append((note,score))   # small slack in case a row fails _unchanged
+            shortlist=kept;max_out=2*room
+        else:
+            shortlist=ranked[:room+5];max_out=room
+        cand_rowids=[note['_rowid'] for note,_ in shortlist]
+        per_row,informative,common=_coverage_fts(db,tokens,cand_rowids)
+        coverage={note['id']:per_row.get(note['_rowid'],0)/max(1,len(informative)) if informative else 0.0 for note,_ in shortlist}
+        bodies={}
+        if cand_rowids:
+            marks=','.join('?'*len(cand_rowids))
+            bodies=dict(db.execute(f'SELECT rowid,body FROM notes WHERE rowid IN ({marks})',cand_rowids).fetchall())
+    except sqlite3.Error:
+        return []
+    finally:
+        db.close()
+    wanted={stem(t) for t in tokens if t not in common}
+    output=[];spent={'active':0,'resolved':0}
+    for note,score in shortlist:
+        if not _unchanged(note['path'],note['revision']):continue
+        kind='resolved' if note.get('status','active')=='resolved' else 'active'
+        if resolved and spent[kind]>=room:continue
+        if len(output)>=max_out:break
+        spent[kind]+=1
+        body=bodies.get(note['_rowid'],'')
+        title=stems(note['title'])
+        field='title' if wanted&title else 'tags' if wanted&stems(' '.join(note.get('tags',[]))) else 'body'
+        output.append({'id':note['id'],'domain':domain,'path':note['path'],'title':note['title'],'type':note.get('type','knowledge'),'updated':str(note.get('updated') or '')[:10],
+                       'tags':note.get('tags',[]),'status':note.get('status','active'),'snippet':snippet(body,tokens),'score':score,'rank':len(output)+1,'engine':engine,
+                       'revision':note['revision'],'sourceField':field,'sourceScope':'active','coverage':coverage[note['id']],
+                       'titleOverlap':len(wanted&title),'titleTerms':len(title),'queryTerms':len(wanted),'relevance':round(coverage[note['id']],2)})
+        if note.get('sources'):output[-1]['sources']=note['sources']
+        if note.get('file_hashes'):output[-1]['file_hashes']=note['file_hashes']
+        if is_interim({'type':note.get('type'),'title':note['title'],'body':body}):output[-1]['interim']=True
+        if similarity is not None:output[-1].update(similarity=round(similarity.get(note['id'],0.0),4),similarityScored=note['id'] in similarity)
+        output[-1]['backend']=semantic_info['backend']
+        if semantic_info.get('reason'):output[-1]['backendReason']=semantic_info['reason']
+        if note['id'] in units:output[-1]['units']=units[note['id']]
+    LAST_SEMANTIC[domain]=semantic_info
+    return output
+
+def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False,resolved=False,ensure_fresh=True):
     from .notes import is_interim
     root=Path(root or memory_root()).resolve();tokens=query_terms(query)
     domain=canonical_domain(domain,root)
     if not tokens:return []
+    if not ensure_fresh and not rebuild:
+        return _search_index_readonly(query,tokens,domain,limit,root,filters,resolved)
     with store_lock(root):
         notes=inventory(domain,root,retired=True);fresh=_fresh(domain,root,notes)
         if not fresh and rebuild:rebuild_index(domain,root);fresh=True
@@ -491,15 +652,17 @@ def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False,reso
                     found+=[row for row in batch if row[0] in ids and row[0] not in listed];listed|={row[0] for row in batch}
                     if sum(ids[r[0]].get('status','active')=='active' for r in found)>=limit or len(tokens)==1:break   # resolved notes fill no slot
                 rows=found;ranked=[(ids[note_id],-score) for note_id,score,_ in rows]
-                per_row,informative,common=_coverage_fts(db,tokens)
-                coverage={note_id:per_row.get(rowid,0)/max(1,len(informative)) for note_id,_,rowid in rows} if informative else {note_id:0.0 for note_id,_,_ in rows}
                 similarity,units,semantic_info=_semantic(db,query,ids,root,domain,[note_id for note_id,_,_ in rows])
+                rowids_by_id={note_id:rowid for note_id,_,rowid in rows}
                 if similarity is not None:
                     engine='fts5+semantic';ranked=_fuse(ranked,similarity,ids)
-                    # Notes found by meaning alone still report how many query words they carry.
-                    rowids=dict(db.execute('SELECT id,rowid FROM notes').fetchall())
-                    for note,_ in ranked:
-                        if note['id'] not in coverage:coverage[note['id']]=per_row.get(rowids[note['id']],0)/max(1,len(informative)) if informative else 0.0
+                    missing=[note['id'] for note,_ in ranked if note['id'] not in rowids_by_id]
+                    if missing:
+                        marks=','.join('?'*len(missing))
+                        rowids_by_id.update(db.execute(f'SELECT id,rowid FROM notes WHERE id IN ({marks})',missing).fetchall())
+                cand_rowids=[rowids_by_id[note['id']] for note,_ in ranked if note['id'] in rowids_by_id]
+                per_row,informative,common=_coverage_fts(db,tokens,cand_rowids)
+                coverage={note['id']:per_row.get(rowids_by_id.get(note['id']),0)/max(1,len(informative)) if informative else 0.0 for note,_ in ranked}
             finally:db.close()
         else:
             ranked=_fallback(tokens,active);common=_common_fallback(tokens,notes)
@@ -657,7 +820,7 @@ def _fuse(ranked,similarity,ids):
     order=sorted(fused,key=lambda i:(-round(fused[i],12),lexical.get(i,len(ranked)+1),i))
     return [(notes[i],fused[i]) for i in order]
 
-def search_domains(query,domains,limit=3,root=None,filters=None,rebuild=False,weights=None,keep=None,resolved=False):
+def search_domains(query,domains,limit=3,root=None,filters=None,rebuild=False,weights=None,keep=None,resolved=False,ensure_fresh=True):
     """Rank-fused results across domains; the first domain counts double unless weights say otherwise.
     keep filters each domain's hits before the merge, so weak local hits cannot crowd out a strong
     match from another domain before relevance is judged."""
@@ -669,7 +832,7 @@ def search_domains(query,domains,limit=3,root=None,filters=None,rebuild=False,we
             wanted=filters['file'].get(domain,filters['file'].get('*'))
             if wanted is None:continue
             mine={**filters,'file':wanted}
-        found=search_domain(query,domain,max(20,limit),root,mine,rebuild,resolved)
+        found=search_domain(query,domain,max(20,limit),root,mine,rebuild,resolved,ensure_fresh=ensure_fresh)
         for hit in keep(found) if keep else found:
             placed=hit.get('status')=='resolved' and strong(hit,root)
             hit['score']=weight/(60+hit['rank'])*(RESOLVED_FACTOR if hit.get('status')=='resolved' and not placed else 1);hits.append(hit)

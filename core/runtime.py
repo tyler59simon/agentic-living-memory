@@ -8,7 +8,10 @@ from . import clock
 from .capture import status as capture_status,turn_key
 from .note_types import NOTE_TYPES
 
-from .launcher import active
+def active(script):
+    from .launcher import active as _active
+    return _active(script)
+
 from .instructions import FALLBACK_PROTOCOL,AUTO_MEMORY,fallback_usage,installed
 SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 # Tools that cannot change files; anything else marks the turn as mutating.
@@ -147,12 +150,29 @@ def protected_rule(path,cwd,root):
         return 'vault' if any(is_within(p,v/folder) for v in vault_roots(root) for folder in ('Domains','Archive','Dashboards','Notebooks')) else None
     except (ValueError,OSError):return None
 
+_VAULT_ROOTS_CACHE={}   # str(root) -> (sig, frozenset(Path))
+
 def vault_roots(root):
+    root_p=Path(root);key=str(root_p);domains_dir=root_p/'domains'
+    if not domains_dir.is_dir():return set()
+    sig=[];paths=[]
+    try:
+        for entry in os.scandir(domains_dir):
+            if not entry.is_dir(follow_symlinks=False):continue
+            state=Path(entry.path)/'sync-state.json'
+            try:st=os.stat(state)
+            except OSError:continue
+            sig.append((entry.name,st.st_mtime_ns,st.st_size));paths.append(state)
+    except OSError:return set()
+    sig_t=tuple(sorted(sig));hit=_VAULT_ROOTS_CACHE.get(key)
+    if hit is not None and hit[0]==sig_t:return set(hit[1])
     found=set()
-    for state in Path(root).glob('domains/*/sync-state.json'):
+    for state in paths:
         try:vault=json.loads(state.read_text(encoding='utf-8')).get('vault')
         except (OSError,ValueError):continue
         if vault:found.add(Path(vault).resolve())
+    if len(_VAULT_ROOTS_CACHE)>16:_VAULT_ROOTS_CACHE.clear()
+    _VAULT_ROOTS_CACHE[key]=(sig_t,frozenset(found))
     return found
 
 def raw_paths(value):
@@ -1627,11 +1647,20 @@ def signals_seen(root,domain):
 
 def settle_signal(root,domain,value):
     """Remember a statement's hash once its turn is settled (reminded, captured, finalized or closed)."""
-    if not value or not domain:return
+    if value:settle_signals(root,domain,[value])
+
+def settle_signals(root,domain,values):
+    """Remember one or more statement hashes in a single read/write of .signals-seen.json (REL-P5)."""
+    clean=[v for v in values if v]
+    if not clean or not domain:return
     try:
         path=root/'domains'/domain/SIGNALS_SEEN;row=read_json(path,{}) or {}
-        seen=[h for h in row.get('seen',[]) if h!=value]+[value]
-        if row.get('salt') and seen!=row.get('seen'):atomic_write(path,canonical_json({**row,'seen':seen[-MAX_SIGNALS_SEEN:]}))
+        if not row.get('salt'):return
+        before=list(row.get('seen',[]))
+        seen=list(before)
+        for value in clean:seen=[h for h in seen if h!=value]+[value]
+        seen=seen[-MAX_SIGNALS_SEEN:]
+        if seen!=before:atomic_write(path,canonical_json({**row,'seen':seen}))
     except (OSError,ValueError,AttributeError):pass
 
 MAX_SIGNAL_WORDS=12
@@ -1676,7 +1705,7 @@ def signal_notes(statement,domain,root,bindings):
         from .search import search_domains
         from .common import global_domains
         domains=list(dict.fromkeys([domain,*scope_domains(domain,bindings),*global_domains(root)]))
-        hits=search_domains(statement,domains,6,root,keep=relevance_gate(statement,root))
+        hits=search_domains(statement,domains,6,root,keep=relevance_gate(statement,root),ensure_fresh=False)
         return [h for h in hits if h.get('type') in NUDGE_NOTE_TYPES and not h.get('sources')][:NUDGE_NOTES]
     except Exception as exc:
         from .logs import swallowed
@@ -1726,7 +1755,9 @@ def _unseen(hit,shown):
     seen=shown.get(ref) if isinstance(shown,dict) else None
     return bool(seen) and seen!=revision_key(hit)
 
-from .search import relevance_gate   # moved to search.py so notes.capture can use it; kept here for callers and patches
+def relevance_gate(*args,**kwargs):
+    from .search import relevance_gate as _relevance_gate
+    return _relevance_gate(*args,**kwargs)   # lazy proxy so importing runtime does not load sqlite3/search (REL-P3)
 
 # A task brief is mostly boilerplate: past this many characters a prompt is searched in pieces, so the assignment
 # in the middle is not lost to the team header and the closing checklist.
@@ -1853,13 +1884,13 @@ def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=N
         # Each query has its own relevance gate; a note any query finds counts once, at its best rank.
         trace['queries']=len(queries);best={}
         for text,(body,least,limit) in queries.items():
-            for h in search_domains(text,domains,limit,root,weights=weights,keep=relevance_gate(text,root,trace['candidates'],body,least),resolved=True):
+            for h in search_domains(text,domains,limit,root,weights=weights,keep=relevance_gate(text,root,trace['candidates'],body,least),resolved=True,ensure_fresh=False):
                 key=(h['domain'],h['id'])
                 if key not in best or h['score']>best[key]['score']:best[key]=h
         # Rank-one notes of different items tie on score; the better covered one goes first.
         found=sorted(best.values(),key=lambda h:(-h['score'],-h.get('relevance',0) if items else 0,h['domain'],h['id']))
-    else:found=search_domains(prompt,domains,10,root,weights=weights,keep=relevant,resolved=True)
-    if not found and scope.get('foreign_domains'):found=search_domains(prompt,scope['foreign_domains'],10,root,keep=relevant)
+    else:found=search_domains(prompt,domains,10,root,weights=weights,keep=relevant,resolved=True,ensure_fresh=False)
+    if not found and scope.get('foreign_domains'):found=search_domains(prompt,scope['foreign_domains'],10,root,keep=relevant,ensure_fresh=False)
     if bindings.get('cross_project',True) is not False:
         try:
             from .search import strong
@@ -2211,7 +2242,7 @@ def _process(harness,event,payload,root=None,info=None):
     info['turn']=turn
     result={}
     if event in {'session-start','user-prompt','stop'}:
-        try:atomic_write(root/'hooks/last-delivery.json',canonical_json({'harness':harness,'event':event,'timestamp':now(),'bound':bool(domain),'cwd':str(cwd),'domain':domain,'payload_keys':sorted(payload)}))
+        try:atomic_write(root/'hooks/last-delivery.json',canonical_json({'harness':harness,'event':event,'timestamp':now(),'bound':bool(domain),'cwd':str(cwd),'domain':domain,'payload_keys':sorted(payload)}),fsync=False)
         except OSError:pass  # Diagnostics only; never cost the session its memory context.
     if event=='session-end':
         synced=_sync_vaults(root,'session end');worker=schedule_housekeeping(root)
@@ -2392,48 +2423,49 @@ def _process(harness,event,payload,root=None,info=None):
         for ref in deferred:delivered.pop(ref,None)
         relevant_notes=len(ids)+len(detail.get('suppressed_shown') or [])
         delivered.update(map_refs);delivered.update(brief_refs);ids=list(map_refs)+list(brief_refs)+ids
-        if mapped:
-            def noted(repos):
-                for key,ref in mapped.items():
-                    rec=dict(repos.pop(key,{}))
-                    if ref:rec['map']=ref
-                    else:rec['told']=True
-                    repos[key]=rec
-            _track_repos(root,session,noted)
-        if (ids or overview) and session!='unknown':
-            def remember(s):
-                previous=s.get('shown',{})
-                previous=dict(previous) if isinstance(previous,dict) else dict.fromkeys(previous if isinstance(previous,list) else [],'')
-                for ref,key in delivered.items():previous.pop(ref,None);previous[ref]=key
-                s['shown']=dict(list(previous.items())[-50:])
-                # Unlike shown, surfaced survives session start, so the compaction handoff can name these notes.
-                s['surfaced']=list(dict.fromkeys(list(s.get('surfaced',[]))+ids))[-MAX_SURFACED:]
-                if overview:s['overview_shown']=True
-                if units_out:
-                    from .injection import remember as delivered_unit
-                    record=s.get('delivered') if isinstance(s.get('delivered'),dict) else {}
-                    for row in units_out:delivered_unit(record,row['hit'],row['unit'],row['level'])
-                    s['delivered']=dict(list(record.items())[-MAX_DELIVERED:])
-            try:_update(root,session,remember)
+        set_topic='topic' in detail and not detail.get('follow_up')
+        if session!='unknown' and (mapped or ids or overview or set_topic):
+            def remember_prompt(s):
+                if mapped:
+                    repos=_repos(s)
+                    for key,ref in mapped.items():
+                        rec=dict(repos.pop(key,{}))
+                        if ref:rec['map']=ref
+                        else:rec['told']=True
+                        repos[key]=rec
+                    s['repos']=dict(list(repos.items())[-MAX_REPOS:])
+                if ids or overview:
+                    previous=s.get('shown',{})
+                    previous=dict(previous) if isinstance(previous,dict) else dict.fromkeys(previous if isinstance(previous,list) else [],'')
+                    for ref,key in delivered.items():previous.pop(ref,None);previous[ref]=key
+                    s['shown']=dict(list(previous.items())[-50:])
+                    # Unlike shown, surfaced survives session start, so the compaction handoff can name these notes.
+                    s['surfaced']=list(dict.fromkeys(list(s.get('surfaced',[]))+ids))[-MAX_SURFACED:]
+                    if overview:s['overview_shown']=True
+                    if units_out:
+                        from .injection import remember as delivered_unit
+                        rec_d=s.get('delivered') if isinstance(s.get('delivered'),dict) else {}
+                        for row in units_out:delivered_unit(rec_d,row['hit'],row['unit'],row['level'])
+                        s['delivered']=dict(list(rec_d.items())[-MAX_DELIVERED:])
+                if set_topic:
+                    # A short follow-up ("why?") refers to what this prompt found: refs only, never prompt text. A searched prompt
+                    # that found nothing clears it, so "why?" after an unrelated question does not answer the old topic.
+                    s['topic']=detail['topic']
+            try:_update(root,session,remember_prompt)
             except (OSError,TimeoutError):pass
-        if session!='unknown' and 'topic' in detail and not detail.get('follow_up'):
-            # A short follow-up ("why?") refers to what this prompt found: refs only, never prompt text. A searched prompt
-            # that found nothing clears it, so "why?" after an unrelated question does not answer the old topic.
-            try:_update(root,session,lambda s:s.update(topic=detail['topic']))
-            except (OSError,TimeoutError):pass
+        usage_batch=[]
         if briefed:
-            from .usage import record
-            detail['briefed']=list(briefed);record(root,'inject',briefed,session,'map-brief')
+            detail['briefed']=list(briefed);usage_batch.append(('inject',briefed,'map-brief',None))
         if ids:
-            from .usage import record
-            if map_refs:record(root,'inject',list(map_refs),session,'prompt-map')
-            if brief_refs:record(root,'inject',list(brief_refs),session,'prompt-brief')
-            if ids[len(map_refs)+len(brief_refs):]:record(root,'inject',ids[len(map_refs)+len(brief_refs):],session,'prompt',
-                                                          levels={f"{r['hit']['domain']}:{r['hit']['id']}":r['level'] for r in units_out})
+            if map_refs:usage_batch.append(('inject',list(map_refs),'prompt-map',None))
+            if brief_refs:usage_batch.append(('inject',list(brief_refs),'prompt-brief',None))
+            if ids[len(map_refs)+len(brief_refs):]:usage_batch.append(('inject',ids[len(map_refs)+len(brief_refs):],'prompt',
+                                                                      {f"{r['hit']['domain']}:{r['hit']['id']}":r['level'] for r in units_out}))
         # Candidates the gate kept but the cap cut: surfaced, not injected (refs only; never read as "unused").
-        if detail.get('cut_by_cap'):
-            from .usage import record
-            record(root,'surface',list(detail['cut_by_cap'])[:3],session,'prompt')
+        if detail.get('cut_by_cap'):usage_batch.append(('surface',list(detail['cut_by_cap'])[:3],'prompt',None))
+        if usage_batch:
+            from .usage import record_many
+            record_many(root,usage_batch,session)
         result['context']=resume+header+('\n'+maps_text if maps_text else '')+('\n'+hits if hits else '')
         if resumed:detail['resumed']=True
         fits=lambda text:not DELIVERY or len(result['context'])+len(text)+1+sum(len(g)+1 for g in governance)<=injection.PROMPT_CAP
@@ -2597,7 +2629,7 @@ def _process(harness,event,payload,root=None,info=None):
             if receipted:settle(s,approvals)
         signal=state.get('signal');detail.update(turns=len(turns),mutating=bool(state.get('mutating')),signal=signal)
         # The turn ends here whatever happens next, so its statement is settled: a header repeated in every brief raises once.
-        for value in state.get('signal_hashes') or [state.get('signal_hash')]:settle_signal(root,domain,value)
+        settle_signals(root,domain,state.get('signal_hashes') or [state.get('signal_hash')])
         # Plan mode cannot save anything, so a repo explored there is reminded about at the next Stop outside plan mode.
         planning=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()=='plan'
         try:pending=stop_pending(root,bindings,state,session,turns,domain,cwd,planning,harness,approvals)
@@ -2928,7 +2960,7 @@ def doc_notes(root,bindings,domain,path,file):
     hits=scoped_file_hits([path],domain,bindings,root,2)[path]
     query=doc_query(path,file)
     if query:
-        try:hits+=search_domains(query,domains,2,root,keep=relevance_gate(query,root))
+        try:hits+=search_domains(query,domains,2,root,keep=relevance_gate(query,root),ensure_fresh=False)
         except (OSError,ValueError):pass
     from .session_start import _title
     found={}

@@ -14,10 +14,19 @@ def turn_key(session,turn):return hashlib.sha256((session+':'+turn).encode()).he
 def status(session,turn,root=None):return read_json(Path(root or memory_root())/'.turns'/(turn_key(session,turn)+'.json'))
 
 def prune(root,days=RETENTION_DAYS):
-    cutoff=time.time()-days*86400;removed=0
-    for path in (Path(root)/'.turns').glob('*'):
+    import os
+    turns_dir=Path(root)/'.turns'
+    if not turns_dir.is_dir():return 0
+    now_ts=time.time();cutoff=now_ts-days*86400;lock_cutoff=now_ts-86400;reminded_cutoff=now_ts-min(days,7)*86400;removed=0
+    try:entries=list(os.scandir(turns_dir))
+    except OSError:return 0
+    for entry in entries:
         try:
-            if path.is_file() and path.stat().st_mtime<cutoff:path.unlink();removed+=1
+            if not entry.is_file(follow_symlinks=False):continue
+            mtime=entry.stat(follow_symlinks=False).st_mtime
+            name=entry.name
+            limit=lock_cutoff if name.endswith('.lock') else reminded_cutoff if name.endswith('.reminded') else cutoff
+            if mtime<limit:os.unlink(entry.path);removed+=1
         except OSError:pass
     return removed
 

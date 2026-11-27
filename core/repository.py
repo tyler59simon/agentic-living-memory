@@ -698,7 +698,7 @@ def transaction(root, changes, kind, expected=None, operation_id=None, skip_unch
         if user:
             journal["os_user"] = user
         # Marker first: a crash between the two writes leaves a marker with no journal, which roll_forward_pending clears.
-        atomic_write(journal_path.with_name(PENDING), "pending\n")
+        atomic_write(_pending_marker(root, operation_id), "pending\n")
         atomic_write(journal_path, canonical_json(journal))
         for old, new in renames:
             # Same file, new spelling: the content is untouched, so an interruption here loses nothing.
@@ -714,9 +714,21 @@ def transaction(root, changes, kind, expected=None, operation_id=None, skip_unch
 
 
 PENDING = "pending"
+PENDING_DIR = ".pending"
 # Journals of regenerated vault views and sync bookkeeping. Nothing undoes them, so old ones only take space.
 # Journals of note edits (including overlay_capture, overlay_auto_update, overlay_delete) are never pruned.
 BOOKKEEPING_KINDS = frozenset({"overlay_sync", "overlay_state", "overlay_views"})
+IMMEDIATE_PRUNE_KINDS = frozenset({"overlay_state"})
+
+
+def _pending_marker(root, operation_id):
+    return Path(root) / ".operations" / PENDING_DIR / operation_id
+
+
+def _clear_pending(root, operation_id):
+    for marker in (_pending_marker(root, operation_id), Path(root) / ".operations" / operation_id / PENDING):
+        if marker.exists():
+            retry_sharing(marker.unlink)
 
 
 FINAL_STATES = frozenset({"committed", "rolled_back", "abandoned"})
@@ -730,7 +742,17 @@ def unfinished_operations(root):
     Only the last bytes of each journal are read. A store keeps every note-edit journal, with the notes'
     before and after text inside, so parsing them all made each health check slower with every write."""
     pending, unreadable = [], []
-    for path in sorted(Path(root).glob(".operations/*/journal.json")):
+    ops_dir = Path(root) / ".operations"
+    if not ops_dir.is_dir():
+        return pending, unreadable
+    try:
+        entries = sorted((e.name, e.path) for e in os.scandir(ops_dir) if e.name != PENDING_DIR and e.is_dir(follow_symlinks=False))
+    except OSError:
+        return pending, unreadable
+    for op_id, folder in entries:
+        path = Path(folder) / "journal.json"
+        if not path.is_file():
+            continue
         state = None
         try:
             with path.open("rb") as handle:
@@ -739,16 +761,16 @@ def unfinished_operations(root):
                 match = _TAIL_STATE.search(handle.read())
             state = match[1].decode() if match else read_json(path)["state"]
         except (OSError, ValueError, KeyError, TypeError):
-            unreadable.append(path.parent.name)
+            unreadable.append(op_id)
             continue
         if state not in FINAL_STATES:
-            pending.append(path.parent.name)
+            pending.append(op_id)
     return pending, unreadable
 
 
 def _pruneable_journal(journal_path, cutoff, kinds):
     folder = journal_path.parent
-    if (folder / PENDING).exists():
+    if (folder / PENDING).exists() or (folder.parent / PENDING_DIR / folder.name).exists():
         return False
     try:
         value = read_json(journal_path, None)
@@ -756,6 +778,8 @@ def _pruneable_journal(journal_path, cutoff, kinds):
         return False
     if not isinstance(value, dict) or value.get("kind") not in kinds or value.get("state") != "committed":
         return False
+    if value.get("kind") in IMMEDIATE_PRUNE_KINDS:
+        return True
     try:
         created = parse_iso(str(value.get("created")))
     except ValueError:
@@ -766,13 +790,24 @@ def _pruneable_journal(journal_path, cutoff, kinds):
 
 
 def prune_journals(root, days=14, kinds=BOOKKEEPING_KINDS):
-    """Delete committed journals of the given kinds older than `days`; returns how many were removed."""
+    """Delete committed journals of the given kinds older than `days` (and legacy overlay_state immediately); returns how many were removed."""
     from datetime import timedelta
     import shutil
     root = Path(root).resolve()
+    ops_dir = root / ".operations"
+    if not ops_dir.is_dir():
+        return 0
     cutoff = clock.now() - timedelta(days=days)
     # Scan without store_lock so a large .operations/ folder never stalls hooks; lock only per candidate deletion.
-    candidates = [path for path in sorted(root.glob(".operations/*/journal.json")) if _pruneable_journal(path, cutoff, kinds)]
+    candidates = []
+    try:
+        entries = sorted((e.name, e.path) for e in os.scandir(ops_dir) if e.name != PENDING_DIR and e.is_dir(follow_symlinks=False))
+    except OSError:
+        return 0
+    for _, folder in entries:
+        journal_path = Path(folder) / "journal.json"
+        if journal_path.is_file() and _pruneable_journal(journal_path, cutoff, kinds):
+            candidates.append(journal_path)
     removed = 0
     for journal_path in candidates:
         with store_lock(root):
@@ -822,24 +857,49 @@ def remove_leftover_plans(root, require_plan=False):
 def roll_forward_pending(root):
     """Finish operations a crashed or interrupted process left half-applied.
 
-    Each journal has a marker while it is incomplete, so this costs one glob when nothing
-    is pending. A journal whose files changed since is left for `recover --abandon`."""
-    results = []
-    for marker in sorted(Path(root).glob(f".operations/*/{PENDING}")):
-        operation_id = marker.parent.name
+    Pending markers live in .operations/.pending/<operation_id>, so this is O(pending) instead of
+    scanning every historical journal folder. On a store created before .pending/ existed, runs one
+    legacy scan of .operations/*/pending and creates .operations/.pending/."""
+    root = Path(root)
+    ops_dir = root / ".operations"
+    if not ops_dir.is_dir():
+        return []
+    pending_dir = ops_dir / PENDING_DIR
+    pending_ids = []
+    if pending_dir.is_dir():
         try:
-            if not marker.with_name("journal.json").exists():
-                # No journal: nothing was applied. The folder holds only the marker.
+            pending_ids = sorted(e.name for e in os.scandir(pending_dir) if e.is_file(follow_symlinks=False))
+        except OSError:
+            pending_ids = []
+    else:
+        # One-time migration from legacy .operations/*/pending layout.
+        try:
+            for e in os.scandir(ops_dir):
+                if e.name != PENDING_DIR and e.is_dir(follow_symlinks=False) and (Path(e.path) / PENDING).exists():
+                    pending_ids.append(e.name)
+            pending_ids.sort()
+            pending_dir.mkdir(exist_ok=True)
+        except OSError:
+            pass
+    results = []
+    for operation_id in pending_ids:
+        op_dir = ops_dir / operation_id
+        journal_path = op_dir / "journal.json"
+        try:
+            if not journal_path.exists():
+                # No journal: nothing was applied. Remove any empty folder and marker.
                 import shutil
-                shutil.rmtree(marker.parent, ignore_errors=True)
+                _clear_pending(root, operation_id)
+                if op_dir.is_dir():
+                    shutil.rmtree(op_dir, ignore_errors=True)
                 continue
-            journal = read_json(marker.with_name("journal.json"))  # a damaged journal is reported below, not raised: it must not block every write
+            journal = read_json(journal_path)  # a damaged journal is reported below, not raised: it must not block every write
             if not isinstance(journal, dict) or not isinstance(journal.get("effects"), list):
                 # A journal that is there but damaged keeps its folder.
                 results.append({"ok": False, "operation_id": operation_id, "error": f"corrupt_journal {operation_id}: see RECOVERY.md"})
                 continue
             if journal.get("state") in {"rolled_back", "abandoned"}:
-                retry_sharing(marker.unlink)  # a reversed journal has nothing to finish
+                _clear_pending(root, operation_id)  # a reversed journal has nothing to finish
                 continue
             results.append(recover(root, operation_id, "forward"))
         except ValueError as exc:
@@ -862,9 +922,7 @@ def abandon(root, operation_id):
         journal["state"] = "abandoned"
         journal["completed"] = now()
         atomic_write(journal_path, canonical_json(journal))
-        marker = journal_path.with_name(PENDING)
-        if marker.exists():
-            retry_sharing(marker.unlink)
+        _clear_pending(root, operation_id)
         return {"ok": True, "operation_id": operation_id, "state": "abandoned",
                 "files": [effect["path"] for effect in journal["effects"]]}
 
@@ -881,9 +939,7 @@ def recover(root, operation_id, direction="forward"):
         desired = "after" if direction == "forward" else "before"
         final_state = "committed" if direction == "forward" else "rolled_back"
         if journal["state"] == final_state:
-            marker = journal_path.with_name(PENDING)
-            if marker.exists():
-                retry_sharing(marker.unlink)
+            _clear_pending(root, operation_id)
             return {"ok": True, "operation_id": operation_id, "state": final_state, "idempotent": True}
         if journal["state"] == "abandoned":
             raise ValueError("Operation was abandoned")
@@ -919,9 +975,7 @@ def recover(root, operation_id, direction="forward"):
         journal["state"] = final_state
         journal["completed"] = now()
         atomic_write(journal_path, canonical_json(journal))
-        marker = journal_path.with_name(PENDING)
-        if marker.exists():
-            retry_sharing(marker.unlink)
+        _clear_pending(root, operation_id)
         return {"ok": True, "operation_id": operation_id, "state": final_state, "idempotent": False}
 
 

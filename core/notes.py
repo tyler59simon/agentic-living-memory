@@ -60,8 +60,31 @@ def _by_id(note_id,notes):
 def _ambiguous(domain,matches):
     return ValueError('ambiguous_ref: '+', '.join(f"{domain}:{n['id']} \"{n['title']}\"" for n in matches[:10]))
 
+def _find_note_index(note_id,domain,root):
+    """O(log N) lookup via search.sqlite3; returns (Path, parsed note) on unique verified hit, else None (caller falls back to inventory)."""
+    import sqlite3
+    try:
+        from .search import domain_dir
+        db_path=domain_dir(domain,root)/'search.sqlite3'
+        if not db_path.exists():return None
+        db=sqlite3.connect(db_path.as_uri()+'?mode=ro',uri=True)
+        try:
+            rows=db.execute('SELECT id,path FROM notes WHERE id=?',(note_id,)).fetchall()
+            if not rows and ID_PREFIX.fullmatch(note_id):
+                rows=db.execute('SELECT id,path FROM notes WHERE lower(id) LIKE ? LIMIT 2',(note_id.lower()+'%',)).fetchall()
+        finally:db.close()
+        if len(rows)!=1:return None
+        found_id,raw_path=rows[0];path=Path(raw_path)
+        if not path.is_file():return None
+        note=parse(path)
+        if note and note.get('id')==found_id:return path,note
+    except (ValueError,OSError,sqlite3.Error):pass
+    return None
+
 def find_note(note_id,domain,root=None):
     """The note with this ID, or with this unique ID prefix (8+ characters)."""
+    hit=_find_note_index(note_id,domain,root)
+    if hit is not None:return hit
     matches=_by_id(note_id,inventory(domain,root,retired=True))
     if len(matches)>1:raise _ambiguous(domain,matches)
     if len(matches)!=1:raise ValueError(f'Expected one note ID, found {len(matches)}')
@@ -350,12 +373,22 @@ class TitleScorer:
     with a rare-token veto. A word that appears in few titles and only on one side ("rdlp-api" vs
     "rdlp-plugin", "Phase 1" vs "Phase 2") marks the pair distinct whatever the overlap."""
     def __init__(self,notes):
+        import math
         from collections import Counter
-        self.n=len(notes);self.df=Counter(t for n in notes for t in _title_words(n['title']))
+        self.n=len(notes);self._words={};self._rare_limit=max(2,0.1*self.n)
+        df=Counter()
+        for n in notes:
+            title=n['title']
+            w=self._words.get(title)
+            if w is None:w=frozenset(_title_words(title));self._words[title]=w
+            df.update(w)
+        self.df=df
+        self._idf_sq={t:(math.log((self.n+1)/(c+1))+1)**2 for t,c in df.items()}
+        self._default_idf_sq=(math.log(self.n+1)+1)**2
     def idf(self,token):
         import math
         return math.log((self.n+1)/(self.df.get(token,0)+1))+1
-    def rare(self,token):return self.df.get(token,0)<=max(2,0.1*self.n)
+    def rare(self,token):return self.df.get(token,0)<=self._rare_limit
     def vetoed(self,x,y):
         left=[t for t in x-y if self.rare(t)];right=[t for t in y-x if self.rare(t)]
         # Substituted rare words on both sides, or an added identifier on either side.
@@ -371,15 +404,27 @@ class TitleScorer:
     def _fold(cls,x,y):
         """y with inflections of x's words replaced by them ("using" and "use" are one word; the light
         stemmer keeps short stems apart)."""
-        y=set(y)
-        for t in x-y:
-            for u in sorted(y-x):
-                if not _identifier(t) and not _identifier(u) and cls._base(t)==cls._base(u):
-                    y.discard(u);y.add(t);break
-        return y
+        diff_x=x-y;diff_y=y-x
+        if not diff_x or not diff_y:return y
+        by_base={}
+        for u in sorted(diff_y):
+            if not _identifier(u):by_base.setdefault(cls._base(u),[]).append(u)
+        if not by_base:return y
+        out=set(y)
+        for t in diff_x:
+            if _identifier(t):continue
+            bucket=by_base.get(cls._base(t))
+            if bucket:
+                u=bucket.pop(0)
+                out.discard(u);out.add(t)
+        return out
+    def _get_words(self,title):
+        w=self._words.get(title)
+        if w is None:w=frozenset(_title_words(title));self._words[title]=w
+        return w
     def score(self,a,b,lenient=False):
         """lenient: words that differ only as identifiers ("Sprint 3" / "Sprint 4") count as the same, for numbered status notes."""
-        x,y=_title_words(a),_title_words(b)
+        x,y=self._get_words(a),self._get_words(b)
         if lenient:
             drop={t for t in x^y if _identifier(t)};x,y=x-drop,y-drop
         if not x or not y:return 0.0
@@ -389,8 +434,11 @@ class TitleScorer:
         shared=x&y
         if len(shared)<2 or self.vetoed(x,y):return 0.0
         import math
-        weight=lambda words:sum(self.idf(t)**2 for t in words)
-        return weight(shared)/math.sqrt(weight(x)*weight(y))
+        idf_sq=self._idf_sq;default=self._default_idf_sq
+        ws=sum(idf_sq.get(t,default) for t in shared)
+        wx=sum(idf_sq.get(t,default) for t in x)
+        wy=sum(idf_sq.get(t,default) for t in y)
+        return ws/math.sqrt(wx*wy)
 
 def similar_title(title,notes,threshold=0.8):
     """Near-duplicate guard: the active note whose title scores highest, if it reaches the threshold."""
@@ -476,6 +524,28 @@ def build_note(title,body,tags,domain,root,note_type='knowledge',context='',key=
     path=Path(root)/'domains'/domain/'notes'/f"{note['prefix']} - {slug(title)}-{note['id'][:8]}.md"
     return path,note,serialize(note)
 
+def _active_titles(domain,root):
+    """Lightweight active note headers ({id, title, type, path}) from search.sqlite3, falling back to inventory()."""
+    import sqlite3
+    try:
+        from .search import domain_dir
+        db_path=domain_dir(domain,root)/'search.sqlite3'
+        if db_path.exists():
+            db=sqlite3.connect(db_path.as_uri()+'?mode=ro',uri=True)
+            try:rows=db.execute("SELECT id,title,type,path FROM notes WHERE status='active'").fetchall()
+            finally:db.close()
+            return [{'id':i,'title':t,'type':k,'path':p,'status':'active','_light':True} for i,t,k,p in rows]
+    except (ValueError,sqlite3.Error):pass
+    return [n for n in inventory(domain,root) if n.get('status','active')=='active']
+
+def _hydrate(note,domain,root):
+    if not note.get('_light'):return note
+    path=Path(note['path'])
+    if path.is_file():
+        parsed=parse(path)
+        if parsed and parsed.get('id')==note['id']:return parsed
+    return find_note(note['id'],domain,root)[1]
+
 def _cross_domain(title,body,domain,root):
     """An exact copy of a new note outside its own domain, as (action, domain, note), or None.
 
@@ -488,13 +558,15 @@ def _cross_domain(title,body,domain,root):
     globals_=set(global_domains(root))
     others=[d for d in domain_folders(root) if d!=domain]
     order=lambda d:(0 if d in globals_ else 1 if related(d,domain,root) else 2,d)
-    wanted=title.strip().casefold()
+    wanted=title.strip().casefold();wanted_body=body.strip()
     for other in sorted(others,key=order):
-        notes=[n for n in inventory(other,root) if n.get('status','active')=='active']
+        notes=_active_titles(other,root)
         if not notes:continue
         visible=other in globals_ or related(other,domain,root)
-        exact=next((n for n in notes if n['title'].strip().casefold()==wanted and n['body'].strip()==body.strip()),None)
-        if exact:return ('duplicate' if visible else 'promote'),other,exact
+        for cand in notes:
+            if cand['title'].strip().casefold()!=wanted:continue
+            full=_hydrate(cand,other,root)
+            if full['body'].strip()==wanted_body:return ('duplicate' if visible else 'promote'),other,full
     return None
 
 def _cross_similar(title,body,note_type,domain,root):
@@ -503,13 +575,14 @@ def _cross_similar(title,body,note_type,domain,root):
     globals_=set(global_domains(root));to_global=domain in globals_
     order=lambda d:(0 if d in globals_ else 1 if related(d,domain,root) else 2,d)
     for other in sorted((d for d in domain_folders(root) if d!=domain),key=order):
-        notes=[n for n in inventory(other,root) if n.get('status','active')=='active' and not (note_type in KEYED_TYPES and effective_type(n)==note_type)]
+        notes=[n for n in _active_titles(other,root) if not (note_type in KEYED_TYPES and effective_type(n)==note_type)]
         similar=similar_title(title,notes) if notes else None
         if not similar:continue
-        if other in globals_ or related(other,domain,root):return 'visible',other,similar
-        if to_global:return ('supersede' if effective_type(similar)==note_type else 'promotable'),other,similar
-        if near_identical(title,body,note_type,similar,TitleScorer(notes)):return 'promote',other,similar
-        return 'promotable',other,similar
+        full=_hydrate(similar,other,root)
+        if other in globals_ or related(other,domain,root):return 'visible',other,full
+        if to_global:return ('supersede' if effective_type(full)==note_type else 'promotable'),other,full
+        if near_identical(title,body,note_type,full,TitleScorer(notes)):return 'promote',other,full
+        return 'promotable',other,full
     return None
 
 def _promote_existing(note,source,root,origin_ref=None):
@@ -842,25 +915,26 @@ def capture(title,body,tags,domain,root=None,**metadata):
         else:
             result=_commit(domain,changes,'capture_supersede' if supersedes else 'capture',root,expected or None)
         result.update(id=note['id'],domain=domain,status='created',path=str(path))
-        hint=None if domain in global_domains(root) else scope_hint(note)
-        if hint:result['scope_hint']={'reason':hint,'next':f'If this holds beyond this project, run `promote {domain}:{note["id"]}`.'}
-        near=near_titles(title,[n for n in existing if n.get('status','active')=='active' and n['id'] not in set(supersedes) and not other_map(n)],note_type=selected_type)
-        if near:result['similar']=[{'ref':f"{domain}:{n['id']}",'title':n['title'],'revision':n.get('revision')} for n in near]
-        hits=_related_hits(note,domain,root,{n['id'] for n in near}|set(supersedes))
-        related=_related_listing(hits,domain)
-        _queue_replaced(note,hits,domain,root)
-        if related:
-            result['related']=related
-            mine=(result.get('revisions') or {}).get(f"{domain}:{note['id']}") or 'REV'
-            result['related_hint']=f"if this replaces one of them: supersede REF --expected-revision ITS_REV --by {domain}:{note['id']}@{mine}; a different subject: nothing to do"
-        warnings=quality_warnings(note)
-        if warnings:result['quality_warnings']=warnings
-        if supersedes:result['superseded']=[f'{domain}:{old}' for old in supersedes];result['carried_links']=carried;result['carried_files']=carried_files
-        user=_user_brief_hint(note,domain,root)
-        if user:result['user_brief']=user
-        rules=_rule_hint(note,domain,root)
-        if rules:result['rule_warning']=rules
-        return result
+    # Advisory post-capture hints run outside store_lock so they never block concurrent writers (REL-P2).
+    hint=None if domain in global_domains(root) else scope_hint(note)
+    if hint:result['scope_hint']={'reason':hint,'next':f'If this holds beyond this project, run `promote {domain}:{note["id"]}`.'}
+    near=near_titles(title,[n for n in existing if n.get('status','active')=='active' and n['id'] not in set(supersedes) and not other_map(n)],note_type=selected_type)
+    if near:result['similar']=[{'ref':f"{domain}:{n['id']}",'title':n['title'],'revision':n.get('revision')} for n in near]
+    hits=_related_hits(note,domain,root,{n['id'] for n in near}|set(supersedes))
+    related_list=_related_listing(hits,domain)
+    _queue_replaced(note,hits,domain,root)
+    if related_list:
+        result['related']=related_list
+        mine=(result.get('revisions') or {}).get(f"{domain}:{note['id']}") or 'REV'
+        result['related_hint']=f"if this replaces one of them: supersede REF --expected-revision ITS_REV --by {domain}:{note['id']}@{mine}; a different subject: nothing to do"
+    warnings=quality_warnings(note)
+    if warnings:result['quality_warnings']=warnings
+    if supersedes:result['superseded']=[f'{domain}:{old}' for old in supersedes];result['carried_links']=carried;result['carried_files']=carried_files
+    user=_user_brief_hint(note,domain,root)
+    if user:result['user_brief']=user
+    rules=_rule_hint(note,domain,root)
+    if rules:result['rule_warning']=rules
+    return result
 
 def _change_set(note_id,domain,action,root,expected_revision=None,successor=None,pending=None,carried=None,rehash=True,actor='agent',retirement=None,successor_revision=None,**values):
     """Files to write for one note action, with the revisions they must still have. `pending` holds the

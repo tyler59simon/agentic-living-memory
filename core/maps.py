@@ -69,7 +69,7 @@ def _json(text):
     except ValueError:return []
     return found if isinstance(found,list) else []
 
-def _rows(domain,root,kind='map'):
+def _rows(domain,root,kind='map',verify=True):
     """Active rows of a note type (map or brief, or a tuple of types) from the domain's index (no rebuild: hooks must stay fast), else from the note files."""
     kinds=(kind,) if isinstance(kind,str) else tuple(kind)
     from .search import _unchanged,domain_dir
@@ -83,8 +83,8 @@ def _rows(domain,root,kind='map'):
             try:rows=db.execute(f"SELECT id,title,updated,files,body,path,revision,type,repo,sources,file_hashes,checked FROM notes WHERE status='active' AND type IN ({','.join('?'*len(kinds))})",kinds).fetchall()
             except sqlite3.OperationalError:rows=[r+('','','') for r in db.execute(f"SELECT id,title,updated,files,body,path,revision,type,repo FROM notes WHERE status='active' AND type IN ({','.join('?'*len(kinds))})",kinds)]   # an index from before file hashes
             finally:db.close()
-            return [dict({'id':i,'domain':domain,'title':t,'type':k,'updated':str(u or ''),'files':f,'body':b,'revision':r,'repo':e or ''},**{n:v for n,v in (('sources',_json(s)),('file_hashes',_json(h)),('checked',c)) if v})
-                    for i,t,u,f,b,p,r,k,e,s,h,c in rows if _unchanged(p,r)]
+            return [dict({'id':i,'domain':domain,'title':t,'type':k,'updated':str(u or ''),'files':f,'body':b,'path':p,'revision':r,'repo':e or ''},**{n:v for n,v in (('sources',_json(s)),('file_hashes',_json(h)),('checked',c)) if v})
+                    for i,t,u,f,b,p,r,k,e,s,h,c in rows if not verify or _unchanged(p,r)]
         except sqlite3.Error:pass
     from .repository import inventory
     try:return [dict(n,domain=domain) for n in inventory(domain,root) if n.get('type') in kinds and n.get('status','active')=='active']
@@ -319,8 +319,9 @@ def repo_notes(hit,repo,root,bindings,shown,budget=REPO_NOTES_BUDGET,files=True,
             try:raw=json.loads(raw)
             except ValueError:raw=[raw]
         return any((p:=_resolve(f,domain,bindings)) is not None and p.is_relative_to(repo) for f in raw or [])
-    found=[n for n in _rows(domain,root,REPO_NOTE_TYPES)
-           if n['title'].strip().casefold() in linked or (files and inside(n))]
+    from .search import _unchanged
+    found=[n for n in _rows(domain,root,REPO_NOTE_TYPES,verify=False)
+           if (n['title'].strip().casefold() in linked or (files and inside(n))) and (not n.get('path') or _unchanged(n['path'],n['revision']))]
     lines=[];refs=[];used=0
     head='Notes about this repo (decisions, bugs, runbooks and policies; read one when it bears on the task):'
     for n in sorted(found,key=lambda n:n.get('updated',''),reverse=True):

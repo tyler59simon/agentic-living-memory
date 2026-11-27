@@ -6,7 +6,7 @@ arithmetic: no pip dependency and no network after the one explicit `semantic in
 `<root>/.models/<name>/`; it is a download, not canonical data, and backups skip it.
 """
 from __future__ import annotations
-import array,hashlib,json,marshal,math,mmap,operator,os,shutil,struct,tempfile,time,unicodedata,urllib.request
+import array,hashlib,json,math,operator,os,struct,time
 from collections import OrderedDict
 from pathlib import Path
 
@@ -35,7 +35,10 @@ _DTYPES={'F32':('f',4),'F16':('e',2)}
 
 def _punctuation(ch):
     code=ord(ch)
-    return 33<=code<=47 or 58<=code<=64 or 91<=code<=96 or 123<=code<=126 or unicodedata.category(ch).startswith('P')
+    if code<128:
+        return 33<=code<=47 or 58<=code<=64 or 91<=code<=96 or 123<=code<=126
+    import unicodedata
+    return unicodedata.category(ch).startswith('P')
 
 def _cjk(code):
     return any(a<=code<=b for a,b in ((0x4E00,0x9FFF),(0x3400,0x4DBF),(0x20000,0x2A6DF),(0x2A700,0x2B73F),(0x2B740,0x2B81F),(0x2B820,0x2CEAF),(0xF900,0xFAFF),(0x2F800,0x2FA1F)))
@@ -46,6 +49,7 @@ def _tokenizer_spec(folder):
     """The tokenizer.json fields the reader uses. Parsing the 1.5 MB file costs every hook process about as much as the rest of a
     prompt, so the parsed plain data is kept beside it as tokenizer.marshal, keyed by the source's size and mtime; a missing, stale or
     unreadable cache is rebuilt, and one that cannot be written (read-only folder) is skipped. Derived: safe to delete."""
+    import marshal
     source=folder/'tokenizer.json';stat=source.stat();key=[stat.st_size,stat.st_mtime_ns];cache=folder/'tokenizer.marshal'
     try:
         stored=marshal.loads(cache.read_bytes())
@@ -55,6 +59,7 @@ def _tokenizer_spec(folder):
     pick=lambda part,names:{k:part[k] for k in names if k in part} if isinstance(part,dict) else {}
     spec={'model':pick(spec.get('model'),_SPEC_MODEL),'normalizer':pick(spec.get('normalizer'),_SPEC_NORM),'pre_tokenizer':pick(spec.get('pre_tokenizer'),('type',))}
     try:
+        import tempfile
         fd,tmp=tempfile.mkstemp(prefix='.tokenizer.',suffix='.tmp',dir=folder)
         try:
             with os.fdopen(fd,'wb') as out:out.write(marshal.dumps({'source':key,'spec':spec}))
@@ -69,6 +74,7 @@ def _tokenizer_spec(folder):
 class Model:
     """A loaded static model: BERT normalization and pre-tokenization, greedy WordPiece, rows read on demand."""
     def __init__(self,folder):
+        import mmap
         folder=Path(folder);spec=_tokenizer_spec(folder)
         model,norm,pre=spec.get('model') or {},spec.get('normalizer') or {},spec.get('pre_tokenizer') or {}
         if model.get('type')!='WordPiece' or norm.get('type')!='BertNormalizer' or pre.get('type')!='BertPreTokenizer':
@@ -92,6 +98,12 @@ class Model:
     def close(self):self._map.close()
 
     def _normalize(self,text):
+        # Fast path for plain ASCII text without control characters (REL-P6): avoids unicodedata NFD & category loops.
+        if text.isascii():
+            if self.clean:
+                text=''.join(' ' if ch in '\t\n\r\x0b\x0c' else ch for ch in text if ord(ch)>=32 and ord(ch)!=127 or ch in '\t\n\r\x0b\x0c')
+            return text.lower() if self.lower else text
+        import unicodedata
         out=[]
         for ch in text:
             code=ord(ch)
@@ -147,10 +159,11 @@ class Model:
         """The unit-length mean of the text's piece rows, or None when no piece is known."""
         ids=self.tokenize(text)
         if not ids:return None
-        total=[0.0]*self.dim
-        for index in ids:
-            for k,value in enumerate(self.row(index)):total[k]+=value
-        norm=math.sqrt(sum(v*v for v in total))
+        total=list(self.row(ids[0]))
+        add=operator.add
+        for index in ids[1:]:
+            total=list(map(add,total,self.row(index)))
+        norm=math.sqrt(sum(map(operator.mul,total,total)))
         return array.array('f',(v/norm for v in total)) if norm else None
 
 def to_blob(vector):return vector.tobytes()
@@ -197,17 +210,17 @@ def _sha256(path):
 
 MAX_DOWNLOAD_BYTES=256*1024*1024
 
-class _HttpsOnlyRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self,req,fp,code,msg,headers,newurl):
-        if not str(newurl).lower().startswith('https://'):
-            raise ValueError(f'Refusing non-HTTPS redirect during model download: {newurl}')
-        return super().redirect_request(req,fp,code,msg,headers,newurl)
-
 def _fetch(url,target):
     """Download url to target with an HTTPS-only redirect guard and a hard byte cap, touching the .partial- folder at least
     once a minute: Windows may not update an open file's write time, and _clear_stale_partials must see a long download as alive."""
+    import urllib.request
     if not str(url).lower().startswith('https://'):
         raise ValueError(f'Model download requires https: {url}')
+    class _HttpsOnlyRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self,req,fp,code,msg,headers,newurl):
+            if not str(newurl).lower().startswith('https://'):
+                raise ValueError(f'Refusing non-HTTPS redirect during model download: {newurl}')
+            return super().redirect_request(req,fp,code,msg,headers,newurl)
     opener=urllib.request.build_opener(_HttpsOnlyRedirect())
     beat=0.0;total=0
     with opener.open(url,timeout=60) as response,open(target,'wb') as out:
@@ -235,6 +248,7 @@ def rebuild_all(root,units=False):
 
 def install(root,name=DEFAULT_MODEL,source=None):
     """Download (or copy from a local folder) the pinned model files, verify every SHA-256, then rebuild indexes."""
+    import shutil,tempfile
     if name not in MODELS:raise ValueError(f'unknown_model: choose one of {", ".join(MODELS)}')
     spec=MODELS[name];folder=models_dir(root);folder.mkdir(parents=True,exist_ok=True)
     _clear_stale_partials(folder)
@@ -261,6 +275,7 @@ def _clear_stale_partials(folder,now=None):
     """Delete .partial- folders left by an install that was killed (its finally never ran). One that an install is still
     writing may be older than an hour, and writing a file does not touch its folder's time, so a folder goes only when it
     and every file in it are older than STALE_PARTIAL_SECONDS."""
+    import shutil
     cutoff=(now if now is not None else time.time())-STALE_PARTIAL_SECONDS
     for other in folder.iterdir():
         try:
@@ -271,6 +286,7 @@ def _clear_stale_partials(folder,now=None):
 def _retire(folder):
     """Make a model inert first (readers need its marker), then delete what can be deleted. On Windows a file another
     process has mapped cannot be deleted; that leftover has no marker, so nothing uses it, and a later remove clears it."""
+    import shutil
     (folder/MARKER).unlink(missing_ok=True)
     shutil.rmtree(folder,ignore_errors=True)
 

@@ -203,16 +203,20 @@ def page_packet(domain, scope, edition, pid, notes_by_id):
         for other in sec['pages']:
             if other != pid:
                 pkeys[f'P{len(pkeys) + 1}'] = other
-                others.append({'key': f'P{len(pkeys)}', 'title': edition['pages'][other]['title'], 'purpose': edition['pages'][other]['purpose']})
+                others.append({'key': f'P{len(pkeys)}', 'title': edition['pages'][other]['title']})
     entries = []
     for k, n in keys.items():
         entry = {'key': k, 'title': _clean(n['title']), 'type': n['type'], 'tags': n['tags'][:12], 'files': [_clean(f) for f in n['files'][:5]],
-                 'updated': n['updated'], 'lead': _clean(n['lead']), 'body': bodies[k]}
+                 'updated': n['updated'], 'body': bodies[k]}
+        if not bodies[k] and n.get('lead'):
+            entry['lead'] = _clean(n['lead'])
         if k in cut:
             entry['cut'] = True
         entries.append(entry)
-    text = _json({'task': 'page', 'domain': domain, 'scope': scope, 'page': {'title': page['title'], 'purpose': page['purpose'], 'section': {'title': section['title'], 'blurb': section['blurb']}},
-                  'other_pages': others, 'sources': entries})
+    # Place static domain/other_pages prefix before varying page/sources for prompt caching (REL-P7).
+    text = _json({'task': 'page', 'domain': domain, 'scope': scope, 'other_pages': others,
+                  'page': {'title': page['title'], 'purpose': page['purpose'], 'section': {'title': section['title'], 'blurb': section['blurb']}},
+                  'sources': entries})
     return text, {'notes': {k: n['id'] for k, n in keys.items()}, 'pages': pkeys}
 
 

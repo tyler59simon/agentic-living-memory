@@ -84,21 +84,22 @@ def currency_of(note,root,bindings=None,cache=None,working_tree=False,info=None)
 
 def _stale(pool,root,bindings,working_tree=False,infos=None):
     """{ref: reason} for notes with a changed or missing digest source or hashed file, and maps and briefs whose cited files changed according to the currency cache (and, with working_tree, uncommitted edits)."""
-    from .digests import stale_note
+    from .digests import stale_note,flush_hashes
     from .note_types import KEYED_TYPES
     from .maps import stale_clause
     from .folder_policy import Policy
-    found={};cache=None;policy=None
+    found={};cache=None;policy=None;hashed=False
     for note in pool:
         if note.get('sources') or note.get('file_hashes'):
             policy=policy or Policy(root)   # one per scan: it caches the folders it has judged
-            text=stale_note(note,root,bindings,policy)
+            text=stale_note(note,root,bindings,policy,flush=False);hashed=True
             if text:found[_ref(note)]=text
         elif note.get('type') in KEYED_TYPES:
             if cache is None:cache=_cache(root)
             info=_map_currency(note,root,bindings,cache,working_tree)
             if infos is not None:infos[_ref(note)]=info
             if info['changed']:found[_ref(note)]=stale_clause(note,{'changed':info['changed']},note['type'])
+    if hashed:flush_hashes(root)
     return found
 
 def _due(pool,root,domain,today=None,rows=None):
@@ -153,7 +154,7 @@ def _quality(pool,root):
         while len(results)>QUALITY_CACHE_MAX:results.pop(next(iter(results)))
         try:
             from .common import atomic_write
-            atomic_write(path,json.dumps({'code':code,'results':results},separators=(',',':')))
+            atomic_write(path,json.dumps({'code':code,'results':results},separators=(',',':')),fsync=False)
         except Exception as exc:
             from .logs import swallowed
             swallowed('worklist.quality_cache',exc,root)
@@ -277,15 +278,17 @@ def worklist(root,domains,kinds=None,limit=100,tags=None,cheap=False,notes=None,
     from .note_types import last_confirmed
     rank=lambda ref:min(KINDS.index(k) for k in found[ref]['kinds'])
     # Stable: within a kind the order each computation gave (review order for due) stays.
-    order=sorted(order,key=rank);items=[]
-    for ref in order:
+    # Slice to limit BEFORE calling _maintenance() / _action() so SessionStart and review only evaluate returned rows (REL-P4).
+    order=sorted(order,key=rank);total=len(order);items=[]
+    for ref in order[:max(1,limit)]:
         n=by_ref[ref];row=found[ref];extra=dict(row['extra']);same=extra.pop('_same',False)
         pair=extra.get('pair');kinds_=[k for k in KINDS if k in row['kinds']]
-        items.append({'ref':ref,'title':n['title'],'type':n.get('type'),'updated':str(n.get('updated',''))[:10],'review_by':n.get('review_by'),
-                      'confirmed':last_confirmed(n),'pinned':n.get('pinned') is True,'revision':n['revision'],'domain':n['domain'],'kinds':kinds_,'reason':'; '.join(row['reasons']),
-                      'action':_action(kinds_,n,dict(pair,same=same) if pair else None),'maintenance':_maintenance(n,kinds_,same,pair is not None,root),**extra})
+        item={'ref':ref,'title':n['title'],'type':n.get('type'),'updated':str(n.get('updated',''))[:10],'review_by':n.get('review_by'),
+              'confirmed':last_confirmed(n),'pinned':n.get('pinned') is True,'revision':n['revision'],'domain':n['domain'],'kinds':kinds_,'reason':'; '.join(row['reasons']),
+              'action':_action(kinds_,n,dict(pair,same=same) if pair else None),**extra}
+        if not cheap:item['maintenance']=_maintenance(n,kinds_,same,pair is not None,root)
+        items.append(item)
     counts={k:sum(1 for r in found.values() if k in r['kinds']) for k in wanted}
-    total=len(items);items=items[:max(1,limit)]
     if not cheap:
         bindings=load_bindings(root);cache=_cache(root)
         for item in items:
