@@ -192,7 +192,7 @@ class SessionIndex(StoreFixture):
         capture('Prefer small commits', 'Keep commits small. ' * 20, TAGS, 'demo', self.root, type='preference')
         self.many(60)
         payload = {'cwd': str(self.base / 'project'), 'session_id': 'cx'}
-        kept = lambda context: context[:4000]   # Codex keeps this much of SessionStart (additionalContextLimit, integrations/setup.py)
+        kept = lambda context: context[:runtime.SESSION_LIMITS['codex']]   # the SessionStart additionalContextLimit integrations/setup.py gives Codex
         shown_now = lambda: json.loads(runtime._pointer(self.root, 'cx').read_text()).get('shown_snippet', {})
         with patch('core.runtime.command', return_value='alm --domain demo'):   # a fixed CMD, so the room left does not depend on this machine's paths
             context = runtime.process('codex', 'session-start', payload, self.root)['context']

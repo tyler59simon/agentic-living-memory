@@ -175,7 +175,7 @@ class ReviewFindings(Base):
 
     def test_recall_cut_by_the_budget_stays_eligible(self):
         self.start(source='compact')
-        with patch('core.recall.auto',return_value=('x'*5000,[1,2])),patch.object(runtime,'RECALL_HARNESSES',{'claude'}):
+        with patch('core.recall.auto',return_value=('x'*(injection.PROMPT_CAP+1),[1,2])),patch.object(runtime,'RECALL_HARNESSES',{'claude'}):
             self.prompt('event delivery design')
         state=runtime.read_json(runtime._pointer(self.root,'s'),{})
         self.assertEqual(state.get('recalled'),[])

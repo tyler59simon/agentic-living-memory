@@ -112,7 +112,7 @@ class Delivery(StoreFixture):
         hooks.write_text(json.dumps(original));(home/'AGENTS.md').write_text('# my codex rules\n',encoding='utf-8')
         setup('codex',home)
         config=read_json(hooks);self.assertEqual(len(config['hooks']['Stop']),2);self.assertTrue(config['custom'])
-        self.assertEqual(config['hooks']['SessionStart'][0]['hooks'][0]['additionalContextLimit'],4000)
+        self.assertEqual(config['hooks']['SessionStart'][0]['hooks'][0]['additionalContextLimit'],9000)
         agents=(home/'AGENTS.md').read_text(encoding='utf-8')
         self.assertTrue(agents.startswith('# my codex rules\n'));self.assertIn(instruction_block('codex'),agents)
         setup('codex',home)   # rerun replaces, never duplicates

@@ -145,8 +145,8 @@ def codex_groups(script):
         item={**hook_command(script,action),'statusMessage':status,'timeout':30}
         if limit is not None:item['additionalContextLimit']=limit
         return item
-    return {'SessionStart':[{'matcher':'startup|resume|clear|compact|fork','hooks':[handler('session-start','Loading project memory',4000)]}],
-            'UserPromptSubmit':[{'hooks':[handler('user-prompt','Searching project memory',4000)]}],
+    return {'SessionStart':[{'matcher':'startup|resume|clear|compact|fork','hooks':[handler('session-start','Loading project memory',9000)]}],
+            'UserPromptSubmit':[{'hooks':[handler('user-prompt','Searching project memory',9000)]}],
             'SubagentStart':[{'hooks':[handler('subagent-start','Applying memory access rules',1000)]}],
             'PreToolUse':[{'hooks':[handler('pre-tool-use','Checking protected memory paths')]}],
             'Stop':[{'hooks':[handler('stop','Checking durable capture completion')]}],

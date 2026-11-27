@@ -125,7 +125,7 @@ Folder notebooks live outside the store; Living Memory reaches them through sour
 
 ### 8.3 Injection
 
-- UserPromptSubmit adds up to two source excerpts (800 characters) when notes gave fewer than two answers. Notebook excerpts use that channel and inherit all of its rules: no injection for subagents or machine prompts, each excerpt at most once a session, and only when the block fits the 4,000-character prompt budget of `core/injection.py`.
+- UserPromptSubmit adds up to two source excerpts (800 characters) when notes gave fewer than two answers. Notebook excerpts use that channel and inherit all of its rules: no injection for subagents or machine prompts, each excerpt at most once a session, and only when the block fits the 9,000-character prompt budget of `core/injection.py`.
 - Only chunks of injectable, non-private notebooks are candidates; they are labelled `[notebook TITLE]`. Living Memory pages of injectable notebooks in the session's scope domains join the same channel, after notes. Searchable notebooks are never injected.
 - SessionStart is unchanged, and a test asserts that no page or notebook excerpt ever appears in it.
 
