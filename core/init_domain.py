@@ -1,5 +1,4 @@
-﻿"""Register project bindings without replacing unreadable configuration."""
-import argparse,json
+"""Register project bindings without replacing unreadable configuration."""
 from pathlib import Path
 from .common import memory_root,safe_domain
 from .repository import read_json,store_lock,canonical_json,transaction,reconcile,roll_forward_pending,digest
@@ -15,27 +14,37 @@ def _read_bindings(root,default):
 
 
 def init_domain(name,prefixes,root=None):
-    root=Path(root or memory_root()).resolve();name=safe_domain(name)
+    root=Path(root or memory_root()).resolve()
+    name=safe_domain(name)
     with store_lock(root):
         settings,read=_read_bindings(root,{'version':2,'domains':{},'search_scope':{'global_domains':['_global'],'foreign_domains':[]}})
         if not isinstance(settings,dict) or not isinstance(settings.get('domains',{}),dict):raise ValueError('Invalid bindings preserved')
-        domains=settings.setdefault('domains',{});existing=domains.get(name,{})
-        legacy=existing.get('paths',[]) if 'prefixes' not in existing else [];legacy=[legacy] if isinstance(legacy,str) else list(legacy or [])   # `prefixes` shadows a legacy `paths` list, so carry its folders over once; later it stays shadowed (STO-4.1)
+        domains=settings.setdefault('domains',{})
+        existing=domains.get(name,{})
+        legacy=existing.get('paths',[]) if 'prefixes' not in existing else []  # `prefixes` shadows a legacy `paths` list, so carry its folders over once; later it stays shadowed (STO-4.1)
+        legacy=[legacy] if isinstance(legacy,str) else list(legacy or [])
         selected=sorted(set(existing.get('prefixes',[])+legacy+[str(Path(p).expanduser().resolve()) for p in prefixes]))
         for other,entry in domains.items():
             if other!=name and set(selected)&set(entry.get('prefixes',[])):raise ValueError('Prefix is already registered to another domain')
-        domains[name]={**existing,'prefixes':selected};settings['version']=2
-        scope=settings.setdefault('search_scope',{});scope.setdefault('global_domains',['_global']);scope.setdefault('foreign_domains',[])
+        domains[name]={**existing,'prefixes':selected}
+        settings['version']=2
+        scope=settings.setdefault('search_scope',{})
+        scope.setdefault('global_domains',['_global'])
+        scope.setdefault('foreign_domains',[])
         transaction(root,{'bindings.json':canonical_json(settings)},'bind_domain',expected={'bindings.json':read})
-        directory=root/'domains'/name;(directory/'notes').mkdir(parents=True,exist_ok=True);(directory/'archive').mkdir(exist_ok=True)
-        reconcile(name,root);return directory
+        directory=root/'domains'/name
+        (directory/'notes').mkdir(parents=True,exist_ok=True)
+        (directory/'archive').mkdir(exist_ok=True)
+        reconcile(name,root)
+        return directory
 
 def unbind_domain(name,root=None):
     """Drop a domain's folder bindings (a journaled change to bindings.json). Refused for a global domain, an unknown name, and while notes or archived notes remain:
     move them first (remap), so no note is orphaned. The domain's folders stay on disk."""
     from .common import global_domains
     from .repository import _note_files
-    root=Path(root or memory_root()).resolve();name=safe_domain(name)
+    root=Path(root or memory_root()).resolve()
+    name=safe_domain(name)
     with store_lock(root):
         settings,read=_read_bindings(root,{})
         if not isinstance(settings,dict) or not isinstance(settings.get('domains',{}),dict):raise ValueError('Invalid bindings preserved')
@@ -60,13 +69,16 @@ def unbind_prefix(name,prefix,root=None):
     from .paths import fold
     def norm(value):return fold(Path(os.path.expandvars(str(value))).expanduser().resolve())
     def folders(entry):return [norm(p) for _,_,prefixes in _entries({'domains':{name:entry}}) for p in prefixes]
-    root=Path(root or memory_root()).resolve();name=safe_domain(name)
+    root=Path(root or memory_root()).resolve()
+    name=safe_domain(name)
     with store_lock(root):
         settings,read=_read_bindings(root,{})
         if not isinstance(settings,dict) or not isinstance(settings.get('domains',{}),dict):raise ValueError('Invalid bindings preserved')
         entry=settings.get('domains',{}).get(name)
         if not isinstance(entry,dict):raise ValueError(f'{name} is not a bound domain')
-        target=norm(prefix);shown=str(Path(os.path.expandvars(prefix)).expanduser().resolve());before=folders(entry)
+        target=norm(prefix)
+        shown=str(Path(os.path.expandvars(prefix)).expanduser().resolve())
+        before=folders(entry)
         if target not in before:raise ValueError(f"{name} is not bound to {shown}; its folders are: {', '.join(before) or 'none'}")
         changed=dict(entry)
         for key in ('prefixes','paths'):
@@ -80,7 +92,3 @@ def unbind_prefix(name,prefix,root=None):
         settings['domains'][name]=changed
         transaction(root,{'bindings.json':canonical_json(settings)},'unbind_prefix',expected={'bindings.json':read})
         return shown
-
-def main(argv=None):
-    p=argparse.ArgumentParser();p.add_argument('name');p.add_argument('prefix',nargs='+');p.add_argument('--root',type=Path,default=memory_root());a=p.parse_args(argv);print(init_domain(a.name,a.prefix,a.root));return 0
-if __name__=='__main__':raise SystemExit(main())

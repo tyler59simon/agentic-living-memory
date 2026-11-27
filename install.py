@@ -19,11 +19,10 @@ import sys
 from pathlib import Path
 
 from core.installer_lifecycle import build_plan as build_lifecycle_plan
-from core.instructions import harness_home
+from core.instructions import CONFIG_FILES as CONFIG_NAMES, HARNESSES, harness_home
 
 SOURCE = Path(__file__).resolve().parent
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser().resolve()
-HARNESSES = ("claude", "codex", "copilot", "factory", "antigravity")
 
 
 def _install_home() -> Path:
@@ -40,9 +39,6 @@ INSTALL_DIR = INSTALL_HOME / "app"
 LEGACY_DIR = CODEX_HOME / "agentic-living-memory"
 LAUNCHER_DIR = Path.home() / ".local" / "bin"
 PROFILE_LINE = 'export PATH="$HOME/.local/bin:$PATH"  # agentic-living-memory'
-
-
-CONFIG_NAMES = {"claude": "settings.json", "codex": "hooks.json", "copilot": "hooks/agentic-living-memory.json", "factory": "hooks.json", "antigravity": "hooks.json"}
 
 
 def default_homes() -> list:

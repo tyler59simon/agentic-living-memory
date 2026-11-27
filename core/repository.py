@@ -513,7 +513,7 @@ def validate(note, domain, root=None, new=False, extra_tags=()):
             from .notes import slug
             expected = f"{prefix} - {slug(note['title'])}-{note['id'][:8]}.md"
             if Path(note['path']).name != expected:
-                raise ValueError('Filename must match type and title; use a reviewed update/rename plan')
+                raise ValueError('Filename must match type and title; use update to rename the note')
     from .note_format import check
     check(note["body"], note.get("type", "knowledge"), root)
     tags = note.get("tags", [])
@@ -736,6 +736,15 @@ FINAL_STATES = frozenset({"committed", "rolled_back", "abandoned"})
 _TAIL_STATE = re.compile(rb'"state":"([a-z_]+)"\}\s*$')
 
 
+def journal_state(path):
+    """Read a journal's state quickly from its last 64 bytes, falling back to full JSON parsing."""
+    with Path(path).open("rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        handle.seek(max(0, handle.tell() - 64))
+        match = _TAIL_STATE.search(handle.read())
+    return match[1].decode() if match else read_json(path)["state"]
+
+
 def unfinished_operations(root):
     """(IDs of operations that never reached a final state, IDs whose journal cannot be read).
 
@@ -753,13 +762,8 @@ def unfinished_operations(root):
         path = Path(folder) / "journal.json"
         if not path.is_file():
             continue
-        state = None
         try:
-            with path.open("rb") as handle:
-                handle.seek(0, os.SEEK_END)
-                handle.seek(max(0, handle.tell() - 64))
-                match = _TAIL_STATE.search(handle.read())
-            state = match[1].decode() if match else read_json(path)["state"]
+            state = journal_state(path)
         except (OSError, ValueError, KeyError, TypeError):
             unreadable.append(op_id)
             continue

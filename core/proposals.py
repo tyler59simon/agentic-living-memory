@@ -41,7 +41,8 @@ def get(root,pid):
 
 def rows(root,status='pending',session=None):
     """Proposals oldest first; status 'any' lists all, session limits them to one session."""
-    wanted=_hash(session) if session else None;out=[]
+    wanted=_hash(session) if session else None
+    out=[]
     for path in (Path(root)/'.turns').glob(PREFIX+'*.json'):
         row=read_json(path)
         if not isinstance(row,dict):continue

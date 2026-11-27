@@ -26,16 +26,22 @@ def parse(text):
     if not text.startswith('---\n'):return {},text.strip()
     head,sep,body=text[4:].partition('\n---')
     if not sep:return {},text.strip()
-    meta={};parent=None
+    meta={}
+    parent=None
     for line in head.split('\n'):
         if not line.strip() or line.lstrip().startswith('#'):continue
-        indented=line[:1] in (' ','\t');key,colon,value=line.strip().partition(':')
+        indented=line[:1] in (' ','\t')
+        key,colon,value=line.strip().partition(':')
         if not colon:continue
         value=value.strip()
         if len(value)>=2 and value[0]==value[-1] and value[0] in '"\'':value=value[1:-1]
         if indented and parent:meta.setdefault(parent,{})[key.strip()]=value
-        elif not value:parent=key.strip();meta[parent]={}
-        else:parent=None;meta[key.strip()]=value
+        elif not value:
+            parent=key.strip()
+            meta[parent]={}
+        else:
+            parent=None
+            meta[key.strip()]=value
     return meta,body.split('\n',1)[1].strip() if '\n' in body else ''
 
 def _title(name,fallback):
@@ -64,47 +70,72 @@ def _ingest(root,domain,source,redact=False,allow_similar=False):
     from .repository import inventory,find_secrets,redact as redact_text
     from .governance import commit
     from .cli import _infer_tags
-    root=Path(root).resolve();source=Path(source).expanduser()
+    root=Path(root).resolve()
+    source=Path(source).expanduser()
     if not source.is_dir():raise ValueError(f'No auto-memory folder at {source}')
-    existing=inventory(domain,root,retired=True);keys={n.get('capture_key'):n for n in existing if n.get('capture_key')}
+    existing=inventory(domain,root,retired=True)
+    keys={n.get('capture_key'):n for n in existing if n.get('capture_key')}
     active=[n for n in existing if n.get('status','active')=='active']
-    changes={};created=[];unchanged=[];skipped=[]
+    changes={}
+    created=[]
+    unchanged=[]
+    skipped=[]
     for path in sorted(source.glob('*.md')):
         name=path.name
         if name.upper()=='MEMORY.MD':continue
-        if path.is_symlink():skipped.append({'file':name,'reason':'symbolic link'});continue
-        if path.stat().st_size>MAX_BYTES:skipped.append({'file':name,'reason':f'larger than {MAX_BYTES//1024} KB'});continue
-        raw=path.read_bytes();key=KEY_PREFIX+hashlib.sha256(raw).hexdigest()
-        if key in keys:unchanged.append({'file':name,'ref':f"{domain}:{keys[key]['id']}"});continue
+        if path.is_symlink():
+            skipped.append({'file':name,'reason':'symbolic link'})
+            continue
+        if path.stat().st_size>MAX_BYTES:
+            skipped.append({'file':name,'reason':f'larger than {MAX_BYTES//1024} KB'})
+            continue
+        raw=path.read_bytes()
+        key=KEY_PREFIX+hashlib.sha256(raw).hexdigest()
+        if key in keys:
+            unchanged.append({'file':name,'ref':f"{domain}:{keys[key]['id']}"})
+            continue
         try:meta,body=parse(raw.decode('utf-8'))
-        except UnicodeDecodeError:skipped.append({'file':name,'reason':'not UTF-8 text'});continue
+        except UnicodeDecodeError:
+            skipped.append({'file':name,'reason':'not UTF-8 text'})
+            continue
         nested=meta.get('metadata') if isinstance(meta.get('metadata'),dict) else {}
         kind=str(nested.get('type') or meta.get('type') or '')
         note_type=TYPE_MAP.get(kind.strip().lower())
-        if not note_type:skipped.append({'file':name,'reason':f'unknown auto-memory type {kind!r}'});continue
-        title=_title(meta.get('name'),path.stem);summary=str(meta.get('description') or '').strip() or title
+        if not note_type:
+            skipped.append({'file':name,'reason':f'unknown auto-memory type {kind!r}'})
+            continue
+        title=_title(meta.get('name'),path.stem)
+        summary=str(meta.get('description') or '').strip() or title
         text=render(summary,_details(body))
         item={'title':title,'body':text,'type':note_type,'tags':[]}
         found=find_secrets('\n'.join((title,text)))
         if found and not redact:
-            skipped.append({'file':name,'reason':'credential: '+', '.join(sorted({k for k,_,_ in found}))+' (re-run with --redact to replace it)'});continue
+            skipped.append({'file':name,'reason':'credential: '+', '.join(sorted({k for k,_,_ in found}))+' (re-run with --redact to replace it)'})
+            continue
         redacted=[]
         if found:
-            item['title'],kinds=redact_text(item['title']);redacted+=kinds
-            item['body'],kinds=redact_text(item['body']);redacted+=kinds
+            item['title'],kinds=redact_text(item['title'])
+            redacted+=kinds
+            item['body'],kinds=redact_text(item['body'])
+            redacted+=kinds
         inferred=_infer_tags(item,root)
         if not any(t.startswith('concern/') for t in item['tags']) and 'concern/knowledge' in taxonomy(root):
             # Context notes (auto-memory "project") have no type default; they record what is known.
-            item['tags'].append('concern/knowledge');inferred.append('concern/knowledge')
+            item['tags'].append('concern/knowledge')
+            inferred.append('concern/knowledge')
         similar=None if allow_similar else similar_title(item['title'],active)
         if similar:
-            skipped.append({'file':name,'reason':f"similar to {domain}:{similar['id']} \"{similar['title']}\"; update that note, or re-run with --allow-similar"});continue
+            skipped.append({'file':name,'reason':f"similar to {domain}:{similar['id']} \"{similar['title']}\"; update that note, or re-run with --allow-similar"})
+            continue
         # The ID comes from the file's hash, so two proposals for the same file target the same path: once one
         # is applied, the other fails as stale instead of creating a second copy.
         note_id=str(uuid.uuid5(uuid.NAMESPACE_URL,key))
         try:target,note,serialized=build_note(item['title'],item['body'],item['tags'],domain,root,note_type,key=key,note_id=note_id)
-        except ValueError as error:skipped.append({'file':name,'reason':str(error)});continue
-        changes[target.relative_to(root).as_posix()]=serialized;active.append(note)
+        except ValueError as error:
+            skipped.append({'file':name,'reason':str(error)})
+            continue
+        changes[target.relative_to(root).as_posix()]=serialized
+        active.append(note)
         entry={'file':name,'ref':f"{domain}:{note['id']}",'title':note['title'],'type':note_type,'tags':note['tags']}
         if inferred:entry['inferred_tags']=inferred
         if redacted:entry['redacted']=sorted(set(redacted))

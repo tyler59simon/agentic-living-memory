@@ -40,7 +40,9 @@ ENV_NAME=re.compile(r'[A-Z][A-Z0-9_]{1,63}\Z')
 
 class ConnectorError(ValueError):
     """A failed pull, with a message that never carries the token; status is the HTTP status, when there was one."""
-    def __init__(self,message,status=None):super().__init__(message);self.status=status
+    def __init__(self,message,status=None):
+        super().__init__(message)
+        self.status=status
 
 def _sleep(seconds):time.sleep(seconds)   # a seam for the tests
 
@@ -122,10 +124,13 @@ class _SameOrigin(urllib.request.HTTPRedirectHandler):
 class Client:
     """JSON over HTTP with the source's credential, timeouts, bounded retries and a deadline for the whole sync."""
     def __init__(self,spec,deadline):
-        name=spec['token_env'];token=os.environ.get(name,'').strip()
+        name=spec['token_env']
+        token=os.environ.get(name,'').strip()
         if not token:raise ConnectorError(f'environment variable {name} is not set; it must hold the token for source {spec["name"]}')
         if re.search(r'[\x00-\x1f\x7f]',token):raise ConnectorError(f'environment variable {name} holds an invalid token (control characters)')
-        self.secrets=[s for s in (token,base64.b64encode(token.encode()).decode()) if s];self.name=name;self.deadline=deadline
+        self.secrets=[s for s in (token,base64.b64encode(token.encode()).decode()) if s]
+        self.name=name
+        self.deadline=deadline
         host=urllib.parse.urlsplit(spec['base_url']).hostname
         auth='Basic '+base64.b64encode(token.encode()).decode() if spec['kind']=='confluence' and ':' in token else 'Bearer '+token
         self.headers={'Authorization':auth,'Accept':'application/json','User-Agent':'living-memory-connector'}
@@ -139,7 +144,9 @@ class Client:
 
     def get(self,url,body=None):
         """The decoded JSON of one request; 429 and 5xx (and a network error) are retried up to RETRIES times."""
-        attempt=0;where=urllib.parse.urlsplit(url);place=f'{where.netloc}{where.path}'
+        attempt=0
+        where=urllib.parse.urlsplit(url)
+        place=f'{where.netloc}{where.path}'
         while True:
             remaining=self.deadline-time.monotonic()
             if remaining<=0:raise ConnectorError('the time budget for this sync ran out; what was fetched is kept, run source-sync again to continue')
@@ -162,12 +169,16 @@ class Client:
             except (urllib.error.URLError,OSError) as exc:
                 if attempt>=RETRIES:raise ConnectorError(self.scrub(f'cannot reach {where.netloc} after {RETRIES} retries: {getattr(exc,"reason",exc)}'))
             if delay>=self.deadline-time.monotonic():raise ConnectorError('the time budget for this sync ran out while waiting to retry')
-            attempt+=1;_sleep(delay)
+            attempt+=1
+            _sleep(delay)
 
 # ---- Confluence -----------------------------------------------------------------------------------------------------
 def _confluence_page(spec,r,top=''):
-    links=r.get('_links') or {};version=r.get('version') or {};body=((r.get('body') or {}).get('export_view') or {}).get('value')
-    api=spec.get('api_path',CONFLUENCE_API);site=links.get('base') or top or spec['base_url']+(api[:-len('/rest/api')] if api.endswith('/rest/api') else '')
+    links=r.get('_links') or {}
+    version=r.get('version') or {}
+    body=((r.get('body') or {}).get('export_view') or {}).get('value')
+    api=spec.get('api_path',CONFLUENCE_API)
+    site=links.get('base') or top or spec['base_url']+(api[:-len('/rest/api')] if api.endswith('/rest/api') else '')
     web=links.get('webui') or ''
     url=(site.rstrip('/')+web) if web.startswith('/') and str(site).startswith(('http://','https://')) else ''
     return {'id':str(r['id']),'title':str(r.get('title') or r['id']),'version':str(version.get('number','')),'modified':version.get('when'),'url':url,
@@ -177,18 +188,22 @@ def _confluence_list(client,spec,first):
     """Pages of a content listing (space or descendants), following _links.next by start offset."""
     start=0
     while True:
-        data=client.get(f'{first}&limit={PAGE_SIZE}&start={start}');results=data.get('results') or []
+        data=client.get(f'{first}&limit={PAGE_SIZE}&start={start}')
+        results=data.get('results') or []
         for r in results:
             if isinstance(r,dict) and 'id' in r:yield _confluence_page(spec,r,(data.get('_links') or {}).get('base',''))
         if not results or not (data.get('_links') or {}).get('next'):return
         start+=len(results)
 
 def _confluence(client,spec):
-    api=spec['base_url']+spec.get('api_path',CONFLUENCE_API);missing=spec.setdefault('missing',[])
+    api=spec['base_url']+spec.get('api_path',CONFLUENCE_API)
+    missing=spec.setdefault('missing',[])
     def one(pid):
         try:return _confluence_page(spec,client.get(f'{api}/content/{pid}?expand={EXPAND}'))
         except ConnectorError as exc:
-            if exc.status==404:missing.append(pid);return None
+            if exc.status==404:
+                missing.append(pid)
+                return None
             raise
     if spec.get('space'):yield from _confluence_list(client,spec,f"{api}/content?spaceKey={urllib.parse.quote(spec['space'])}&type=page&expand={EXPAND}")
     if spec.get('root_page'):
@@ -219,7 +234,8 @@ def _plain(items):return ''.join(t.get('plain_text') or '' for t in items or [] 
 def _table(rows,data):
     cells=[[_rich(c).replace('|','\\|').replace('\n',' ') for c in (r.get('table_row') or {}).get('cells') or []] for r in rows if r.get('type')=='table_row']
     if not cells:return []
-    width=max(len(r) for r in cells);cells=[r+['']*(width-len(r)) for r in cells]
+    width=max(len(r) for r in cells)
+    cells=[r+['']*(width-len(r)) for r in cells]
     header,rest=(cells[0],cells[1:]) if data.get('has_column_header') else ([' ']*width,cells)
     return ['| '+' | '.join(header)+' |','|'+' --- |'*width]+['| '+' | '.join(r)+' |' for r in rest]
 
@@ -227,23 +243,48 @@ LISTS=frozenset({'bulleted_list_item','numbered_list_item','to_do','toggle'})
 def notion_markdown(blocks,indent=''):
     """Markdown for Notion blocks (children already fetched under each block's 'children'): paragraphs, headings, lists, to-dos, code,
     quotes, callouts, toggles (as bullets), tables, dividers, links to sub-pages and embeds; unsupported blocks keep their text."""
-    out=[];number=0;previous_list=False
+    out=[]
+    number=0
+    previous_list=False
     for b in blocks:
         if not isinstance(b,dict):continue
-        t=b.get('type') or '';d=b.get(t) if isinstance(b.get(t),dict) else {};kids=b.get('children') or [];text=_rich(d.get('rich_text'));number=number+1 if t=='numbered_list_item' else 0
-        child=indent;lines=[]
-        if t=='bulleted_list_item':lines=[f'{indent}- {text}'];child=indent+'  '
-        elif t=='numbered_list_item':lines=[f'{indent}{number}. {text}'];child=indent+'   '
-        elif t=='to_do':lines=[f"{indent}- [{'x' if d.get('checked') else ' '}] {text}"];child=indent+'  '
-        elif t=='toggle':lines=[f'{indent}- {text}'];child=indent+'  '
+        t=b.get('type') or ''
+        d=b.get(t) if isinstance(b.get(t),dict) else {}
+        kids=b.get('children') or []
+        text=_rich(d.get('rich_text'))
+        number=number+1 if t=='numbered_list_item' else 0
+        child=indent
+        lines=[]
+        if t=='bulleted_list_item':
+            lines=[f'{indent}- {text}']
+            child=indent+'  '
+        elif t=='numbered_list_item':
+            lines=[f'{indent}{number}. {text}']
+            child=indent+'   '
+        elif t=='to_do':
+            lines=[f"{indent}- [{'x' if d.get('checked') else ' '}] {text}"]
+            child=indent+'  '
+        elif t=='toggle':
+            lines=[f'{indent}- {text}']
+            child=indent+'  '
         elif t in {'heading_1','heading_2','heading_3'}:lines=[f"{indent}{'#'*int(t[-1])} {text}"]
         elif t=='code':
-            language=d.get('language') or '';lines=[f"{indent}```{'' if language=='plain text' else language}"]+[indent+l for l in _plain(d.get('rich_text')).split('\n')]+[indent+'```']
-        elif t=='quote':lines=[f'{indent}> {text}'];child=indent+'> '
-        elif t=='callout':icon=(d.get('icon') or {}).get('emoji') or '';lines=[f"{indent}> {icon+' ' if icon else ''}{text}"];child=indent+'> '
+            language=d.get('language') or ''
+            lines=[f"{indent}```{'' if language=='plain text' else language}"]+[indent+l for l in _plain(d.get('rich_text')).split('\n')]+[indent+'```']
+        elif t=='quote':
+            lines=[f'{indent}> {text}']
+            child=indent+'> '
+        elif t=='callout':
+            icon=(d.get('icon') or {}).get('emoji') or ''
+            lines=[f"{indent}> {icon+' ' if icon else ''}{text}"]
+            child=indent+'> '
         elif t=='divider':lines=[indent+'---']
-        elif t=='table':lines=[indent+l for l in _table(kids,d)];kids=[]
-        elif t in {'child_page','child_database'}:lines=[f"{indent}- (sub-page) {d.get('title') or ''}"];kids=[]
+        elif t=='table':
+            lines=[indent+l for l in _table(kids,d)]
+            kids=[]
+        elif t in {'child_page','child_database'}:
+            lines=[f"{indent}- (sub-page) {d.get('title') or ''}"]
+            kids=[]
         elif t in {'bookmark','embed','link_preview'} and d.get('url'):lines=[f"{indent}[{d['url']}]({d['url']})"]
         elif t=='equation':lines=[f"{indent}$$ {d.get('expression') or ''} $$"]
         elif t in {'image','file','pdf','video','audio'} and _rich(d.get('caption')):lines=[f"{indent}[{t}: {_rich(d.get('caption'))}]"]
@@ -251,12 +292,14 @@ def notion_markdown(blocks,indent=''):
         is_list=t in LISTS
         if lines:
             if out and not (is_list and previous_list):out.append('')
-            out+=lines;previous_list=is_list
+            out+=lines
+            previous_list=is_list
         if kids:
             inner=notion_markdown(kids,child)
             if inner:
                 if out and not (lines and (is_list or t in {'quote','callout'})):out.append('')
-                out+=inner.split('\n');previous_list=is_list
+                out+=inner.split('\n')
+                previous_list=is_list
     return '\n'.join(out)
 
 def _notion_title(page):
@@ -268,25 +311,29 @@ def _children(client,base,block_id,depth,count):
     """The blocks under one block or page, following next_cursor and recursing into children up to MAX_DEPTH levels and MAX_BLOCKS blocks."""
     bid=str(block_id or '').strip()
     if not bid:return []
-    blocks=[];cursor=None
+    blocks=[]
+    cursor=None
     while True:
         data=client.get(f"{base}/v1/blocks/{urllib.parse.quote(bid,safe='')}/children?page_size=100"+(f'&start_cursor={urllib.parse.quote(cursor)}' if cursor else ''))
         for b in data.get('results') or []:
             if not isinstance(b,dict):continue
             count[0]+=1
             if count[0]>MAX_BLOCKS:
-                blocks.append({'type':'paragraph','paragraph':{'rich_text':[{'plain_text':f'[page cut here: more than {MAX_BLOCKS} blocks]'}]}});return blocks
+                blocks.append({'type':'paragraph','paragraph':{'rich_text':[{'plain_text':f'[page cut here: more than {MAX_BLOCKS} blocks]'}]}})
+                return blocks
             if b.get('has_children') and depth<MAX_DEPTH and b.get('type') not in {'child_page','child_database'} and b.get('id'):b['children']=_children(client,base,b['id'],depth+1,count)
             blocks.append(b)
         if not data.get('has_more') or not data.get('next_cursor'):return blocks
         cursor=data['next_cursor']
 
 def _notion_page(client,base,p):
-    pid=str(p['id']);return {'id':pid,'title':_notion_title(p) or pid,'version':str(p.get('last_edited_time') or ''),'modified':p.get('last_edited_time'),'url':str(p.get('url') or ''),'ancestors':[],
+    pid=str(p['id'])
+    return {'id':pid,'title':_notion_title(p) or pid,'version':str(p.get('last_edited_time') or ''),'modified':p.get('last_edited_time'),'url':str(p.get('url') or ''),'ancestors':[],
                              'load':lambda:notion_markdown(_children(client,base,pid,0,[0]))}
 
 def _notion(client,spec):
-    base=spec['base_url'];missing=spec.setdefault('missing',[])
+    base=spec['base_url']
+    missing=spec.setdefault('missing',[])
     for db in spec.get('database_ids') or []:
         cursor=None
         while True:
@@ -298,7 +345,9 @@ def _notion(client,spec):
     for pid in spec.get('page_ids') or []:
         try:p=client.get(f'{base}/v1/pages/{pid}')
         except ConnectorError as exc:
-            if exc.status==404:missing.append(pid);continue
+            if exc.status==404:
+                missing.append(pid)
+                continue
             raise
         if isinstance(p,dict) and 'id' in p and not (p.get('archived') or p.get('in_trash')):yield _notion_page(client,base,p)
 
@@ -325,27 +374,49 @@ def pull(root,spec,full=False):
     Only pages whose version differs are fetched in full and rewritten (full: all of them); with a complete listing, cached pages that are
     gone upstream are removed. A failure keeps what was fetched, is recorded in the manifest (shown by `sources`) and is returned as `error`."""
     from .sources import redact_text
-    name=spec['name'];kind=spec['kind'];folder=cache_dir(root,name)
+    name=spec['name']
+    kind=spec['kind']
+    folder=cache_dir(root,name)
     result={'name':name,'fetched':0,'unchanged':0,'removed':0,'skipped':0,'missing':[],'truncated':False,'redacted':0,'error':None}
     try:
         with file_lock(Path(root)/'hooks'/f'sources-pull-{name}.lock',timeout=0):
-            old=manifest(root,name);pages=dict(old.get('pages') or {});skipped={};seen=set();complete=False;folder.mkdir(parents=True,exist_ok=True);client=None
+            old=manifest(root,name)
+            pages=dict(old.get('pages') or {})
+            skipped={}
+            seen=set()
+            complete=False
+            folder.mkdir(parents=True,exist_ok=True)
+            client=None
             try:
-                fields=validate(kind,spec,strict=False);work=dict(spec,**fields);client=Client(work,time.monotonic()+BUDGET)
+                fields=validate(kind,spec,strict=False)
+                work=dict(spec,**fields)
+                client=Client(work,time.monotonic()+BUDGET)
                 for page in (_confluence if kind=='confluence' else _notion)(client,work):
-                    if len(seen)>=MAX_PAGES:result['truncated']=True;break
-                    pid=page['id'];seen.add(pid);rel=_file(page,kind);prev=pages.get(pid)
+                    if len(seen)>=MAX_PAGES:
+                        result['truncated']=True
+                        break
+                    pid=page['id']
+                    seen.add(pid)
+                    rel=_file(page,kind)
+                    prev=pages.get(pid)
                     clean_title=redact_text(str(page['title']))[0]
                     clean_anc=[redact_text(str(a))[0] for a in (page.get('ancestors') or [])]
                     if prev and not full and prev.get('version')==page['version'] and prev.get('path')==rel and (folder/rel).is_file():
-                        pages[pid]=dict(prev,title=clean_title,url=page['url'],modified=page['modified']);result['unchanged']+=1;continue
+                        pages[pid]=dict(prev,title=clean_title,url=page['url'],modified=page['modified'])
+                        result['unchanged']+=1
+                        continue
                     text,redacted=redact_text(_render(page,kind,page['body'] if 'body' in page else page['load']()))
                     if prev and prev.get('path')!=rel:_safe_cache_unlink(folder,prev.get('path'))
                     if len(text.encode())>MAX_PAGE_BYTES:
-                        skipped[pid]={'title':clean_title,'reason':f'larger than {MAX_PAGE_BYTES>>20} MB'};result['skipped']+=1
-                        if prev:_safe_cache_unlink(folder,prev.get('path'));pages.pop(pid,None)
+                        skipped[pid]={'title':clean_title,'reason':f'larger than {MAX_PAGE_BYTES>>20} MB'}
+                        result['skipped']+=1
+                        if prev:
+                            _safe_cache_unlink(folder,prev.get('path'))
+                            pages.pop(pid,None)
                         continue
-                    atomic_write(folder/rel,text);result['redacted']+=redacted;result['fetched']+=1
+                    atomic_write(folder/rel,text)
+                    result['redacted']+=redacted
+                    result['fetched']+=1
                     pages[pid]={'title':clean_title,'version':page['version'],'modified':page['modified'],'url':page['url'],'path':rel,'ancestors':clean_anc}
                 else:complete=True
                 result['missing']=work.get('missing',[])
@@ -355,7 +426,9 @@ def pull(root,spec,full=False):
                 result['error']=(client.scrub(msg) if client else msg)[:300]
             if complete and not result['truncated']:   # the whole listing was seen: what it no longer has is gone upstream
                 for pid in [p for p in pages if p not in seen]:
-                    _safe_cache_unlink(folder,pages[pid].get('path'));del pages[pid];result['removed']+=1
+                    _safe_cache_unlink(folder,pages[pid].get('path'))
+                    del pages[pid]
+                    result['removed']+=1
             failed=result['error']
             atomic_write(folder/'manifest.json',canonical_json({'version':1,'source':name,'kind':kind,'synced':old.get('synced') if failed else now(),'attempted':now(),
                          'error':{'at':now(),'message':failed} if failed else None,'truncated':result['truncated'],'pages':dict(sorted(pages.items())),'skipped':skipped}))

@@ -1,6 +1,6 @@
-﻿"""Shared deterministic lifecycle behavior; adapters translate native wire formats."""
+"""Shared deterministic lifecycle behavior; adapters translate native wire formats."""
 from __future__ import annotations
-import hashlib,json,os,re,shlex,sys,time
+import hashlib,json,os,re,sys,time
 from pathlib import Path
 from .common import memory_root,load_bindings,resolve_domain,atomic_write,canonical_domain,file_lock,head_oid,parse_iso
 from .repository import read_json,canonical_json,now
@@ -8,26 +8,43 @@ from . import clock
 from .capture import status as capture_status,turn_key
 from .note_types import NOTE_TYPES
 
-def active(script):
-    from .launcher import active as _active
-    return _active(script)
-
 from .instructions import FALLBACK_PROTOCOL,AUTO_MEMORY,fallback_usage,installed
-SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
+from .shell_guard import (
+    SCRIPT,GLOBAL_OPTIONS,VALUE_OPTIONS,ALLOWED_SUBCOMMANDS,MUTATING_SUBCOMMANDS,
+    HIVEMIND_GOVERNED,HIVEMIND_DENY,DOC_WRITE_ACTIONS,DOC_AGENT_ACTIONS,PRIVATE_DENY,SERVE_DENY,SUBAGENT_DENY,
+    SHELL_META,POWERSHELL_META,STOP_PARSING,POWERSHELL_QUOTES,SHELL_GRAMMARS,
+    SHELL_WRAPPERS,PREFIX_COMMANDS,INTERPRETER,ASSIGNMENT,PAGE_ID,FILE_OPTIONS,
+    READONLY_SIMPLE,READONLY_GIT,VARIABLE_PARAMETER,FOREACH_PROPERTIES,FIND_WRITERS,NULL_SINKS,
+    SHELL_KEYWORDS,SHELL_CLOSERS,SED_FLAGS,SED_SAFE,AWK_UNSAFE,XARGS_VALUED,UNIQ_VALUED,
+    active,_norm,shell_command,shell_grammar,_words,_parsed,_option_width,_subcommand,memory_subcommand,
+    _names_memory,_doc_action,doc_write,serve_command,_command_words,_memory_option_words,include_private,
+    _settles_page,page_settle,_subcommand_rest,config_write,hivemind_governed,_option_values,remote_sync,
+    views_write,_json_format,wiki_build,wiki_write,maintenance_write,maintenance_paid,rebaseline_write,
+    proposals_write,taxonomy_write,memory_write,subagent_write_verb,auto_allowed,
+    _positional,_sed_script_safe,_sed_readonly,_awk_readonly,_xargs_command,_readonly_segment,_shell_pipelines,
+    readonly_shell,writing_shell_text,
+)
+from .signals import (
+    MACHINE_PROMPT,IGNORED,QUOTED,QUOTED_CHARS,STATEMENT_BREAK,TRANSIENT,SIGNALS,
+    DIRECTIVE_STRONG,DIRECTIVE_WEAK,PRIORITY,SIGNAL_TEXT,BLOCKING_SIGNALS,
+    SIGNALS_SEEN,MAX_SIGNALS_SEEN,MAX_SIGNAL_WORDS,MIN_COVER_WORDS,SIGNAL_STOP,
+    NUDGE_KINDS,NUDGE_NOTE_TYPES,NUDGE_NOTES,
+    _statements,signals_of,signal_of,durable_signal,_statement_hash,signals_seen,
+    settle_signal,settle_signals,content_hashes,covers_signal,signal_notes,signal_nudge,
+)
+from .prompt_context import (
+    HIT_SNIPPET,LONG_PROMPT,LONG_SEGMENTS,LONG_LEAST,HEADING,
+    LIST_ITEM,LIST_MARK,LIST_MIN,LIST_QUERIES,LIST_HITS,ITEM_LEAST,LIST_CAP,LIST_SNIPPET,LIST_BUDGET,
+    MAX_QUESTIONS,DELIVERY,SIBLING_DOMAINS,SIBLING_LEAST_TERMS,
+    hit_marks,hit_line,revision_key,_snippeted,_unseen,relevance_gate,
+    _is_item,_pieces,prompt_segments,list_items,questions,item_queries,long_queries,
+    context,_own_scope,sibling_hit,_deliver,parent_domains,child_domains,scope_domains,child_path,scoped_file_hits,
+)
 # Tools that cannot change files; anything else marks the turn as mutating.
 READ_TOOLS={'read','read_file','glob','grep','search','view_image','view','ls','list','webfetch','websearch','web_fetch','web_search','todowrite','task','agent','toolsearch','askuserquestion','exitplanmode','enterplanmode'}
 SHELL_TOOLS={'bash','powershell','shell','run_shell_command','exec_command','local_shell','execute'}
-# The bulk writes (delete, merge, retag, migrate, restore-backup, import, ingest, overlay-teardown) are left out on purpose:
-# they are direct and undoable, and the harness asks the user before each one (the user chose this gate on 2026-11-26).
-ALLOWED_SUBCOMMANDS={'ask','types','sources','source-sync','ingest-scan','search','read','taxonomy','doctor','history','logs','capture','capture-finalize','validate','update','supersede','review','backup','open','check','stats','confirm','timeline','archive','rewrite','promote','projects','systems','views','wiki','resolve','reopen','restore','log','maintenance','rebaseline','recap','status','help','propose','proposals','doc'}
-# Subagents are read-only: these are denied for them even though the main agent gets them auto-allowed. Their one write is
-# propose, a draft in .turns/ that only the main agent turns into a note (proposals accept, or capture --from-proposal with an edited note) or rejects.
-MUTATING_SUBCOMMANDS={'capture','capture-finalize','update','supersede','backup','check','confirm','resolve','reopen','restore','off','on','undo','archive','rewrite','remap','promote','source','project','system','type',
-                     'delete','merge','retag','migrate','restore-backup','import','ingest','overlay-teardown','setup','upgrade',
-                     'sync','overlay-build','overlay-sync-all'}   # a vault sync by hand applies vault deletions, archives and resolves   # `taxonomy add` is the same kind of write: taxonomy_write
-GLOBAL_OPTIONS={'--root','--domain','--cwd','--actor'}
 HOOK_LOCK_TIMEOUT=5
-# Codex has no SessionEnd, so its session start picks up Obsidian edits, at most this often.
+# Harnesses without SessionEnd pick up Obsidian edits at session start, at most this often.
 SESSION_START_SYNC_SECONDS=15*60
 
 def _configured_root():
@@ -48,8 +65,9 @@ def hint_command(root,state,domain=None):
     return 'CMD' if isinstance(state,dict) and state.get('domain') else command(root,domain)
 
 def _tag_summary(root):
+    from .tag_taxonomy import load_tags
     try:
-        data=read_json(Path(root)/'tag_taxonomy.json',{'tags':[]});tags=data.get('tags',[]) if isinstance(data,dict) else data
+        tags=load_tags(root)
     except ValueError:return ''
     facets={}
     for tag in sorted(tags):
@@ -66,14 +84,16 @@ def _custom_types_line(root):
         parts=[]
         for name,entry in sorted(custom_types(root).items()):
             if entry.get('status','active')!='active':continue
-            found=definition(name,root);extra=list(found['sections'])+(['action items'] if found['actions'] else [])
+            found=definition(name,root)
+            extra=list(found['sections'])+(['action items'] if found['actions'] else [])
             parts.append(name+(f" ({', '.join(extra)})" if extra else '')+': '+found['description'])
         if not parts:return ''
         line='Custom note types (--type NAME): '+'; '.join(parts)
         return line if len(line)<=CUSTOM_TYPES_BUDGET else line[:CUSTOM_TYPES_BUDGET-30].rsplit(' ',1)[0]+' ... (CMD types lists them all)'
     except Exception as exc:
         from .logs import swallowed
-        swallowed('runtime.custom_types_line',exc,root);return ''
+        swallowed('runtime.custom_types_line',exc,root)
+        return ''
 
 def protocol(root,domain=None,harness='',session='SESSION',room=None):
     """SessionStart context (re-fires after compaction). When the harness's instruction file carries the
@@ -94,7 +114,8 @@ def protocol(root,domain=None,harness='',session='SESSION',room=None):
         return text
     text=build(tags,custom)
     if room is not None and len(text)>room and custom:
-        custom='Custom note types: CMD types lists them.';text=build(tags,custom)
+        custom='Custom note types: CMD types lists them.'
+        text=build(tags,custom)
     if room is not None and len(text)>room:
         text=build('\nTags: CMD taxonomy lists them; new notes need existing subject/ and concern/ tags.',custom)
     return text
@@ -139,7 +160,8 @@ def protected_rule(path,cwd,root):
     try:
         p=Path(os.path.expandvars(path)).expanduser()
         if not p.is_absolute():p=Path(cwd)/p
-        p=p.resolve();root=Path(root).resolve()
+        p=p.resolve()
+        root=Path(root).resolve()
         from .storage import config_path
         from .paths import is_within,path_key
         if is_within(p,root/'domains'):return 'domains'
@@ -153,18 +175,23 @@ def protected_rule(path,cwd,root):
 _VAULT_ROOTS_CACHE={}   # str(root) -> (sig, frozenset(Path))
 
 def vault_roots(root):
-    root_p=Path(root);key=str(root_p);domains_dir=root_p/'domains'
+    root_p=Path(root)
+    key=str(root_p)
+    domains_dir=root_p/'domains'
     if not domains_dir.is_dir():return set()
-    sig=[];paths=[]
+    sig=[]
+    paths=[]
     try:
         for entry in os.scandir(domains_dir):
             if not entry.is_dir(follow_symlinks=False):continue
             state=Path(entry.path)/'sync-state.json'
             try:st=os.stat(state)
             except OSError:continue
-            sig.append((entry.name,st.st_mtime_ns,st.st_size));paths.append(state)
+            sig.append((entry.name,st.st_mtime_ns,st.st_size))
+            paths.append(state)
     except OSError:return set()
-    sig_t=tuple(sorted(sig));hit=_VAULT_ROOTS_CACHE.get(key)
+    sig_t=tuple(sorted(sig))
+    hit=_VAULT_ROOTS_CACHE.get(key)
     if hit is not None and hit[0]==sig_t:return set(hit[1])
     found=set()
     for state in paths:
@@ -192,626 +219,6 @@ def raw_paths(value):
         return patch+quoted+absolute
     return []
 
-def _norm(path):return os.path.normcase(str(path).replace('/','\\') if os.name=='nt' else str(path))
-
-def shell_command(args):
-    if isinstance(args,dict):
-        value=args.get('command',args.get('cmd'))
-        if isinstance(value,list):value=value[-1] if value else ''
-        return value if isinstance(value,str) else ''
-    return args if isinstance(args,str) else ''
-
-# Outside quotes these run, chain, redirect or expand. Parentheses open a subshell in Bash and evaluate an
-# expression in PowerShell: `search (Remove-Item x)` runs the cmdlet before the script sees its arguments.
-# Braces are a script block in PowerShell and expand in Bash ({a,/etc/passwd} becomes two arguments).
-SHELL_META=frozenset(';|&<>`$(){}\r\n')
-# PowerShell only: splatting, array expressions and here-strings.
-POWERSHELL_META=frozenset('@')
-# PowerShell's stop-parsing token: what follows is no longer read by the rules tracked here.
-STOP_PARSING='--%'
-# PowerShell reads these as quotation marks too, so a curly quote can close a string an ASCII quote opened.
-POWERSHELL_QUOTES=frozenset('\u2018\u2019\u201a\u201b\u201c\u201d\u201e')
-SHELL_GRAMMARS=('posix','powershell')
-
-def shell_grammar(tool):
-    """The quoting rules a shell tool's command follows: 'posix', 'powershell', or None when the tool does not say."""
-    return 'posix' if tool=='bash' else 'powershell' if tool=='powershell' else None
-
-def _words(rest,grammar):
-    """The argument words of a command line that cannot run or expand anything, else None.
-
-    Quote state is tracked per shell, because the two disagree. In Bash a backslash outside quotes makes the
-    next character literal, so \\' does not open a string and '\\'' is a quote inside single-quoted text. In
-    PowerShell a backslash is an ordinary character and '' is the quote inside single-quoted text.
-    Single-quoted text is literal in both, so note text there may hold anything (->, |, $, newlines).
-    Double-quoted text may not expand ($, `) or, in Bash, escape (a backslash before $ ` " \\ or a newline);
-    other backslashes, as in Windows paths, are literal."""
-    words=[];word=None;state=None;i=0;ps=grammar=='powershell'
-    while i<len(rest):
-        ch=rest[i];nxt=rest[i+1:i+2]
-        if ps and ch in POWERSHELL_QUOTES:return None
-        if state=="'":
-            if ch!="'":word+=ch
-            elif ps and nxt=="'":word+="'";i+=1
-            else:state=None
-        elif state=='"':
-            if ch=='"':
-                if ps and nxt=='"':word+='"';i+=1
-                else:state=None
-            elif ch in '$`' or (not ps and ch=='\\' and nxt in ('$','`','"','\\','\n','\r','')):return None
-            else:word+=ch
-        elif ch in "'\"":state=ch;word=word or ''
-        elif ch=='\\' and not ps:
-            if nxt in ('','\n','\r'):return None
-            word=(word or '')+nxt;i+=1
-        elif ch=='#' and word is None:return None
-        elif ch in SHELL_META or (ps and ch in POWERSHELL_META and word is None):return None
-        elif ch.isspace():
-            if word is not None:words.append(word);word=None
-        else:word=(word or '')+ch
-        i+=1
-    if state is not None:return None
-    if word is not None:words.append(word)
-    return None if ps and STOP_PARSING in words else words
-
-def _parsed(text,grammar=None):
-    """The argument words of an exact, unchained living_memory.py invocation (interpreter and script paths each double- or single-quoted, or bare `alm` while launcher.active; an optional leading `&`), once per shell grammar that
-    may apply, else None. A tool that does not name its shell must be inert under both grammars."""
-    match=re.match(r'''\s*(?:&\s*)?(?:"([^"]+)"|'([^']+)')\s+(?:"([^"]+)"|'([^']+)')(.*)\Z''',text,re.S)   # each path double- or single-quoted: literal in both shells
-    if match:
-        if _norm(match[1] or match[2])!=_norm(sys.executable) or _norm(match[3] or match[4])!=_norm(SCRIPT):return None
-        rest=match[5]
-    else:
-        bare=re.match(r'\s*(?:&\s*)?alm(?=\s|\Z)(.*)\Z',text,re.S)
-        if not bare or not active(SCRIPT):return None   # fail closed: an `alm` that is not our launcher keeps the host's normal prompt
-        rest=bare[1]
-    found=[_words(rest,g) for g in ((grammar,) if grammar in SHELL_GRAMMARS else SHELL_GRAMMARS)]
-    return None if any(words is None for words in found) else found
-
-VALUE_OPTIONS=('--root','--domain','--cwd','--actor')
-
-def _option_width(word):
-    """How many words an option takes as argparse reads it: 2 for --root, --domain, --cwd and --actor and their abbreviations
-    (--dom), 1 for any other option and for --opt=value."""
-    if '=' in word:return 1
-    if word in GLOBAL_OPTIONS:return 2
-    return 2 if len(word)>=3 and word.startswith('--') and any(o.startswith(word) for o in VALUE_OPTIONS) else 1
-
-def _subcommand(words):
-    index=0
-    while index<len(words):
-        token=words[index]
-        if token.startswith('-'):index+=_option_width(token);continue
-        return token
-    return None
-
-def memory_subcommand(text,grammar=None):
-    """Subcommand of an exact, unchained living_memory.py invocation, else None. grammar: see shell_grammar."""
-    parsed=_parsed(text,grammar)
-    if not parsed:return None
-    found={_subcommand(words) for words in parsed}
-    return found.pop() if len(found)==1 else None
-
-# Hivemind sets HIVEMIND_SESSION for every program it starts in a terminal. Undo, the direct writes and the bulk writes there are the user's, done in Hivemind.
-HIVEMIND_GOVERNED={'undo','recover','upgrade','setup','archive','rewrite','remap','promote','source','project','system','type',
-                   'delete','merge','retag','migrate','restore-backup','import','ingest','overlay-teardown','sync','overlay-build','overlay-sync-all'}   # `taxonomy add` and `doc` writes are governed too (below)
-HIVEMIND_DENY=('Undo, setup, upgrade, the direct writes (archive, rewrite, remap, promote, taxonomy add, source, project, system, type), the bulk writes (delete, merge, retag, '
-               'migrate, restore-backup, import, ingest, overlay-teardown), a vault sync run by hand and folder notebook writes (settling a page proposal included) are for the user to do in Hivemind, '
-               'not for an agent. Stage a page edit with doc propose; for the rest, tell the user what to change.')
-# `doc` actions that write. `doc propose` is missing on purpose: it only stages an edit for the user, so agents may run it.
-DOC_WRITE_ACTIONS={'undo','folder'}
-# What agents may run. Anything else after `doc`, an unknown word included, counts as a write.
-DOC_AGENT_ACTIONS={'read','propose'}
-PRIVATE_DENY='Living Memory: private notebooks are excluded from agent sessions, so --include-private is not available here.'
-def _names_memory(tokens):
-    return any(t.lower().endswith(('living_memory.py','living_memory')) or re.split(r'[\\/]',t)[-1].lower() in ('alm','alm.exe','alm.cmd') for t in tokens)
-
-def _doc_action(words):
-    """The action of a `doc` command (the first word after `doc` that is not an option or an option's value), or None."""
-    index=0
-    while index<len(words) and words[index]!='doc':index+=_option_width(words[index]) if words[index].startswith('-') else 1
-    index+=1
-    while index<len(words):
-        word=words[index]
-        if word.startswith('-'):index+=_option_width(word);continue
-        return word
-    return None
-
-def doc_write(text,grammar):
-    """True when a `doc` command may write: any action but the reads and `doc propose`, and any action it cannot name."""
-    return any(_doc_action(words) not in DOC_AGENT_ACTIONS for words in _parsed(text,grammar) or [] if _subcommand(words)=='doc')
-
-def serve_command(text,grammar):
-    """True when a shell command runs `serve`, the JSON-lines server for apps: its requests carry their own arguments, which
-    the hook never sees. Text that cannot be parsed counts when it names living_memory or `alm` and a `serve` token."""
-    parsed=_parsed(text,grammar)
-    if parsed:return any(_subcommand(words)=='serve' for words in parsed)
-    import shlex
-    try:
-        lexer=shlex.shlex(text,posix=True,punctuation_chars=True);lexer.whitespace_split=True
-        tokens=list(lexer)   # quoted paths with spaces stay one word
-    except ValueError:
-        # Unbalanced quotes: fail closed, any `serve` word after a living_memory or alm token counts.
-        tokens=[t for t in re.split(r'''[\s;&|()"'`{}<>=,]+''',text) if t]
-        first=next((i for i,t in enumerate(tokens) if _names_memory([t])),None)
-        return first is not None and 'serve' in tokens[first+1:]
-    for index,token in enumerate(tokens):
-        if _names_memory([token]):
-            index+=1
-            while index<len(tokens) and tokens[index].startswith('-'):index+=_option_width(tokens[index])
-            if index<len(tokens) and tokens[index]=='serve':return True
-    return False
-SERVE_DENY='Living Memory: serve is the request server for apps such as Hivemind, not for agents; run the command itself.'
-
-SHELL_WRAPPERS=frozenset({'bash','sh','zsh','dash','pwsh','powershell','cmd','eval'})   # their arguments are command text
-PREFIX_COMMANDS=frozenset({'env','sudo','nohup','exec','time','command','xargs','nice','start','call'})   # they run the command that follows
-INTERPRETER=re.compile(r'(?:python[\d.]*|py)(?:\.exe)?',re.I)
-ASSIGNMENT=re.compile(r'[A-Za-z_]\w*=')
-
-def _command_words(text,ps):
-    """([[(word, quoted)]], [command text run inside $( ) or backticks]) for a shell command line, or None when a quote is left open. The
-    words of each simple command are split at ; | & ( ) { } and line ends, with quoting read as _words reads it; `quoted` says a word held
-    quoted text, which is a value, never an option."""
-    commands=[[]];nested=[];word=None;quoted=False;state=None;i=0;n=len(text)
-    def finish():
-        nonlocal word,quoted
-        if word is not None:commands[-1].append((word,quoted))
-        word=None;quoted=False
-    def substitution(at):
-        depth=0
-        for j in range(at+1,n):
-            if text[j]=='(':depth+=1
-            elif text[j]==')':
-                depth-=1
-                if depth==0:return text[at+2:j],j
-        return text[at+2:],n-1
-    def backticks(at):
-        end=text.find('`',at+1);end=n-1 if end<0 else end
-        return text[at+1:end],end
-    while i<n:
-        ch=text[i];nxt=text[i+1:i+2]
-        if state=="'":
-            if ch!="'":word+=ch
-            elif ps and nxt=="'":word+="'";i+=1
-            else:state=None
-        elif state=='"':
-            if ch=='"':
-                if ps and nxt=='"':word+='"';i+=1
-                else:state=None
-            elif ch=='$' and nxt=='(':inner,end=substitution(i);nested.append(inner);word+=text[i:end+1];i=end
-            elif ch=='`' and not ps:inner,end=backticks(i);nested.append(inner);word+=text[i:end+1];i=end
-            elif ch=='\\' and not ps and nxt in ('$','`','"','\\','\n','\r'):word+=nxt;i+=1   # as bash reads it: any other backslash, as in a Windows path, is literal
-            else:word+=ch
-        elif ch in "'\"":state=ch;word=word or '';quoted=True
-        elif ch=='\\' and not ps and nxt and nxt in ' \t\'"$`\\;&|<>(){}\n\r':word=(word or '')+nxt;i+=1   # an escaped character; before any other the backslash stays, as in a Windows path
-        elif ch=='`' and ps:   # PowerShell's escape character; before a line end it continues the command
-            if nxt in ('\n','\r'):finish()
-            elif nxt:word=(word or '')+nxt
-            i+=1
-        elif ch=='`':inner,end=backticks(i);nested.append(inner);word=(word or '')+text[i:end+1];i=end
-        elif ch=='$' and nxt=='(':inner,end=substitution(i);nested.append(inner);word=(word or '')+text[i:end+1];i=end
-        elif ch in ';|&(){}\n\r':finish();commands.append([])
-        elif ch.isspace() or ch in '<>':finish()
-        else:word=(word or '')+ch
-        i+=1
-    if state is not None:return None
-    finish()
-    return [c for c in commands if c],nested
-
-def _memory_option_words(text,ps,depth=0):
-    """The option words (unquoted, starting with --) of every living_memory.py or alm command in a shell command line, also those run inside
-    $( ), backticks and the text a shell is given (bash -c "..."). Words in quotes are values; other programs' options (grep --include) are
-    not asked about. None when the text cannot be read (a quote left open, nesting too deep)."""
-    if depth>4:return None
-    scanned=_command_words(text,ps)
-    if scanned is None:return None
-    work,nested=scanned;found=[]
-    for inner in nested:
-        words=_memory_option_words(inner,ps,depth+1)
-        if words is None:return None
-        found+=words
-    while work:
-        words=work.pop()
-        i=0
-        while i<len(words) and (words[i][0].lower() in PREFIX_COMMANDS or ASSIGNMENT.match(words[i][0]) or words[i][0].startswith('-') or re.fullmatch(r'/[A-Za-z]',words[i][0])):i+=1   # `cmd /c`
-        head=words[i:]
-        if not head:continue
-        first=re.split(r'[\\/]',head[0][0])[-1].lower()
-        if first.removesuffix('.exe') in SHELL_WRAPPERS:
-            for word,quoted in head[1:]:
-                if quoted:
-                    inner=_memory_option_words(word,ps,depth+1)
-                    if inner is None:return None
-                    found+=inner
-            work.append([w for w in head[1:] if not w[1]])   # `cmd /c alm ...`: the unquoted words are a command too
-            continue
-        rest=None
-        if _names_memory([head[0][0]]):rest=head[1:]
-        elif INTERPRETER.fullmatch(first):
-            for k,(word,_) in enumerate(head[1:],1):
-                if word.startswith('-'):continue
-                if _names_memory([word]):rest=head[k+1:]
-                break
-        if rest is not None:found+=[w for w,quoted in rest if not quoted and w.startswith('--')]
-    return found
-
-def include_private(text,grammar):
-    """True when a memory command asks for private notebooks: --include-private or an argparse abbreviation of it (3 characters or more),
-    given as an option word of a living_memory.py or alm command. Quoted values (a summary that mentions the flag) and other programs'
-    options (grep --include=*.py) do not count. Text that cannot be read counts when it names living_memory or a standalone `alm`
-    together with such a token."""
-    def flag(word):
-        name=word.partition('=')[0];return len(name)>=3 and name.startswith('--') and '--include-private'.startswith(name)
-    for g in (grammar,) if grammar in SHELL_GRAMMARS else SHELL_GRAMMARS:
-        words=_memory_option_words(text,g=='powershell')
-        if words is None:
-            tokens=[t for t in re.split(r'''[\s;&|()"'`{}<>,]+''',text) if t]
-            if _names_memory(tokens) and any(flag(t) for t in tokens):return True
-        elif any(flag(w) for w in words):return True
-    return False
-
-PAGE_ID=re.compile(r'[a-f0-9]{12}')
-
-def _settles_page(words):
-    """True when these words accept or reject a page edit (a 12-digit hex ID); a staged note's 8-digit ID is the main agent's to settle."""
-    return bool({'accept','reject'}&set(words)) and any(PAGE_ID.fullmatch(w) for w in words)
-
-def page_settle(text,grammar):
-    """True when an exact `proposals` command accepts or rejects a page edit: only the user settles those, so the harness's own prompt decides."""
-    return any(_subcommand(words)=='proposals' and _settles_page(words) for words in _parsed(text,grammar) or [])
-
-def _subcommand_rest(words,name):
-    """Argument words following subcommand `name`, skipping global options and their values via _option_width, else None."""
-    index=0
-    while index<len(words):
-        token=words[index]
-        if token.startswith('-'):index+=_option_width(token);continue
-        return words[index+1:] if token==name else None
-    return None
-
-def config_write(text,grammar):
-    """True when a `config` command writes (`config set`); `config get` only reads."""
-    for words in _parsed(text,grammar) or []:
-        rest=_subcommand_rest(words,'config')
-        if rest is not None and 'set' in rest:return True
-    return False
-
-def hivemind_governed(text,grammar):
-    """True when a shell command undoes an operation or makes a direct or bulk write: undo, recover, setup, taxonomy add, archive, delete, merge and the other HIVEMIND_GOVERNED verbs. Exact invocations are read by
-    word; text that cannot be parsed (chained, redirected, expanded) is refused when it names living_memory or a standalone `alm`
-    together with a governed word as a separate token."""
-    parsed=_parsed(text,grammar)
-    subs=[_subcommand(words) for words in parsed or []]
-    if parsed and all(sub and not sub.startswith('-') for sub in subs):   # an option in the subcommand slot (--domain=x, --dom x) is not a subcommand: read the tokens
-        return any(sub in HIVEMIND_GOVERNED or (sub=='taxonomy' and 'add' in (_subcommand_rest(words,'taxonomy') or ()))
-                   or (sub=='config' and 'set' in (_subcommand_rest(words,'config') or ()))
-                   or (sub=='doc' and _doc_action(words) not in DOC_AGENT_ACTIONS) or (sub=='proposals' and _settles_page(words)) for sub,words in zip(subs,parsed))
-    tokens=[t for t in re.split(r'''[\s;&|()"'`{}<>=,]+''',text) if t]
-    return _names_memory(tokens) and (any(t in HIVEMIND_GOVERNED for t in tokens) or ('taxonomy' in tokens and 'add' in tokens)
-                                      or ('config' in tokens and 'set' in tokens)
-                                      or ('doc' in tokens and any(t in DOC_WRITE_ACTIONS for t in tokens)) or ('proposals' in tokens and _settles_page(tokens)))
-
-# Options that read a file into a note. Auto-approval covers only files the session could already see.
-FILE_OPTIONS=('--content-file','--body-file','--payload-file','--spec-file')
-
-def _option_values(words,names):
-    """Values given to these options as `--opt VALUE` or `--opt=VALUE`, including argparse abbreviations (--content)."""
-    found=[]
-    for index,word in enumerate(words):
-        if not word.startswith('--') or len(word)<4:continue
-        name,sep,value=word.partition('=')
-        if any(option.startswith(name) for option in names):found.append(value if sep else words[index+1] if index+1<len(words) else '')
-    return found
-
-def remote_sync(text,grammar,root):
-    """True when an exact `source-sync` command would reach the network: --all-remote (or an abbreviation of it) or the name of a
-    registered confluence or notion source. Plain `source-sync` never does (it only re-indexes what remote caches hold)."""
-    parsed=_parsed(text,grammar)
-    if not parsed:return False
-    try:
-        from . import sources
-        remote={s['name'] for s in sources.load(root)['sources'] if s.get('kind') in sources.REMOTE}
-    except (ValueError,OSError):remote=set()   # without a readable registry no remote source resolves either
-    for words in parsed:
-        rest=_subcommand_rest(words,'source-sync')
-        if rest is None:continue
-        for word in rest:
-            if word in remote or (word.startswith('--a') and '--all-remote'.startswith(word.split('=')[0])):return True
-    return False
-
-def views_write(text,grammar):
-    """True when a `views` command writes: add, update, remove, published, or render except `--format json` with no --out."""
-    for words in _parsed(text,grammar) or []:
-        rest=_subcommand_rest(words,'views')
-        if not rest:continue
-        action=next((w for w in rest if not w.startswith('-')),'list')
-        if action in {'add','update','remove','published'}:return True
-        if action=='render' and (_option_values(rest,('--out',)) or not _json_format(rest)):return True
-    return False
-
-def _json_format(words):
-    """True when these words end up as `--format json`: argparse keeps the last value, so `--format json --format html` is html."""
-    return _option_values(words,('--format',))[-1:]==['json']
-
-def wiki_build(text,grammar):
-    """True when a `wiki` command is `--agent --build`, or an argparse abbreviation of --build: it calls a model and costs money."""
-    for words in _parsed(text,grammar) or []:
-        rest=_subcommand_rest(words,'wiki')
-        if rest is None:continue
-        if any(len(name)>=4 and '--build'.startswith(name) for name in (w.partition('=')[0] for w in rest if w.startswith('--'))):return True
-    return False
-
-def wiki_write(text,grammar):
-    """True when a `wiki` command writes a file or spends money: anything but `--format json` with no --out, and any --build."""
-    if wiki_build(text,grammar):return True
-    for words in _parsed(text,grammar) or []:
-        rest=_subcommand_rest(words,'wiki')
-        if rest is None:continue
-        if _option_values(rest,('--out',)) or not _json_format(rest):return True
-    return False
-
-def maintenance_write(text,grammar):
-    """True when a `maintenance` command runs or changes maintenance: run, enable or disable (status, preview and history only read)."""
-    for words in _parsed(text,grammar) or []:
-        rest=_subcommand_rest(words,'maintenance')
-        if rest is not None and {'run','enable','disable'}&set(rest):return True   # any word, so an option value before the action cannot hide it
-    return False
-
-def maintenance_paid(text,grammar):
-    """True when a `maintenance` command enables or triggers paid model runs (`enable` or `run`): the harness's own permission prompt decides."""
-    for words in _parsed(text,grammar) or []:
-        rest=_subcommand_rest(words,'maintenance')
-        if rest is not None and {'run','enable'}&set(rest):return True
-    return False
-
-def rebaseline_write(text,grammar):
-    """True when a `rebaseline` command may write (anything but --dry-run)."""
-    for words in _parsed(text,grammar) or []:
-        rest=_subcommand_rest(words,'rebaseline')
-        if rest is not None and '--dry-run' not in rest:return True
-    return False
-
-def proposals_write(text,grammar):
-    """True when a `proposals` command settles one (accept or reject); list and show only read."""
-    for words in _parsed(text,grammar) or []:
-        rest=_subcommand_rest(words,'proposals')
-        if rest is not None and {'accept','reject'}&set(rest):return True   # any word, as in maintenance_write
-    return False
-
-SUBAGENT_DENY='Living Memory: subagents are read-only. Stage the finding with propose for the main agent instead of running '
-
-def taxonomy_write(text,grammar):
-    """True when a `taxonomy` command adds tags (`taxonomy add`); plain `taxonomy` only reads."""
-    for words in _parsed(text,grammar) or []:
-        rest=_subcommand_rest(words,'taxonomy')
-        if rest is not None and 'add' in rest:return True   # any word, as in maintenance_write
-    return False
-
-def memory_write(subcommand,text,grammar):
-    """True when a memory command writes anything a subagent may not: MUTATING_SUBCOMMANDS, or the writing forms of views,
-    maintenance, wiki, proposals, config, taxonomy, rebaseline and doc. propose and doc propose are the subagent's writes and are not counted."""
-    if not subcommand:return False
-    return (subcommand in MUTATING_SUBCOMMANDS or (subcommand=='views' and views_write(text,grammar))
-            or (subcommand=='maintenance' and maintenance_write(text,grammar)) or (subcommand=='wiki' and wiki_write(text,grammar))
-            or (subcommand=='proposals' and proposals_write(text,grammar)) or (subcommand=='taxonomy' and taxonomy_write(text,grammar))
-            or (subcommand=='config' and config_write(text,grammar))
-            or (subcommand=='rebaseline' and rebaseline_write(text,grammar)) or (subcommand=='doc' and doc_write(text,grammar)))
-
-def subagent_write_verb(text,grammar):
-    """The mutating subcommand a subagent shell command attempts (exact or chained/unparseable fail-closed), else None."""
-    sub=memory_subcommand(text,grammar)
-    if sub:return sub if memory_write(sub,text,grammar) else None
-    tokens=[t for t in re.split(r'''[\s;&|()"'`{}<>=,]+''',text) if t]
-    if not _names_memory(tokens):return None
-    for t in tokens:
-        if t in MUTATING_SUBCOMMANDS:return t
-    if 'taxonomy' in tokens and 'add' in tokens:return 'taxonomy'
-    if 'config' in tokens and 'set' in tokens:return 'config'
-    if 'proposals' in tokens and {'accept','reject'}&set(tokens):return 'proposals'
-    if 'maintenance' in tokens and {'run','enable','disable'}&set(tokens):return 'maintenance'
-    if 'views' in tokens and {'add','update','remove','published','render'}&set(tokens):return 'views'
-    if 'wiki' in tokens:return 'wiki'
-    if 'rebaseline' in tokens:return 'rebaseline'
-    if 'doc' in tokens and any(t in DOC_WRITE_ACTIONS for t in tokens):return 'doc'
-    return None
-
-def auto_allowed(text,grammar,root,cwd,scratch=None):
-    """True when an allow-listed memory command may skip the permission prompt: it uses the hook's own store
-    and reads input files only from the working directory or the session scratchpad. Anything else is left to
-    the harness's normal permission prompt (this never denies)."""
-    parsed=_parsed(text,grammar)
-    if not parsed or wiki_build(text,grammar) or maintenance_paid(text,grammar):return False   # paid model calls: the harness's own permission prompt decides
-    try:
-        from .paths import is_within
-        store=Path(root).resolve();bases=[Path(cwd).resolve()]+([Path(scratch).resolve()] if scratch else [])
-        for words in parsed:
-            for value in _option_values(words,('--root',)):
-                if not value or Path(os.path.expandvars(value)).expanduser().resolve()!=store:return False
-            # Input files are read into a note; --out (views render) writes a file. Both stay inside what the session can see.
-            for value in _option_values(words,FILE_OPTIONS+('--out',)):
-                if not value:return False
-                path=Path(os.path.expandvars(value)).expanduser()
-                path=(path if path.is_absolute() else bases[0]/path).resolve()
-                if not any(is_within(path,base) for base in bases):return False
-        return True
-    except (OSError,ValueError,RuntimeError):return False   # RuntimeError: ~user with no such user
-
-READONLY_SIMPLE={'ls','dir','cat','type','head','tail','wc','grep','egrep','fgrep','cut','tr','echo','printf','pwd','which','where','whoami','stat','file','du','df','tree','diff','cmp','basename','dirname','realpath','readlink','test','[','true','false','sleep','cd','pushd','popd','set-location','gci','gc','printenv',
- 'select-string','select-object','where-object','sort-object','measure-object','format-table','format-list','test-path','resolve-path','split-path','join-path','convertto-json','write-output','write-host',
- 'nl','comm','paste','rev','fold','column','md5sum','sha1sum','sha256sum','jq','seq'}
-READONLY_GIT={'status','log','diff','show','ls-files','ls-tree','rev-parse','blame','describe','shortlog','grep','cat-file','rev-list','merge-base','name-rev',
- 'for-each-ref','show-ref','ls-remote','count-objects'}
-VARIABLE_PARAMETER=re.compile(r'-(?:outvariable|ov|pipelinevariable|pv|errorvariable|ev|warningvariable|wv|informationvariable|iv)(?::.*)?',re.I)
-# Properties of Select-String matches and file items: reading one runs no method.
-FOREACH_PROPERTIES={'line','linenumber','path','filename','name','fullname','matches','length','count','basename','extension','directoryname'}
-FIND_WRITERS={'-delete','-exec','-execdir','-ok','-okdir','-fprint','-fprintf','-fls','-fprint0'}
-NULL_SINKS={'/dev/null','nul','$null'}
-# Control-flow words wrap a command without running anything themselves: `for f in *; do cat $f; done`.
-SHELL_KEYWORDS={'do','then','else','elif','if','while','until','!'}
-SHELL_CLOSERS={'done','fi'}
-# sed: s///FLAGS may only print or match (w writes a file, e executes); other commands may only print/edit the stream.
-SED_FLAGS=set('gpiImM0123456789')
-SED_SAFE=re.compile(r'[\s0-9,$!;{}pdnNDPqQ=lgGhHx~+-]*')
-# awk: shell-outs, pipes, extension loading and output redirection (`print > file`) can write.
-AWK_UNSAFE=re.compile(r'system\s*\(|\||@load|@include|\bprintf?\b[^;}]*>')
-XARGS_VALUED={'-n','-L','-I','-d','-P','-s','-a','-E','-e'}
-UNIQ_VALUED={'-f','-s','-w'}
-
-def _positional(args,valued=()):
-    found=[];skip=False
-    for a in args:
-        if skip:skip=False;continue
-        if a in valued:skip=True;continue
-        if a.startswith('-') and a!='-':continue
-        found.append(a)
-    return found
-
-def _sed_script_safe(script):
-    text=re.sub(r'\\.','',script)
-    def body(m):return ' ' if set(m[2])<=SED_FLAGS else '\0'
-    text=re.sub(r's(.)(?:(?!\1).)*\1(?:(?!\1).)*\1([A-Za-z0-9]*)',body,text)
-    text=re.sub(r'y(.)(?:(?!\1).)*\1(?:(?!\1).)*\1',' ',text)
-    text=re.sub(r'/[^/]*/[IM]?',' ',text)
-    return bool(SED_SAFE.fullmatch(text))
-
-def _sed_readonly(args):
-    scripts=[];positional=[];expect=False
-    for a in args:
-        if expect:scripts.append(a);expect=False;continue
-        if a in {'-e','--expression'}:expect=True;continue
-        if a.startswith('--expression='):scripts.append(a.split('=',1)[1]);continue
-        if a.startswith('--'):
-            if a.startswith(('--in-place','--file')):return False
-            continue
-        if a.startswith('-') and a!='-':
-            flags=a[1:]
-            if 'e' in flags:
-                cut=flags.index('e');flags,attached=flags[:cut],flags[cut+1:]
-                if attached:scripts.append(attached)
-                else:expect=True
-            if 'i' in flags or 'f' in flags:return False
-            continue
-        positional.append(a)
-    if not scripts and positional:scripts=[positional[0]]
-    return bool(scripts) and not expect and all(_sed_script_safe(s) for s in scripts)
-
-def _awk_readonly(args):
-    skip=False
-    for a in args:
-        if skip:skip=False;continue
-        if a in {'-F','-v','--field-separator','--assign'}:skip=True;continue
-        if a.startswith(('-f','-i','-l','-E','--file','--include','--load','--exec')):return False
-        if a.startswith('-') and a!='-':continue
-        return not AWK_UNSAFE.search(a)
-    return False
-
-def _xargs_command(words):
-    index=0
-    while index<len(words):
-        a=words[index].strip('"\'')
-        if a in XARGS_VALUED:index+=2;continue
-        if a.startswith('-') and a!='-':index+=1;continue
-        break
-    return words[index:]
-
-def _readonly_segment(words):
-    """True when one simple command (already split on ; & | and parentheses) provably cannot write files."""
-    while words and words[0].strip('"\'').lower() in SHELL_KEYWORDS:words=words[1:]
-    if not words:return True
-    if len(words)==1 and words[0].lower() in SHELL_CLOSERS:return True
-    # A for-loop header only expands words; its body is judged as separate segments.
-    if words[0].lower()=='for':return len(words)>=3 and words[2].lower()=='in'
-    first=words[0].strip('"\'').replace('\\','/').rsplit('/',1)[-1].lower()
-    first=first[:-4] if first.endswith('.exe') else first
-    args=[w.strip('"\'') for w in words[1:]]
-    # A PowerShell common parameter that stores output in a variable hands it to a later statement: `-OutVariable f; Remove-Item $f`.
-    # Only Verb-Noun cmdlets: `grep -iv` is ignore-case and invert, not -InformationVariable.
-    if '-' in first and any(VARIABLE_PARAMETER.fullmatch(a) for a in args):return False
-    if first in READONLY_SIMPLE:return True
-    if first.startswith('get-'):return True  # PowerShell getters only read
-    # ForEach-Object NAME reads a property, but calls a method of that name (`ForEach-Object Delete`); script blocks run anything.
-    if first in {'foreach-object','%','foreach'}:return len(args)==1 and args[0].lower() in FOREACH_PROPERTIES
-    if first=='find':return not FIND_WRITERS.intersection(args)
-    if first=='rg':return not any(a=='--pre' or a.startswith('--pre=') for a in args)
-    if first=='sort':return not any(a.startswith('-o') or a.startswith('--output') for a in args)
-    if first=='uniq':return len(_positional(args,UNIQ_VALUED))<=1  # `uniq in out` writes out
-    if first=='sed':return _sed_readonly(args)
-    if first in {'awk','gawk','mawk'}:return _awk_readonly(args)
-    if first=='xargs':return _readonly_segment(_xargs_command(words[1:]))
-    if first=='git':
-        rest=args[:]
-        while rest and rest[0]=='-C' and len(rest)>1:rest=rest[2:]
-        if not rest or rest[0].startswith('-'):return False
-        sub,tail=rest[0],rest[1:]
-        if any(a.startswith('--output') or a=='-o' for a in tail):return False
-        if sub in READONLY_GIT:return True
-        if sub=='branch':return all(a in {'-a','-r','-v','-vv','--list','--show-current'} for a in tail)
-        if sub=='remote':return all(a in {'-v','--verbose'} for a in tail)
-        if sub=='tag':return all(a in {'-l','--list'} for a in tail)
-        if sub=='config':return bool(tail) and tail[0] in {'--get','--get-all','--list','-l'}
-        if sub=='reflog':return not tail or tail[0]=='show' or tail[0].startswith('-')  # expire/delete rewrite it
-        if sub=='stash':return bool(tail) and tail[0] in {'list','show'}  # bare `git stash` saves and resets
-        return False
-    if first in {'python','python3','py','node'}:return args in (['--version'],['-V'],['-v'])
-    if first in {'pip','pip3'}:return bool(args) and args[0] in {'list','show','freeze','--version'}
-    if first=='npm':return bool(args) and args[0] in {'ls','list','view','--version','-v'}
-    return False
-
-def _shell_pipelines(text):
-    """[[(words, redirects, words_read_only)]]: the pipelines of a shell command line (split on ; && || outside
-    parentheses), each a list of its simple commands (split on |, & and parentheses). A single & stays inside the
-    pipeline: it is PowerShell's call operator (`Get-Item a | & Remove-Item`). redirects holds the redirection operators
-    and targets that may write. None when the text cannot be split (backticks, newlines, $( ), <( ), >( ), unbalanced quotes)."""
-    if not text or re.search(r'[`\r\n]|\$\(|[<>]\(',text):return None
-    try:
-        lexer=shlex.shlex(text,posix=False,punctuation_chars=True);lexer.whitespace_split=True
-        lexer.commenters=''   # `#` inside a word (sed s/#a/b/) is literal; a real comment only adds words, which is conservative
-        tokens=list(lexer)
-    except ValueError:return None
-    pipelines=[[]];words=[];redirects=[];depth=0;index=0
-    while index<len(tokens):
-        token=tokens[index]
-        if token and set(token)<=set(';&|<>()') and not token.startswith(('"',"'")):
-            if set(token)&set('<>'):
-                # Only discard-to-null and fd duplication (2>&1) are harmless redirections.
-                nxt=tokens[index+1].strip('"\'').lower() if index+1<len(tokens) else ''
-                if '<' not in token and token.endswith('&') and nxt.isdigit():index+=2;continue
-                if token in {'>','>>'} and nxt in NULL_SINKS:index+=2;continue
-                redirects+=tokens[index:index+2];index+=2;continue
-            # Each simple command is judged on its own; only ; && || outside parentheses end a pipeline, since a
-            # group feeds the writer after it: `(printf a; printf b) | xargs rm`.
-            pipelines[-1].append((words,redirects,_readonly_segment(words)));words=[];redirects=[];index+=1
-            depth=max(0,depth+token.count('(')-token.count(')'))
-            if not depth and (';' in token or '&&' in token or '||' in token):pipelines.append([])
-            continue
-        words.append(token);index+=1
-    pipelines[-1].append((words,redirects,_readonly_segment(words)))
-    return pipelines
-
-def readonly_shell(text):
-    """True only if a shell command is provably read-only. Anything doubtful returns False.
-    This only decides whether the turn needs a memory reminder; it is not a security check
-    (the PreToolUse deny path deliberately does not parse shell text)."""
-    pipelines=_shell_pipelines(text)
-    return pipelines is not None and all(ok and not redirects for pipeline in pipelines for _,redirects,ok in pipeline)
-
-def writing_shell_text(text):
-    """The parts of a shell command that may write: every pipeline with a command that is not provably read-only
-    (whole, since a writer may act on what an earlier command names: `Get-Item a.md | Remove-Item`), and the
-    redirection targets of the others. A file named only in a read-only pipeline (`Select-String -Path a.md; cp b c`,
-    the input of `grep x a.md > out.txt`) is not an edit. The whole text when it cannot be split."""
-    pipelines=_shell_pipelines(text)
-    if pipelines is None:return text
-    # Control flow carries names across commands (`for f in a.md; do sed -i ... "$f"; done`, `foreach (...) { ... }`): a write anywhere keeps them all.
-    flow=any(words and (words[0].strip('"\'').lower() in SHELL_KEYWORDS|SHELL_CLOSERS|{'for','foreach'} or any(w.startswith('{') for w in words))
-             for pipeline in pipelines for words,_,_ in pipeline)
-    if flow and not all(ok and not redirects for pipeline in pipelines for _,redirects,ok in pipeline):return text
-    parts=[]
-    for pipeline in pipelines:
-        whole=not all(ok for _,_,ok in pipeline)
-        parts+=[' '.join((words if whole else [])+redirects) for words,redirects,_ in pipeline if whole or redirects]
-    return ' '.join(parts)
-
 def _sync_vaults(root,trigger,min_interval=0):
     """Pull Obsidian edits into memory and refresh every managed vault. Never fails the hook."""
     try:
@@ -824,7 +231,8 @@ def _sync_vaults(root,trigger,min_interval=0):
         return sync_all(root,trigger)
     except Exception as exc:
         from .logs import swallowed
-        swallowed('runtime.sync_vaults',exc,root);return None
+        swallowed('runtime.sync_vaults',exc,root)
+        return None
 
 def _daily_backup(root):
     """At most one snapshot a day, taken from session housekeeping. Never fails the hook."""
@@ -833,13 +241,15 @@ def _daily_backup(root):
         return maybe_backup(root)
     except Exception as exc:
         from .logs import swallowed
-        swallowed('runtime.daily_backup',exc,root);return None
+        swallowed('runtime.daily_backup',exc,root)
+        return None
 
 def _old_plan_folders():
     """Where install.py and integrations/setup.py kept their plans before 2026-11-26: each harness home, and the install folder when
     this code is the installed copy (app/ beside it; a source checkout never reaches into the user's install folder)."""
     from .instructions import harness_home
-    app=SCRIPT.parent;homes=[harness_home(h) for h in ('claude','codex','copilot','factory','antigravity')]
+    app=SCRIPT.parent
+    homes=[harness_home(h) for h in ('claude','codex','copilot','factory','antigravity')]
     if (app/'.core-ownership-v1.json').is_file():homes.append(app.parent)
     return [home for home in dict.fromkeys(homes) if (home/'.plans').is_dir()]
 
@@ -862,19 +272,14 @@ def _housekeeping_due(root):return _backup_due(root) or _prune_due(root)
 HOUSEKEEP_COOLDOWN=600
 
 def _spawn_housekeeping(root):
-    """Start `housekeep` detached, as maintenance._spawn and sources.spawn do."""
-    import subprocess,tempfile
-    argv=[sys.executable,str(SCRIPT),'--root',str(root),'housekeep']
-    options={'stdin':subprocess.DEVNULL,'stdout':subprocess.DEVNULL,'stderr':subprocess.DEVNULL,'close_fds':True,'cwd':tempfile.gettempdir()}
-    if os.name=='nt':
-        flags=0x00000008|0x00000200   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, and CREATE_BREAKAWAY_FROM_JOB when allowed
-        try:subprocess.Popen(argv,creationflags=flags|0x01000000,**options)
-        except OSError:subprocess.Popen(argv,creationflags=flags,**options)
-    else:subprocess.Popen(argv,start_new_session=True,**options)
+    """Start `housekeep` detached via core/background.py."""
+    from .background import spawn_detached
+    spawn_detached([sys.executable,str(SCRIPT),'--root',str(root),'housekeep'])
 
 def schedule_housekeeping(root):
     """Start a detached `housekeep` worker when daily backup or pruning is due. Never waits and never raises."""
     try:
+        from .background import in_cooldown,touch_cooldown
         if os.environ.get('LIVING_MEMORY_NO_BACKGROUND'):return 'background_disabled'
         if os.environ.get('LIVING_MEMORY_MAINTENANCE_CHILD'):return 'maintenance_child'
         if not _housekeeping_due(root):return 'not_due'
@@ -882,15 +287,14 @@ def schedule_housekeeping(root):
             with file_lock(Path(root)/'hooks'/'housekeep.lock',timeout=0):pass
         except (TimeoutError,OSError):return 'already_running'
         marker=Path(root)/'hooks'/'housekeep.spawned'
-        try:
-            if time.time()-float(marker.read_text(encoding='utf-8'))<HOUSEKEEP_COOLDOWN:return 'cooldown'
-        except (OSError,ValueError):pass
+        if in_cooldown(marker,HOUSEKEEP_COOLDOWN):return 'cooldown'
         _spawn_housekeeping(root)
-        atomic_write(marker,str(time.time()))
+        touch_cooldown(marker)
         return 'spawned'
     except Exception as exc:
         from .logs import swallowed
-        swallowed('runtime.schedule_housekeeping',exc,root);return 'error'
+        swallowed('runtime.schedule_housekeeping',exc,root)
+        return 'error'
 
 def housekeep(root):
     """Run daily backup and pruning under a non-blocking worker lock; one worker at a time."""
@@ -899,7 +303,8 @@ def housekeep(root):
     with ExitStack() as stack:
         try:stack.enter_context(file_lock(root/'hooks'/'housekeep.lock',timeout=0))
         except (TimeoutError,OSError):return {'ok':True,'skipped':'already_running','backup':False,'pruned':False}
-        backup=_daily_backup(root);pruned=_prune_journals(root)
+        backup=_daily_backup(root)
+        pruned=_prune_journals(root)
         return {'ok':True,'backup':bool(backup),'pruned':pruned is not None,'counts':pruned}
 
 def _prune_journals(root):
@@ -933,7 +338,8 @@ def _prune_journals(root):
             return out
     except Exception as exc:
         from .logs import swallowed
-        swallowed('runtime.prune_journals',exc,root);return None
+        swallowed('runtime.prune_journals',exc,root)
+        return None
 
 AUTO_RESOLVE_DAYS=3
 
@@ -946,7 +352,8 @@ def auto_resolve(root,domain,bindings,session=None):
         from datetime import timedelta,timezone
         if bindings.get('auto_resolve',True) is False or (headless() and not clock.simulated()):return []
         marker=root/'hooks'/'last-auto-resolve.json'
-        marks=read_json(marker,{});marks=marks if isinstance(marks,dict) else {}
+        marks=read_json(marker,{})
+        marks=marks if isinstance(marks,dict) else {}
         try:age=(clock.now()-parse_iso(marks[domain])).total_seconds()
         except (KeyError,TypeError,ValueError):age=None
         if age is not None and age<24*3600:return []
@@ -956,7 +363,8 @@ def auto_resolve(root,domain,bindings,session=None):
         from .notes import change,short_ref
         from .repository import inventory
         from .usage import record
-        cutoff=clock.now()-timedelta(days=AUTO_RESOLVE_DAYS);done=[]
+        cutoff=clock.now()-timedelta(days=AUTO_RESOLVE_DAYS)
+        done=[]
         for note in inventory(domain,root):
             if not takes_actions(note.get('type'),root) or not note.get('id') or not note.get('title') or note.get('pinned') is True:continue   # a pin blocks automatic retirement
             items=action_items(note.get('body',''))
@@ -969,12 +377,15 @@ def auto_resolve(root,domain,bindings,session=None):
             try:change(note['id'],domain,'resolve',root,expected_revision=note.get('revision'),actor='auto_resolve')
             except (OSError,ValueError,TimeoutError) as exc:   # one stale or locked note must not stop the rest
                 from .logs import swallowed
-                swallowed('runtime.auto_resolve',exc,root);continue
-            record(root,'resolve',[f"{domain}:{note['id']}"],session,'auto-resolve');done.append((short_ref(domain,note['id']),note['title']))
+                swallowed('runtime.auto_resolve',exc,root)
+                continue
+            record(root,'resolve',[f"{domain}:{note['id']}"],session,'auto-resolve')
+            done.append((short_ref(domain,note['id']),note['title']))
         return done
     except Exception as exc:
         from .logs import swallowed
-        swallowed('runtime.auto_resolve',exc,root);return []
+        swallowed('runtime.auto_resolve',exc,root)
+        return []
 
 def _subagent(payload):
     """Claude Code marks hooks that fire inside a subagent with agent_id. Subagents are read-only
@@ -1007,7 +418,9 @@ def touched_paths(args,payload,cwd,root,domain,bindings,shell=False):
     try:
         scratch=payload.get('scratchpad_dir') or payload.get('scratchpadDir')
         base=Path(scratch).resolve() if scratch else None
-        prefixes=domain_prefixes(domain,bindings);store=Path(root).resolve();found=[]
+        prefixes=domain_prefixes(domain,bindings)
+        store=Path(root).resolve()
+        found=[]
         # Only a command line is split; an argv list (["rm", "a", "b"]) keeps every element.
         text=args.get('command',args.get('cmd')) if shell and isinstance(args,dict) else None
         text=text if isinstance(text,str) else ''
@@ -1027,7 +440,8 @@ def touched_paths(args,payload,cwd,root,domain,bindings,shell=False):
         return list(dict.fromkeys(found))
     except Exception as exc:  # provenance is a nicety; never fail the hook
         from .logs import swallowed
-        swallowed('runtime.touched_paths',exc,root);return []
+        swallowed('runtime.touched_paths',exc,root)
+        return []
 
 # Hosts whose PreToolUse output documents additionalContext (Claude Code; Codex since openai/codex#20692).
 # Copilot CLI, Factory and Antigravity CLI document no PreToolUse context, so they get no hints.
@@ -1049,8 +463,11 @@ def file_hints(paths,state,root,domain,bindings,session=None,trace=None,follow=N
     try:
         from .search import file_matches
         from . import digests
-        seen=set(state.get('file_hints',[]));wanted=[p for p in paths if p not in seen][:HINT_FILES_PER_CALL]
-        blocks=[];refs=[];found=scoped_file_hits(wanted,domain,bindings,root,HINT_NOTES_PER_FILE,True)   # a resolved bug's fix is still worth knowing before the file is changed
+        seen=set(state.get('file_hints',[]))
+        wanted=[p for p in paths if p not in seen][:HINT_FILES_PER_CALL]
+        blocks=[]  # a resolved bug's fix is still worth knowing before the file is changed
+        refs=[]
+        found=scoped_file_hits(wanted,domain,bindings,root,HINT_NOTES_PER_FILE,True)
         for path in wanted:
             hits=found.get(path)
             if hits:
@@ -1070,7 +487,8 @@ def file_hints(paths,state,root,domain,bindings,session=None,trace=None,follow=N
         return text,wanted
     except Exception as exc:
         from .logs import swallowed
-        swallowed('runtime.file_hints',exc,root);return None,[]
+        swallowed('runtime.file_hints',exc,root)
+        return None,[]
 
 MAX_COMMAND_SEEN=200
 MAX_COMMAND_HINTED=100
@@ -1106,7 +524,8 @@ def command_hints(text,state,root,domain,bindings,session,trace=None):
                 +'\n'.join(hit_line(h) for h in hits))
     except Exception as exc:
         from .logs import swallowed
-        swallowed('runtime.command_hints',exc,root);return None
+        swallowed('runtime.command_hints',exc,root)
+        return None
 
 from .common import git_root  # re-exported: older callers import it from here
 
@@ -1128,7 +547,8 @@ def _track_repos(root,session,change):
     """Apply change(repos) to the session's per-repo state under its lock; never fails the hook."""
     if session=='unknown':return
     def apply(s):
-        repos=_repos(s);change(repos)
+        repos=_repos(s)
+        change(repos)
         s['repos']=dict(list(repos.items())[-MAX_REPOS:])
     try:_update(root,session,apply)
     except (OSError,TimeoutError):pass
@@ -1161,9 +581,14 @@ def note_currency(hit,folder,root,bindings,state,session,slot='fresh'):
     try:
         from .maps import currency
         if folder is None:return {}
-        key=Path(folder).as_posix();cache=(_repos(state).get(key) or {}).get(slot);cache=cache if isinstance(cache,dict) else None
+        key=Path(folder).as_posix()
+        cache=(_repos(state).get(key) or {}).get(slot)
+        cache=cache if isinstance(cache,dict) else None
         from .maps import fingerprint
-        head=head_oid(folder);rev=str(hit.get('revision') or '');fp=fingerprint(hit);shared=None
+        head=head_oid(folder)
+        rev=str(hit.get('revision') or '')
+        fp=fingerprint(hit)
+        shared=None
         if cache and (cache.get('fp'),cache.get('head'))!=(fp,head):cache=None
         if head and rev and not cache:
             k,n,u=_currency_key(folder,hit)
@@ -1180,14 +605,18 @@ def note_currency(hit,folder,root,bindings,state,session,slot='fresh'):
         if (computed or shared or refreshed) and entry.get('head') and session and session!='unknown':
             stored=dict(entry,ref=f"{hit['domain']}:{hit['id']}")
             def save(s):
-                repos=_repos(s);rec=dict(repos.pop(key,{}));rec[slot]=stored;repos[key]=rec
+                repos=_repos(s)
+                rec=dict(repos.pop(key,{}))
+                rec[slot]=stored
+                repos[key]=rec
                 s['repos']=dict(list(repos.items())[-MAX_REPOS:])
             try:_update(root,session,save)
             except (OSError,TimeoutError):pass
         return entry
     except Exception as exc:
         from .logs import swallowed
-        swallowed('runtime.note_currency',exc,root);return {}
+        swallowed('runtime.note_currency',exc,root)
+        return {}
 
 def _target_repos(name,args,cwd,bindings):
     """Repos a read-type tool call explores: the repo holding each path argument (else cwd's); for a subagent
@@ -1218,31 +647,43 @@ def explore(name,args,payload,cwd,root,bindings,state,session,hints=True):
     # A spawn is tracked but gets no hint: PreToolUse fires once the brief is written, so "put the map in the
     # brief" could not be acted on. Recording the map here is what lets SubagentStart hand it to the subagent.
     spawn=name in SPAWN_TOOLS
-    agent=_agent_key(payload)+('#spawn' if spawn else '');shown=state.get('shown',{}) if isinstance(state.get('shown'),dict) else {}
+    agent=_agent_key(payload)+('#spawn' if spawn else '')
+    shown=state.get('shown',{}) if isinstance(state.get('shown'),dict) else {}
     # The main agent's session context defines CMD; a subagent's does not, so it gets the whole command.
     cmd=hint_command(root,state) if not _agent_key(payload) else command(root)
-    lines=[];rows=[];changes={}
+    lines=[]
+    rows=[]
+    changes={}
     for repo in _target_repos(name,args,cwd,bindings):
-        key=repo.as_posix();done=_repos(state).get(key,{}).get('done',[])
-        if '*' in done or agent in done:rows.append({'repo':repo.name,'skip':'done'});continue
+        key=repo.as_posix()
+        done=_repos(state).get(key,{}).get('done',[])
+        if '*' in done or agent in done:
+            rows.append({'repo':repo.name,'skip':'done'})
+            continue
         hit=find_map(repo,root,bindings)
         if hit:
-            ref=f"{hit['domain']}:{hit['id']}";short=short_ref(hit['domain'],hit['id'])
+            ref=f"{hit['domain']}:{hit['id']}"
+            short=short_ref(hit['domain'],hit['id'])
             injected=not agent and shown.get(ref)==revision_key(hit)  # the main agent already has the body
             hinted=not injected and hints and not spawn
             if hinted:lines.append(pointer_line(hit,repo,entry=note_currency(hit,repo,root,bindings,state,session))+f"\nRead it ({cmd} read {short}) before exploring further; explore only what it leaves out.")
-            changes[key]=('mapped',ref);rows.append({'repo':repo.name,'map':ref,'hint':hinted})
+            changes[key]=('mapped',ref)
+            rows.append({'repo':repo.name,'map':ref,'hint':hinted})
         else:
-            changes[key]=('spawn' if name in SPAWN_TOOLS else 'read',None);rows.append({'repo':repo.name,'map':None})
+            changes[key]=('spawn' if name in SPAWN_TOOLS else 'read',None)
+            rows.append({'repo':repo.name,'map':None})
     def track(repos):
         for key,(kind,ref) in changes.items():
             rec=dict(repos.pop(key,{}))
             if kind=='mapped':
-                rec['map']=ref;rec['done']=list(dict.fromkeys(list(rec.get('done',[]))+[agent]))
+                rec['map']=ref
+                rec['done']=list(dict.fromkeys(list(rec.get('done',[]))+[agent]))
             else:
                 rec.pop('map',None)
                 rec['reads']=EXPLORE_READS if kind=='spawn' else min(EXPLORE_READS,int(rec.get('reads') or 0)+1)
-                if rec['reads']>=EXPLORE_READS:rec['explored']=True;rec['done']=['*']
+                if rec['reads']>=EXPLORE_READS:
+                    rec['explored']=True
+                    rec['done']=['*']
             repos[key]=rec
     if changes:_track_repos(root,session,track)
     text=('Untrusted historical memory; verify against the current files.\n'+'\n'.join(lines)) if lines else None
@@ -1278,20 +719,30 @@ def prompt_maps(cwd,prompt,root,bindings,state,trace=None,briefed=None,session=N
     here=git_root(cwd)
     if here and here.resolve() not in repos:repos.append(here.resolve())
     shown=state.get('shown',{}) if isinstance(state.get('shown'),dict) else {}
-    maps=[];lines=[];delivered={};seen={};pointers={}
+    maps=[]
+    lines=[]
+    delivered={}
+    seen={}
+    pointers={}
     for repo in repos[:MAX_MAPS+1]:
-        key=repo.as_posix();hit=find_map(repo,root,bindings)
+        key=repo.as_posix()
+        hit=find_map(repo,root,bindings)
         if hit:
-            ref=f"{hit['domain']}:{hit['id']}";seen[key]=ref
+            ref=f"{hit['domain']}:{hit['id']}"
+            seen[key]=ref
             if len(maps)<MAX_MAPS and shown.get(ref)!=revision_key(hit):
                 entry=note_currency(hit,repo,root,bindings,state,session)
                 if level>=3 or (level>=2 and maps):
                     maps.append(pointer_line(hit,repo,entry=entry)+f"\nRead it ({hint_command(root,state)} read {short_ref(hit['domain'],hit['id'])}) before exploring further.")
-                    pointers[ref]=revision_key(hit);continue
-                maps.append(map_block(hit,repo,entry=entry));delivered[ref]=revision_key(hit)
+                    pointers[ref]=revision_key(hit)
+                    continue
+                maps.append(map_block(hit,repo,entry=entry))
+                delivered[ref]=revision_key(hit)
                 if level>=1:continue
                 lines_,refs_=repo_notes(hit,repo,root,bindings,{**_snippeted(state),**shown},exclude=briefed)
-                if lines_:maps[-1]+='\n'+lines_;briefed.extend(refs_)
+                if lines_:
+                    maps[-1]+='\n'+lines_
+                    briefed.extend(refs_)
         else:
             seen[key]=None
             if not _repos(state).get(key,{}).get('told'):
@@ -1339,7 +790,9 @@ def prompt_briefs(cwd,root,bindings,state,trace=None,briefed=None,session=None,l
     block=brief_block(hit,entry=entry)
     if level>=1:return block,{ref:revision_key(hit)}
     lines_,refs_=repo_notes(hit,None,root,bindings,{**_snippeted(state),**shown},budget=BRIEF_NOTES_BUDGET,files=False,exclude=briefed)
-    if lines_:block+='\n'+lines_;briefed.extend(refs_)
+    if lines_:
+        block+='\n'+lines_
+        briefed.extend(refs_)
     return block,{ref:revision_key(hit)}
 
 # Source excerpts (core/sources.py): when notes answer a prompt poorly, the project's own docs and code may.
@@ -1359,25 +812,37 @@ def prompt_sources(prompt,root,domain,state,trace=None):
     [notebook TITLE]. Searchable, hidden and private notebooks never reach it. No further query starts after SOURCE_SECONDS."""
     from . import sources
     from .folder_policy import Policy
-    trace=trace if isinstance(trace,dict) else {};started=time.monotonic()
-    if not sources.db_path(root,domain).is_file():trace['index']=False;return None,[]
+    trace=trace if isinstance(trace,dict) else {}
+    started=time.monotonic()
+    if not sources.db_path(root,domain).is_file():
+        trace['index']=False
+        return None,[]
     from .search import terms
-    text=sources.split_camel(prompt);words=terms(text)
+    text=sources.split_camel(prompt)
+    words=terms(text)
     vocab=sources.vocabulary(root,domain,words)
-    if not vocab[0]:trace['index']=False;return None,[]
-    long=len(prompt)>LONG_PROMPT;queries=[(text,True)]
+    if not vocab[0]:
+        trace['index']=False
+        return None,[]
+    long=len(prompt)>LONG_PROMPT
+    queries=[(text,True)]
     if long:
         queries=[]
         for q in long_queries(text,vocab)+[(q,True) for q in item_queries(text,vocab)]:   # list items are asked on their own (at most LIST_QUERIES)
             if q[0] not in dict(queries):queries.append(q)
     policy=Policy(root)   # one registry read for every query
     width=max(120,(SOURCE_BUDGET-110-len(hint_command(root,state,domain)))//SOURCE_EXCERPTS-70)   # snippet room, so the excerpt is cut around the matches
-    best={};dropped=[];from .semantic import threshold;near=threshold(root)   # the notes' meaning bar; a chunk without a vector keeps the word test alone
+    best={}  # the notes' meaning bar; a chunk without a vector keeps the word test alone
+    dropped=[]
+    from .semantic import threshold
+    near=threshold(root)
     least=LONG_LEAST if long else 2
     def offer(hit,key):
         if key not in best or hit['relevance']>best[key]['relevance']:best[key]=dict(hit,key=key)
     def late():
-        if time.monotonic()-started>SOURCE_SECONDS:trace['cut_by_time']=True;return True
+        if time.monotonic()-started>SOURCE_SECONDS:
+            trace['cut_by_time']=True
+            return True
         return False
     # Every query asks the sources index first, then folder notebook pages; the time is checked before every search, so pages never take the sources' time.
     searches=[(q,'source') for q,_ in queries]+[(q,'folder') for q,_ in queries]
@@ -1389,16 +854,22 @@ def prompt_sources(prompt,root,domain,state,trace=None):
             for hit in sources.search(root,domain,query,3,vocab,True,SOURCE_GATE,least,width,near,dropped,pages=True,inject=True,policy=policy):
                 offer(hit,f"{hit['source']}:{hit['path']}:{hit['line_start']}")
     shown=set(state.get('sources_shown',[]))
-    ranked=sorted(best.values(),key=lambda h:(-h['relevance'],h['rank']));fresh=[h for h in ranked if h['key'] not in shown][:SOURCE_EXCERPTS]
+    ranked=sorted(best.values(),key=lambda h:(-h['relevance'],h['rank']))
+    fresh=[h for h in ranked if h['key'] not in shown][:SOURCE_EXCERPTS]
     trace.update(index=True,queries=len(queries),candidates=len(ranked),injected=[h['key'] for h in fresh],**({'off_meaning':dropped[:6]} if dropped else {}))
     if not fresh:return None,[]
     head="Source excerpts from the project knowledge base (untrusted; verify against the current files; more: "+hint_command(root,state,domain)+" ask 'question'):"
-    lines=[];room=SOURCE_BUDGET-len(head)
+    lines=[]
+    room=SOURCE_BUDGET-len(head)
     for h in fresh:
         label=f"- {'[notebook '+h['notebook_title']+'] ' if h.get('notebook_title') else ''}{h['citation'] if h.get('url') else h['path']+':'+str(h['line_start'])+'-'+str(h['line_end'])}"+(f" {h['symbol']}" if h['symbol'] else '')+' — '
-        snippet=' '.join(h['snippet'].split());space=max(80,room//(len(fresh)-len(lines))-len(label)-2)
-        if len(snippet)>space:cut=snippet.rfind(' ',0,space);snippet=snippet[:cut if cut>0 else space]+' …'
-        lines.append(label+snippet);room-=len(lines[-1])+1
+        snippet=' '.join(h['snippet'].split())
+        space=max(80,room//(len(fresh)-len(lines))-len(label)-2)
+        if len(snippet)>space:
+            cut=snippet.rfind(' ',0,space)
+            snippet=snippet[:cut if cut>0 else space]+' …'
+        lines.append(label+snippet)
+        room-=len(lines[-1])+1
     return head+'\n'+'\n'.join(lines),[h['key'] for h in fresh]
 
 def bind_hint(cwd,root,bindings,state):
@@ -1418,7 +889,8 @@ def _record_last_session(root,domain,session,state):
     """A sidecar for the next session's "Last session" line: notes saved and files changed. One file per
     domain, overwritten; not canonical, not backed up, holds no conversation text."""
     try:
-        saved=list(state.get('saved',[]));files=len(state.get('touched_session',[]))
+        saved=list(state.get('saved',[]))
+        files=len(state.get('touched_session',[]))
         if not saved and not files:return
         path=root/'domains'/domain/LAST_SESSION
         row={'session':session_hash(session),'harness':state.get('harness') or 'unknown','notes':saved,'files_changed':files}
@@ -1514,7 +986,8 @@ def steering(root,state,domain=None,bindings=None):
     try:rules=_rules_line(root,domain,bindings) if domain else None
     except Exception as exc:
         from .logs import swallowed
-        swallowed('runtime.rules_line',exc,root);rules=None
+        swallowed('runtime.rules_line',exc,root)
+        rules=None
     if rules:lines.append(rules)
     lines.append('Bulky detail (full tool output, long code) may be left out: after compaction the agent can search this '
                  "session's transcript with the Living Memory search command (--transcript).")
@@ -1523,7 +996,8 @@ def steering(root,state,domain=None,bindings=None):
 def handoff(root,domain,session,state,harness):
     """The SessionStart(compact) block: this session's memory work, and the transcript search command."""
     from .session_start import _cap
-    saved=list(dict.fromkeys(state.get('saved',[])));recent=saved[-HANDOFF_NOTES:]
+    saved=list(dict.fromkeys(state.get('saved',[])))
+    recent=saved[-HANDOFF_NOTES:]
     surfaced=[r for r in reversed(list(dict.fromkeys(state.get('surfaced',[])))) if r not in saved][:HANDOFF_NOTES]
     lines=[]
     named=_titled(root,recent)
@@ -1541,538 +1015,9 @@ def _update(root,session,change):
     with file_lock(pointer.with_suffix('.lock'),timeout=HOOK_LOCK_TIMEOUT):
         state=read_json(pointer,{})
         if not isinstance(state,dict):state={}
-        change(state);atomic_write(pointer,canonical_json(state))
+        change(state)
+        atomic_write(pointer,canonical_json(state))
     return state
-
-# Harness-generated turns (subagent hand-backs, task notifications) are not questions to answer from memory.
-MACHINE_PROMPT=re.compile(r'\A\s*(?:<(?:agent-message|task-notification|system-reminder)\b|\[SYSTEM NOTIFICATION)')
-HIT_SNIPPET=220
-# Conversation is where preferences, corrections and decisions are stated, and those turns often edit no files.
-# Deterministic and conservative. A match adds one line to that prompt's context; a request to remember, a decision
-# or a directive (BLOCKING_SIGNALS) can also hold the turn open at Stop, so those are matched most narrowly.
-# A prompt can carry several kinds: they are tried in priority order (remember, decision, directive, correction,
-# preference), so a blocking kind is never hidden by a non-blocking one ("No, we decided to use X").
-# Fenced code and machine tags are never read. Pasted blocks and blockquotes (a memo, a ticket) are read only for a directive.
-IGNORED=re.compile(r'```.*?(?:```|\Z)|<(system-reminder|agent-message|task-notification)\b.*?(?:</\1>|\Z)',re.S|re.I)
-QUOTED=re.compile(r'<pasted_content\b[^>]*>(.*?)(?:</pasted_content>|\Z)|^[ \t]*>[ \t]*([^\r\n]*)$',re.S|re.M|re.I)
-QUOTED_CHARS=2000
-# Statements are judged one at a time. Each pattern's ^ is the start of a statement.
-STATEMENT_BREAK=re.compile(r'(?<=[.!?])\s+|\n+')
-# A remark about this task only is not something to keep: "please don't touch the tests for now".
-TRANSIENT=re.compile(r"\b(?:for now|for the moment|this time|just this once|right now|for this (?:task|pr|change|commit|session|turn))\b",re.I)
-SIGNALS=(
-    # "don't forget to run the tests" is an instruction for this turn, not a fact to keep.
-    ('remember',re.compile(r"\b(?:remember (?:that|this|we|it)|keep in mind|for (?:the )?record|don'?t forget(?! to\b))\b",re.I)),
-    # A bare "must", "approved" or "regulator" describes the task, so only a statement addressed to the team
-    # ("we must never ...") or a decision's own wording counts. "You must not ..." and "you are not allowed to ..."
-    # constrain the agent's task; they are not a decision of the team.
-    ('decision',re.compile(r"\b(?:let'?s (?:go with|use)|we(?:'ll| will) (?:go with|use)|we decided|i(?:'ve)? decided|go with option|we(?:'ve| have)? (?:agreed|chosen|settled on)"
-                           r"|the decision is|effective (?:immediately|today|from|as of)|(?<!\byou )(?:is|are) (?:not )?(?:allowed|permitted|prohibited)|(?:we|the team) must (?:never|not|always|stay|remain))\b|\bdecision:",re.I)),
-    ('correction',re.compile(r"^\s*(?:no|nope)\s*[,.!:;—-]|^\s*actually,?\s+(?:it'?s|it is|that'?s|the|we|i|you)\b|\bthat'?s (?:wrong|not right|incorrect|not what i)\b|\byou(?:'re| are| were) wrong\b|\bi meant\b",re.I)),
-    # "always"/"never" count when they address the agent or state a habit, not inside a description
-    # ("the API should always use HTTPS").
-    ('preference',re.compile(r"\b(?:i(?:'d)? prefer|i'?d rather|i (?:hate|don'?t like)|from now on|going forward|in (?:the )?future|please (?:don'?t|do not|never|always)|stop doing|don'?t ever|by default,? use"
-                             r"|(?:you should|you must|we) (?:always|never)|i (?:always|never) (?:use|want|like|do))\b|^\s*(?:always|never)\s+\w",re.I)),
-)
-# A memo quoted in the prompt states a directive: one strong phrase, or two weaker ones.
-DIRECTIVE_STRONG=re.compile(r"\b(?:decided|decision|directive|policy|effective (?:immediately|today|from|as of)|must never|must not|may not)\b",re.I)
-DIRECTIVE_WEAK=tuple(re.compile(p,re.I) for p in (r"\bmust (?:be|use|stay|remain|always)\b",r"\b(?:replac(?:es|ing)|supersed(?:es|ing)|no longer)\b",
-                                                   r"\b(?:going forward|from now on|in future)\b",r"\b(?:all|every|each) [\w -]{0,40}\b(?:must|shall)\b"))
-PRIORITY=('remember','decision','directive','correction','preference')
-SIGNAL_TEXT={'remember':('asked you to remember something','--type TYPE --concern CONCERN'),
-             'correction':('corrected you','--type knowledge --concern correction'),
-             'preference':('stated a preference','--type preference --concern preference'),
-             'decision':('made a decision','--type decision --concern decision'),
-             'directive':('shared a directive (a memo, ticket or decision record)','--type decision --concern decision --link SOURCE')}
-# Kinds whose missing capture decision still holds the turn open at Stop. The others are raised once, in the
-# prompt's own context, where acting on them costs no extra turn.
-BLOCKING_SIGNALS=frozenset({'remember','decision','directive'})
-
-def _statements(text):
-    return [s for s in STATEMENT_BREAK.split(text) if s.strip() and not s.rstrip().endswith('?') and not TRANSIENT.search(s)]
-
-def signals_of(prompt,skip=None):
-    """[(kind, the statement that carries it)], one per kind the user's own words carry, highest priority first
-    (PRIORITY), else []. Pasted and harness-generated text is ignored, and so are questions ("why does it never use
-    the cache?") and remarks about this task only. Quoted text (a blockquote, a pasted block) yields only a
-    'directive'. skip, when given, is called with a statement and returns True for one already settled, which then
-    signals nothing."""
-    if not isinstance(prompt,str) or MACHINE_PROMPT.match(prompt):return []
-    plain=IGNORED.sub(' ',prompt)
-    statements=[s for s in _statements(QUOTED.sub(' ',plain)) if not (skip and skip(s))]
-    found={}
-    for kind,pattern in SIGNALS:
-        hit=next((s for s in statements if pattern.search(s)),None)
-        if hit:found[kind]=hit
-    quoted=[s for s in _statements('\n'.join(m[1] or m[2] or '' for m in QUOTED.finditer(plain))[:QUOTED_CHARS]) if not (skip and skip(s))]
-    strong=next((s for s in quoted if DIRECTIVE_STRONG.search(s)),None)
-    weak=[(s,p) for s in quoted for p in DIRECTIVE_WEAK if p.search(s)]
-    if strong:found['directive']=strong
-    elif len({p for _,p in weak})>=2:found['directive']=weak[0][0]
-    return [(kind,found[kind]) for kind in PRIORITY if kind in found]
-
-def signal_of(prompt,skip=None):
-    """(kind, statement) of the highest-priority kind signals_of finds, else (None, None)."""
-    found=signals_of(prompt,skip)
-    return found[0] if found else (None,None)
-
-def durable_signal(prompt):
-    """The kind of durable statement the user's own words carry ('preference', 'correction', 'decision',
-    'remember', or 'directive' from a quoted memo), else None."""
-    return signal_of(prompt)[0]
-
-# Which statements already raised a signal, so a standing header repeated in every brief is not raised again.
-# A non-canonical sidecar per domain, like .last-session.json: salted hashes of the normalized statement only.
-SIGNALS_SEEN='.signals-seen.json'
-MAX_SIGNALS_SEEN=500
-
-def _statement_hash(salt,statement):
-    from .private import _hash,_words
-    return _hash(salt,_words(statement))
-
-def signals_seen(root,domain):
-    """(raised, hashed): raised(statement) is True for a statement settled before; hashed(statement) is its
-    salted hash, which creates the sidecar's salt when there is none."""
-    path=root/'domains'/domain/SIGNALS_SEEN
-    row=read_json(path,{}) or {};row=row if isinstance(row,dict) else {}
-    raised=lambda statement:bool(row.get('salt')) and _statement_hash(row['salt'],statement) in (row.get('seen') or [])
-    def hashed(statement):
-        if not row.get('salt'):
-            import secrets
-            row['salt']=secrets.token_hex(16)
-            try:atomic_write(path,canonical_json(row))
-            except OSError:pass
-        return _statement_hash(row['salt'],statement)
-    return raised,hashed
-
-def settle_signal(root,domain,value):
-    """Remember a statement's hash once its turn is settled (reminded, captured, finalized or closed)."""
-    if value:settle_signals(root,domain,[value])
-
-def settle_signals(root,domain,values):
-    """Remember one or more statement hashes in a single read/write of .signals-seen.json (REL-P5)."""
-    clean=[v for v in values if v]
-    if not clean or not domain:return
-    try:
-        path=root/'domains'/domain/SIGNALS_SEEN;row=read_json(path,{}) or {}
-        if not row.get('salt'):return
-        before=list(row.get('seen',[]))
-        seen=list(before)
-        for value in clean:seen=[h for h in seen if h!=value]+[value]
-        seen=seen[-MAX_SIGNALS_SEEN:]
-        if seen!=before:atomic_write(path,canonical_json({**row,'seen':seen}))
-    except (OSError,ValueError,AttributeError):pass
-
-MAX_SIGNAL_WORDS=12
-MIN_COVER_WORDS=2
-
-# Function words and the signals' own wording ("remember that", "we decided"): a note about the statement need not
-# repeat them. Not search.STOP, which drops words a fact is often about ("go", "fix", "run").
-SIGNAL_STOP=frozenset('''a an the and or but of to in on at by for with from into as so if then than that this these those there here
-is are was were be been being am do does did done it its we i you they he she our my your their me us them not no yes ok please just
-also too very will would should can could may might must shall let lets ll ve re
-remember keep mind forget record prefer rather like hate decided decide decision agreed chosen settled going forward future now
-always never actually wrong meant team effective immediately today allowed permitted prohibited'''.split())
-
-def content_hashes(salt,text,limit=None):
-    """Salted hashes of the distinct content words (no SIGNAL_STOP words, no single letters, light stemming) of a
-    text, in order. A blocking statement keeps these instead of its text, so Stop can tell whether a note covers it.
-    Short identifiers count ("CI uses Go")."""
-    from .private import _hash,_words
-    from .search import stem
-    words=dict.fromkeys(stem(w) for w in _words(text) if w not in SIGNAL_STOP and len(w)>1)
-    return [_hash(salt,[w]) for w in list(words)[:limit]]
-
-def covers_signal(root,refs,state):
-    """True when one of the notes (refs, DOMAIN:ID) a turn's receipts touched shares at least min(2, n) content words
-    with the statement that armed the turn, n being the number of word hashes the prompt stored."""
-    from .notes import find_note
-    wanted=set(state.get('signal_words') or []);salt=state.get('signal_salt')
-    for ref in dict.fromkeys(refs):
-        try:domain,note_id=ref.split(':',1);note=find_note(note_id,domain,root)[1]
-        except (ValueError,OSError):continue
-        if len(wanted&set(content_hashes(salt,(note.get('title') or '')+' '+(note.get('body') or ''))))>=min(MIN_COVER_WORDS,len(wanted)):return True
-    return False
-
-NUDGE_KINDS=('preference','correction','decision')   # statements that often change a note already saved
-NUDGE_NOTE_TYPES=frozenset({'preference','policy','decision','knowledge'})
-NUDGE_NOTES=2
-
-def signal_notes(statement,domain,root,bindings):
-    """Up to NUDGE_NOTES saved notes (preference, policy, decision, knowledge; not digests) in this domain, its parents, its children and the global
-    domains that the statement may change, through the relevance gate. The statement is searched, never stored. Fails open: []."""
-    try:
-        from .search import search_domains
-        from .common import global_domains
-        domains=list(dict.fromkeys([domain,*scope_domains(domain,bindings),*global_domains(root)]))
-        hits=search_domains(statement,domains,6,root,keep=relevance_gate(statement,root),ensure_fresh=False)
-        return [h for h in hits if h.get('type') in NUDGE_NOTE_TYPES and not h.get('sources')][:NUDGE_NOTES]
-    except Exception as exc:
-        from .logs import swallowed
-        swallowed('runtime.signal_notes',exc,root);return []
-
-def signal_nudge(signal,session,kinds=None,notes=None):
-    """The one line a prompt with a durable statement adds to its own context. It names every kind the prompt carried
-    (kinds, in priority order) but suggests the capture command of the primary one (signal). notes (signal_notes hits) are
-    named as notes the statement may change."""
-    said,hint=SIGNAL_TEXT[signal]
-    said=[SIGNAL_TEXT[k][0] for k in kinds if k in SIGNAL_TEXT] if kinds and signal in kinds else [said]
-    said=said[0] if len(said)==1 else ', '.join(said[:-1])+' and '+said[-1]
-    line=(f"Living Memory: the user {said} in this prompt. If it should outlast this session, update its note or "
-          f"CMD capture --session {session} {hint} --title '...' --summary '...' before you finish; if not, nothing is needed.")
-    if notes:
-        from .notes import short_ref
-        names=' or '.join(f"{short_ref(h['domain'],h['id'])} {h['title'][:70]}" for h in notes)
-        line+=f" It may change {names}; update that note instead of capturing a new one."
-    return line
-
-def hit_marks(hit):
-    """Where a hit came from or stands: `[from DOMAIN] ` for a sibling project's portable note (context), `[resolved] ` for a finished bug or risk."""
-    return (f"[from {hit['domain']}] " if hit.get('sibling') else '')+('[resolved] ' if hit.get('status')=='resolved' else '')
-
-def hit_line(hit,width=HIT_SNIPPET):
-    snippet=hit.get('snippet','')
-    if len(snippet)>width:
-        cut=snippet.rfind(' ',0,width);snippet=snippet[:cut if cut>0 else width]+' …'
-    from .notes import short_ref
-    stale=f"{hit['stale']} — " if hit.get('stale') else ''   # a digest whose source file changed (core/digests.py)
-    mark=hit_marks(hit)+(f"UNCONFIRMED (as of {hit.get('updated','')}): " if hit.get('interim') else '')   # notes.is_interim
-    line=f"- [{str(hit.get('type','note')).upper()} {hit.get('updated','')}] {short_ref(hit['domain'],hit['id'])} {mark}{hit['title']} — {stale}{snippet}"
-    return line
-
-def revision_key(note):return str(note.get('revision') or '')[:12]
-
-def _snippeted(state):
-    """ref -> revision key of the notes SessionStart showed with a snippet: a one-line summary would only repeat them."""
-    found=state.get('shown_snippet')
-    return found if isinstance(found,dict) else {}
-
-def _unseen(hit,shown):
-    """True unless this revision of the note was already delivered. shown maps ref -> revision key;
-    a legacy list of refs (or a ref without a revision) suppresses the note itself."""
-    ref=f"{hit['domain']}:{hit['id']}"
-    if ref not in shown:return True
-    seen=shown.get(ref) if isinstance(shown,dict) else None
-    return bool(seen) and seen!=revision_key(hit)
-
-def relevance_gate(*args,**kwargs):
-    from .search import relevance_gate as _relevance_gate
-    return _relevance_gate(*args,**kwargs)   # lazy proxy so importing runtime does not load sqlite3/search (REL-P3)
-
-# A task brief is mostly boilerplate: past this many characters a prompt is searched in pieces, so the assignment
-# in the middle is not lost to the team header and the closing checklist.
-LONG_PROMPT=600
-LONG_SEGMENTS=4
-LONG_LEAST=3
-HEADING=re.compile(r'^\s{0,3}#{1,6}\s')
-
-# A numbered, lettered, bulleted or question-per-line list (a quiz, a checklist): each item is searched on its own.
-LIST_ITEM=re.compile(r'^\s*(?:\d+[.)]|[qQ]\d+[.:)]|[-*])\s+\S')
-LIST_MARK=re.compile(r'^\s*(?:\d+[.)]|[qQ]\d+[.:)]|[-*])\s+')
-LIST_MIN=3        # items that make a prompt a list
-LIST_QUERIES=8    # items searched, richest by IDF first
-LIST_HITS=2       # notes one item may contribute
-ITEM_LEAST=2      # query words body coverage must find for an item (see relevance_gate)
-LIST_CAP=6        # notes injected for a list prompt, at most (3 otherwise)
-LIST_SNIPPET=160
-LIST_BUDGET=2400  # characters of notes a list prompt adds
-
-def _is_item(line):
-    return not HEADING.match(line) and bool(LIST_ITEM.match(line) or line.rstrip().endswith('?'))
-
-def _pieces(text):
-    """[(segment, is_item)]: split at markdown headings (which open a segment) and blank lines; in a prompt with at least
-    LIST_MIN list items each item is a segment of its own, and the lines before the list stay together."""
-    lines=text.splitlines();listy=sum(map(_is_item,lines))>=LIST_MIN
-    segments=[[]];flags=[False]
-    for line in lines:
-        item=listy and _is_item(line)
-        if not line.strip():segments.append([]);flags.append(False)
-        elif segments[-1] and (item or HEADING.match(line)):segments.append([line]);flags.append(item)
-        else:
-            if not segments[-1]:flags[-1]=item
-            segments[-1].append(line)
-    return [('\n'.join(s),f) for s,f in zip(segments,flags) if s]
-
-def prompt_segments(text):
-    """The prompt's paragraphs, or its list items (see _pieces)."""
-    return [s for s,_ in _pieces(text)]
-
-def list_items(text):
-    """The items of a list prompt (at least LIST_MIN of them), else []."""
-    return [s for s,item in _pieces(text) if item]
-
-MAX_QUESTIONS=10
-
-def questions(text):
-    """The separate questions in text, markers removed: its list items when there are at least LIST_MIN, else its
-    ?-terminated sentences when there are at least two; [] for a single question (or none)."""
-    found=[LIST_MARK.sub('',s).strip() for s in list_items(text)]
-    if not found:found=[s.strip() for s in re.findall(r'[^?]*\?',text) if len(s.strip())>1]
-    return found if len(found)>=2 else []
-
-def item_queries(prompt,vocab):
-    """Queries for up to LIST_QUERIES list items, the richest by summed IDF first: each at most 16 terms the notes' own
-    vocabulary selected, judged by the usual gate with body coverage (ITEM_LEAST words)."""
-    from .search import idf_terms,idf_sum
-    queries=[]
-    for item in sorted(list_items(prompt),key=lambda s:-idf_sum(s,vocab))[:LIST_QUERIES]:
-        query=' '.join(idf_terms(item,vocab))
-        if query and query not in queries:queries.append(query)
-    return queries
-
-def long_queries(prompt,vocab):
-    """[(query, body)] for a long prompt: the last segment (the ask usually comes last) and the three richest others by
-    summed IDF, then the whole prompt's most informative terms. Each query is at most 16 terms the notes' own vocabulary
-    selected. A segment is judged by the usual gate; the whole-prompt query (body False) only by titles. Empty and
-    repeated queries are dropped. List items are item_queries' business, not segments here."""
-    from .search import idf_terms,idf_sum
-    segments=[s for s,item in _pieces(prompt) if not item];segments=segments if len(segments)>1 else []
-    rest=sorted(segments[:-1],key=lambda s:-idf_sum(s,vocab))[:LONG_SEGMENTS-1]
-    queries={}
-    for text,body in [(s,True) for s in ([segments[-1]]+rest if segments else [])]+[(prompt,False)]:
-        query=' '.join(idf_terms(text,vocab))
-        if query and query not in queries:queries[query]=body
-    return list(queries.items())
-
-# The injection controller (core/injection.py): section evidence, follow-ups, acknowledgments and per-section dedupe.
-# The eval switches it off to measure the line-per-note delivery used before units.
-DELIVERY=True
-
-def context(cwd,prompt,root,active=None,shown=(),overview_done=False,delivered=None,trace=None,session_delivered=None,topic=None,units_out=None,room=None):
-    """Relevant memory for a prompt: (text or None, ids injected, overview shown). A note shown earlier
-    is offered again once it has a new revision. delivered, when a dict, receives ref -> revision key.
-    trace, when a dict, receives the decision: the path taken, the gate's candidates and the refs injected,
-    suppressed as already shown, or cut by the cap (refs and numbers only).
-    With DELIVERY: session_delivered is the session's {ref: {rev, units: {unit: level}}} (injection.novel); topic is
-    the refs the previous substantive prompt found, which a short follow-up ("why?") refers to; units_out, when a
-    list, receives {ref, unit, level} per injected hit; room is the characters the hits may use (injection.within)."""
-    from .search import search_domains,recent_notes,query_terms,stem
-    from . import injection
-    trace=trace if isinstance(trace,dict) else {}
-    bindings=load_bindings(root);active=active or resolve_domain(cwd,bindings)
-    if not active or MACHINE_PROMPT.match(prompt or ''):trace['path']='machine_prompt' if active else 'unbound';return None,[],False
-    if DELIVERY and injection.is_ack(prompt):trace['path']='ack';return None,[],False
-    query={stem(t) for t in query_terms(prompt)};trace['terms']=len(query)
-    role=injection.follow_up(prompt,query) if DELIVERY and topic else None
-    topic_hits=[]
-    if role:
-        from .search import note_hits
-        topic_hits=note_hits(list(topic)[:injection.TOPIC_REFS],root,prompt);trace['follow_up']=role
-        own=_own_scope(active,bindings,root)
-        for h in topic_hits:
-            if h['domain'] not in own:h['sibling']=True   # a note the last prompt took from another project stays a labelled pointer
-    if not query and not topic_hits:trace['path']='no_terms';return None,[],False
-    if not query:
-        return _deliver(prompt,root,topic_hits,[],shown,delivered,trace,session_delivered,units_out,role,False,set(),room)
-    scope=bindings.get('search_scope',{});global_domains=[canonical_domain(d,root) for d in scope.get('global_domains',['_global'])];global_domains=[d for d in global_domains if (root/'domains'/d).exists()]
-    parents=scope_domains(active,bindings)
-    trace['candidates']=[];relevant=relevance_gate(prompt,root,trace['candidates'])
-    domains=list(dict.fromkeys([active]+parents+global_domains))
-    # Global notes hold in every project, so they rank like the project's own; a parent's or child's count half.
-    weights={**{g:2 for g in global_domains},active:2,**{p:1 for p in parents if p!=active}}
-    queries=None;items=list_items(prompt)
-    if len(prompt)>LONG_PROMPT or items:
-        from .search import vocabulary,terms
-        vocab=vocabulary(domains,root,terms(prompt))
-        if vocab[0]:
-            # A list prompt's items first (a looser gate, a few notes each), then the long-prompt queries; one entry per query text.
-            queries={q:(True,ITEM_LEAST,LIST_HITS) for q in item_queries(prompt,vocab)} if items else {}
-            for q,body in long_queries(prompt,vocab):queries.setdefault(q,(body,LONG_LEAST,10))
-    if items:trace['items']=len(items)
-    if queries:
-        # Each query has its own relevance gate; a note any query finds counts once, at its best rank.
-        trace['queries']=len(queries);best={}
-        for text,(body,least,limit) in queries.items():
-            for h in search_domains(text,domains,limit,root,weights=weights,keep=relevance_gate(text,root,trace['candidates'],body,least),resolved=True,ensure_fresh=False):
-                key=(h['domain'],h['id'])
-                if key not in best or h['score']>best[key]['score']:best[key]=h
-        # Rank-one notes of different items tie on score; the better covered one goes first.
-        found=sorted(best.values(),key=lambda h:(-h['score'],-h.get('relevance',0) if items else 0,h['domain'],h['id']))
-    else:found=search_domains(prompt,domains,10,root,weights=weights,keep=relevant,resolved=True,ensure_fresh=False)
-    if not found and scope.get('foreign_domains'):found=search_domains(prompt,scope['foreign_domains'],10,root,keep=relevant,ensure_fresh=False)
-    if bindings.get('cross_project',True) is not False:
-        try:
-            from .search import strong
-            if not any(strong(h,root) for h in found):   # nothing here answers the prompt well: another project may hold a portable note
-                sibling=sibling_hit(prompt,root,bindings,_own_scope(active,bindings,root),not queries)
-                if sibling:found=found+[sibling];trace['sibling']=f"{sibling['domain']}:{sibling['id']}"
-        except Exception as exc:   # fail open: the prompt keeps what it found
-            from .logs import swallowed
-            swallowed('runtime.context.sibling',exc,root)
-    from .search import LAST_SEMANTIC
-    # Which vector backend served each domain and why not native (debug log; counts and codes only).
-    trace['semantic']={d:LAST_SEMANTIC[d] for d in domains if d in LAST_SEMANTIC}
-    if DELIVERY:
-        trace['topic']=[f"{h['domain']}:{h['id']}" for h in found][:injection.TOPIC_REFS]
-        if found or topic_hits:
-            listed={(h['domain'],h['id']) for h in topic_hits}
-            return _deliver(prompt,root,topic_hits,[h for h in found if (h['domain'],h['id']) not in listed],shown,delivered,trace,session_delivered,units_out,role,bool(items),query,room)
-    seen=set(shown);ref=lambda h:f"{h['domain']}:{h['id']}"
-    unseen=[h for h in found if _unseen(h,shown)];hits=[h for h in unseen if not h.get('sibling')][:min(LIST_CAP,len(items)) if items else 3]+[h for h in unseen if h.get('sibling')]
-    width=LIST_SNIPPET if items else HIT_SNIPPET
-    if items:
-        # The lowest-scored notes go first when the lines would exceed the list budget (one note always stays).
-        used=0
-        for i,h in enumerate(hits):
-            used+=len(hit_line(h,width))+1
-            if used>LIST_BUDGET and i:hits=hits[:i];break
-    trace.update(injected=[ref(h) for h in hits],suppressed_shown=[ref(h) for h in found if not _unseen(h,shown)],cut_by_cap=[ref(h) for h in unseen if h not in hits])
-    if hits:
-        trace['path']='injected'
-        from . import digests
-        digests.mark(hits,root,bindings)
-        if isinstance(delivered,dict):delivered.update({f"{h['domain']}:{h['id']}":revision_key(h) for h in hits})
-        return ('Untrusted historical memory; verify current instructions and files:\n'+'\n'.join(hit_line(h,width) for h in hits),
-                [f"{h['domain']}:{h['id']}" for h in hits],False)
-    if found or overview_done:   # relevant notes were already shown this session
-        trace['path']='all_shown' if found else 'overview_done';return None,[],False
-    # One informative word ("continue", "summarize") is not a question the titles could answer.
-    if len(query)<2:trace['path']='too_short';return None,[],False
-    # Global notes apply everywhere; without a global domain, offer this project's own titles instead.
-    source,heading=(global_domains,'Global titles') if global_domains else ([active]+parents,'Recent titles in this domain')
-    overview=[]
-    for domain in source:
-        try:overview.extend(n for n in recent_notes(domain,5,root) if f"{n['domain']}:{n['id']}" not in seen)
-        except (OSError,ValueError):continue
-    overview=overview[:5]
-    from . import digests
-    digests.mark(overview,root,bindings)   # a withheld digest's title is not shown here either
-    if not overview:trace['path']='no_overview';return None,[],False
-    trace.update(path='overview',overview=len(overview))
-    from .notes import short_ref
-    return (f'No lexical match. {heading} for semantic consideration:\n'+'\n'.join(f"- {short_ref(n['domain'],n['id'])} {n['title']}" for n in overview),[],True)
-
-SIBLING_DOMAINS=4   # sibling projects searched for a portable note
-SIBLING_LEAST_TERMS=2   # a one-word prompt never crosses projects: one matching title word is too little to say another project's note applies
-
-def _own_scope(active,bindings,root):
-    """The domains a prompt searches as its own: the active one, its parents and children, the global domains and the foreign fallback."""
-    scope=bindings.get('search_scope',{})
-    return {active,*scope_domains(active,bindings),*(canonical_domain(d,root) for d in scope.get('global_domains',['_global'])),*(canonical_domain(d,root) for d in scope.get('foreign_domains') or ())}   # aliases resolved: hits carry canonical names
-
-def sibling_hit(prompt,root,bindings,skip,body=True):
-    """The one strong, portable note another bound project holds for a prompt this project answers weakly (UX-C7), marked
-    hit['sibling'], or None. Portable: see search.sibling_search, which reads each sibling's index only (a sibling's notes are
-    never parsed, so up to SIBLING_DOMAINS of them cost a few milliseconds each). skip is the domains already searched. The winner
-    must still match its canonical file. Fails open: any error leaves the prompt with what it found."""
-    try:
-        from .search import sibling_search,strong,relevance_gate,_unchanged
-        from .common import _entries
-        names=sorted(n for n,_,_ in _entries(bindings) if n not in skip and (root/'domains'/n/'notes').is_dir())[:SIBLING_DOMAINS]
-        gate=relevance_gate(prompt,root,body=body);best=None
-        for name in names:
-            try:hits=gate(sibling_search(prompt,name,root))
-            except Exception as exc:
-                from .logs import swallowed
-                swallowed('runtime.sibling_hit',exc,root);continue
-            for h in hits:
-                h['score']=2/(60+h['rank'])
-                if h.get('queryTerms',0)>=SIBLING_LEAST_TERMS and strong(h,root) and (best is None or (h.get('relevance',0),h['score'])>(best.get('relevance',0),best['score'])) and _unchanged(h['path'],h['revision']):best=h
-        if best:best['sibling']=True
-        return best
-    except Exception as exc:
-        from .logs import swallowed
-        swallowed('runtime.sibling_hit',exc,root);return None
-
-def _deliver(prompt,root,topic_hits,found,shown,delivered,trace,session_delivered,units_out,role,listy,query,room=None):
-    """context() with the delivery controller: per hit, the unit to deliver and its level (injection.choose, level_of),
-    dropped when this session already has it (injection.novel), at most 3 hits (a list prompt: up to LIST_CAP within
-    LIST_BUDGET). The previous topic's notes (a follow-up) come first and skip the gate: the prompt names them."""
-    from . import injection,digests
-    from .semantic import threshold
-    near=threshold(root);again=injection.wants_again(prompt);ref=lambda h:f"{h['domain']}:{h['id']}"
-    topical={id(h) for h in topic_hits};chosen=[];suppressed=[]
-    for h in topic_hits+found:
-        mine=id(h) in topical
-        unit=None if h.get('sibling') else injection.choose(h,query,near,role if mine else None,prompt)   # a sibling project's note is always a pointer
-        level='pointer' if h.get('sibling') else injection.level_of(unit,prompt);key=injection.unit_key(unit)
-        # "Does that still apply?" re-states the note's current summary and date even if it was shown before.
-        if injection.novel(h,key,level,session_delivered or {},shown,again or (mine and role=='overview')):chosen.append((h,unit,level,key))
-        else:suppressed.append(ref(h))
-    picked=[c for c in chosen if not c[0].get('sibling')][:min(LIST_CAP,trace.get('items') or 0) if listy else 3]+[c for c in chosen if c[0].get('sibling')]   # the sibling's pointer comes last, beyond the cap
-    width=LIST_SNIPPET if listy else HIT_SNIPPET
-    if picked:digests.mark([h for h,_,_,_ in picked],root,load_bindings(root))
-    lines=[injection.line(h,None if h.get('withheld') else u,'pointer' if h.get('withheld') else level,width) for h,u,level,_ in picked]   # a withheld digest shows its notice, never its text
-    # The lowest-scored notes go first when the lines would exceed the list budget or the hook's room (one note always stays).
-    room=injection.PROMPT_CAP if room is None else room;keep=injection.within(lines,injection.HEADING,min(LIST_BUDGET,room) if listy else room)
-    if keep<len(lines):trace['cut_by_budget']=[ref(h) for h,_,_,_ in picked[keep:]];picked,lines=picked[:keep],lines[:keep]
-    trace.update(injected=[ref(h) for h,_,_,_ in picked],suppressed_shown=suppressed,cut_by_cap=[ref(c[0]) for c in chosen if c not in picked],
-                 levels={ref(h):[level,u['role'] if u else 'overview'] for h,u,level,_ in picked})   # roles, not headings: the log holds no note text
-    if not picked:trace['path']='all_shown';return None,[],False
-    trace['path']='injected'
-    if isinstance(delivered,dict):delivered.update({ref(h):revision_key(h) for h,_,_,_ in picked})
-    if isinstance(units_out,list):units_out.extend({'hit':h,'unit':key,'level':level} for h,_,level,key in picked)
-    return (injection.HEADING+'\n'+'\n'.join(lines),[ref(h) for h,_,_,_ in picked],False)
-
-def parent_domains(domain,bindings):
-    """Domains bound to a folder that contains this domain's folder (e.g. Sandbox above Sandbox/project)."""
-    from .common import _entries
-    mine=[];others={}
-    for name,_,prefixes in _entries(bindings):
-        paths=[]
-        for raw in prefixes:
-            try:paths.append(Path(os.path.expandvars(str(raw))).expanduser().resolve())
-            except (OSError,ValueError):continue
-        if name==domain:mine=paths
-        else:others[name]=paths
-    found=[]
-    for name,paths in others.items():
-        if any(child!=parent and child.is_relative_to(parent) for child in mine for parent in paths):found.append(name)
-    return sorted(found,key=lambda n:-max(len(str(p)) for p in others[n]))
-
-def child_domains(domain,bindings):
-    """Domains bound to a folder inside this domain's folder (e.g. Sandbox/project under Sandbox), nearest first. A domain that is also a parent is left out."""
-    from .common import _entries
-    mine=[];others={}
-    for name,_,prefixes in _entries(bindings):
-        paths=[]
-        for raw in prefixes:
-            try:paths.append(Path(os.path.expandvars(str(raw))).expanduser().resolve())
-            except (OSError,ValueError):continue
-        if name==domain:mine=paths
-        else:others[name]=paths
-    depth={}
-    for name,paths in others.items():
-        found=[len(child.relative_to(parent).parts) for child in paths for parent in mine if child!=parent and child.is_relative_to(parent)]
-        if found:depth[name]=min(found)
-    parents=set(parent_domains(domain,bindings))
-    return sorted((n for n in depth if n not in parents),key=lambda n:(depth[n],n))
-
-def scope_domains(domain,bindings):
-    """Parent and child domains: the neighbours whose notes count at weight 1 beside the domain's own."""
-    return parent_domains(domain,bindings)+child_domains(domain,bindings)
-
-def child_path(shown,domain,child,bindings):
-    """A path as shown for `domain` (touched_paths: relative to its folder, else absolute), rewritten relative to the folder of its child domain `child`,
-    which is how that domain's notes name files; None when the file is not inside the child's folder. A folder that is the child's root or
-    contains it gives '' (every file the child's notes name): search_domains' file filter and search.file_matches read '' that way. Hooks test the
-    result for truth, so they skip it: a touched path is a file, never a folder."""
-    from .common import domain_prefixes
-    try:
-        mine=domain_prefixes(domain,bindings);theirs=domain_prefixes(child,bindings)
-        raw=Path(shown);found=[raw] if raw.is_absolute() else [p/raw for p in mine]
-        for p in found:
-            p=p.resolve()
-            for t in theirs:
-                if p.is_relative_to(t):return '' if p==t else p.relative_to(t).as_posix()
-                if t.is_relative_to(p):return ''
-    except (OSError,ValueError):pass
-    return None
-
-def scoped_file_hits(paths,domain,bindings,root,per_file,resolved=False):
-    """{path: notes about it} from the domain, its parents and its child domains (a child's notes name files relative to the child's folder:
-    child_path rewrites the path for them, and each such hit carries it as 'file'). Reads the index without refreshing it, like every hook lookup."""
-    from .search import files_notes
-    paths=list(dict.fromkeys(paths));out=files_notes(paths,[domain]+parent_domains(domain,bindings),root,per_file,resolved)
-    for child in child_domains(domain,bindings):
-        mapped={c:p for p in paths if (c:=child_path(p,domain,child,bindings))}
-        if not mapped:continue
-        for c,hits in files_notes(list(mapped),[child],root,per_file,resolved).items():
-            for h in hits:h['file']=c
-            out[mapped[c]]=out[mapped[c]]+hits
-    for p,hits in out.items():out[p]=sorted(sorted(hits,key=lambda h:h.get('updated',''),reverse=True),key=lambda h:(h.get('match')!='files',h.get('status')=='resolved'))[:per_file]
-    return out
 
 def process(harness,event,payload,root=None):
     """No store-wide lock: hooks must not serialize every session's tool calls.
@@ -2082,11 +1027,14 @@ def process(harness,event,payload,root=None):
     from .storage import resolve_root
     root=resolve_root(root)[0]
     from . import logs
-    logs.use(root);info={};start=time.perf_counter()
+    logs.use(root)
+    info={}
+    start=time.perf_counter()
     session=str(payload.get('session_id') or payload.get('sessionId') or '')
     fields=lambda:{'harness':harness,'domain':info.get('domain'),'session':session_hash(session) if session and session!='unknown' else None,
                    'ms':round((time.perf_counter()-start)*1000,1)}
-    previous=repository.LOCK_TIMEOUT;repository.LOCK_TIMEOUT=HOOK_LOCK_TIMEOUT
+    previous=repository.LOCK_TIMEOUT
+    repository.LOCK_TIMEOUT=HOOK_LOCK_TIMEOUT
     def extra(result):
         """Decision detail at debug (refs, numbers, reason codes); text only for a sandbox store (logs.content_allowed)."""
         found={}
@@ -2101,7 +1049,8 @@ def process(harness,event,payload,root=None):
         return found
     try:result=_process(harness,event,payload,root,info)
     except Exception as exc:
-        logs.write('error','hook',event,root,**fields(),**extra({}),error=logs.error_fields(exc));raise
+        logs.write('error','hook',event,root,**fields(),**extra({}),error=logs.error_fields(exc))
+        raise
     finally:repository.LOCK_TIMEOUT=previous
     context=result.get('context') or result.get('instructions')
     outcome=sorted(k for k in ('context','deny','allow','continue_reason','warning','instructions') if result.get(k))
@@ -2155,8 +1104,10 @@ def _pre_tool_guards(name,args,text,grammar,cwd,root,domain,state,payload,detail
 def _process(harness,event,payload,root=None,info=None):
     info=info if info is not None else {}
     detail=info.setdefault('detail',{})  # why this hook did what it did: refs, numbers and reason codes only
-    root=Path(root or memory_root()).resolve();cwd=payload.get('cwd') or payload.get('workingDirectory') or os.getcwd()
-    session=str(payload.get('session_id') or payload.get('sessionId') or 'unknown');turn=str(payload.get('turn_id') or payload.get('turnId') or '')
+    root=Path(root or memory_root()).resolve()
+    cwd=payload.get('cwd') or payload.get('workingDirectory') or os.getcwd()
+    session=str(payload.get('session_id') or payload.get('sessionId') or 'unknown')
+    turn=str(payload.get('turn_id') or payload.get('turnId') or '')
     bindings=load_bindings(root)
     state=read_json(_pointer(root,session),{}) if session!='unknown' else {}
     if not isinstance(state,dict):state={}
@@ -2169,10 +1120,13 @@ def _process(harness,event,payload,root=None,info=None):
         if denied is not None:return denied
     off=session_off(state)
     if off:
-        info['off']=True;detail['reason']='off';detail['off']=off
+        info['off']=True
+        detail['reason']='off'
+        detail['off']=off
         if event=='session-end':
             # Store-wide housekeeping only; nothing about this session is recorded.
-            _sync_vaults(root,'session end');detail['housekeeping']={'worker':schedule_housekeeping(root)}
+            _sync_vaults(root,'session end')
+            detail['housekeeping']={'worker':schedule_housekeeping(root)}
             return {}
         if event=='pre-tool-use':
             return {}
@@ -2187,14 +1141,18 @@ def _process(harness,event,payload,root=None,info=None):
     source=str(payload.get('source') or '').lower()
     transcript=None if _subagent(payload) else _transcript(payload)
     if event=='session-start' and session!='unknown':
-        current=resolve_domain(cwd,bindings) or domain;domain=current;info['domain']=domain
+        current=resolve_domain(cwd,bindings) or domain
+        domain=current
+        info['domain']=domain
         def pin(s):
             s['harness']=harness
             if current:s['domain']=current
             else:s.pop('domain',None)
             if transcript:s['transcript']=transcript
             # The first prompts after a compaction may ask about something only the transcript still holds.
-            if source=='compact':s['recall_prompts']=AUTO_RECALL_PROMPTS;s['recalled']=[]
+            if source=='compact':
+                s['recall_prompts']=AUTO_RECALL_PROMPTS
+                s['recalled']=[]
         state=_update(root,session,pin)
     statements={}
     if event=='user-prompt':
@@ -2204,7 +1162,8 @@ def _process(harness,event,payload,root=None,info=None):
             planning=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()=='plan'
             text=payload.get('prompt') or payload.get('user_prompt') or payload.get('userPrompt') or payload.get('transformedPrompt') or ''
             raised,hashed=signals_seen(root,domain) if domain else (None,None)
-            kinds=[] if planning else signals_of(text,raised);signal,source=kinds[0] if kinds else (None,None)
+            kinds=[] if planning else signals_of(text,raised)
+            signal,source=kinds[0] if kinds else (None,None)
             # Leaving plan mode is the user approving a plan: a decision even when the prompt says nothing durable (UX-C4).
             mode=str(payload.get('permission_mode') or payload.get('permissionMode') or '').lower()
             # A blocking statement already holds Stop; a preference or correction does not, so the approval outranks it.
@@ -2219,10 +1178,13 @@ def _process(harness,event,payload,root=None,info=None):
             def opened(s):
                 if not s.get('open_turns'):
                     s['turn_started']=time.time()  # the turn's first prompt (shell edits are found by mtime from the first writing shell command)
-                s['turn']=turn;s['open_turns']=(list(s.get('open_turns',[]))+[turn])[-20:]
+                s['turn']=turn
+                s['open_turns']=(list(s.get('open_turns',[]))+[turn])[-20:]
                 if mode:s['last_mode']=mode
                 if signal:
-                    s['signal']=signal;s['signal_hash']=shash;s['signal_hashes']=shashes
+                    s['signal']=signal
+                    s['signal_hash']=shash
+                    s['signal_hashes']=shashes
                     # Hashes of the statement's words, under a per-session salt, so Stop can check a note covers it.
                     if not s.get('signal_salt'):
                         import secrets
@@ -2230,12 +1192,16 @@ def _process(harness,event,payload,root=None,info=None):
                     s['signal_words']=content_hashes(s['signal_salt'],source,MAX_SIGNAL_WORDS)
                 # No words to cover: any receipt settles the approval at Stop. A nonblocking statement's hashes still settle.
                 if approved:
-                    s['signal']='decision';s.pop('signal_words',None)
-                    if not signal:s['signal_hash']=None;s['signal_hashes']=[]
+                    s['signal']='decision'
+                    s.pop('signal_words',None)
+                    if not signal:
+                        s['signal_hash']=None
+                        s['signal_hashes']=[]
                 # <private> spans: salted shingle hashes only, so a capture that copies one can be refused.
                 if isinstance(text,str) and not MACHINE_PROMPT.match(text) and private.remember(s,text):s['private_turn']=turn
                 if transcript:s['transcript']=transcript
-                s.pop('resumed',None);s.pop('off_told',None)
+                s.pop('resumed',None)
+                s.pop('off_told',None)
             state=_update(root,session,opened)
     elif not turn:
         turn=state.get('turn','')
@@ -2245,22 +1211,28 @@ def _process(harness,event,payload,root=None,info=None):
         try:atomic_write(root/'hooks/last-delivery.json',canonical_json({'harness':harness,'event':event,'timestamp':now(),'bound':bool(domain),'cwd':str(cwd),'domain':domain,'payload_keys':sorted(payload)}),fsync=False)
         except OSError:pass  # Diagnostics only; never cost the session its memory context.
     if event=='session-end':
-        synced=_sync_vaults(root,'session end');worker=schedule_housekeeping(root)
+        synced=_sync_vaults(root,'session end')
+        worker=schedule_housekeeping(root)
         detail['housekeeping']={'synced':len(synced.get('results',[])) if isinstance(synced,dict) else None,'worker':worker}
         return {}
     if not domain:
         if event=='stop':detail['reason']='unbound'
         if event=='session-start' and session!='unknown':
-            hint=bind_hint(cwd,root,bindings,state);detail['bind_hint']=bool(hint)
+            hint=bind_hint(cwd,root,bindings,state)
+            detail['bind_hint']=bool(hint)
             if hint:
-                _update(root,session,lambda s:s.update(bind_hint=True));result['context']=hint
+                _update(root,session,lambda s:s.update(bind_hint=True))
+                result['context']=hint
         return result
     if event=='session-start':
         # Harnesses without SessionEnd (Codex, Copilot, Factory, Antigravity) run throttled vault sync and background housekeeping at session start (REL-U5).
-        if harness!='claude':_sync_vaults(root,'session start',SESSION_START_SYNC_SECONDS);detail['housekeeping']=schedule_housekeeping(root)
+        if harness!='claude':
+            _sync_vaults(root,'session start',SESSION_START_SYNC_SECONDS)
+            detail['housekeeping']=schedule_housekeeping(root)
         from .session_start import build_context,BUDGET,MIN_BUDGET,HARD_CAP,_cap
         # A harness with a SESSION_LIMITS entry gets rules that leave room for the session marker after them.
-        limit=SESSION_LIMITS.get(harness);marker=f'\nLiving Memory session={session}\n'
+        limit=SESSION_LIMITS.get(harness)
+        marker=f'\nLiving Memory session={session}\n'
         rules=protocol(root,domain,harness,session,room=None if limit is None else limit-len(marker))
         # The fallback protocol stands in for the instruction block, which BUDGET does not count either: without this the briefing got only
         # MIN_BUDGET whenever the fallback was injected (INST-9). HARD_CAP still bounds the whole context.
@@ -2269,9 +1241,12 @@ def _process(harness,event,payload,root=None,info=None):
         prefix=rules+marker if limit is None or len(rules)+len(marker)<=limit else marker.lstrip('\n')+rules+'\n'
         # After a compaction the handoff goes first; the title index gives up the room.
         if source=='compact' and session!='unknown':
-            handed=handoff(root,domain,session,state,harness);prefix+=handed;detail['handoff_chars']=len(handed)
+            handed=handoff(root,domain,session,state,harness)
+            prefix+=handed
+            detail['handoff_chars']=len(handed)
         # A session started inside a mapped repo sees a pointer to its map; the body comes when a prompt needs it.
-        pointer=session_map(cwd,root,bindings,state,session);detail['map']=bool(pointer)
+        pointer=session_map(cwd,root,bindings,state,session)
+        detail['map']=bool(pointer)
         if pointer:prefix+=pointer+'\n'
         # The knowledge base (core/sources.py): one line, and a detached background sync when the sources changed since the last one.
         from .sources import session_line
@@ -2319,7 +1294,8 @@ def _process(harness,event,payload,root=None,info=None):
             from .logs import swallowed
             swallowed('runtime.refresh_stale',exc,root)
         from .briefs import brief_folder
-        resolved=[] if _subagent(payload) else auto_resolve(root,domain,bindings,session);detail['auto_resolved']=len(resolved)
+        resolved=[] if _subagent(payload) else auto_resolve(root,domain,bindings,session)
+        detail['auto_resolved']=len(resolved)
         # A harness that cuts the hook's whole context (Codex: additionalContextLimit) gets a Rules block that ends inside that limit.
         text,shown,indexed=build_context(cwd,root,max(MIN_BUDGET,BUDGET-(len(prefix)-rules_outside_budget)),session=session,trace=detail,resolved=resolved,
                                          limit=None if limit is None else max(0,limit-len(prefix)),
@@ -2331,7 +1307,11 @@ def _process(harness,event,payload,root=None,info=None):
             # full injection is deduplicated. Index lines are titles, so those notes stay eligible too. Once the index
             # has listed the newest titles, the prompt-time "recent titles" fallback has nothing to add.
             def started(s):
-                s.pop('shown',None);s.pop('shown_snippet',None);s.pop('overview_shown',None);s.pop('delivered',None);s.pop('topic',None)
+                s.pop('shown',None)
+                s.pop('shown_snippet',None)
+                s.pop('overview_shown',None)
+                s.pop('delivered',None)
+                s.pop('topic',None)
                 if shown:s['shown_snippet']=shown
                 # The new context has not seen any map hint either; exploration counts and reminders stand.
                 for rec in _repos(s).values():
@@ -2380,10 +1360,15 @@ def _process(harness,event,payload,root=None,info=None):
         # The brief and maps get what PROMPT_HARD_CAP leaves after the header, resume prefix, governance and HIT_RESERVE; when
         # they would not fit, they are rebuilt at the next ORIENTATION_LEVEL (fewer summaries, then pointers for maps).
         orientation_room=PROMPT_HARD_CAP-len(header)-len(resume)-governance_len-HIT_RESERVE-1
-        delivered={};maps_text,map_refs,mapped=None,{},{};brief_text,brief_refs=None,{};briefed=[]
+        delivered={}
+        maps_text,map_refs,mapped=None,{},{}
+        brief_text,brief_refs=None,{}
+        briefed=[]
         if isinstance(prompt,str) and not MACHINE_PROMPT.match(prompt):
             for level in range(ORIENTATION_LEVELS):
-                maps_text,map_refs,mapped=None,{},{};brief_text,brief_refs=None,{};briefed=[]
+                maps_text,map_refs,mapped=None,{},{}
+                brief_text,brief_refs=None,{}
+                briefed=[]
                 try:maps_text,map_refs,mapped=prompt_maps(cwd,prompt,root,bindings,state,detail,briefed,session,level)
                 except Exception as exc:
                     from .logs import swallowed
@@ -2407,22 +1392,28 @@ def _process(harness,event,payload,root=None,info=None):
         # A map or brief injected now counts as shown, so the note search below does not repeat it as a hit.
         shown_now=state.get('shown',{})
         shown_now=dict(shown_now) if isinstance(shown_now,dict) else dict.fromkeys(shown_now if isinstance(shown_now,list) else [],'')
-        shown_now.update(map_refs);shown_now.update(brief_refs)
+        shown_now.update(map_refs)
+        shown_now.update(brief_refs)
         # A map or brief given only as a pointer is kept out of the hits too, but not recorded: its body comes later.
         deferred={**((detail.get('maps') or {}).get('pointers') or {}),**((detail.get('brief') or {}).get('pointer') or {})}
         shown_now.update(deferred)
-        units_out=[];topic=state.get('topic') if isinstance(state.get('topic'),list) else None
+        units_out=[]
+        topic=state.get('topic') if isinstance(state.get('topic'),list) else None
         session_delivered=state.get('delivered') if isinstance(state.get('delivered'),dict) else {}
         # One budget for note hits (injection.PROMPT_CAP): they get what the header, brief, maps and governance lines leave,
         # and source excerpts and recall join only when they still fit.
         fixed=len(header)+(len(maps_text)+1 if maps_text else 0)+governance_len
         room=max(0,min(injection.PROMPT_CAP,PROMPT_HARD_CAP-len(resume))-fixed-1) if DELIVERY else None
         if isinstance(prompt,str):hits,ids,overview=context(cwd,prompt,root,domain,shown_now,state.get('overview_shown',False),delivered,detail,session_delivered,topic,units_out,room)
-        else:hits,ids,overview=None,[],False;detail['path']='not_text'
+        else:
+            hits,ids,overview=None,[],False
+            detail['path']='not_text'
         # A recall prompt ("remind me") bypasses shown_now; a pointer-only map or brief it returned as a hit is still not its delivery.
         for ref in deferred:delivered.pop(ref,None)
         relevant_notes=len(ids)+len(detail.get('suppressed_shown') or [])
-        delivered.update(map_refs);delivered.update(brief_refs);ids=list(map_refs)+list(brief_refs)+ids
+        delivered.update(map_refs)
+        delivered.update(brief_refs)
+        ids=list(map_refs)+list(brief_refs)+ids
         set_topic='topic' in detail and not detail.get('follow_up')
         if session!='unknown' and (mapped or ids or overview or set_topic):
             def remember_prompt(s):
@@ -2437,7 +1428,9 @@ def _process(harness,event,payload,root=None,info=None):
                 if ids or overview:
                     previous=s.get('shown',{})
                     previous=dict(previous) if isinstance(previous,dict) else dict.fromkeys(previous if isinstance(previous,list) else [],'')
-                    for ref,key in delivered.items():previous.pop(ref,None);previous[ref]=key
+                    for ref,key in delivered.items():
+                        previous.pop(ref,None)
+                        previous[ref]=key
                     s['shown']=dict(list(previous.items())[-50:])
                     # Unlike shown, surfaced survives session start, so the compaction handoff can name these notes.
                     s['surfaced']=list(dict.fromkeys(list(s.get('surfaced',[]))+ids))[-MAX_SURFACED:]
@@ -2455,7 +1448,8 @@ def _process(harness,event,payload,root=None,info=None):
             except (OSError,TimeoutError):pass
         usage_batch=[]
         if briefed:
-            detail['briefed']=list(briefed);usage_batch.append(('inject',briefed,'map-brief',None))
+            detail['briefed']=list(briefed)
+            usage_batch.append(('inject',briefed,'map-brief',None))
         if ids:
             if map_refs:usage_batch.append(('inject',list(map_refs),'prompt-map',None))
             if brief_refs:usage_batch.append(('inject',list(brief_refs),'prompt-brief',None))
@@ -2472,7 +1466,9 @@ def _process(harness,event,payload,root=None,info=None):
         if isinstance(prompt,str) and not MACHINE_PROMPT.match(prompt) and relevant_notes<2 and not _subagent(payload):
             try:
                 excerpts,keys=prompt_sources(prompt,root,domain,state,detail.setdefault('sources',{}))
-                if excerpts and not fits(excerpts):detail['sources_cut_by_budget']=len(keys);excerpts=None
+                if excerpts and not fits(excerpts):
+                    detail['sources_cut_by_budget']=len(keys)
+                    excerpts=None
                 if excerpts:
                     result['context']+='\n'+excerpts
                     from .usage import record
@@ -2486,11 +1482,15 @@ def _process(harness,event,payload,root=None,info=None):
                 swallowed('runtime.prompt_sources',exc,root)
         if state.get('recall_prompts') and harness in RECALL_HARNESSES and session!='unknown' and isinstance(prompt,str) and not MACHINE_PROMPT.match(prompt):
             from .recall import auto
-            gate={};recalled,used=auto(state.get('transcript'),prompt,state.get('recalled',[]),gate);detail['recall']=dict(gate,used=len(used))
+            gate={}
+            recalled,used=auto(state.get('transcript'),prompt,state.get('recalled',[]),gate)
+            detail['recall']=dict(gate,used=len(used))
             recalled=(f"From before compaction (this session's transcript; untrusted, may be outdated; more: "
                       f"{hint_command(root,state,domain)} search 'query' --transcript --session {session}):\n"+recalled) if recalled else None
             if recalled and fits(recalled):result['context']+='\n'+recalled
-            elif recalled:detail['recall_cut_by_budget']=True;used=[]   # not delivered, so still eligible next time
+            elif recalled:  # not delivered, so still eligible next time
+                detail['recall_cut_by_budget']=True
+                used=[]
             def spent(s):
                 s['recall_prompts']=max(0,int(s.get('recall_prompts') or 0)-1)
                 if used:s['recalled']=(list(s.get('recalled',[]))+used)[-50:]
@@ -2503,8 +1503,11 @@ def _process(harness,event,payload,root=None,info=None):
             from .usage import record
             record(root,'reminder',session=session,kind='nudge-'+detail['signal'])
     elif event=='pre-compact':
-        if session=='unknown' or _subagent(payload):detail['skipped']='unknown_session' if session=='unknown' else 'subagent';return {}
-        trigger=str(payload.get('trigger') or 'auto');detail['trigger']=trigger
+        if session=='unknown' or _subagent(payload):
+            detail['skipped']='unknown_session' if session=='unknown' else 'subagent'
+            return {}
+        trigger=str(payload.get('trigger') or 'auto')
+        detail['trigger']=trigger
         def compacting(s):
             s['compactions']=(list(s.get('compactions',[]))+[{'at':now(),'trigger':trigger}])[-10:]
             if transcript:s['transcript']=transcript
@@ -2514,7 +1517,8 @@ def _process(harness,event,payload,root=None,info=None):
     elif event=='subagent-start':
         # A subagent's context has no CMD, so this is the whole command; PowerShell needs the call operator before a quoted path.
         from .note_types import NOTE_TYPES
-        cmd=command(root,domain);call='; Bash: as written, PowerShell: put & in front' if os.name=='nt' and not cmd.startswith('alm ') else ''
+        cmd=command(root,domain)
+        call='; Bash: as written, PowerShell: put & in front' if os.name=='nt' and not cmd.startswith('alm ') else ''
         # Its one write is a draft for the main agent (core/proposals.py), so the evidence it found survives the hand-back
         # while notes still come only from the main agent.
         result['context']=('Living Memory: subagents may only search/read via scripts, plus one staging write. To keep a verified finding a future '
@@ -2532,7 +1536,8 @@ def _process(harness,event,payload,root=None,info=None):
         name,args,text,grammar=tool_info
         detail['tool']=name
         if _subagent(payload):detail['subagent']=True   # who ran a command (for evaluations that count subagent propose calls)
-        subcommand=memory_subcommand(text,grammar) if text else None;detail['subcommand']=subcommand
+        subcommand=memory_subcommand(text,grammar) if text else None
+        detail['subcommand']=subcommand
         # The call operator is PowerShell's: Bash would background the command. Say so, with the command that works.
         if subcommand and grammar=='posix' and re.match(r'\s*&',text):
             detail['decision']='deny:call-operator'
@@ -2563,38 +1568,46 @@ def _process(harness,event,payload,root=None,info=None):
                 swallowed('runtime.explore',exc,root)
         # What the agent is about to run is looked up even when the command only reads: a note may warn that a build exits 0 and builds nothing.
         if name in SHELL_TOOLS and text and not subcommand and session!='unknown' and domain and harness in FILE_HINT_HARNESSES and bindings.get('command_hints',True) is not False:
-            detail['command_hints']=[];hint=command_hints(text,state,root,domain,bindings,session,detail['command_hints'])
+            detail['command_hints']=[]
+            hint=command_hints(text,state,root,domain,bindings,session,detail['command_hints'])
             if hint:result['context']='\n'.join(filter(None,[result.get('context'),hint]))
         if not skip and name not in SHELL_TOOLS:
             try:created=created_top_level(args,cwd,root,bindings)
             except Exception as exc:
                 from .logs import swallowed
-                swallowed('runtime.created_top_level',exc,root);created={}
+                swallowed('runtime.created_top_level',exc,root)
+                created={}
             if created:
                 detail['created_top_level']={Path(k).name:names for k,(_,names) in created.items()}
                 def grew(repos):
                     for key,(ref,names) in created.items():
-                        rec=dict(repos.pop(key,{}));rec['map']=ref
-                        rec['created']=list(dict.fromkeys(list(rec.get('created',[]))+names))[:MAX_CREATED];repos[key]=rec
+                        rec=dict(repos.pop(key,{}))
+                        rec['map']=ref
+                        rec['created']=list(dict.fromkeys(list(rec.get('created',[]))+names))[:MAX_CREATED]
+                        repos[key]=rec
                 _track_repos(root,session,grew)
         if not skip:
             paths=touched_paths(args,payload,cwd,root,domain,bindings,shell=name in SHELL_TOOLS)
-            detail['touched']=len(paths);detail['hints']=[]
-            follow={};digested=[]
+            detail['touched']=len(paths)
+            detail['hints']=[]
+            follow={}
+            digested=[]
             hints,looked=file_hints(paths,state,root,domain,bindings,session,detail['hints'],follow,digested) if harness in FILE_HINT_HARNESSES else (None,[])
             # Files past the per-call hint cap were never looked up; Stop looks them up in one batch (follow_pending).
             unlooked=[p for p in paths if p not in looked and p not in set(state.get('file_hints',[]))] if harness in FILE_HINT_HARNESSES else []
             if hints:result['context']='\n'.join(filter(None,[result.get('context'),hints]))
             # Decision documents (ADRs, changelogs, boards) changed this turn; Stop asks for a note about them.
             from .triggers import decision_docs
-            docs=decision_docs(paths,bindings);detail['docs']=len(docs)
+            docs=decision_docs(paths,bindings)
+            detail['docs']=len(docs)
             # The repos this command may change, with HEAD now: Stop asks git about these only (PROV-2).
             repos=shell_repos(text,cwd,bindings,state) if name in SHELL_TOOLS else []
             new_repos=[k for k in repos if k not in (state.get('shell_repos') or [])]
             new_heads={k:h for k in new_repos if (h:=head_oid(Path(k)))}
             if not state.get('mutating') or set(paths)-set(state.get('touched',[])) or looked or (name in SHELL_TOOLS and not state.get('shell')) or new_repos:
                 def touch(s):
-                    s['mutating']=True;s['edited']=True   # edited outlives the turn: read-only sessions get no housekeeping reminders
+                    s['mutating']=True  # edited outlives the turn: read-only sessions get no housekeeping reminders
+                    s['edited']=True
                     if name in SHELL_TOOLS:   # shell edits often use relative paths no hook can see; Stop asks git
                         if not s.get('shell'):s['shell_started']=time.time()
                         s['shell']=True
@@ -2602,10 +1615,12 @@ def _process(harness,event,payload,root=None,info=None):
                         heads=s.get('heads') if isinstance(s.get('heads'),dict) else {}
                         for key in repos:
                             if key not in known and key in new_heads:heads[key]=new_heads[key]
-                        s['heads']=heads;s['shell_repos']=list(dict.fromkeys(known+repos))[:MAX_SHELL_REPOS]
+                        s['heads']=heads
+                        s['shell_repos']=list(dict.fromkeys(known+repos))[:MAX_SHELL_REPOS]
                     if docs:s['docs']=list(dict.fromkeys(list(s.get('docs',[]))+docs))[:MAX_DOCS]
                     if follow:
-                        hinted={p:r for p,r in (s.get('hinted') or {}).items() if p not in follow};hinted.update(follow)
+                        hinted={p:r for p,r in (s.get('hinted') or {}).items() if p not in follow}
+                        hinted.update(follow)
                         s['hinted']=dict(list(hinted.items())[-MAX_HINTED:])
                         if digested:s['hinted_digests']=list(dict.fromkeys(list(s.get('hinted_digests',[]))+digested))[-MAX_HINTED:]
                     s['touched']=list(dict.fromkeys(list(s.get('touched',[]))+paths))[:MAX_TOUCHED]
@@ -2614,7 +1629,9 @@ def _process(harness,event,payload,root=None,info=None):
                     if looked:s['file_hints']=list(dict.fromkeys(list(s.get('file_hints',[]))+looked))[-MAX_FILE_HINTS:]
                 _update(root,session,touch)
     elif event=='stop':
-        if session=='unknown':detail['reason']='unknown_session';return {}
+        if session=='unknown':
+            detail['reason']='unknown_session'
+            return {}
         _record_last_session(root,domain,session,state)
         turns=list(dict.fromkeys(list(state.get('open_turns',[]))+([turn] if turn else [])))
         _record_ledger(root,domain,session,state,cwd,turns)
@@ -2628,7 +1645,8 @@ def _process(harness,event,payload,root=None,info=None):
             for key in TURN_STATE:s.pop(key,None)
             if left or s.get('docs_left'):s['docs_left']=left
             if receipted:settle(s,approvals)
-        signal=state.get('signal');detail.update(turns=len(turns),mutating=bool(state.get('mutating')),signal=signal)
+        signal=state.get('signal')
+        detail.update(turns=len(turns),mutating=bool(state.get('mutating')),signal=signal)
         # The turn ends here whatever happens next, so its statement is settled: a header repeated in every brief raises once.
         settle_signals(root,domain,state.get('signal_hashes') or [state.get('signal_hash')])
         # Plan mode cannot save anything, so a repo explored there is reminded about at the next Stop outside plan mode.
@@ -2636,7 +1654,8 @@ def _process(harness,event,payload,root=None,info=None):
         try:pending=stop_pending(root,bindings,state,session,turns,domain,cwd,planning,harness,approvals)
         except Exception as exc:
             from .logs import swallowed
-            swallowed('runtime.stop_pending',exc,root);pending=[]
+            swallowed('runtime.stop_pending',exc,root)
+            pending=[]
         detail['explore_pending']=[(Path(data[0]).name,kind) for kind,data in pending if kind in MAP_KINDS]
         detail['pending']=[kind for kind,_ in pending]
         # Documents not asked about yet (the reminder names STOP_DOCS at a time) are asked about at the next Stop.
@@ -2651,12 +1670,18 @@ def _process(harness,event,payload,root=None,info=None):
         quiet=('receipt' if not pending and receipted else 'no_change' if not (state.get('mutating') or signal or pending)
                else 'no_turns' if not turns else None if pending else 'nudged' if signal in SIGNAL_TEXT else 'files_only')
         if quiet:
-            detail['reason']=quiet;_update(root,session,close);return {}
-        latest=turns[-1];reminder=root/'.turns'/(turn_key(session,latest)+'.reminded')
+            detail['reason']=quiet
+            _update(root,session,close)
+            return {}
+        latest=turns[-1]
+        reminder=root/'.turns'/(turn_key(session,latest)+'.reminded')
         if payload.get('stop_hook_active') or payload.get('stopHookActive') or reminder.exists():
-            detail['reason']='stop_active' if payload.get('stop_hook_active') or payload.get('stopHookActive') else 'already_reminded';_update(root,session,close);return {}
+            detail['reason']='stop_active' if payload.get('stop_hook_active') or payload.get('stopHookActive') else 'already_reminded'
+            _update(root,session,close)
+            return {}
         atomic_write(reminder,'reminded\n')
-        used=[];text=stop_text(pending,session,used)
+        used=[]
+        text=stop_text(pending,session,used)
         def reminded(s):
             # The reminder settles these turns: a later turn is not reminded again about this one's statement
             # or changes, even when the harness sends no stop_hook_active follow-up. The turn's touched files
@@ -2699,7 +1724,8 @@ def explore_pending(root,bindings,state,domain=None,cwd=None):
     (one captured since quiets it), new top-level paths in a mapped repo, or a map or brief that was shown as stale, is unchanged
     since and sits in a repo the turn touched (data: its ref, short ref, kind and the cited paths that changed)."""
     from .maps import find_map
-    pending=[];stale=[]
+    pending=[]
+    stale=[]
     for key,rec in _repos(state).items():
         if not isinstance(rec,dict):continue
         if rec.get('explored') and not rec.get('reminded') and not rec.get('map') and not find_map(Path(key),root,bindings):
@@ -2714,13 +1740,17 @@ def stale_pending(root,bindings,state,domain,cwd,stale):
     from .briefs import find_brief
     from .common import domain_prefixes
     from .notes import short_ref
-    told=set(state.get('stale_told',[]));touched=state.get('touched') or [];found=[]
+    told=set(state.get('stale_told',[]))
+    touched=state.get('touched') or []
+    found=[]
     prefixes=domain_prefixes(domain,bindings) if domain else []
     def inside(repo,path):
-        q=Path(path);return any(c.is_relative_to(repo) for c in ([q] if q.is_absolute() else [b/path for b in prefixes]))
+        q=Path(path)
+        return any(c.is_relative_to(repo) for c in ([q] if q.is_absolute() else [b/path for b in prefixes]))
     for key,slot,entry in stale:
         if entry['ref'] in told:continue
-        repo=Path(key);here=git_root(cwd) if cwd else None
+        repo=Path(key)
+        here=git_root(cwd) if cwd else None
         if not (any(inside(repo,p) for p in touched) or (state.get('shell') and state.get('mutating') and here and here.as_posix()==key)):continue
         hit=(find_map if slot=='fresh' else find_brief)(repo,root,bindings)
         # Updated (or replaced) since it was shown: nothing left to ask.
@@ -2737,10 +1767,13 @@ def map_sentence(key,kind,data,session):
                 f"CMD capture --session {session} --type map --file '{key}' --title '{name} codebase map' --summary '...' "
                 "--detail '**Layout:** ...' (and Entry points, Key modules, Data flow, Build/test/run, Conventions), plus --section 'Data flow' with a small Mermaid flowchart if it helps.")
     if kind=='stale':
-        paths=data['paths'];names=', '.join(paths[:2])+(f' and {len(paths)-2} more' if len(paths)>2 else '');short=data['short']
+        paths=data['paths']
+        names=', '.join(paths[:2])+(f' and {len(paths)-2} more' if len(paths)>2 else '')
+        short=data['short']
         return (f"{data['what']} {short} is stale ({names} changed since it was written): CMD read {short}, then CMD update {short} --session {session} "
                 f"--set-detail '{'**Conventions:**' if data['what']=='map' else '**Key decisions:**'} ...' --expected-revision REV for each bullet that changed.")
-    ref,names=data;short=short_ref(*ref.split(':',1))
+    ref,names=data
+    short=short_ref(*ref.split(':',1))
     return (f"new top-level paths in {name} ({', '.join(names)}): if they change its layout, update map {short} "
             f"(CMD read {short}, then CMD update {short} --session {session} --set-detail '**Layout:** ...' --expected-revision REV for each bullet that changed).")
 
@@ -2755,7 +1788,8 @@ STOP_DOCS=2
 STOP_NOTES=2
 STOP_FOLLOW=5   # notes about edited files one Stop reminder names, in a single sentence
 STOP_PROPOSALS=3   # subagent proposals one Stop reminder names
-CHANGE_GUARD_COMMITS=3;CHANGE_GUARD_FILES=30   # more than this changed under a shell command is a pull or checkout, not the agent's work
+CHANGE_GUARD_COMMITS=3  # more than this changed under a shell command is a pull or checkout, not the agent's work
+CHANGE_GUARD_FILES=30
 FOLLOW_BATCH_FILES=30
 BOILERPLATE_HEADINGS={'context','decision','decisions','consequences','status','background','summary','overview','alternatives','options','notes','rationale','changelog','unreleased'}
 
@@ -2765,13 +1799,15 @@ def stop_pending(root,bindings,state,session,turns,domain=None,cwd=None,planning
     unbriefed, brief (the project has no brief, or a decision this turn may have outdated it); unmapped, grown (a
     repo explored without a map, or grown at its top level). approvals, when given, collects the key of every approval
     in the transcript turn (approved_decisions), for the caller to settle."""
-    pending=[];signal=state.get('signal')
+    pending=[]
+    signal=state.get('signal')
     # A receipt settles the housekeeping, so only the brief (which a captured decision may have outdated) is still asked
     # about. A blocking statement, a decision document or a file a note covers is settled only by a note that covers it
     # (or by "nothing durable"), so an unrelated capture does not silence it. A statement that stored no words
     # (older state, or nothing but stopwords) is settled by any receipt.
     receipts=[r for r in (capture_status(session,t,root) for t in turns) if r]
-    receipted=bool(receipts);dismissed=any(r.get('outcome')=='nothing_durable' or r.get('dismissed') for r in receipts)
+    receipted=bool(receipts)
+    dismissed=any(r.get('outcome')=='nothing_durable' or r.get('dismissed') for r in receipts)
     saved=[ref for r in receipts for ref in r.get('notes',[])]
     if signal in BLOCKING_SIGNALS and not (dismissed or (covers_signal(root,saved,state) if state.get('signal_words') else receipted)):pending.append((signal,{'files':bool(state.get('mutating'))}))
     # What the turn's tool calls and their results show (core/recall.turn_tools): an approved plan or an answered
@@ -2783,7 +1819,8 @@ def stop_pending(root,bindings,state,session,turns,domain=None,cwd=None,planning
             from .recall import turn_tools
             tools=turn_tools(state['transcript'])
             if signal!='decision':
-                found=approved_decisions(tools);settled=set(state.get('decisions_settled') or [])
+                found=approved_decisions(tools)
+                settled=set(state.get('decisions_settled') or [])
                 if approvals is not None:approvals.extend(key for _,key in found)
                 chosen=next(((label,key) for label,key in found if key not in settled),None)
                 if chosen and not receipted:pending.append(('decision',{'files':bool(state.get('mutating')),'plan':chosen[0],'key':chosen[1]}))
@@ -2801,7 +1838,8 @@ def stop_pending(root,bindings,state,session,turns,domain=None,cwd=None,planning
             try:found=[(kind,data) for kind,data in find() if not (kind=='doc' and saved and covered_by(root,saved,data['path']))]
             except Exception as exc:
                 from .logs import swallowed
-                swallowed('runtime.'+name+'_pending',exc,root);continue
+                swallowed('runtime.'+name+'_pending',exc,root)
+                continue
             # A note a document reminder already offers to update is not asked about a second time.
             named={n['ref'] for kind,data in pending if kind=='doc' for n in data['notes']}
             pending+=[(kind,data) for kind,data in found if not (kind=='follow' and data['ref'] in named)]
@@ -2854,7 +1892,8 @@ def verified_fix(tools):
     An edit is an edit tool that did not fail, or a successful shell command that plainly writes (SHELL_WRITE: `sed -i`, a
     redirect to a file, `npm install`) and is not one of the failed commands. Memory commands and results with no exit code are ignored."""
     from .recall import _command_text
-    failed=set();ready=set()
+    failed=set()
+    ready=set()
     for tool in tools:
         name=str(tool.get('name','')).lower()
         if name in EDIT_TOOLS:
@@ -2865,7 +1904,9 @@ def verified_fix(tools):
         text=_command_text(args.get('command',args.get('cmd')))
         key=command_key(text)
         if not key or key.split()[0] in MEMORY_COMMANDS or key.split()[0].lower() in PROBE_COMMANDS or 'living_memory.py' in text:continue
-        if not tool['ok']:failed.add(key);ready.discard(key)
+        if not tool['ok']:
+            failed.add(key)
+            ready.discard(key)
         elif key in ready:return key
         elif key not in failed and SHELL_WRITE.search(text) and not readonly_shell(text):ready|=failed
     return None
@@ -2877,22 +1918,20 @@ def approved_decisions(tools):
     A rejected plan is an error result and arms nothing."""
     found=[]
     for tool in tools:
-        name=str(tool.get('name','')).lower();args=tool.get('input') or {}
+        name=str(tool.get('name','')).lower()
+        args=tool.get('input') or {}
         if tool.get('ok') is not True:continue
         if name=='exitplanmode':
             plan=str(args.get('plan') or '')
             label=next((l.lstrip('# ').strip() for l in plan.splitlines() if l.lstrip().startswith('#')),'')[:120] or 'approved plan'
         elif name=='askuserquestion':
-            asked=args.get('questions');first=asked[0] if isinstance(asked,list) and asked and isinstance(asked[0],dict) else {}
+            asked=args.get('questions')
+            first=asked[0] if isinstance(asked,list) and asked and isinstance(asked[0],dict) else {}
             label=(str(first.get('question') or 'question')[:100]+' -> '+' '.join(str(tool.get('text') or '').split())[:100]).strip()
         else:continue
         whole=json.dumps([str(tool.get('id') or ''),name,args,str(tool.get('text') or '')],sort_keys=True,default=str)
         found.append((label,hashlib.sha256(whole.encode('utf-8')).hexdigest()[:16]))
     return found
-
-def approved_decision(tools):
-    """The label of the first approval in this turn (approved_decisions), else None."""
-    return next((label for label,_ in approved_decisions(tools)),None)
 
 def _norm_path(path):return re.sub(r'^(?:\./)+','',str(path).strip().replace('\\','/')).casefold()
 
@@ -2908,7 +1947,9 @@ def covered_by(root,refs,path):
     """True when one of the notes (refs, DOMAIN:ID) a turn's receipts touched covers the document at path."""
     from .notes import find_note
     for ref in dict.fromkeys(refs):
-        try:domain,note_id=ref.split(':',1);note=find_note(note_id,domain,root)[1]
+        try:
+            domain,note_id=ref.split(':',1)
+            note=find_note(note_id,domain,root)[1]
         except (ValueError,OSError):continue
         if note_covers(note,path):return True
     return False
@@ -2923,7 +1964,8 @@ def brief_pending(root,bindings,state,session,turns,domain,cwd,pending,receipted
     from .maps import repo_name
     from .notes import short_ref
     from .search import active_notes
-    asked=set(state.get('briefed',[]));signal=state.get('signal')
+    asked=set(state.get('briefed',[]))
+    signal=state.get('signal')
     if set(BRIEF_KINDS)<=asked:return []
     docs=bool(state.get('docs')) or any(kind=='doc' for kind,_ in pending)
     saved=[r for t in turns for r in (capture_status(root=root,session=session,turn=t) or {}).get('notes',[])]
@@ -2935,14 +1977,16 @@ def brief_pending(root,bindings,state,session,turns,domain,cwd,pending,receipted
         return [('brief',{'short':short_ref(hit['domain'],hit['id']),'title':hit['title']})]
     if 'unbriefed' in asked or receipted or not state.get('edited'):return []
     if docs or signal in BLOCKING_SIGNALS or (state.get('mutating') and active_count(domain,root,MIN_NOTES)>=MIN_NOTES):
-        folder=project_dir(cwd,bindings);return [('unbriefed',{'dir':project_key(folder,bindings),'name':repo_name(folder)})]
+        folder=project_dir(cwd,bindings)
+        return [('unbriefed',{'dir':project_key(folder,bindings),'name':repo_name(folder)})]
     return []
 
 def _doc_file(shown,prefixes):
     """The file a path shown to notes names, else None."""
     for base in prefixes:
         if (base/shown).is_file():return base/shown
-    p=Path(shown);return p if p.is_absolute() and p.is_file() else None
+    p=Path(shown)
+    return p if p.is_absolute() and p.is_file() else None
 
 def doc_query(path,file):
     """Search words for a document: its H1 and H2 headings (the first 8 KB), else its file name."""
@@ -2993,7 +2037,9 @@ def _turn_repos(cwd,state):
 def others_touched(root,session):
     """Files other sessions active in the last OTHER_SESSION_HOURS hours named in write tool calls (their touched_session),
     as notes name them. A parallel session's edits show up in this session's git status; they are not this session's work."""
-    mine=_pointer(root,session) if session else None;cutoff=time.time()-OTHER_SESSION_HOURS*3600;found=set()
+    mine=_pointer(root,session) if session else None
+    cutoff=time.time()-OTHER_SESSION_HOURS*3600
+    found=set()
     try:pointers=list((Path(root)/'.turns').glob('*.current.json'))
     except OSError:return found
     for pointer in pointers:
@@ -3012,7 +2058,11 @@ def turn_changed(root,bindings,state,domain,cwd,session=None):
     edited is the set of shown names of existing files the moved HEAD modified (empty unless pulled): what doc_pending leaves out after a pull."""
     from .common import domain_prefixes,display_path,head_oid
     from .triggers import changed_since,committed_since,commit_count
-    prefixes=domain_prefixes(domain,bindings);files={};pulled=False;total=0;moved=[]
+    prefixes=domain_prefixes(domain,bindings)
+    files={}
+    pulled=False
+    total=0
+    moved=[]
     def show(path):
         try:p=path.resolve()
         except OSError:return None,None
@@ -3020,12 +2070,15 @@ def turn_changed(root,bindings,state,domain,cwd,session=None):
         return display_path(p,prefixes),p
     if state.get('shell') and cwd:
         heads=state.get('heads') if isinstance(state.get('heads'),dict) else {}
-        since=state.get('shell_started') or state.get('turn_started');theirs=others_touched(root,session)
+        since=state.get('shell_started') or state.get('turn_started')
+        theirs=others_touched(root,session)
         for repo in _turn_repos(cwd,state):
             found=changed_since(repo,since) if since else []
-            start=heads.get(repo.as_posix());head=head_oid(repo) if start else None
+            start=heads.get(repo.as_posix())
+            head=head_oid(repo) if start else None
             if start and head and head!=start:
-                found+=committed_since(repo,start,head);moved.append((repo,start,head))
+                found+=committed_since(repo,start,head)
+                moved.append((repo,start,head))
                 pulled=pulled or (commit_count(repo,start,head) or 0)>CHANGE_GUARD_COMMITS
             total+=len(found)
             for path in found:
@@ -3042,7 +2095,8 @@ def doc_pending(root,bindings,state,domain,cwd,changed=None):
     pull added (a teammate's new ADR), one the agent wrote in the working tree, and docs and docs_left (edit-tool edits) still count. changed, when given, is the memoized turn_changed."""
     from .common import domain_prefixes
     from .triggers import decision_docs
-    prefixes=domain_prefixes(domain,bindings);files,pulled,edited=(changed or (lambda:turn_changed(root,bindings,state,domain,cwd)))()
+    prefixes=domain_prefixes(domain,bindings)
+    files,pulled,edited=(changed or (lambda:turn_changed(root,bindings,state,domain,cwd)))()
     shown=list(state.get('docs_left',[]))+list(state.get('docs',[]))+[f for f in files if not pulled or f not in edited]
     done=set(state.get('docs_reminded',[]))
     docs=[d for d in decision_docs(shown,bindings) if d not in done][:MAX_DOCS]
@@ -3057,7 +2111,9 @@ def follow_pending(root,state,bindings=None,domain=None,changed=None):
     from .notes import short_ref
     from .session_start import _title
     hinted=state.get('hinted') if isinstance(state.get('hinted'),dict) else {}
-    skip=set(state.get('saved',[]))|set(state.get('followed',[]));wanted={};digested=set(state.get('hinted_digests') or [])
+    skip=set(state.get('saved',[]))|set(state.get('followed',[]))
+    wanted={}
+    digested=set(state.get('hinted_digests') or [])
     for path in state.get('touched',[]):
         for ref in hinted.get(path,[]):
             if ref not in skip:wanted.setdefault(ref,path)
@@ -3098,7 +2154,8 @@ def _stop_part(kind,data,session):
         if any(d.get('type')=='bug' for d in data):text+=f" If one fixed a bug: CMD update REF --session {session} --set-detail '**Fix:** ...' then CMD resolve REF --expected-revision REV."
         return text
     if kind=='follow':
-        s=data['short'];sec=data.get('type') in {'decision','runbook','research','knowledge'}
+        s=data['short']
+        sec=data.get('type') in {'decision','runbook','research','knowledge'}
         edit="--set-detail '**Label:** ...' (or --section 'Heading' '...')" if sec else "--set-detail '**Label:** ...'"
         text=(f"You edited {data['path']}, which note {s} {data['title']} covers. Still true: CMD confirm {s} --session {session} --expected-revision REV; "
               f"changed: CMD update {s} --session {session} {edit} --expected-revision REV.")
@@ -3130,7 +2187,9 @@ def stop_text(pending,session,used=None):
     later ones while they fit, at most STOP_DOCS documents and STOP_NOTES notes named, and the notes about edited
     files (STOP_FOLLOW at most) together in one sentence when there are several. Short refs and exact commands,
     closing with how to say nothing is durable. used, when a list, receives the items the text covers."""
-    parts=[];docs=notes=0;closing=f" Nothing durable: CMD capture-finalize --session {session}."
+    parts=[]
+    docs=notes=0
+    closing=f" Nothing durable: CMD capture-finalize --session {session}."
     # A non-interactive run returns only the last message, so housekeeping after the answer would replace it.
     tail=' '+HEADLESS_TEXT if headless() else ''
     followed=[d for kind,d in pending if kind=='follow']
@@ -3149,12 +2208,18 @@ def stop_text(pending,session,used=None):
         part=_stop_part(kind,data,session)
         if kind in MAP_KINDS+BRIEF_KINDS and parts:part='Also: '+part
         # A document that does not fit with its notes is still asked about, with fewer of them.
-        while not fits(part) and kind=='doc' and data['notes']:data={**data,'notes':data['notes'][:-1]};part=_stop_part(kind,data,session)
+        while not fits(part) and kind=='doc' and data['notes']:
+            data={**data,'notes':data['notes'][:-1]}
+            part=_stop_part(kind,data,session)
         # The batch is trimmed to the real budget even as the first part (fits() always admits the first), keeping one note.
-        while kind=='follows' and len(data)>1 and len('Living Memory: '+' '.join(parts+[part]))+len(closing)+len(tail)>STOP_TEXT_CAP:data=data[:-1];part=_stop_part(kind,data,session)
+        while kind=='follows' and len(data)>1 and len('Living Memory: '+' '.join(parts+[part]))+len(closing)+len(tail)>STOP_TEXT_CAP:
+            data=data[:-1]
+            part=_stop_part(kind,data,session)
         if not fits(part):continue
         parts.append(part)
-        if kind=='doc':docs+=1;notes+=len(data['notes'])
+        if kind=='doc':
+            docs+=1
+            notes+=len(data['notes'])
         if kind=='follow':notes+=1
         if kind=='follows':notes+=len(data)
         if isinstance(used,list):used.extend([('follow',d) for d in data] if kind=='follows' else [(kind,data)])
@@ -3169,4 +2234,5 @@ def session_map(cwd,root,bindings,state=None,session=None):
         return pointer_line(hit,here,entry=note_currency(hit,here,root,bindings,state or {},session)) if hit else None
     except Exception as exc:
         from .logs import swallowed
-        swallowed('runtime.session_map',exc,root);return None
+        swallowed('runtime.session_map',exc,root)
+        return None

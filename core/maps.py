@@ -94,7 +94,8 @@ def find_map(repo,root=None,bindings=None,notes=None,kind='map'):
     """The active note of a keyed type (map by default) for a folder, else None: the note of the same repo identity (a clone of the
     same origin elsewhere counts) first, then the one keyed to this very folder. notes, when given, is [(domain, note)] to look in instead."""
     from .common import load_bindings
-    root=Path(root or memory_root()).resolve();bindings=bindings if bindings is not None else load_bindings(root)
+    root=Path(root or memory_root()).resolve()
+    bindings=bindings if bindings is not None else load_bindings(root)
     try:repo=Path(repo).resolve()
     except (OSError,ValueError):return None
     if notes is None:notes=[(d,n) for d in map_domains(repo,bindings,root) for n in _rows(d,root,kind)]
@@ -231,12 +232,16 @@ def currency(hit,repo,bindings=None,cache=None):
     paths changed since the note was verified, 'count': commits since} for the note, reused from `cache` (an earlier entry) while the
     fingerprint and HEAD are the same (a tag edit keeps it), so no git runs. HEAD comes from the .git files; without one nothing is cached. 'failed': True is added when git could not tell
     (a timeout or error): that entry is not a result to keep."""
-    head=head_oid(repo);rev=str(hit.get('revision') or '');fp=fingerprint(hit)
+    head=head_oid(repo)
+    rev=str(hit.get('revision') or '')
+    fp=fingerprint(hit)
     if cache and head and cache.get('fp')==fp and cache.get('head')==head and not cache.get('failed'):return (cache if cache.get('rev')==rev else dict(cache,rev=rev)),False
     updated=last_current(hit)
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(1) as pool:   # the commit count does not wait for the diff: process starts dominate on Windows
-        count=pool.submit(commits_since,repo,updated);changed=_changed(repo,updated);count=count.result()
+        count=pool.submit(commits_since,repo,updated)
+        changed=_changed(repo,updated)
+        count=count.result()
         entry={'rev':rev,'fp':fp,'head':head,'changed':cited_paths(hit,changed or [],repo,bindings),'count':count}
         if changed is None or count is None:entry['failed']=True
         return entry,True
@@ -271,7 +276,8 @@ def stale_clause(hit,entry,what='map'):
 
 def freshness(hit,repo,entry=None,bindings=None):
     entry=entry if entry is not None else currency(hit,repo,bindings)[0]
-    count=entry.get('count');day=str(hit.get('updated',''))[:10]
+    count=entry.get('count')
+    day=str(hit.get('updated',''))[:10]
     since=f'; {count} commit{"s" if count!=1 else ""} since' if count is not None else ''
     stale=stale_clause(hit,entry)
     if stale:return f"{stale}{since}. Verify the areas you touch against the code."
@@ -312,7 +318,8 @@ def repo_notes(hit,repo,root,bindings,shown,budget=REPO_NOTES_BUDGET,files=True,
     from .digests import stale_note
     from .session_start import gist
     from .runtime import _unseen
-    domain=hit['domain'];linked={t.strip().casefold() for t in LINK.findall(sections(str(hit.get('body',''))).get('links',''))}
+    domain=hit['domain']
+    linked={t.strip().casefold() for t in LINK.findall(sections(str(hit.get('body',''))).get('links',''))}
     def inside(note):
         raw=note.get('files')
         if isinstance(raw,str):
@@ -322,14 +329,20 @@ def repo_notes(hit,repo,root,bindings,shown,budget=REPO_NOTES_BUDGET,files=True,
     from .search import _unchanged
     found=[n for n in _rows(domain,root,REPO_NOTE_TYPES,verify=False)
            if (n['title'].strip().casefold() in linked or (files and inside(n))) and (not n.get('path') or _unchanged(n['path'],n['revision']))]
-    lines=[];refs=[];used=0
+    lines=[]
+    refs=[]
+    used=0
     head='Notes about this repo (decisions, bugs, runbooks and policies; read one when it bears on the task):'
     for n in sorted(found,key=lambda n:n.get('updated',''),reverse=True):
         ref=f"{domain}:{n['id']}"
         if ref in exclude or not _unseen(dict(n,domain=domain),shown):continue
-        stale=stale_note(n,root,bindings);summary=gist(n);line=f"- {n['type'].upper()} {short_ref(domain,n['id'])} {stale+' — ' if stale else ''}{unconfirmed(n)}{n['title']}"+(f' — {summary}' if summary else '')
+        stale=stale_note(n,root,bindings)
+        summary=gist(n)
+        line=f"- {n['type'].upper()} {short_ref(domain,n['id'])} {stale+' — ' if stale else ''}{unconfirmed(n)}{n['title']}"+(f' — {summary}' if summary else '')
         if used+len(line)+1>budget-len(head)-1:break
-        lines.append(line);refs.append(ref);used+=len(line)+1
+        lines.append(line)
+        refs.append(ref)
+        used+=len(line)+1
     return ('\n'.join([head]+lines),refs) if lines else ('',[])
 
 KEYED={'map':('codebase map','REPO','the repo folder they describe','repo'),'brief':('project brief','DIR','the project folder they describe','project')}
@@ -360,7 +373,8 @@ def capture_conflict(files,domain,root,bindings,replaced=(),kind='map'):
         except (OSError,ValueError):continue
         hit=find_map(repo,root,bindings,[(other,n) for n in notes])
         if hit:
-            ref=short_ref(other,hit['id']);identity=repo_identity(repo)
+            ref=short_ref(other,hit['id'])
+            identity=repo_identity(repo)
             same=f"{identity} (the same git remote as {repo.as_posix()})" if identity and _identity_of(hit,other,bindings)==identity and repo_of(hit,other,bindings)!=repo else repo.as_posix()
             return (f"{kind}_exists conflict: {ref} \"{hit['title']}\" is the {label} for {same}; "
                     f"read it and run `update {ref} --expected-revision REV` (or capture with `--supersedes {ref}@REV`)")

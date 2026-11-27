@@ -68,7 +68,8 @@ def snapshots(root):
     folder=backup_dir(root)
     if not folder.is_dir():return []
     def order(p):
-        m=NAME.fullmatch(p.name);return (m[1],int(m[2] or 0))
+        m=NAME.fullmatch(p.name)
+        return (m[1],int(m[2] or 0))
     return sorted((p for p in folder.glob('lm-*.zip') if NAME.fullmatch(p.name)),key=order,reverse=True)
 
 def _note_count(path):
@@ -81,11 +82,14 @@ def backup(root,keep=KEEP):
     """Write and verify a snapshot, then keep the newest `keep`. A note that cannot be read as a note is still
     saved byte for byte and reported under `unreadable`: one damaged file must not stop every backup."""
     import zipfile
-    root=Path(root).resolve();folder=backup_dir(root);folder.mkdir(parents=True,exist_ok=True)
+    root=Path(root).resolve()
+    folder=backup_dir(root)
+    folder.mkdir(parents=True,exist_ok=True)
     # Naming, writing, verification, publication and pruning all hold the store lock, so two sessions
     # backing up in the same second cannot share or delete each other's files.
     with store_lock(root):
-        stamp=datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S');target=folder/f'lm-{stamp}.zip'
+        stamp=datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')
+        target=folder/f'lm-{stamp}.zip'
         # Always above the highest same-second sequence: reusing a pruned lower name would sort as older and be pruned.
         taken=[int(m[2] or 0) for m in (NAME.fullmatch(p.name) for p in folder.glob(f'lm-{stamp}*.zip')) if m and m[1]==stamp]
         if taken:target=folder/f'lm-{stamp}-{max(taken)+1}.zip'
@@ -101,11 +105,15 @@ def backup(root,keep=KEEP):
         finally:
             if temp.exists():retry_sharing(temp.unlink)
         notes=sum(1 for f in files if MEMBER.fullmatch(f))
-        removed=[];retained=[]
+        removed=[]
+        retained=[]
         for old in snapshots(root)[max(1,keep):]:
             held=_note_count(old)
-            if held>=2*notes and held-notes>=SHRINK_MIN:retained.append(old.name);continue
-            retry_sharing(old.unlink);removed.append(old.name)
+            if held>=2*notes and held-notes>=SHRINK_MIN:
+                retained.append(old.name)
+                continue
+            retry_sharing(old.unlink)
+            removed.append(old.name)
     result={'ok':True,'backup':str(target),'notes':notes,'files':len(files),'pruned':removed}
     warnings=[]
     if unreadable:
@@ -136,7 +144,9 @@ def verify(path):
     that is not UTF-8, invalid JSON, an attachment over the size cap. Raises ValueError for a member outside the canonical set."""
     import zipfile
     from .paths import name_key
-    found=[];seen={};remaining=MAX_TOTAL_BYTES
+    found=[]
+    seen={}
+    remaining=MAX_TOTAL_BYTES
     with zipfile.ZipFile(path) as archive:
         infos=archive.infolist()
         if len(infos)>MAX_MEMBERS:raise ValueError('Backup has too many members')
@@ -147,7 +157,8 @@ def verify(path):
             seen[key]=info.filename
         for info in infos:
             if LEGACY_NOTEBOOK.fullmatch(info.filename):continue   # dropped by a restore: not read
-            data=_read_zip_member(archive,info,remaining);remaining-=len(data)
+            data=_read_zip_member(archive,info,remaining)
+            remaining-=len(data)
             if info.filename.startswith('ledger/'):
                 try:
                     for line in data.decode('utf-8').splitlines():
@@ -155,7 +166,9 @@ def verify(path):
                 except (UnicodeError,ValueError):found.append({'member':info.filename,'problem':'invalid JSON lines'})
             elif MEMBER.fullmatch(info.filename):
                 try:text=data.decode('utf-8')
-                except UnicodeError:found.append({'member':info.filename,'problem':'not UTF-8'});continue
+                except UnicodeError:
+                    found.append({'member':info.filename,'problem':'not UTF-8'})
+                    continue
                 if parse_text(text,info.filename) is None:found.append({'member':info.filename,'problem':'does not parse as a note'})
             else:
                 try:read_json_bytes(data)
@@ -173,7 +186,8 @@ def _age_hours(path):
 def maybe_backup(root):
     """Hook trigger: at most once per INTERVAL_HOURS. Never raises."""
     try:
-        root=Path(root).resolve();marker=root/'hooks'/'last-backup.json'
+        root=Path(root).resolve()
+        marker=root/'hooks'/'last-backup.json'
         # An unreadable marker means "no backup known", not "never back up again".
         try:age=(datetime.now(timezone.utc)-parse_iso((read_json(marker,{}) or {})['at'])).total_seconds()/3600
         except (KeyError,TypeError,ValueError):age=None
@@ -184,7 +198,8 @@ def maybe_backup(root):
         return result
     except Exception as exc:
         from .logs import swallowed
-        swallowed('backup.maybe_backup',exc,root);return None
+        swallowed('backup.maybe_backup',exc,root)
+        return None
 
 def staleness_warning(root,notes=None):
     """A sentence when there is no recent snapshot, else None. notes: the store's note count, when the caller
@@ -206,15 +221,18 @@ def restore_backup(root,source):
 def _restore_backup(root,source):
     import zipfile
     from .governance import commit
-    root=Path(root).resolve();source=Path(source)
+    root=Path(root).resolve()
+    source=Path(source)
     # Members that were unreadable when the snapshot was taken are neither restored nor a reason to delete
     # the file that is there now: a damaged copy must not replace, or remove, a possibly good one.
     skipped={problem['member'] for problem in verify(source)}
-    remaining=MAX_TOTAL_BYTES;wanted={}
+    remaining=MAX_TOTAL_BYTES
+    wanted={}
     with zipfile.ZipFile(source) as archive:
         for info in archive.infolist():
             if info.filename in skipped or LEGACY_NOTEBOOK.fullmatch(info.filename):continue
-            raw=_read_zip_member(archive,info,remaining);remaining-=len(raw)
+            raw=_read_zip_member(archive,info,remaining)
+            remaining-=len(raw)
             wanted[info.filename]=raw.decode('utf-8')
     wanted.pop(MANIFEST,None)
     for rel in LEGACY:wanted.pop(rel,None)
@@ -245,7 +263,8 @@ def _restore_backup(root,source):
         wanted['notebook-folders.json']=merge_registry(root,wanted['notebook-folders.json'])
     # Notes of covered domains and the top-level files.
     current=[rel for rel in canonical_files(root) if not MAINT.fullmatch(rel) and (rel in TOP_LEVEL or (MEMBER.fullmatch(rel) and rel.split('/')[1] in covered))]
-    changes={};unchanged=0
+    changes={}
+    unchanged=0
     for rel,text in wanted.items():
         path=root/rel
         if path.is_dir():raise ValueError(f'Restore conflict: {rel} is a folder in the store now; move or delete it, then restore again')

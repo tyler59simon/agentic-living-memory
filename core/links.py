@@ -9,7 +9,10 @@ def note_links(root,domains,status):
     from .sync import WIKILINK
     from .runtime import parent_domains
     from .common import global_domains
-    config=load_bindings(root);globals_=global_domains(root);notes={};titles={}
+    config=load_bindings(root)
+    globals_=global_domains(root)
+    notes={}
+    titles={}
     def notes_of(d):
         if d not in notes:notes[d]=inventory(d,root,retired=status!='active') if (root/'domains'/d/'notes').is_dir() else []
         return notes[d]
@@ -18,7 +21,9 @@ def note_links(root,domains,status):
             # An active note wins a title over a retired one that shares it.
             titles[d]={n['title'].strip().casefold():n for n in sorted(notes_of(d),key=lambda n:n.get('status','active')=='active')}
         return titles[d]
-    nodes={};edges={};unresolved={}
+    nodes={}
+    edges={}
+    unresolved={}
     def node(d,n):
         ref=f"{d}:{n['id']}"
         nodes.setdefault(ref,{'ref':ref,'id':n['id'],'domain':d,'title':n.get('title'),'type':n.get('type'),'status':n.get('status','active'),'tags':n.get('tags') or []})
@@ -31,7 +36,9 @@ def note_links(root,domains,status):
             for target in WIKILINK.findall(n.get('body','')):
                 key=target.strip().casefold()
                 hit=next(((o,by_title(o)[key]) for o in order if key in by_title(o)),None)
-                if hit is None:unresolved.setdefault((source,target.strip()),None);continue
+                if hit is None:
+                    unresolved.setdefault((source,target.strip()),None)
+                    continue
                 found=node(*hit)
                 if found!=source:edges.setdefault((source,found),'link')
             # Newer note -> the note it replaced, from either side of the pair; a link between the two wins.

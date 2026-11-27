@@ -12,12 +12,10 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import stat
 import subprocess
 import sys
 import tempfile
-import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -38,9 +36,9 @@ OPERATION_RE = re.compile(r"^[0-9a-f]{32}$")
 SOFTWARE_ROOTS = ("core", "scripts", "hooks", "integrations", "adapters", "assets")
 ROOT_DOCUMENTS = (
     "README.md", "INSTALLATION.md", "INTEGRATION.md", "MAINTENANCE.md",
-    "OBSIDIAN.md", "PDF.md", "TAGGING.md", "VALIDATION.md", "AGENTS.md",
+    "OBSIDIAN.md", "TAGGING.md", "VALIDATION.md", "AGENTS.md",
     "bindings.example.json", "tag_taxonomy.example.json", "install.py",
-    "new_note.py", "resolve_note.py", "living_memory.py", "PROTOCOL.md",
+    "living_memory.py", "PROTOCOL.md",
     "ARCHITECTURE.md", "SCRIPT_REFERENCE.md", "RECOVERY.md", "NOTE_TYPES.md", "NOTE_MAINTENANCE.md", "NOTEBOOKS.md",
     "WRITING.md", "templates/CLAUDE.md", "templates/AGENTS.md", "templates/GEMINI.md",
 )
@@ -73,12 +71,6 @@ class ConflictError(InstallError):
 class StalePlanError(InstallError):
     code = "stale-plan"
     exit_code = 6
-    retryable = True
-
-
-class RecoveryRequiredError(InstallError):
-    code = "recovery-required"
-    exit_code = 7
     retryable = True
 
 
@@ -472,42 +464,6 @@ def status(target: str | Path, operation_id: str) -> dict[str, Any]:
         value = json.loads(journal.read_text(encoding="utf-8"))
         return {"operationId": operation_id, "state": value.get("state", "unknown"), "receipt": None}
     return {"operationId": operation_id, "state": "unknown", "receipt": None}
-
-
-def _restore_effects(target: Path, operation_root: Path, effects: list[dict[str, Any]], require_after: bool = True) -> None:
-    # Preflight the entire rollback before performing the first restoration.
-    for effect in effects:
-        path = _path(target, effect["path"])
-        _check_ancestors(path, target)
-        if require_after and effect.get("after") is not None and not _same_snapshot(effect["after"], _snapshot(path)):
-            raise StalePlanError(f"Rollback is stale for {effect['path']}")
-        if effect.get("before", {}).get("exists"):
-            if not effect.get("backup"):
-                raise InstallError("Rollback backup is missing")
-            data, _ = _read_regular(_path(operation_root, effect["backup"]))
-            if _sha(data) != effect["before"]["sha256"]:
-                raise InstallError("Rollback backup failed integrity validation")
-    for effect in reversed(effects):
-        rel = _safe_relative(effect["path"])
-        path = _path(target, rel)
-        _check_ancestors(path, target)
-        current = _snapshot(path)
-        after = effect.get("after")
-        if require_after and after is not None and not _same_snapshot(after, current):
-            raise StalePlanError(f"Rollback is stale for {rel}")
-        if not effect.get("before", {}).get("exists"):
-            if current.get("exists"):
-                path.unlink()
-            continue
-        backup_rel = effect.get("backup")
-        if not backup_rel:
-            raise InstallError(f"Rollback backup is missing for {rel}")
-        backup = _path(operation_root, backup_rel)
-        data, _ = _read_regular(backup)
-        before = effect["before"]
-        if _sha(data) != before.get("sha256"):
-            raise InstallError(f"Rollback backup failed integrity validation for {rel}")
-        _atomic_write(path, data, before.get("mode") or 0o600)
 
 
 def rollback(receipt_path: str | Path) -> dict[str, Any]:

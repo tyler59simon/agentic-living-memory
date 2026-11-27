@@ -3,7 +3,7 @@ LIVING_MEMORY_CLOCK_OFFSET_SECONDS (a float, negative allowed), so a simulation 
 Everything that stamps or compares a record time reads now()/today(); duration timers and lock ages stay on real time."""
 from __future__ import annotations
 import math,os
-from datetime import date,datetime,timedelta,timezone
+from datetime import datetime,timedelta,timezone
 
 OFFSET_ENV='LIVING_MEMORY_CLOCK_OFFSET_SECONDS'
 _reported=set()
@@ -36,7 +36,8 @@ def simulated():
 
 def now():
     """Timezone-aware UTC datetime, shifted by the offset."""
-    moment=datetime.now(timezone.utc);offset=offset_seconds()
+    moment=datetime.now(timezone.utc)
+    offset=offset_seconds()
     if not offset:return moment
     try:return moment+timedelta(seconds=offset)
     except OverflowError:return moment

@@ -1,4 +1,4 @@
-﻿"""Native Claude Code lifecycle adapter; installed directly, without a plugin."""
+"""Native Claude Code lifecycle adapter; installed directly, without a plugin."""
 import sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
@@ -10,12 +10,14 @@ REPORTING={'session-start','user-prompt'}
 
 def handle(event,payload,harness='claude'):
     from core.runtime import process
-    result=process(harness,event,payload);out={}
+    result=process(harness,event,payload)
+    out={}
     if result.get('context'):out['hookSpecificOutput']={'hookEventName':NAMES.get(event,event),'additionalContext':result['context']}
     for decision in ('deny','allow'):
         if result.get(decision):
             # A file hint (additionalContext) and a permission decision travel together.
-            out.setdefault('hookSpecificOutput',{'hookEventName':'PreToolUse'}).update(permissionDecision=decision,permissionDecisionReason=result[decision]);break
+            out.setdefault('hookSpecificOutput',{'hookEventName':'PreToolUse'}).update(permissionDecision=decision,permissionDecisionReason=result[decision])
+            break
     if result.get('continue_reason'):
         if harness=='claude':
             # Claude Code continues the turn on Stop additionalContext like decision=block, with the same loop
@@ -34,7 +36,9 @@ def main(harness='claude'):
             # Read, Glob and Grep reach this hook only to find codebase maps; once a repo needs nothing, skip the runtime.
             from core.hookfast import quick
             fast=quick(payload)
-            if fast is not None:emit(fast);return 0
+            if fast is not None:
+                emit(fast)
+                return 0
         if event=='pre-compact':
             # PreCompact stdout is not a JSON reply: Claude Code hands it to the summarizer as instructions.
             from core.runtime import process
@@ -45,6 +49,7 @@ def main(harness='claude'):
     except Exception as exc:  # A memory failure must never break the host session.
         if event=='pre-compact':return 0  # any stdout would become summary instructions
         out={'systemMessage':'Living Memory unavailable: '+str(exc)[:300]} if event in REPORTING else {}
-    emit(out);return 0
+    emit(out)
+    return 0
 
 if __name__=='__main__':raise SystemExit(main())

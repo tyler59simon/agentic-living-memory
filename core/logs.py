@@ -24,7 +24,8 @@ _root=None
 
 def use(root):
     """The store this process logs to, so deep call sites need no root parameter."""
-    global _root;_root=Path(root)
+    global _root
+    _root=Path(root)
 
 def setting():
     value=os.environ.get('LIVING_MEMORY_LOG_LEVEL','').strip().lower()
@@ -43,7 +44,8 @@ def write(level,kind,event,root=None,**fields):
         root=root or _root
         if root is None or not enabled(level):return
         from .common import file_lock
-        when=datetime.now(timezone.utc);path=_path(root,when)
+        when=datetime.now(timezone.utc)
+        path=_path(root,when)
         row={'ts':when.isoformat(timespec='milliseconds'),'level':level,'kind':kind,'event':event,**{k:v for k,v in fields.items() if v is not None},'pid':os.getpid()}
         line=json.dumps(row,ensure_ascii=False,separators=(',',':'),default=str)+'\n'
         with file_lock(path.with_suffix('.lock'),timeout=LOCK_SECONDS):
@@ -85,7 +87,8 @@ def content_state(root):
     harness (scripts/simulate.py) writes the marker; a marker copied into the real store still does nothing."""
     if os.environ.get(CONTENT_ENV,'').strip().lower() not in {'1','true','yes','on'}:return 'off'
     try:
-        root=Path(root).resolve();marker=json.loads((root/MARKER).read_text(encoding='utf-8'))
+        root=Path(root).resolve()
+        marker=json.loads((root/MARKER).read_text(encoding='utf-8'))
         if not (isinstance(marker,dict) and marker.get('sandbox') is True):return 'refused'
         from .runtime import _configured_root
         return 'refused' if _configured_root()==root else 'on'
@@ -95,7 +98,8 @@ def content_allowed(root):
     """True when this store may log text; a refusal is logged once per process and store."""
     state=content_state(root)
     if state=='refused' and str(root) not in _refused:
-        _refused.add(str(root));write('warning','internal','content_logging_refused',root)
+        _refused.add(str(root))
+        write('warning','internal','content_logging_refused',root)
     return state=='on'
 
 def content(fields):
@@ -118,7 +122,9 @@ def _day(path):
 def entries(root,level='info',kind=None,event=None,days=1,limit=50):
     """(matching rows newest first, at most `limit`; total matched). `days` is the last days x 24 hours."""
     from .common import parse_iso
-    since=datetime.now(timezone.utc)-timedelta(hours=24*max(1,days));cutoff=since.date();rows=[]
+    since=datetime.now(timezone.utc)-timedelta(hours=24*max(1,days))
+    cutoff=since.date()
+    rows=[]
     for path in sorted(_dir(root).glob('log-*.jsonl')):
         day=_day(path)
         if day is None or day<cutoff:continue
@@ -147,10 +153,13 @@ def summary(root,days=7):
 
 def prune(root,days=RETENTION_DAYS):
     """Remove day files (and their lock files) older than `days`, judged by the date in the name."""
-    cutoff=(datetime.now(timezone.utc)-timedelta(days=days)).date();removed=0
+    cutoff=(datetime.now(timezone.utc)-timedelta(days=days)).date()
+    removed=0
     for path in _dir(root).glob('log-*'):
         day=_day(path)
         if day is None or day>=cutoff:continue
-        try:path.unlink();removed+=1
+        try:
+            path.unlink()
+            removed+=1
         except OSError:pass
     return removed

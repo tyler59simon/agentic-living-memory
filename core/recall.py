@@ -71,7 +71,8 @@ def _codex(entry):
     """(role, text) pairs of one Codex rollout line."""
     if entry.get('type')=='compacted':return [('boundary','')]
     if entry.get('type')!='response_item':return []
-    item=entry.get('payload') or {};kind=item.get('type')
+    item=entry.get('payload') or {}
+    kind=item.get('type')
     if kind=='message' and item.get('role') in {'user','assistant'}:return [(item['role'],_blocks_text(item.get('content')))]
     if kind=='custom_tool_call':return [('tool',_tool_input(item.get('name','tool'),item.get('input')))]
     if kind=='function_call':return [('tool',_tool_input(item.get('name','tool'),item.get('arguments')))]
@@ -81,7 +82,8 @@ def _codex(entry):
 def records(path,scope='before'):
     """(records, compacted). scope 'before': only what precedes the latest compaction (all of it when
     there was none); 'all': the whole transcript. A record is {i, t, role, text}."""
-    found=[];cut=None
+    found=[]
+    cut=None
     try:handle=Path(path).open(encoding='utf-8',errors='replace')
     except (OSError,TypeError,ValueError):return [],False
     with handle:
@@ -91,7 +93,9 @@ def records(path,scope='before'):
             if not isinstance(entry,dict):continue
             parse=_codex if 'payload' in entry and entry.get('type') in {'response_item','compacted'} else _claude
             for role,text in parse(entry):
-                if role=='boundary':cut=len(found);continue
+                if role=='boundary':
+                    cut=len(found)
+                    continue
                 text=_clean(text)
                 if text:found.append({'i':len(found),'t':str(entry.get('timestamp') or '')[:16].replace('T',' '),'role':role,'text':text})
     if scope=='before' and cut is not None:found=found[:cut]
@@ -135,19 +139,27 @@ def turn_tools(path):
     text; id is the call id ('' when the harness gives none). Only the last TURN_TAIL bytes are read. Harnesses without a reader (Copilot, Factory, Antigravity) give []. Never raises."""
     try:
         with Path(path).open('rb') as handle:
-            handle.seek(0,2);size=handle.tell();handle.seek(max(0,size-TURN_TAIL));data=handle.read()
+            handle.seek(0,2)
+            size=handle.tell()
+            handle.seek(max(0,size-TURN_TAIL))
+            data=handle.read()
         lines=data.decode('utf-8',errors='replace').splitlines()
         if size>TURN_TAIL:lines=lines[1:]   # the first line is cut
-        tools=[];by_id={}
+        tools=[]
+        by_id={}
         for line in lines:
             try:entry=json.loads(line)
             except ValueError:continue
             if not isinstance(entry,dict):continue
-            if _turn_prompt(entry):tools=[];by_id={};continue
+            if _turn_prompt(entry):
+                tools=[]
+                by_id={}
+                continue
             if entry.get('isSidechain'):continue
             payload=entry.get('payload') if entry.get('type')=='response_item' else None
             if isinstance(payload,dict):
-                kind=payload.get('type');call=payload.get('call_id')
+                kind=payload.get('type')
+                call=payload.get('call_id')
                 if kind in {'function_call','custom_tool_call'}:
                     args=_tool_args(payload.get('arguments') if kind=='function_call' else payload.get('input'))
                     tool={'name':str(payload.get('name') or ''),'input':args,'ok':None,'text':'','id':str(call or '')}
@@ -163,13 +175,15 @@ def turn_tools(path):
                 if not isinstance(block,dict):continue
                 if entry.get('type')=='assistant' and block.get('type')=='tool_use':
                     tool={'name':str(block.get('name') or ''),'input':block.get('input') if isinstance(block.get('input'),dict) else {},'ok':None,'text':'','id':str(block.get('id') or '')}
-                    tools.append(tool);by_id[block.get('id')]=tool
+                    tools.append(tool)
+                    by_id[block.get('id')]=tool
                 elif entry.get('type')=='user' and block.get('type')=='tool_result' and block.get('tool_use_id') in by_id:
                     by_id[block['tool_use_id']].update(ok=not block.get('is_error'),text=_blocks_text(block.get('content'))[:TEXT_MAX])
         return tools
     except Exception as exc:
         from .logs import swallowed
-        swallowed('recall.turn_tools',exc);return []
+        swallowed('recall.turn_tools',exc)
+        return []
 
 def _probe(term):
     """A substring every token stemming to `term` contains (stem folds 'ies' to 'y')."""
@@ -182,7 +196,8 @@ def search(path,query,limit=5,scope='before',exclude=(),width=EXCERPT):
     wanted=list(dict.fromkeys(stem(t) for t in query_terms(query or '')))
     meta={'records':len(rows),'compacted':compacted}
     if not rows or not wanted:return [],meta
-    skip=set(exclude);probes=[(q,_probe(q)) for q in wanted]
+    skip=set(exclude)
+    probes=[(q,_probe(q)) for q in wanted]
     docs={}
     for row in rows:
         if row['i'] in skip:continue
@@ -193,15 +208,19 @@ def search(path,query,limit=5,scope='before',exclude=(),width=EXCERPT):
                 s=stem(token)
                 if s in wanted:counts[s]=counts.get(s,0)+1
             if counts:docs[row['i']]=counts
-    total=len(rows);df={q:sum(1 for c in docs.values() if q in c) for q in wanted}
+    total=len(rows)
+    df={q:sum(1 for c in docs.values() if q in c) for q in wanted}
     informative=[q for q in wanted if not (total>=COMMON_MIN_NOTES and df[q]>COMMON_SHARE*total)]
     meta['terms']=len(informative)
     if not informative:return [],meta
-    average=sum(len(r['text']) for r in rows)/total or 1;by_index={r['i']:r for r in rows};hits=[]
+    average=sum(len(r['text']) for r in rows)/total or 1
+    by_index={r['i']:r for r in rows}
+    hits=[]
     for index,counts in docs.items():
         matched=[q for q in informative if q in counts]
         if not matched:continue
-        row=by_index[index];norm=1.2*(0.25+0.75*len(row['text'])/average)
+        row=by_index[index]
+        norm=1.2*(0.25+0.75*len(row['text'])/average)
         score=sum(math.log(1+(total-df[q]+0.5)/(df[q]+0.5))*counts[q]*2.2/(counts[q]+norm) for q in matched)
         if row['role']=='user':score*=USER_WEIGHT
         hits.append({'i':index,'t':row['t'],'role':row['role'],'matched':matched,
@@ -228,4 +247,5 @@ def auto(path,prompt,exclude=(),trace=None):
         return '\n'.join(line(h) for h in hits),[h['i'] for h in hits]
     except Exception as exc:  # recall is a nicety; never fail the prompt hook
         from .logs import swallowed
-        swallowed('recall.auto',exc);return None,[]
+        swallowed('recall.auto',exc)
+        return None,[]

@@ -14,7 +14,9 @@ def _changes(rows):
     for row in rows:
         group=out.get(row['event'])
         if group is None:continue
-        if row['ref'] in group:group[row['ref']]['count']+=1;continue
+        if row['ref'] in group:
+            group[row['ref']]['count']+=1
+            continue
         group[row['ref']]={'ref':row['ref'],'title':row.get('title'),'type':row.get('type'),'summary':row.get('summary'),'actor':row.get('actor'),'time':row['time'],'count':1}
     return {g:list(v.values()) for g,v in out.items() if v}
 
@@ -31,19 +33,24 @@ def _maintenance(root,domains,low,high):
     out={'runs':0,'reviewed':0,'kept':0,'deferred':0,'updated':0,'confirmed':0,'retired':0,'charged_usd':'0.00','retired_notes':[]}
     try:runs=[r for r in maintenance._recent(root) if low<=ms._parse(r['attempted_at'])<=high]
     except (OSError,ValueError,KeyError,ms.Unavailable):return out
-    micro=0;wanted=set(domains);inside=lambda ref:str(ref).partition(':')[0] in wanted
+    micro=0
+    wanted=set(domains)
+    inside=lambda ref:str(ref).partition(':')[0] in wanted
     for run in runs:
         # Only this scope's notes count; a run that reviewed none of them is left out. Its charge cannot be split by domain, so charged_usd is the whole run's.
         selected=[s for s in run['selected'] if inside(s.get('ref'))]
         if not selected:continue
         decisions={ref:d for ref,d in run['decisions'].items() if inside(ref)}
-        s=maintenance._counts(list(decisions.values()));micro+=run['charged_micro'];out['runs']+=1
+        s=maintenance._counts(list(decisions.values()))
+        micro+=run['charged_micro']
+        out['runs']+=1
         out['reviewed']+=0 if run.get('released') else len(selected)
         for k in ('kept','deferred','updated','confirmed'):out[k]+=s[k]
         for ref,d in decisions.items():
             if d.get('result')=='applied' and d.get('action') in ('archive','supersede','resolve'):
                 out['retired_notes'].append({'ref':ref,'action':d['action'],'rule':d.get('rule'),'reason':d.get('reason')})
-    out['retired']=len(out['retired_notes']);out['charged_usd']=ms.format_usd(micro)
+    out['retired']=len(out['retired_notes'])
+    out['charged_usd']=ms.format_usd(micro)
     titles=_titles(root,domains) if out['retired_notes'] else {}
     for item in out['retired_notes']:item['title']=titles.get(item['ref'])
     return out
@@ -52,13 +59,16 @@ def _distinct(root,domains,low,high):
     """Pairs marked distinct in the window (by maintenance or by hand), newest first: both titles, the reason and who marked them. The record lives on the newer note."""
     from .repository import inventory
     from .common import parse_iso
-    found=[];titles=_titles(root,domains)
+    found=[]
+    titles=_titles(root,domains)
     for d in domains:
         try:notes=inventory(d,root,retired=True)
         except (OSError,ValueError):continue
         for n in notes:
             for e in n.get('distinct_from') or []:
-                try:when=parse_iso(e['at']);when=when.replace(tzinfo=timezone.utc) if when.tzinfo is None else when
+                try:
+                    when=parse_iso(e['at'])
+                    when=when.replace(tzinfo=timezone.utc) if when.tzinfo is None else when
                 except (KeyError,TypeError,ValueError):continue
                 if low<=when<=high:
                     found.append({'new':f"{d}:{n['id']}",'new_title':n.get('title'),'old':e['ref'],'old_title':titles.get(e['ref']),'why':e.get('why'),'by':e.get('by'),'at':e['at']})
@@ -99,16 +109,23 @@ def recap(root,domains,days=7,project=None,now=None):
     from .activity import log
     from .notes import open_work
     from .worklist import worklist
-    root=Path(root);domains=list(dict.fromkeys(domains));high=(now or clock.now()).astimezone(timezone.utc);low=high-timedelta(days=days)
+    root=Path(root)
+    domains=list(dict.fromkeys(domains))
+    high=(now or clock.now()).astimezone(timezone.utc)
+    low=high-timedelta(days=days)
     since,until=low.isoformat(),high.isoformat()
     rows=[r for r in log(root,None,project,since,until,limit=10**9)['rows'] if r['domain'] in domains]
-    notes=[r for r in rows if r['event']!='session'];sessions=_sessions([r for r in rows if r['event']=='session'])
+    notes=[r for r in rows if r['event']!='session']
+    sessions=_sessions([r for r in rows if r['event']=='session'])
     counts={}
     for r in notes:counts[r['event']]=counts.get(r['event'],0)+1
-    changes=_changes(notes);maint=_maintenance(root,domains,low,high);distinct=_distinct(root,domains,low,high)
+    changes=_changes(notes)
+    maint=_maintenance(root,domains,low,high)
+    distinct=_distinct(root,domains,low,high)
     tags=[f'project/{project}'] if project else []
     found=open_work(domains,root,tags)
     work={'notes':len(found),'items':sum(len(i) for _,_,i in found),'top':[{'ref':f"{d}:{n['id']}",'title':n['title'],'open':len(i)} for d,n,i in sorted(found,key=lambda f:-len(f[2]))[:TOP_OPEN]]}   # the most open items first; ties stay newest first
-    wl=worklist(root,domains,cheap=True,tags=tags or None);review={'due':wl['total'],'by_kind':{k:v for k,v in wl['counts'].items() if v}}
+    wl=worklist(root,domains,cheap=True,tags=tags or None)
+    review={'due':wl['total'],'by_kind':{k:v for k,v in wl['counts'].items() if v}}
     return {'ok':True,'since':since,'until':until,'days':days,'domains':domains,'counts':counts,'changes':changes,'maintenance':maint,'distinct':distinct,'sessions':sessions,'open_work':work,'review':review,
             'markdown':_markdown(since,until,counts,changes,maint,sessions,work,review,distinct)}

@@ -53,7 +53,8 @@ def validate(key,value):
 
 def get(root,key=None):
     """{ok, settings:{key: {value, default}}}: value is what applies now (the stored one, else the default)."""
-    config=load_bindings(root);keys=[_key(key)] if key else list(DEFAULTS)
+    config=load_bindings(root)
+    keys=[_key(key)] if key else list(DEFAULTS)
     return {'ok':True,'settings':{k:{'value':config.get(k,DEFAULTS[k]),'default':k not in config} for k in keys}}
 
 def set_(root,key,text):
@@ -61,13 +62,18 @@ def set_(root,key,text):
     _key(key)
     try:value=json.loads(text)
     except ValueError:raise ValueError(f'invalid_value: {key} takes JSON, for example true, false or {json.dumps(DEFAULTS[key])}') from None
-    value=validate(key,value);root=Path(root).resolve()
+    value=validate(key,value)
+    root=Path(root).resolve()
     with store_lock(root):
         roll_forward_pending(root)   # an interrupted bind or config change is finished first, so this reads what it wrote
-        path=root/'bindings.json';read=path.read_bytes() if path.is_file() else b'';config=read_json(path,None)
+        path=root/'bindings.json'
+        read=path.read_bytes() if path.is_file() else b''
+        config=read_json(path,None)
         if not isinstance(config,dict):raise ValueError('Invalid bindings preserved')
-        before=config.get(key,DEFAULTS[key]);old=canonical_json(config)
+        before=config.get(key,DEFAULTS[key])
+        old=canonical_json(config)
         if value is None:config.pop(key,None)
         else:config[key]=value
-        new=canonical_json(config);receipt=transaction(root,{'bindings.json':new},'config_set',expected={'bindings.json':digest(read)}) if new!=old else {}   # an unchanged value writes nothing
+        new=canonical_json(config)  # an unchanged value writes nothing
+        receipt=transaction(root,{'bindings.json':new},'config_set',expected={'bindings.json':digest(read)}) if new!=old else {}
     return {'ok':True,'setting':key,'value':config.get(key,DEFAULTS[key]),'default':key not in config,'previous':before,'operation_id':receipt.get('operation_id')}

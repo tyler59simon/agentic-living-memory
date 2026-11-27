@@ -18,20 +18,26 @@ def export(root,domain,out,types=(),tags=(),retired=False):
     """Write a bundle of the domain's notes (active, or all with retired) that match every filter."""
     from .repository import inventory,canonical_json
     from .paths import is_within
-    root=Path(root).resolve();out=Path(out).expanduser().resolve()
+    root=Path(root).resolve()
+    out=Path(out).expanduser().resolve()
     if is_within(out,root/'domains'):raise ValueError('Write the bundle outside the store domains')
     if out.exists():raise ValueError(f'{out} already exists; choose a new file')
     # Retired notes only on request.
     notes=[n for n in inventory(domain,root,retired=True) if (retired or n.get('status','active')=='active') and (not types or n.get('type') in types) and all(t in n.get('tags',[]) for t in tags)]
     if not notes:raise ValueError('No notes match')
-    entries=[];used=set()
-    out.parent.mkdir(parents=True,exist_ok=True);temp=out.with_name('.'+out.name+'.tmp')
+    entries=[]
+    used=set()
+    out.parent.mkdir(parents=True,exist_ok=True)
+    temp=out.with_name('.'+out.name+'.tmp')
     try:
         with zipfile.ZipFile(temp,'w',zipfile.ZIP_DEFLATED) as archive:
             for note in sorted(notes,key=lambda n:n['id']):
-                path=Path(note['path']);folder='archive' if path.parent.name=='archive' else 'notes'
-                data=path.read_bytes();name=f'{folder}/{path.name}'
-                archive.writestr(name,data);used|=set(note.get('tags',[]))
+                path=Path(note['path'])
+                folder='archive' if path.parent.name=='archive' else 'notes'
+                data=path.read_bytes()
+                name=f'{folder}/{path.name}'
+                archive.writestr(name,data)
+                used|=set(note.get('tags',[]))
                 entries.append({'id':note['id'],'path':name,'sha256':hashlib.sha256(data).hexdigest()})
             manifest={'schema':SCHEMA,'domain':domain,'exported':clock.now().isoformat(timespec='seconds'),'notes':entries,'tags':sorted(used)}
             archive.writestr('manifest.json',canonical_json(manifest))
@@ -49,7 +55,9 @@ def _read(source):
     with zipfile.ZipFile(source) as archive:
         infos=archive.infolist()
         if len(infos)>MAX_NOTES+1:raise ValueError('Bundle has too many members')
-        members={};seen={};remaining=MAX_TOTAL
+        members={}
+        seen={}
+        remaining=MAX_TOTAL
         for info in infos:
             name=info.filename
             if info.is_dir() or (name!='manifest.json' and not MEMBER.fullmatch(name)) or '..' in name.split('/'):
@@ -85,12 +93,14 @@ def _import_bundle(root,source,domain=None):
     from .repository import parse_text,serialize,validate,inventory,read_json,canonical_json
     from .notes import taxonomy
     from .governance import commit
-    root=Path(root).resolve();source=Path(source).expanduser()
+    root=Path(root).resolve()
+    source=Path(source).expanduser()
     manifest,members=_read(source)
     target=canonical_domain(domain or str(manifest.get('domain') or ''),root)
     from .common import global_domains
     if target not in read_json(root/'bindings.json',{}).get('domains',{}) and target not in global_domains(root):raise ValueError(f"Domain '{target}' is not bound here; bind it or pass --domain")
-    parsed={};seen={}
+    parsed={}
+    seen={}
     for name,data in sorted(members.items()):
         try:note=parse_text(data.decode('utf-8'),name)
         except UnicodeError:note=None
@@ -104,21 +114,30 @@ def _import_bundle(root,source,domain=None):
     if missing:
         raise ValueError('Tags outside this taxonomy: '+', '.join(missing)+'. Add them first with: taxonomy add '+' '.join(missing))
     present={n['id']:n for n in inventory(target,root,retired=True)}
-    changes={};created=[];unchanged=[];conflicts=[]
+    changes={}
+    created=[]
+    unchanged=[]
+    conflicts=[]
     for name,note in parsed.items():
         folder,file_name=name.split('/',1)
         retired=note.get('status','active')!='active'
         if (folder=='archive')!=retired:raise ValueError(f'{name}: status {note.get("status")!r} does not belong in {folder}/')
-        note['domain']=target;path=root/'domains'/target/folder/file_name;note['path']=str(path)
+        note['domain']=target
+        path=root/'domains'/target/folder/file_name
+        note['path']=str(path)
         validate(note,target,root)
-        text=serialize(note);ref=f"{target}:{note['id']}"
+        text=serialize(note)
+        ref=f"{target}:{note['id']}"
         if note['id'] in present:
             current=Path(present[note['id']]['path'])
             same=current.read_bytes().decode('utf-8').replace('\r\n','\n')==text
             (unchanged if same else conflicts).append({'ref':ref,'title':note['title'],**({} if same else {'reason':'this ID already exists here with different content; update that note instead'})})
             continue
-        if path.exists():conflicts.append({'ref':ref,'title':note['title'],'reason':f'{path.name} already exists'});continue
-        changes[path.relative_to(root).as_posix()]=text;created.append({'ref':ref,'title':note['title'],'status':note.get('status','active')})
+        if path.exists():
+            conflicts.append({'ref':ref,'title':note['title'],'reason':f'{path.name} already exists'})
+            continue
+        changes[path.relative_to(root).as_posix()]=text
+        created.append({'ref':ref,'title':note['title'],'status':note.get('status','active')})
     result={'ok':True,'source':str(source),'domain':target,'created':created,'unchanged':unchanged,'conflicts':conflicts}
     if changes:
         # A note with one of these IDs under another filename would pass the file checks; the guard stops it.

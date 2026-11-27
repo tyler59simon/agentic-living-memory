@@ -11,18 +11,26 @@ Vaults built with the legacy single-folder layout ('Living Memory/...') migrate 
 """
 from __future__ import annotations
 import hashlib,json,re,sys,time,uuid
-from datetime import date
 from pathlib import Path
 from . import clock
-from .common import memory_root,atomic_write,load_bindings
+from .common import memory_root,atomic_write
 from .paths import is_os_junk,remove_empty_dir
-from .repository import inventory,parse,parse_text,validate,serialize,store_lock,read_json,canonical_json,transaction,digest,confined,now,reconcile,clean_files,clean_commands,roll_forward_pending
+from .repository import inventory,parse_text,validate,serialize,store_lock,read_json,canonical_json,transaction,digest,confined,now,reconcile,clean_files,clean_commands,roll_forward_pending
 from .note_types import normalize,STALE_DAYS,keep_baseline
 from .notes import slug
 
-NOTES='Domains';ARCHIVE='Archive';DASH='Dashboards';CANVAS='Canvas';TEMPLATES='Templates';META='.living-memory'
-COPIES=f'{META}/copies.json';GENERATED=f'{META}/generated.json';VAULT_ID=f'{META}/vault.json'
-LEGACY='Living Memory';LEGACY_COPIES=f'{LEGACY}/.copies.json';LEGACY_GENERATED=f'{LEGACY}/.generated.json'
+NOTES='Domains'
+ARCHIVE='Archive'
+DASH='Dashboards'
+CANVAS='Canvas'
+TEMPLATES='Templates'
+META='.living-memory'
+COPIES=f'{META}/copies.json'
+GENERATED=f'{META}/generated.json'
+VAULT_ID=f'{META}/vault.json'
+LEGACY='Living Memory'
+LEGACY_COPIES=f'{LEGACY}/.copies.json'
+LEGACY_GENERATED=f'{LEGACY}/.generated.json'
 SCRIPT=Path(__file__).resolve().parents[1]/'living_memory.py'
 # A file saved this recently may still be open in Obsidian; it is picked up at the next sync.
 QUIET_SECONDS=30
@@ -30,7 +38,7 @@ KEEP=object()   # carry(): leave the note's sync-state entry as it is
 # Losing this many managed copies at once is a vault reset or move, not a request to delete notes.
 MASS_MISSING=(5,0.2)
 from .note_format import sections,HEADINGS,TITLE_MARK,CALLOUT
-from .note_types import TEMPLATE_PROMPTS,definition,type_names,check_type   # the summary line of each built-in type's template
+from .note_types import definition,type_names,check_type
 
 def _hash(path):
     try:return digest(path.read_bytes())
@@ -79,7 +87,8 @@ def vault_id(vault,create=True):
     data=read_json(Path(vault)/VAULT_ID,None)
     if isinstance(data,dict) and data.get('id'):return data['id']
     if not create:return None
-    value=uuid.uuid4().hex;atomic_write(Path(vault)/VAULT_ID,canonical_json({'id':value,'created':now()}))
+    value=uuid.uuid4().hex
+    atomic_write(Path(vault)/VAULT_ID,canonical_json({'id':value,'created':now()}))
     return value
 
 def is_managed(vault):
@@ -101,35 +110,47 @@ def _ticked(vault,domain,pattern):
 
 def _canonical_changes(note,updated,domain,root):
     """Changes for writing an edited note, including a rename and links that point at it."""
-    src=Path(note['path']);target=src.with_name(f"{updated['prefix']} - {slug(updated['title'])}-{note['id'][:8]}.md")
-    updated['path']=str(target);validate(updated,domain,root)
+    src=Path(note['path'])
+    target=src.with_name(f"{updated['prefix']} - {slug(updated['title'])}-{note['id'][:8]}.md")
+    updated['path']=str(target)
+    validate(updated,domain,root)
     if target!=src and target.exists():raise ValueError('Filename collision with another note')
-    changes={target.relative_to(root).as_posix():serialize(updated)};expected={src.relative_to(root).as_posix():digest(src.read_bytes())}
+    changes={target.relative_to(root).as_posix():serialize(updated)}
+    expected={src.relative_to(root).as_posix():digest(src.read_bytes())}
     if target!=src:
         changes[src.relative_to(root).as_posix()]=None
         from .migration import rewrite_type_links
         for referring in inventory(domain,root,retired=True):
             if referring['id']==note['id']:continue
-            old=referring['body'];new=rewrite_type_links(old,Path(referring['path']),{src.resolve():target})
+            old=referring['body']
+            new=rewrite_type_links(old,Path(referring['path']),{src.resolve():target})
             if new!=old:
-                keep_baseline(referring);referring['body']=new;referring['updated']=now();rel=Path(referring['path']).relative_to(root).as_posix()
-                changes[rel]=serialize(referring);expected[rel]=referring['revision']
+                keep_baseline(referring)
+                referring['body']=new
+                referring['updated']=now()
+                rel=Path(referring['path']).relative_to(root).as_posix()
+                changes[rel]=serialize(referring)
+                expected[rel]=referring['revision']
     changes[f'domains/{domain}/.derived-dirty']='dirty\n'
     return target,changes,expected
 
 def _frontmatter_keys(block):
     """Top-level frontmatter keys with their full source lines (block-list items included)."""
-    keys=[];current=None
+    keys=[]
+    current=None
     for line in block.splitlines():
         match=re.match(r'([^\s:#][^:]*):(\s|$)',line)
-        if match:current=[match[1],[line]];keys.append(current)
+        if match:
+            current=[match[1],[line]]
+            keys.append(current)
         elif current is not None:current[1].append(line)
     return keys
 
 def _vault_only(vault_text,canonical_text):
     """Frontmatter lines the user added in Obsidian (aliases, cssclasses, ...) that memory does not store."""
     if not vault_text:return []
-    mine=FRONTMATTER.match(vault_text);theirs=FRONTMATTER.match(canonical_text)
+    mine=FRONTMATTER.match(vault_text)
+    theirs=FRONTMATTER.match(canonical_text)
     if not mine or not theirs:return []
     known={k for k,_ in _frontmatter_keys(theirs[2])}|set(EDITABLE)|{'status','prefix'}
     return [line for key,lines in _frontmatter_keys(mine[2]) if key not in known for line in lines]
@@ -149,7 +170,9 @@ def _session_ids(state,vault):
     return fresh,bool(state.get('entries'))
 
 def sync(domain,vault,root=None,trigger=None):
-    root=Path(root or memory_root()).resolve();vault=Path(vault).resolve();vault.mkdir(parents=True,exist_ok=True)
+    root=Path(root or memory_root()).resolve()
+    vault=Path(vault).resolve()
+    vault.mkdir(parents=True,exist_ok=True)
     state_path=root/'domains'/domain/'sync-state.json'
     with store_lock(root),store_lock(vault):
         # Finish interrupted writes before anything is read: a canonical delete journaled but not applied would otherwise
@@ -160,17 +183,25 @@ def sync(domain,vault,root=None,trigger=None):
         state=read_json(state_path,{'version':3,'entries':{}})
         if state.get('version')!=3:state={'version':3,'entries':{}}
         state,new_vault=_session_ids(state,vault)
-        state['vault']=str(vault);state['vault_id']=vault_id(vault)
-        entries=state['entries'];applied_log=state.setdefault('applied',[]);capture_errors={}
-        copied=conflicts=staged=deferred=restored=renamed=0;applied=[];view_changes={};staging_changes={}
+        state['vault']=str(vault)
+        state['vault_id']=vault_id(vault)
+        entries=state['entries']
+        applied_log=state.setdefault('applied',[])
+        capture_errors={}
+        copied=conflicts=staged=deferred=restored=renamed=0
+        applied=[]
+        view_changes={}
+        staging_changes={}
         wrote_canonical=any(r['ok'] and not r.get('idempotent') for r in rolled[root])   # a recovered write still needs INDEX.md rebuilt
         owner={}
         def row(action,note_id,title,operation_id):
             return {'action':action,'id':note_id,'title':title,'operation_id':operation_id,'at':now()}
         def log(entry):
-            applied.append(entry['operation_id']);applied_log.append(entry)
+            applied.append(entry['operation_id'])
+            applied_log.append(entry)
         titles={n['id']:n['title'] for n in inventory(domain,root,retired=True)}
-        notes=inventory(domain,root,retired=True);by_id={n['id']:n for n in notes}
+        notes=inventory(domain,root,retired=True)
+        by_id={n['id']:n for n in notes}
         # A vault change that waited for an approval before 2026-11-26 (when the user removed plans) is applied directly below:
         # forget the wait and the copy's hash, so the vault copy counts as the edit it is.
         for note_id,entry in list(entries.items()):
@@ -179,12 +210,14 @@ def sync(domain,vault,root=None,trigger=None):
         # "Keep my vault version" ticks: put the saved vault copy back so it is applied below as an edit.
         forced=set()
         for note_id in _ticked(vault,domain,KEEP_LINE):
-            entry=entries.get(note_id) or {};conflict=entry.get('conflict')
+            entry=entries.get(note_id) or {}
+            conflict=entry.get('conflict')
             if not isinstance(conflict,dict) or note_id not in by_id:continue
             saved=root/conflict.get('staged','')
             target=confined(vault,entry['overlay'])
             if saved.is_file() and _hash(target)==entry.get('overlay_hash') and _hash(Path(by_id[note_id]['path']))==entry.get('canonical_hash'):
-                atomic_write(target,_text(saved));forced.add(note_id)
+                atomic_write(target,_text(saved))
+                forced.add(note_id)
             entry.pop('conflict',None)
         # Files renamed or moved inside Obsidian keep their id: follow them instead of proposing a delete.
         overlays={e.get('overlay') for e in entries.values()}
@@ -226,14 +259,19 @@ def sync(domain,vault,root=None,trigger=None):
             if old_rel!=rel:
                 existing=_hash(confined(vault,rel))
                 if existing is not None and existing!=owned_copies.get(rel) and existing!=digest(out.encode()):
-                    blocked[note_id]=rel;rel=old_rel
+                    blocked[note_id]=rel
+                    rel=old_rel
             if current_hash is not None:owner.setdefault(note_id,(old_rel,current_hash))
             if old_rel!=rel and current_hash is not None:view_changes[old_rel]=None
-            view_changes[rel]=out;known_paths.add(rel)
+            view_changes[rel]=out
+            known_paths.add(rel)
             return digest(out.encode())
 
         for note in notes:
-            note_id=note['id'];src=Path(note['path']);source_text=_text(src);source_hash=digest(source_text.encode())
+            note_id=note['id']
+            src=Path(note['path'])
+            source_text=_text(src)
+            source_hash=digest(source_text.encode())
             active=note.get('status')=='active'
             rel=note_rel(domain,src.name,active)
             entry=dict(entries.get(note_id,{}))
@@ -241,57 +279,84 @@ def sync(domain,vault,root=None,trigger=None):
             if left and active and left!=rel and owned_copies.get(left) and _hash(confined(vault,left))==owned_copies[left]:
                 # An archive applied from the vault reached the vault but not the saved sync state, then was undone: remove the
                 # copy it put in the archive and start this note's copy afresh, not as a vault delete.
-                view_changes[left]=None;known_paths.add(left);entry={}
+                view_changes[left]=None
+                known_paths.add(left)
+                entry={}
             old_rel=entry.get('overlay',rel)
-            if note_id in moved:old_rel=moved[note_id];renamed+=1
-            dst=confined(vault,old_rel);known_paths.add(old_rel);target=confined(vault,rel);known_paths.add(rel)
+            if note_id in moved:
+                old_rel=moved[note_id]
+                renamed+=1
+            dst=confined(vault,old_rel)
+            known_paths.add(old_rel)
+            target=confined(vault,rel)
+            known_paths.add(rel)
             if dst.is_symlink() or target.is_symlink():raise ValueError('Overlay symlinks are forbidden')
-            overlay_text=_text(dst);overlay_hash=digest(overlay_text.encode()) if overlay_text is not None else None
-            old_source=entry.get('canonical_hash');old_overlay=entry.get('overlay_hash')
+            overlay_text=_text(dst)
+            overlay_hash=digest(overlay_text.encode()) if overlay_text is not None else None
+            old_source=entry.get('canonical_hash')
+            old_overlay=entry.get('overlay_hash')
             # Only an open "keep my version" choice persists; informational conflicts are shown once.
             conflict=entry.get('conflict') if source_hash==old_source and isinstance(entry.get('conflict'),dict) and entry['conflict'].get('keep') else None
-            pending=False;after_rel=rel;after_hash=source_hash;after_source=source_hash
+            pending=False
+            after_rel=rel
+            after_hash=source_hash
+            after_source=source_hash
             if overlay_hash not in (None,old_overlay,source_hash) and _recent(dst) and note_id not in forced:
                 # Still being edited in Obsidian: leave both sides alone until it is quiet.
                 deferred+=1
                 if entry:entries[note_id]=entry
                 continue
             if entry.get('pending_hash') and overlay_hash==entry['pending_hash'] and source_hash==old_source:
-                pending=True;staged+=1   # waiting for approval or for a fix; nothing changed since
+                pending=True  # waiting for a fix; nothing changed since
+                staged+=1
             elif entry.get('pending_hash')=='deleted' and overlay_hash is None:
-                pending=True;staged+=1
+                pending=True
+                staged+=1
             elif overlay_hash==source_hash:
-                if old_rel!=rel:place(note_id,old_rel,rel,source_text,overlay_text,overlay_hash);copied+=1
+                if old_rel!=rel:
+                    place(note_id,old_rel,rel,source_text,overlay_text,overlay_hash)
+                    copied+=1
             elif overlay_hash is not None and overlay_hash==old_overlay and source_hash==old_source and old_rel==rel:
                 after_hash=overlay_hash   # unchanged since the last sync (vault-only properties kept)
             elif not active:
                 if overlay_hash is not None and old_overlay is not None and overlay_hash!=old_overlay:
                     conflicts+=1
-                    saved=f'domains/{domain}/staged/{note_id}-{overlay_hash[:12]}.conflict.md';staging_changes[saved]=overlay_text
+                    saved=f'domains/{domain}/staged/{note_id}-{overlay_hash[:12]}.conflict.md'
+                    staging_changes[saved]=overlay_text
                     conflict={'message':'Retired notes are read-only in the vault; your edit was saved to '+saved,'staged':saved}
-                after_hash=place(note_id,old_rel,rel,source_text,overlay_text,overlay_hash);copied+=1
+                after_hash=place(note_id,old_rel,rel,source_text,overlay_text,overlay_hash)
+                copied+=1
             elif not entry and overlay_hash is None:
-                after_hash=place(note_id,old_rel,rel,source_text,None,None);copied+=1
+                after_hash=place(note_id,old_rel,rel,source_text,None,None)
+                copied+=1
             elif overlay_hash is None and entry:
                 if vault_reset:
-                    after_hash=place(note_id,old_rel,rel,source_text,None,None);restored+=1
+                    after_hash=place(note_id,old_rel,rel,source_text,None,None)
+                    restored+=1
                 elif source_hash!=old_source:
                     # Deleted in the vault after memory changed the note: memory wins, the note stays and its copy comes back.
                     conflicts+=1
                     conflict={'message':'Deleted in the vault after it changed in memory, so the memory version was copied back. Delete it again to remove it.'}
-                    after_hash=place(note_id,old_rel,rel,source_text,None,None);copied+=1
+                    after_hash=place(note_id,old_rel,rel,source_text,None,None)
+                    copied+=1
                 else:
                     # Deleted in the vault: the user's intent, applied directly and journaled, so undo brings the note back.
                     from .notes import _change_set
                     changes,expected,_=_change_set(note_id,domain,'delete',root,note['revision'],actor='vault')
-                    if dst.exists():deferred+=1;continue   # put back in Obsidian since it was read: the next sync sees it
+                    if dst.exists():  # put back in Obsidian since it was read: the next sync sees it
+                        deferred+=1
+                        continue
                     done=row(DONE['delete'],note_id,note['title'],uuid.uuid4().hex)
-                    transaction(root,carry(changes,done,note_id,None),'overlay_delete',expected,operation_id=done['operation_id']);wrote_canonical=True
-                    log(done);entries.pop(note_id,None);continue
+                    transaction(root,carry(changes,done,note_id,None),'overlay_delete',expected,operation_id=done['operation_id'])
+                    wrote_canonical=True
+                    log(done)
+                    entries.pop(note_id,None)
+                    continue
             elif overlay_hash!=old_overlay and (source_hash!=old_source or not entry) and note_id not in forced:
                 # Changed on both sides. Memory wins in the vault; the vault version is kept and can be restored.
                 conflicts+=1
-                saved=f'domains/{domain}/staged/{note_id}-{overlay_hash[:12]}.conflict.md';staging_changes[saved]=overlay_text
+                saved=f'domains/{domain}/staged/{note_id}-{overlay_hash[:12]}.conflict.md'
+                staging_changes[saved]=overlay_text
                 conflict={'message':'Changed in memory and in the vault at the same time. The vault now shows the memory version; yours was saved to '+saved,
                           'staged':saved,'keep':True}
                 after_hash=place(note_id,old_rel,rel,source_text,overlay_text,overlay_hash)
@@ -313,7 +378,8 @@ def sync(domain,vault,root=None,trigger=None):
                     if 'commands' in updated:
                         updated['commands']=clean_commands(updated['commands'])
                         if not updated['commands']:updated.pop('commands')
-                    updated['body']=proposed_note['body'];updated=normalize(updated)
+                    updated['body']=proposed_note['body']
+                    updated=normalize(updated)
                     if serialize({**updated,'updated':''})!=serialize({**normalize(note),'updated':''}):
                         if serialize({**updated,'updated':'','pinned':False,'rule':False})!=serialize({**normalize(note),'updated':'','pinned':False,'rule':False}):   # a pin- or rule-only edit keeps `updated`, as update --pin and --rule do
                             keep_baseline(updated) if updated['body']==note['body'] else None   # a cosmetic vault edit keeps the verification baseline
@@ -321,13 +387,15 @@ def sync(domain,vault,root=None,trigger=None):
                             if updated['body']!=note['body'] and updated.get('checked'):updated['checked']=updated['updated']   # a body edited in the vault is the author's word for the facts
                         if updated.get('type')!=note.get('type'):check_type(updated.get('type'),root)   # retyping in the vault needs an active type, as update --type does
                         canonical_target,changes,expected=_canonical_changes(note,updated,domain,root)
-                        new_text=changes[canonical_target.relative_to(root).as_posix()];new_hash=digest(new_text.encode())
+                        new_text=changes[canonical_target.relative_to(root).as_posix()]
+                        new_hash=digest(new_text.encode())
                         # The entry saved with the edit records it as taken, so after a stop and an undo the next sync copies the memory
                         # version back instead of applying the edit again. A status change in the same save is still to do: no copy
                         # hash then, so the next sync reads the copy again and finishes it.
                         done=row('Edited',note_id,updated['title'],uuid.uuid4().hex)
                         taken={'overlay':old_rel,'canonical_hash':new_hash,'overlay_hash':overlay_hash if wanted==note.get('status') else None,'status':note.get('status')}
-                        transaction(root,carry(changes,done,note_id,taken),'overlay_auto_update',expected,operation_id=done['operation_id']);wrote_canonical=True
+                        transaction(root,carry(changes,done,note_id,taken),'overlay_auto_update',expected,operation_id=done['operation_id'])
+                        wrote_canonical=True
                         log(done)
                     else:
                         canonical_target,new_text,new_hash=src,source_text,source_hash
@@ -339,7 +407,8 @@ def sync(domain,vault,root=None,trigger=None):
                         if _hash(dst)!=overlay_hash:
                             # Saved again in Obsidian since it was read: the next sync applies the newer copy. Any body edit above
                             # is in memory now, so the entry records it as taken.
-                            deferred+=1;entries[note_id]={'overlay':old_rel,'canonical_hash':new_hash,'overlay_hash':overlay_hash,'status':note.get('status')}
+                            deferred+=1
+                            entries[note_id]={'overlay':old_rel,'canonical_hash':new_hash,'overlay_hash':overlay_hash,'status':note.get('status')}
                             continue
                         after_rel=note_rel(domain,canonical_target.name,False)
                         # The vault edit counts as taken, and no memory hash is recorded: after an undo of the retirement the next
@@ -349,20 +418,28 @@ def sync(domain,vault,root=None,trigger=None):
                         transaction(root,carry(changes,done,note_id,{'overlay':old_rel,'overlay_hash':overlay_hash,'status':wanted,'pending_overlay':after_rel}),
                                     action,expected,operation_id=done['operation_id']);wrote_canonical=True
                         log(done)
-                        new_text=changes[canonical_target.relative_to(root).as_posix()];after_source=digest(new_text.encode())
-                        after_hash=place(note_id,old_rel,after_rel,new_text,overlay_text,overlay_hash);copied+=1
-                        conflict=None;note=dict(note,status=wanted)   # the sync state records the status the note has now
+                        new_text=changes[canonical_target.relative_to(root).as_posix()]
+                        after_source=digest(new_text.encode())
+                        after_hash=place(note_id,old_rel,after_rel,new_text,overlay_text,overlay_hash)
+                        copied+=1
+                        conflict=None  # the sync state records the status the note has now
+                        note=dict(note,status=wanted)
                     else:
-                        after_rel=note_rel(domain,canonical_target.name);after_source=new_hash
-                        after_hash=place(note_id,old_rel,after_rel,new_text,overlay_text,overlay_hash);copied+=1
+                        after_rel=note_rel(domain,canonical_target.name)
+                        after_source=new_hash
+                        after_hash=place(note_id,old_rel,after_rel,new_text,overlay_text,overlay_hash)
+                        copied+=1
                         conflict=None
                 except ValueError as exc:
-                    pending=True;staged+=1
+                    pending=True
+                    staged+=1
                     entry={**{k:v for k,v in entry.items() if k not in ('pending_plan','pending_action','conflict')},'pending_hash':overlay_hash,'pending_error':str(exc)}
             else:
-                after_hash=place(note_id,old_rel,rel,source_text,overlay_text,overlay_hash);copied+=1
+                after_hash=place(note_id,old_rel,rel,source_text,overlay_text,overlay_hash)
+                copied+=1
             if note_id in blocked:
-                after_rel=old_rel;conflicts+=1
+                after_rel=old_rel
+                conflicts+=1
                 conflict=conflict or {'message':f'Not renamed to {blocked[note_id]}: another file is already there. '
                                       'Move or rename that file and the next sync renames this note.'}
             if pending:entries[note_id]={**entry,'overlay':old_rel}
@@ -375,29 +452,43 @@ def sync(domain,vault,root=None,trigger=None):
             if note_id.startswith('capture-'):
                 if entry.get('note_id') in active_ids:entries.pop(note_id)
                 continue
-            path=vault/entry['overlay'];known_paths.add(entry['overlay'])
+            path=vault/entry['overlay']
+            known_paths.add(entry['overlay'])
             if _hash(path)==entry.get('overlay_hash'):
-                view_changes[entry['overlay']]=None;entries.pop(note_id);copied+=1
+                view_changes[entry['overlay']]=None
+                entries.pop(note_id)
+                copied+=1
             elif path.exists():
                 # Edited in the vault, deleted in memory: keep the vault version as a staged copy, once per edit.
-                text=_text(path);saved=f"domains/{domain}/staged/{note_id}-{digest(text.encode())[:12]}.conflict.md"
+                text=_text(path)
+                saved=f"domains/{domain}/staged/{note_id}-{digest(text.encode())[:12]}.conflict.md"
                 if (entry.get('conflict') or {}).get('staged')!=saved:
-                    conflicts+=1;staging_changes[saved]=text
+                    conflicts+=1
+                    staging_changes[saved]=text
                     entry['conflict']={'message':f"Deleted in memory after you edited it in the vault. Your version was saved to {saved}; "
                                                  f"delete `{entry['overlay']}` from the vault to clear this.",'staged':saved}
             else:
-                view_changes[entry['overlay']]=None;entries.pop(note_id)   # the vault copy is gone too: nothing left to show
+                view_changes[entry['overlay']]=None  # the vault copy is gone too: nothing left to show
+                entries.pop(note_id)
         scan_dirs=[vault/NOTES/domain,vault/LEGACY/'domains'/domain/'notes']
         # New drafts: (path_rel, hash read, note id, title, managed copy rel, canonical write or None for a replay).
         # Canonical captures are committed after the drafts are re-checked, just before the vault write.
-        drafts=[];captured_ids=set()
+        drafts=[]
+        captured_ids=set()
         for path in (p for d in scan_dirs if d.is_dir() for p in sorted(d.rglob('*.md')) if not is_os_junk(p)):
-            confined(vault,path.relative_to(vault));path_rel=path.relative_to(vault).as_posix()
+            confined(vault,path.relative_to(vault))
+            path_rel=path.relative_to(vault).as_posix()
             if path_rel in known_paths or path_rel in view_changes:continue
-            if _recent(path):deferred+=1;continue
+            if _recent(path):
+                deferred+=1
+                continue
             try:text=_text(path)
-            except UnicodeDecodeError:staged+=1;capture_errors[path_rel]='Not UTF-8 text; save it as UTF-8';continue
-            note=parse_text(text,path);h=digest(text.encode())
+            except UnicodeDecodeError:
+                staged+=1
+                capture_errors[path_rel]='Not UTF-8 text; save it as UTF-8'
+                continue
+            note=parse_text(text,path)
+            h=digest(text.encode())
             if 'capture-'+h in entries:continue
             staging_changes[f'domains/{domain}/staged/capture-{h[:16]}.md']=text
             try:
@@ -412,25 +503,33 @@ def sync(domain,vault,root=None,trigger=None):
                 if derived:note['id']=str(uuid.uuid5(uuid.NAMESPACE_URL,f'living-memory-vault-capture:{domain}:{h}'))
                 replay=next((n for n in notes if n['id']==note['id']),None) if derived and note['id'] not in captured_ids else None
                 if replay:
-                    destination=Path(replay['path']);new_text=destination.read_text(encoding='utf-8').replace('\r\n','\n')
+                    destination=Path(replay['path'])
+                    new_text=destination.read_text(encoding='utf-8').replace('\r\n','\n')
                     canonical=None
                 else:
                     if not note.get('domain'):note['domain']=domain
                     if not note.get('status'):note['status']='active'
-                    stamp=now();note.setdefault('created',stamp);note.setdefault('updated',stamp)
+                    stamp=now()
+                    note.setdefault('created',stamp)
+                    note.setdefault('updated',stamp)
                     note=normalize(note)
                     destination=root/'domains'/domain/'notes'/f"{note['prefix']} - {slug(note['title'])}-{note['id'][:8]}.md"
                     note['path']=str(destination)
                     validate(note,domain,root,new=True)
                     if note['id'] in captured_ids or any(n['id']==note['id'] for n in notes):raise ValueError('Duplicate ID')
                     if destination.exists():raise ValueError('Filename collision')
-                    new_text=serialize(note);canonical=destination.relative_to(root).as_posix()
+                    new_text=serialize(note)
+                    canonical=destination.relative_to(root).as_posix()
                 new_rel=note_rel(domain,destination.name)
-                captured_ids.add(note['id']);drafts.append((path_rel,h,note['id'],note['title'],new_rel,canonical and (canonical,new_text)))
-                view_changes[path_rel]=None;view_changes[new_rel]=new_text;copied+=1
+                captured_ids.add(note['id'])
+                drafts.append((path_rel,h,note['id'],note['title'],new_rel,canonical and (canonical,new_text)))
+                view_changes[path_rel]=None
+                view_changes[new_rel]=new_text
+                copied+=1
                 entries[note['id']]={'overlay':new_rel,'canonical_hash':digest(new_text.encode()),'overlay_hash':digest(new_text.encode()),'status':'active'}
             except ValueError as exc:
-                staged+=1;capture_errors[path_rel]=str(exc)
+                staged+=1
+                capture_errors[path_rel]=str(exc)
         # A file saved in Obsidian since it was read is left alone; the next sync sees it as an edit.
         skipped=0
         for note_id,(old_rel,seen) in owner.items():
@@ -442,7 +541,11 @@ def sync(domain,vault,root=None,trigger=None):
         for path_rel,seen,note_id,title,new_rel,canonical in drafts:
             if _hash(confined(vault,path_rel))!=seen:
                 # Saved again in Obsidian while syncing: keep the draft; the next sync captures the newer text.
-                view_changes.pop(path_rel,None);view_changes.pop(new_rel,None);entries.pop(note_id,None);copied-=1;skipped+=1
+                view_changes.pop(path_rel,None)
+                view_changes.pop(new_rel,None)
+                entries.pop(note_id,None)
+                copied-=1
+                skipped+=1
                 continue
             if canonical is None:   # already saved by an interrupted sync, whose write also saved its applied row
                 if not any(r.get('id')==note_id and r.get('action')=='Captured' for r in applied_log):log(row('Captured',note_id,title,None))
@@ -454,7 +557,8 @@ def sync(domain,vault,root=None,trigger=None):
             transaction(root,carry({rel:text,f'domains/{domain}/.derived-dirty':'dirty\n'},done,'capture-'+seen,{'note_id':note_id}),
                         'overlay_capture',operation_id=done['operation_id']);wrote_canonical=True
             log(done)
-        state['capture_errors']=capture_errors;state['applied']=applied_log[-20:]
+        state['capture_errors']=capture_errors
+        state['applied']=applied_log[-20:]
         copy_manifest=read_json(vault/COPIES,None)
         if copy_manifest is None:copy_manifest=read_json(vault/LEGACY_COPIES,{'files':{}})
         if (vault/LEGACY_COPIES).exists():view_changes[LEGACY_COPIES]=None
@@ -489,10 +593,13 @@ def _undo_command(domain,operation_id):
     return f'& "{sys.executable}" "{SCRIPT}" --domain {domain} undo {operation_id}'
 
 def _status_page(domain,root,notes,view_conflicts=(),failure=None):
-    state=read_json(root/'domains'/domain/'sync-state.json',{'entries':{}});by_id={n['id']:n for n in notes}
+    state=read_json(root/'domains'/domain/'sync-state.json',{'entries':{}})
+    by_id={n['id']:n for n in notes}
     def name(note_id,entry):
-        n=by_id.get(note_id);return n['title'] if n else Path(entry.get('overlay','?')).stem
-    errors=[];conflicts=[]
+        n=by_id.get(note_id)
+        return n['title'] if n else Path(entry.get('overlay','?')).stem
+    errors=[]
+    conflicts=[]
     for note_id,entry in state.get('entries',{}).items():
         if note_id.startswith('capture-'):continue
         if entry.get('pending_error'):errors.append(f"- {name(note_id,entry)}: {entry['pending_error']}")
@@ -544,7 +651,9 @@ WIKILINK=re.compile(r'\[\[([^\]|#]+)')
 def _canvas_edges(active):
     """Edges for relationships the notes state: a [[Title]] link to another note on the canvas, or a
     supersedes link between two notes on it. Shared tags are not a relationship ("both are project notes")."""
-    by_title={n['title'].strip().casefold():n['id'] for n in active};ids={n['id'] for n in active};found={}
+    by_title={n['title'].strip().casefold():n['id'] for n in active}
+    ids={n['id'] for n in active}
+    found={}
     for n in active:
         targets=[(by_title.get(t.strip().casefold()),'link') for t in WIKILINK.findall(n.get('body',''))]
         targets+=[(str(s).split(':')[-1],'supersedes') for s in n.get('supersedes') or []]
@@ -558,7 +667,8 @@ STALE_TEXT=('Notes that need a look, by kind. Changed evidence (stale): a cited 
 
 def _recap_page(domain,root):
     """The Recap page text: computed once per local day and domain, then read from .cache/recap-DOMAIN.json. A failing recap gives a short fallback page, never a failed overlay."""
-    path=Path(root)/'.cache'/f'recap-{domain}.json';today=clock.today().isoformat()
+    path=Path(root)/'.cache'/f'recap-{domain}.json'
+    today=clock.today().isoformat()
     try:
         cached=json.loads(path.read_text(encoding='utf-8'))
         if cached.get('day')==today and isinstance(cached.get('markdown'),str):return cached['markdown']
@@ -568,7 +678,8 @@ def _recap_page(domain,root):
         text=recap.recap(root,[domain])['markdown']
     except Exception as exc:
         from .logs import swallowed
-        swallowed('sync.recap',exc,root);return '# Recap\n\nRecap unavailable: see the logs.\n'
+        swallowed('sync.recap',exc,root)
+        return '# Recap\n\nRecap unavailable: see the logs.\n'
     try:atomic_write(path,json.dumps({'day':today,'markdown':text},ensure_ascii=False))
     except OSError:pass   # derived: a cache that cannot be written only costs a recompute
     return text
@@ -588,9 +699,11 @@ def write_status(domain,vault,root):
     """Rewrite the vault's Sync Status page from the state as it is now (after `sync`, which builds no overlay), recording
     its hash in the generated-file manifest as overlay-build does, so teardown still owns it."""
     try:
-        root=Path(root).resolve();vault=Path(vault).resolve()
+        root=Path(root).resolve()
+        vault=Path(vault).resolve()
         with store_lock(vault):
-            text=_status_page(domain,root,inventory(domain,root,retired=True));manifest=read_json(vault/GENERATED,{'files':{}})
+            text=_status_page(domain,root,inventory(domain,root,retired=True))
+            manifest=read_json(vault/GENERATED,{'files':{}})
             manifest.setdefault('files',{})[status_rel(domain)]=digest(text.encode())
             transaction(vault,{status_rel(domain):text,GENERATED:canonical_json(manifest)},'overlay_views',skip_unchanged=True)
     except (OSError,ValueError,TimeoutError) as exc:
@@ -598,12 +711,16 @@ def write_status(domain,vault,root):
         swallowed('sync.write_status',exc,root)
 
 def build_overlay(domain,vault,root=None,trigger=None):
-    root=Path(root or memory_root()).resolve();vault=Path(vault).resolve()
+    root=Path(root or memory_root()).resolve()
+    vault=Path(vault).resolve()
     try:sync_result=sync(domain,vault,root,trigger)
     except Exception as exc:
-        _report_failure(domain,vault,root,exc);raise
+        _report_failure(domain,vault,root,exc)
+        raise
     forget_page_mirror(domain,root)
-    notes=inventory(domain,root,retired=True);active=[n for n in notes if n.get('status')=='active'];changes={}
+    notes=inventory(domain,root,retired=True)
+    active=[n for n in notes if n.get('status')=='active']
+    changes={}
     def link(n):
         target=note_rel(domain,Path(n['path']).name,n.get('status')=='active')[:-3]
         return f"[[{target}|{n['title']}]]"
@@ -631,8 +748,10 @@ def build_overlay(domain,vault,root=None,trigger=None):
     edges=_canvas_edges(active)
     changes[f'{CANVAS}/{domain}.canvas']=canonical_json({'nodes':nodes,'edges':edges})
     with store_lock(vault):
-        manifest=read_json(vault/GENERATED,{'files':{}});semantic=manifest.setdefault('semantic',{})
-        legacy_conflicts=[];view_conflicts=[]
+        manifest=read_json(vault/GENERATED,{'files':{}})
+        semantic=manifest.setdefault('semantic',{})
+        legacy_conflicts=[]
+        view_conflicts=[]
         legacy=read_json(vault/LEGACY_GENERATED,None)
         if legacy is not None:
             # Remove unchanged legacy-layout views; user-edited ones are left in place and disowned.
@@ -645,16 +764,22 @@ def build_overlay(domain,vault,root=None,trigger=None):
             changes[LEGACY_GENERATED]=None
         for rel,text in list(changes.items()):
             if text is None:continue
-            path=confined(vault,rel);current=_hash(path);owned=manifest['files'].get(rel)
+            path=confined(vault,rel)
+            current=_hash(path)
+            owned=manifest['files'].get(rel)
             if current is not None and (owned is None or current!=owned):
                 # Templates are seeded once and are the user's to customize afterwards.
-                if rel.startswith(TEMPLATES+'/'):changes.pop(rel);manifest['files'].pop(rel,None);continue
+                if rel.startswith(TEMPLATES+'/'):
+                    changes.pop(rel)
+                    manifest['files'].pop(rel,None)
+                    continue
                 if rel.endswith('.canvas') and owned is not None:
                     # Obsidian reformats canvases on open; only a layout change is a user edit.
                     existing=_read(path)
                     if _canvas_key(existing)==semantic.get(rel) or (rel not in semantic and _canvas_on_grid(existing)):continue
                 # A user-edited dashboard or canvas is preserved and no longer regenerated (delete it to reset).
-                changes.pop(rel);view_conflicts.append(rel)
+                changes.pop(rel)
+                view_conflicts.append(rel)
         # The status page is a control surface: ticks were consumed by sync, so it is always regenerated
         # (and written only when its text differs).
         changes[status_rel(domain)]=_status_page(domain,root,notes,view_conflicts)
@@ -682,7 +807,8 @@ def _overlay_lock(root,domain,kind):return Path(root)/'hooks'/f'overlay-{domain}
 
 def _quiet(root,domain):
     """Wait until no write has reconciled this domain for OVERLAY_QUIET seconds (reconcile rewrites .derived-dirty), at most OVERLAY_QUIET_MAX."""
-    marker=Path(root)/'domains'/domain/'.derived-dirty';deadline=time.monotonic()+OVERLAY_QUIET_MAX
+    marker=Path(root)/'domains'/domain/'.derived-dirty'
+    deadline=time.monotonic()+OVERLAY_QUIET_MAX
     while time.monotonic()<deadline:
         try:idle=time.time()-marker.stat().st_mtime
         except OSError:return
@@ -701,16 +827,12 @@ def schedule_overlay(domain,root):
     except OSError:return False
     argv=[sys.executable,'-I','-X','utf8','-c',_WORKER,str(Path(__file__).resolve().parents[1]),str(root),domain]   # -I: the temp folder is not an import path
     try:
-        options={'stdin':subprocess.DEVNULL,'stdout':subprocess.DEVNULL,'stderr':subprocess.DEVNULL,'close_fds':True,'cwd':tempfile.gettempdir(),
-                 'env':dict(os.environ,LIVING_MEMORY_NO_BACKGROUND='1')}
-        if os.name=='nt':
-            flags=0x00000008|0x00000200   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, and CREATE_BREAKAWAY_FROM_JOB when allowed
-            try:subprocess.Popen(argv,creationflags=flags|0x01000000,**options)
-            except OSError:subprocess.Popen(argv,creationflags=flags,**options)
-        else:subprocess.Popen(argv,start_new_session=True,**options)
+        from .background import spawn_detached
+        spawn_detached(argv,env=dict(os.environ,LIVING_MEMORY_NO_BACKGROUND='1'))
     except OSError as exc:
         from .logs import swallowed
-        swallowed('sync.schedule_overlay',exc,root);return False
+        swallowed('sync.schedule_overlay',exc,root)
+        return False
     return True
 
 def refresh_overlay(domain,root):
@@ -730,10 +852,12 @@ def refresh_overlay(domain,root):
                 _quiet(root,domain)   # still queued: a write during this wait needs no worker of its own
             vault=read_json(root/'domains'/domain/'sync-state.json',{}).get('vault')
             if not vault or not is_managed(vault):return 'unmanaged'
-            build_overlay(domain,Path(vault),root,trigger='memory change');return 'built'
+            build_overlay(domain,Path(vault),root,trigger='memory change')
+            return 'built'
     except Exception as exc:
         from .logs import swallowed
-        swallowed('sync.refresh_overlay',exc,root);return 'failed'
+        swallowed('sync.refresh_overlay',exc,root)
+        return 'failed'
 
 def _report_failure(domain,vault,root,exc):
     """Best effort: a failed sync must still be visible where the user looks."""
@@ -775,19 +899,24 @@ def teardown(vault):
 
 def _teardown(vault):
     from .governance import commit
-    vault=Path(vault).resolve();manifest={'files':{}};semantic={};changes={};seen={}
+    vault=Path(vault).resolve()
+    manifest={'files':{}}
+    semantic={}
+    changes={}
+    seen={}
     for rel in (GENERATED,COPIES,LEGACY_GENERATED,LEGACY_COPIES,VAULT_ID):
         if (vault/rel).exists():
-            data=read_json(vault/rel,{'files':{}});manifest['files'].update(data.get('files',{}));semantic.update(data.get('semantic',{}));changes[rel]=None;seen[rel]=_hash(vault/rel)
+            data=read_json(vault/rel,{'files':{}})
+            manifest['files'].update(data.get('files',{}))
+            semantic.update(data.get('semantic',{}))
+            changes[rel]=None
+            seen[rel]=_hash(vault/rel)
     for rel,expected in manifest['files'].items():
         current=_hash(vault/rel)
         if current is None:continue
         if current!=expected and not (rel in semantic and _canvas_key(_read(vault/rel))==semantic[rel]):
             raise ValueError('Modified managed file preserved: '+rel)
-        changes[rel]=None;seen[rel]=current
+        changes[rel]=None
+        seen[rel]=current
     # Obsidian does not take the store lock: a file saved after the check above makes the removal stale, and nothing is removed.
     return commit(vault,changes,'overlay_teardown',summary={'files':len(changes)},guards={'read_set':seen})
-def main(argv=None):
-    import argparse
-    p=argparse.ArgumentParser();p.add_argument('domain');p.add_argument('vault',type=Path);p.add_argument('--root',type=Path,default=memory_root());a=p.parse_args(argv);print(json.dumps(sync(a.domain,a.vault,a.root)));return 0
-if __name__=='__main__':raise SystemExit(main())

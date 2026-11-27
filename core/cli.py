@@ -1,9 +1,9 @@
-﻿"""Unified compact script interface. Compatibility scripts delegate here."""
+"""Unified CLI interface for Agentic Living Memory (alm)."""
 from __future__ import annotations
 import argparse,json,os,sys,hashlib,time
 from pathlib import Path
-from .common import memory_root,load_bindings,resolve_domain,canonical_domain
-from .repository import read_json,inventory,parse,store_lock,canonical_json,now
+from .common import load_bindings,resolve_domain,canonical_domain
+from .repository import read_json,inventory,store_lock,canonical_json,now
 from .note_types import NOTE_TYPES,TYPE_NAME
 from .links import note_links
 
@@ -95,7 +95,8 @@ def _file_args(args,domain,root,existing=()):
     if getattr(args,'files',None)=='auto' and not args.session:raise ValueError('--files auto needs --session')
     touched=_session_state(root,args.session).get('touched',[]) if args.session else []
     if not args.file and not args.files:return None,[t for t in touched if t not in existing]
-    prefixes=domain_prefixes(domain,load_bindings(root));files=[] if args.files=='none' else list(existing)
+    prefixes=domain_prefixes(domain,load_bindings(root))
+    files=[] if args.files=='none' else list(existing)
     for value in args.file or []:
         path=Path(value).expanduser()
         # The bound folder itself (a repo's codebase map) is stored as '.', like any other project-relative path.
@@ -141,9 +142,15 @@ def _infer_tags(item,root,user=False):
     """Adds the default subject and concern tags the taxonomy knows; user marks the user brief (a global brief with no files), which is about the user."""
     from .notes import taxonomy
     from .note_types import definition
-    known=taxonomy(root);tags=list(item.get('tags') or []);kind=item.get('type') or 'knowledge';added=[];found=definition(kind,root) or {}
+    known=taxonomy(root)
+    tags=list(item.get('tags') or [])
+    kind=item.get('type') or 'knowledge'
+    added=[]
+    found=definition(kind,root) or {}
     for facet,tag in (('subject','subject/user' if user else found.get('subject') or 'subject/project'),('concern',found.get('concern'))):
-        if tag and tag in known and not any(t.startswith(facet+'/') for t in tags):tags.append(tag);added.append(tag)
+        if tag and tag in known and not any(t.startswith(facet+'/') for t in tags):
+            tags.append(tag)
+            added.append(tag)
     item['tags']=tags
     return added
 
@@ -153,10 +160,13 @@ def _redact(values):
     found=[]
     for field in ('title','body','context'):
         if isinstance(values.get(field),str):
-            values[field],kinds=redact(values[field]);found+=[{'kind':k,'field':field} for k in kinds]
+            values[field],kinds=redact(values[field])
+            found+=[{'kind':k,'field':field} for k in kinds]
     if isinstance(values.get('commands'),list):
         for i,command in enumerate(values['commands']):
-            if isinstance(command,str):values['commands'][i],kinds=redact(command);found+=[{'kind':k,'field':'commands'} for k in kinds]
+            if isinstance(command,str):
+                values['commands'][i],kinds=redact(command)
+                found+=[{'kind':k,'field':'commands'} for k in kinds]
     return found
 
 RULE_HELP='Mark a policy or preference note as a rule: every session start shows its title and summary in full, outside the guidance slots'
@@ -176,14 +186,19 @@ def doctor(root,cwd,explicit=None,domain=None):
     from .search import _fresh
     from .repository import problems
     import sqlite3
-    config=load_bindings(root);domain=domain or resolve_domain(cwd,config);db=sqlite3.connect(':memory:')
-    try:db.execute('CREATE VIRTUAL TABLE capability USING fts5(text)');fts=True
+    config=load_bindings(root)
+    domain=domain or resolve_domain(cwd,config)
+    db=sqlite3.connect(':memory:')
+    try:
+        db.execute('CREATE VIRTUAL TABLE capability USING fts5(text)')
+        fts=True
     except sqlite3.Error:fts=False
     finally:db.close()
     from .repository import unfinished_operations
     pending,damaged=unfinished_operations(root)
     index='unbound'
-    counts={};warnings=[]
+    counts={}
+    warnings=[]
     if pending:warnings.append(f"{len(pending)} operation(s) did not finish: run recover ID to complete one, or recover ID --abandon when its files changed since ({', '.join(pending[:5])})")
     if damaged:warnings.append(f"{len(damaged)} operation journal(s) cannot be read and are ignored ({', '.join(damaged[:5])}); history skips them and undo refuses them")
     from . import wiring as hook_wiring
@@ -208,8 +223,12 @@ def doctor(root,cwd,explicit=None,domain=None):
     for kind,names,effect in (('global_domains',scope.get('global_domains',['_global']),'no note can be saved there and the no-match title fallback uses the active domain instead; migrate --schema points it at _global'),
                               ('foreign_domains',scope.get('foreign_domains',[]),'it is never searched')):
         for name in names:
-            try:canonical=canonical_domain(name,root);missing=not (root/'domains'/canonical).is_dir()
-            except ValueError:canonical=None;missing=True
+            try:
+                canonical=canonical_domain(name,root)
+                missing=not (root/'domains'/canonical).is_dir()
+            except ValueError:
+                canonical=None
+                missing=True
             # `capture --global` creates _global's folder on first use; an older name without a folder still
             # warns, because migrate --schema points it at _global.
             if kind=='global_domains' and canonical==GLOBAL:missing=False
@@ -252,7 +271,8 @@ def doctor(root,cwd,explicit=None,domain=None):
     location = diagnostics(explicit)
     semantic=semantic_status(root)
     from .installer_lifecycle import CORE_RELEASE,installed_stamp,source_warning
-    install=installed_stamp();installed_warning=source_warning(install)
+    install=installed_stamp()
+    installed_warning=source_warning(install)
     if installed_warning:warnings.append(installed_warning)
     if semantic.get('error'):warnings.append(f"semantic model {semantic['model']} cannot be read ({semantic['error']}); search is lexical-only until it is reinstalled or removed")
     return {'release':CORE_RELEASE,'install':install,'semantic':{k:semantic[k] for k in ('enabled','model','backend') if k in semantic},'ok':fts and not pending and not unreadable and (not domain or domain_exists) and not hook_wiring.broken(wired),'problems':unreadable,'interpreter':sys.executable,'python':sys.version.split()[0],'fts5':fts,'root':str(root),'location':location,'domain':domain,'binding':'bound' if domain else 'unbound','domain_data':'present' if domain_exists else 'missing' if domain else 'unbound','index':index,'pending_recovery':pending,'hooks':{'trust':'unknown','last_delivery':last,'wiring':wired},'logs':logged,'capture':'main_agent_via_scripts','protection':'cooperating_agent_governance','notes':counts,'warnings':warnings}
@@ -376,14 +396,19 @@ def list_notes(root,domains,status,types,tags,offset,limit,summary=False):
 def _summary_fields(note):
     """search --with-summary: the summary as plain text (300 characters at most), the files, and action item counts for plan, bug and risk notes."""
     from .note_format import sections,plain,action_items,note_takes_actions
-    body=note.get('body') or '';text=sections(body).get('summary') or ''
+    body=note.get('body') or ''
+    text=sections(body).get('summary') or ''
     out={'summary':plain(text)[:300],'files':list(note.get('files') or []),'pinned':note.get('pinned') is True,'rule':note.get('rule') is True}
-    if note_takes_actions(note):items=action_items(body);out['actions']={'open':sum(1 for d,_ in items if not d),'done':sum(1 for d,_ in items if d)}
+    if note_takes_actions(note):
+        items=action_items(body)
+        out['actions']={'open':sum(1 for d,_ in items if not d),'done':sum(1 for d,_ in items if d)}
     return out
 
 def list_domains(root):
     """Bound domains plus any domain folder on disk, with note counts and the search scope settings."""
-    config=load_bindings(root);bound=config.get('domains',{});folder=root/'domains'
+    config=load_bindings(root)
+    bound=config.get('domains',{})
+    folder=root/'domains'
     names=sorted(set(bound)|{p.name for p in folder.iterdir() if p.is_dir()} if folder.is_dir() else set(bound))
     count=lambda name,sub:sum(1 for _ in (folder/name/sub).rglob('*.md')) if (folder/name/sub).is_dir() else 0
     scope=config.get('search_scope',{}) if isinstance(config.get('search_scope'),dict) else {}
@@ -396,8 +421,11 @@ def _note_hits(root,domain,query,scope,limit,rebuild,filters,config,globals_,pri
     for each result the section and level the prompt hook would deliver (refs, headings and numbers; no note text)."""
     from .search import search_domains
     from .runtime import relevance_gate,scope_domains,parent_domains,child_domains
-    candidates=[] if explain else None;parents=parent_domains(domain,config);children=child_domains(domain,config)
-    gate=relevance_gate(query,root,candidates);gated=True
+    candidates=[] if explain else None
+    parents=parent_domains(domain,config)
+    children=child_domains(domain,config)
+    gate=relevance_gate(query,root,candidates)
+    gated=True
     # As for prompts: global notes rank like the project's own, a parent's or child's count half.
     weights={**{g:2 for g in globals_},domain:2,**{p:1 for p in scope_domains(domain,config) if p!=domain}}
     def run(domains):
@@ -406,25 +434,36 @@ def _note_hits(root,domain,query,scope,limit,rebuild,filters,config,globals_,pri
         # when nothing passes the gate, the best ungated matches are returned and marked.
         nonlocal gated
         hits=search_domains(query,domains,limit,root,filters or None,rebuild,weights=weights,keep=gate)
-        if hits:gated=True;return hits
-        gated=False;return search_domains(query,domains,limit,root,filters or None,rebuild,weights=weights)
+        if hits:
+            gated=True
+            return hits
+        gated=False
+        return search_domains(query,domains,limit,root,filters or None,rebuild,weights=weights)
     domains=list(dict.fromkeys(sorted(load_bindings(root).get('domains',{}))+globals_)) if scope=='all' else primary
-    hits=run(domains);fallback=False
-    if not hits and scope=='fallback' and foreign:domains=foreign;hits=run(domains);fallback=True
+    hits=run(domains)
+    fallback=False
+    if not hits and scope=='fallback' and foreign:
+        domains=foreign
+        hits=run(domains)
+        fallback=True
     from . import digests
     digests.mark(hits,root,config)
     for hit in hits:
         if hit.get('withheld'):hit['snippet']=hit['stale']
         elif hit.get('stale'):hit['snippet']=f"{hit['stale']} — {hit.get('snippet','')}"
-    for hit in hits:hit['sourceScope']='active' if hit['domain']==domain else 'global' if hit['domain'] in globals_ else 'parent' if hit['domain'] in parents else 'child' if hit['domain'] in children else 'foreign';hit.pop('path',None)
+    for hit in hits:
+        hit['sourceScope']='active' if hit['domain']==domain else 'global' if hit['domain'] in globals_ else 'parent' if hit['domain'] in parents else 'child' if hit['domain'] in children else 'foreign'
+        hit.pop('path',None)
     decisions={}
     if explain:
         from . import injection
         from .search import stem,query_terms
         from .semantic import threshold
-        wanted={stem(t) for t in query_terms(query)};near=threshold(root)
+        wanted={stem(t) for t in query_terms(query)}
+        near=threshold(root)
         for hit in hits:
-            unit=injection.choose(hit,wanted,near,prompt=query);decisions[f"{hit['domain']}:{hit['id']}"]={'level':injection.level_of(unit,query),'section':unit['heading'] if unit else None}
+            unit=injection.choose(hit,wanted,near,prompt=query)
+            decisions[f"{hit['domain']}:{hit['id']}"]={'level':injection.level_of(unit,query),'section':unit['heading'] if unit else None}
     for hit in hits:
         # The sections that matched best, by heading and line span; `read REF --section HEADING` shows one.
         units=hit.pop('units',None)
@@ -445,7 +484,8 @@ def _note_hits(root,domain,query,scope,limit,rebuild,filters,config,globals_,pri
 def _search_scope(root,domain):
     """(bindings, global domains that exist, the domains a search covers first, foreign domains) for a domain."""
     from .runtime import scope_domains
-    config=load_bindings(root);scope=config.get('search_scope',{})
+    config=load_bindings(root)
+    scope=config.get('search_scope',{})
     globals_=[g for g in (canonical_domain(g,root) for g in scope.get('global_domains',['_global'])) if (root/'domains'/g).exists()]
     return config,globals_,list(dict.fromkeys([domain]+scope_domains(domain,config)+globals_)),scope.get('foreign_domains',[])
 
@@ -508,9 +548,12 @@ def _ask(root,domain,query,limit):
     A query of several questions is also answered one by one: `questions` holds each question's own notes and sources."""
     from . import sources
     if not query.strip():raise ValueError('ask needs a question')
-    limit=max(1,min(20,limit));config,globals_,primary,foreign=_search_scope(root,domain)
+    limit=max(1,min(20,limit))
+    config,globals_,primary,foreign=_search_scope(root,domain)
     found=_note_hits(root,domain,query,'fallback',limit,False,{},config,globals_,primary,foreign)
-    notes=[dict(h,label='note') for h in found['results']];excerpts=sources.search(root,domain,query,limit);info=sources.state(root,domain)
+    notes=[dict(h,label='note') for h in found['results']]
+    excerpts=sources.search(root,domain,query,limit)
+    info=sources.state(root,domain)
     result={'ok':True,'query':query,'domain':domain,'notes':notes,'sources':excerpts,'relevant':found['relevant'],
             'knowledge_base':dict(info,syncing=sources.syncing(root,domain)) if info else {'files':0,'syncing':sources.syncing(root,domain)}}
     result['pages']=_page_hits(root,primary,query,limit)
@@ -562,7 +605,9 @@ def report_error(message,code,as_json,command=None):
     return 6 if code=='stale' else 5 if code=='conflict' else 2
 
 class _ArgumentError(Exception):
-    def __init__(self,message,prog):super().__init__(message);self.prog=prog
+    def __init__(self,message,prog):
+        super().__init__(message)
+        self.prog=prog
 
 class JsonArgumentParser(argparse.ArgumentParser):
     """Raises on a usage error so main can report it in the JSON error shape; subcommand parsers inherit the class."""
@@ -571,7 +616,9 @@ class JsonArgumentParser(argparse.ArgumentParser):
 class _RequestStdin(__import__('io').StringIO):
     """A serve request's stdin; `given` says whether the request carried one, so a command that needs a body can tell an
     empty body from none (NS-2C re-review, R2-D5)."""
-    def __init__(self,text,given):super().__init__(text);self.given=given
+    def __init__(self,text,given):
+        super().__init__(text)
+        self.given=given
 
 def serve(root,cwd,commands):
     """JSON lines on stdin: {"id", "argv", "stdin"?} -> one {"id", "exit_code", "result", "error"} line each, run in-process."""
@@ -580,7 +627,9 @@ def serve(root,cwd,commands):
     if hasattr(real_in,'reconfigure'):
         try:real_in.reconfigure(encoding='utf-8')
         except (ValueError,OSError):pass
-    def reply(value):real_out.write(json.dumps(value,ensure_ascii=False,separators=(',',':'))+'\n');real_out.flush()
+    def reply(value):
+        real_out.write(json.dumps(value,ensure_ascii=False,separators=(',',':'))+'\n')
+        real_out.flush()
     while True:
         line=real_in.readline()
         if not line:return 0
@@ -590,13 +639,18 @@ def serve(root,cwd,commands):
             if len(line.encode())>SERVE_LIMIT:raise ValueError('Request exceeds 2 MiB')
             request=json.loads(line)
             if not isinstance(request,dict):raise ValueError('Request must be a JSON object')
-            ident=request.get('id');argv=request.get('argv');stdin=request.get('stdin','')
+            ident=request.get('id')
+            argv=request.get('argv')
+            stdin=request.get('stdin','')
             # The command comes first so it can be checked; its options follow it.
             if not isinstance(argv,list) or not argv or any(not isinstance(v,str) for v in argv) or argv[0] not in commands:raise ValueError('argv must start with a command: '+', '.join(sorted(commands)))
             if not isinstance(stdin,str):raise ValueError('stdin must be a string')
         except ValueError as exc:
-            reply({'id':ident,'exit_code':2,'result':None,'error':{'code':'invalid','message':str(exc)}});continue
-        out=io.StringIO();error=io.StringIO();sys.stdin=_RequestStdin(stdin,'stdin' in request)
+            reply({'id':ident,'exit_code':2,'result':None,'error':{'code':'invalid','message':str(exc)}})
+            continue
+        out=io.StringIO()
+        error=io.StringIO()
+        sys.stdin=_RequestStdin(stdin,'stdin' in request)
         try:
             with contextlib.redirect_stdout(out),contextlib.redirect_stderr(error):
                 try:code=main(['--json','--root',str(root),'--cwd',str(cwd)]+argv)
@@ -604,7 +658,8 @@ def serve(root,cwd,commands):
         except Exception as exc:  # one failing request must not end the session
             from .logs import swallowed
             swallowed('cli.serve',exc,root)
-            code=1;error=io.StringIO(json.dumps({'ok':False,'error':{'code':'internal','message':f'{type(exc).__name__}: {exc}'}}))
+            code=1
+            error=io.StringIO(json.dumps({'ok':False,'error':{'code':'internal','message':f'{type(exc).__name__}: {exc}'}}))
         finally:sys.stdin=real_in
         def decode(text):
             try:return json.loads(text) if text.strip() else None
@@ -644,7 +699,8 @@ def _propose(root,data,domain,session,to_global,redact=False):
     if not target:raise ValueError('Project is unbound; pass --domain or bind it')
     title=str(data.get('title') or '').strip()
     if not title or not str(data.get('body') or '').strip():raise ValueError('A proposal needs a title and content (--summary, --section, --detail or a body)')
-    known=taxonomy(root);unknown=[t for t in data.get('tags') or [] if t not in known]
+    known=taxonomy(root)
+    unknown=[t for t in data.get('tags') or [] if t not in known]
     if unknown:raise ValueError('Unknown tags: '+', '.join(unknown)+'; use tags that taxonomy lists')
     data=dict(data,title=title,body=format_body(data['body']))
     warnings=quality_warnings({'title':title,'body':data['body'],'type':data.get('type') or 'knowledge'})
@@ -692,16 +748,37 @@ def _grouped_commands():
 def _doc_parsers(p,common):
     """The `doc` command group: `doc ACTION ...`. Pages are the Markdown files of registered folder notebooks (--file)."""
     ds=p.add_subparsers(dest='doc_action',required=True,metavar='ACTION')
-    def dsub(name,text,parent=ds):q=parent.add_parser(name,description=text,help=text);common(q,True);return q
+    def dsub(name,text,parent=ds):
+        q=parent.add_parser(name,description=text,help=text)
+        common(q,True)
+        return q
     def folder_page(q):q.add_argument('--file',metavar='PATH',required=True,help='A page of a folder notebook (absolute, or relative to the working folder)')
     def private(q):q.add_argument('--include-private',action='store_true',help='Include private notebooks (user or local client only; refused to agents)')
-    q=dsub('read','Read a page of a folder notebook');folder_page(q);q.add_argument('--max-chars',type=int);private(q)
-    q=dsub('propose','Stage an edit of a folder notebook page for the user to review (agents may run it)');folder_page(q);q.add_argument('--base-revision',help='The revision you read; leave out for a new page');q.add_argument('--body-file',type=Path);q.add_argument('--note');q.add_argument('--session');private(q)
-    q=dsub('undo','Undo a notebook operation');q.add_argument('operation_id');private(q)
-    q=dsub('folder','Folder notebooks: configure agent visibility and privacy');fs=q.add_subparsers(dest='folder_action',required=True,metavar='ACTION')
-    q=dsub('set','Add or change a folder notebook',fs);q.add_argument('path');q.add_argument('--visibility',choices=['hidden','searchable','injectable'],help='Left out: the folder keeps what Living Memory holds for it (a new one is searchable)')
-    pv=q.add_mutually_exclusive_group();pv.add_argument('--private',dest='private',action='store_const',const=True);pv.add_argument('--no-private',dest='private',action='store_const',const=False)
-    q=dsub('unset','Remove a folder notebook (a hidden or private one stays excluded unless --forget)',fs);q.add_argument('path');q.add_argument('--forget',action='store_true')
+    q=dsub('read','Read a page of a folder notebook')
+    folder_page(q)
+    q.add_argument('--max-chars',type=int)
+    private(q)
+    q=dsub('propose','Stage an edit of a folder notebook page for the user to review (agents may run it)')
+    folder_page(q)
+    q.add_argument('--base-revision',help='The revision you read; leave out for a new page')
+    q.add_argument('--body-file',type=Path)
+    q.add_argument('--note')
+    q.add_argument('--session')
+    private(q)
+    q=dsub('undo','Undo a notebook operation')
+    q.add_argument('operation_id')
+    private(q)
+    q=dsub('folder','Folder notebooks: configure agent visibility and privacy')
+    fs=q.add_subparsers(dest='folder_action',required=True,metavar='ACTION')
+    q=dsub('set','Add or change a folder notebook',fs)
+    q.add_argument('path')
+    q.add_argument('--visibility',choices=['hidden','searchable','injectable'],help='Left out: the folder keeps what Living Memory holds for it (a new one is searchable)')
+    pv=q.add_mutually_exclusive_group()
+    pv.add_argument('--private',dest='private',action='store_const',const=True)
+    pv.add_argument('--no-private',dest='private',action='store_const',const=False)
+    q=dsub('unset','Remove a folder notebook (a hidden or private one stays excluded unless --forget)',fs)
+    q.add_argument('path')
+    q.add_argument('--forget',action='store_true')
 
 def _spec_file(path):
     """The query a --spec-file holds (JSON, at most 64 KB); views.check_spec checks it."""
@@ -776,7 +853,8 @@ def _proposals(args,root):
 def _doc(args,root,domain,cwd=None):
     import re
     from . import docs
-    action=args.doc_action;private=getattr(args,'include_private',False)
+    action=args.doc_action
+    private=getattr(args,'include_private',False)
     if action=='read':
         from . import folder_docs
         return folder_docs.read_file(root,args.file,cwd,args.max_chars,private)
@@ -801,188 +879,443 @@ def build_parser():
                               epilog=_grouped_commands(),formatter_class=argparse.RawDescriptionHelpFormatter)
     def common(p,suppress=False):
         default=argparse.SUPPRESS if suppress else None
-        p.add_argument('--root',type=Path,default=default);p.add_argument('--domain',default=default);p.add_argument('--cwd',default=default)
+        p.add_argument('--root',type=Path,default=default)
+        p.add_argument('--domain',default=default)
+        p.add_argument('--cwd',default=default)
         p.add_argument('--json',action='store_true',default=argparse.SUPPRESS if suppress else False)
         p.add_argument('--actor',choices=['main','subagent','viewer'],default=argparse.SUPPRESS if suppress else os.environ.get('LIVING_MEMORY_ACTOR','main'))
-    common(parser);subs=parser.add_subparsers(dest='command',required=True,metavar='COMMAND',help='one of the commands listed below')
+    common(parser)
+    subs=parser.add_subparsers(dest='command',required=True,metavar='COMMAND',help='one of the commands listed below')
     # No help= here, so argparse does not print its own flat list; the epilog lists them by group.
-    def sub(name):p=subs.add_parser(name,description=HELP.get(name));common(p,True);return p
-    p=sub('setup');p.add_argument('--location',type=Path);p.add_argument('--non-interactive',action='store_true');p.add_argument('--source',type=Path,help='Move the store from this folder (default: the configured store) to --location')
-    p=sub('upgrade');p.add_argument('--rewire',action='store_true',help='Also run any harness wiring updates reported by the install')
+    def sub(name):
+        p=subs.add_parser(name,description=HELP.get(name))
+        common(p,True)
+        return p
+    p=sub('setup')
+    p.add_argument('--location',type=Path)
+    p.add_argument('--non-interactive',action='store_true')
+    p.add_argument('--source',type=Path,help='Move the store from this folder (default: the configured store) to --location')
+    p=sub('upgrade')
+    p.add_argument('--rewire',action='store_true',help='Also run any harness wiring updates reported by the install')
     from .instructions import TOPICS
-    p=sub('help');p.add_argument('topic',nargs='?',choices=list(TOPICS))
-    p=sub('bind');p.add_argument('name');p.add_argument('prefix',nargs='+')
-    p=sub('config');cs=p.add_subparsers(dest='action',required=True,metavar='ACTION')
-    q=cs.add_parser('get',description='Show store settings or one key',help='Show store settings or one key');common(q,True)
-    q.add_argument('key',nargs='?',help='search_scope, repo_aliases, suggest_bind, auto_resolve, auto_rebaseline, cross_project or digest_refresh')
-    q=cs.add_parser('set',description='Change one store setting',help='Change one store setting');common(q,True)
-    q.add_argument('key',help='search_scope, repo_aliases, suggest_bind, auto_resolve, auto_rebaseline, cross_project or digest_refresh')
+    p=sub('help')
+    p.add_argument('topic',nargs='?',choices=list(TOPICS))
+    p=sub('bind')
+    p.add_argument('name')
+    p.add_argument('prefix',nargs='+')
+    from .settings import HELP as SETTING_HELP
+    _cfg_epilog='Settings:\n'+'\n'.join(f'  {k:<18}{v}' for k,v in SETTING_HELP.items())
+    p=sub('config')
+    cs=p.add_subparsers(dest='action',required=True,metavar='ACTION')
+    q=cs.add_parser('get',description='Show store settings or one key',help='Show store settings or one key',epilog=_cfg_epilog,formatter_class=argparse.RawDescriptionHelpFormatter)
+    common(q,True)
+    q.add_argument('key',nargs='?',help=', '.join(SETTING_HELP))
+    q=cs.add_parser('set',description='Change one store setting',help='Change one store setting',epilog=_cfg_epilog,formatter_class=argparse.RawDescriptionHelpFormatter)
+    common(q,True)
+    q.add_argument('key',help=', '.join(SETTING_HELP))
     q.add_argument('value',help='JSON value, for example true, false, ["_global"] or {"repo": ["alias"]}; null restores the default')
-    p=sub('unbind');p.add_argument('name',help='A bound domain with no notes left (move them with remap first)')
+    p=sub('unbind')
+    p.add_argument('name',help='A bound domain with no notes left (move them with remap first)')
     p.add_argument('--prefix',help='Remove only this folder from the binding and keep the domain and its notes (after a bound folder moved)')
     # Legacy forms keep working but are left out of help: --tags, --prefix and a third positional (tags).
     def capture_flags(p):
-     p.add_argument('items',nargs='*',metavar='TITLE BODY',help='Title and body; or use --title and --summary');p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain');p.add_argument('--payload-file',type=Path);p.add_argument('--content-file','--body-file',dest='content_file',type=Path);p.add_argument('--title');p.add_argument('--tag',action='append',default=[]);p.add_argument('--tags',default='',help=argparse.SUPPRESS);p.add_argument('--prefix',help=argparse.SUPPRESS);p.add_argument('--type',type=_type_name,help='Note type (default: knowledge)');p.add_argument('--context',default='');p.add_argument('--idempotency-key');p.add_argument('--session');p.add_argument('--turn');p.add_argument('--allow-similar',action='store_true');p.add_argument('--supersedes',action='append',default=[],metavar='REF@REVISION',help="A note this one replaces, with the revision you read; it is retired in the same transaction, and its links and files are carried over (see --drop-links)");p.add_argument('--drop-links',action='store_true',help='With --supersedes: do not carry the links and files of the replaced note over');p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk/map/runbook/brief notes get a default');p.add_argument('--pin',action='store_true',help=PIN_HELP);p.add_argument('--rule',action='store_true',help=RULE_HELP)
+     p.add_argument('items',nargs='*',metavar='TITLE BODY',help='Title and body; or use --title and --summary')
+     p.add_argument('--global',dest='to_global',action='store_true',help='Save to the global domain (knowledge that holds beyond this project); overrides --domain')
+     p.add_argument('--payload-file',type=Path)
+     p.add_argument('--content-file','--body-file',dest='content_file',type=Path)
+     p.add_argument('--title')
+     p.add_argument('--tag',action='append',default=[])
+     p.add_argument('--tags',default='',help=argparse.SUPPRESS)
+     p.add_argument('--prefix',help=argparse.SUPPRESS)
+     p.add_argument('--type',type=_type_name,help='Note type (default: knowledge)')
+     p.add_argument('--context',default='')
+     p.add_argument('--idempotency-key')
+     p.add_argument('--session')
+     p.add_argument('--turn')
+     p.add_argument('--allow-similar',action='store_true')
+     p.add_argument('--supersedes',action='append',default=[],metavar='REF@REVISION',help="A note this one replaces, with the revision you read; it is retired in the same transaction, and its links and files are carried over (see --drop-links)")
+     p.add_argument('--drop-links',action='store_true',help='With --supersedes: do not carry the links and files of the replaced note over')
+     p.add_argument('--review-by',help='YYYY-MM-DD; status/plan/bug/risk/map/runbook/brief notes get a default')
+     p.add_argument('--pin',action='store_true',help=PIN_HELP)
+     p.add_argument('--rule',action='store_true',help=RULE_HELP)
      for facet in CAPTURE_FACETS:p.add_argument('--'+facet,action='append',default=[])
      p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
-     sections_args(p);_file_flags(p)
-    p=sub('capture');capture_flags(p)
+     sections_args(p)
+     _file_flags(p)
+    p=sub('capture')
+    capture_flags(p)
     p.add_argument('--from-proposal',metavar='ID',help='Save this staged note edited: give the whole note (title and content) beside it. To save it as staged run proposals accept ID')
-    p=sub('propose');capture_flags(p)
+    p=sub('propose')
+    capture_flags(p)
     PRIV_HELP='Include private notebooks (user or local client only; refused to agents)'
-    p=sub('proposals');ps=p.add_subparsers(dest='action',required=True,metavar='ACTION')
-    q=ps.add_parser('list',description='List staged notes and page edits',help='List proposals (default)');common(q,True)
+    p=sub('proposals')
+    ps=p.add_subparsers(dest='action',required=True,metavar='ACTION')
+    q=ps.add_parser('list',description='List staged notes and page edits',help='List proposals (default)')
+    common(q,True)
     q.add_argument('--kind',choices=['note','page','all'],default='all',help='Staged notes, page edits or both (default all)')
     q.add_argument('--status',choices=['pending','accepted','rejected','all'],default='pending',help='Which proposals (default pending)')
-    q.add_argument('--session',help='Only this session');q.add_argument('--notebook',help='Only page edits of this notebook (--domain narrows them to a domain)')
+    q.add_argument('--session',help='Only this session')
+    q.add_argument('--notebook',help='Only page edits of this notebook (--domain narrows them to a domain)')
     q.add_argument('--include-private',action='store_true',help=PRIV_HELP)
-    q=ps.add_parser('show',description='Show one proposal',help='Show one proposal');common(q,True)
-    q.add_argument('id',help='Proposal ID (8 hex digits: a staged note; 12: a page edit)');q.add_argument('--include-private',action='store_true',help=PRIV_HELP)
-    q=ps.add_parser('accept',description='Accept a staged note or page edit',help='Accept a proposal');common(q,True)
+    q=ps.add_parser('show',description='Show one proposal',help='Show one proposal')
+    common(q,True)
     q.add_argument('id',help='Proposal ID (8 hex digits: a staged note; 12: a page edit)')
-    q.add_argument('--session',help='Accept a note: the session that saves it');q.add_argument('--rule',action='store_true',help='Accept a note: make it a rule')
-    q.add_argument('--pin',action='store_true',help='Accept a note: pin it');q.add_argument('--turn',help='Accept a note: with --session, the turn it settles')
-    q.add_argument('--expected-revision',help='Accept a page edit: the page must be at this revision');q.add_argument('--body-file',type=Path)
+    q.add_argument('--include-private',action='store_true',help=PRIV_HELP)
+    q=ps.add_parser('accept',description='Accept a staged note or page edit',help='Accept a proposal')
+    common(q,True)
+    q.add_argument('id',help='Proposal ID (8 hex digits: a staged note; 12: a page edit)')
+    q.add_argument('--session',help='Accept a note: the session that saves it')
+    q.add_argument('--rule',action='store_true',help='Accept a note: make it a rule')
+    q.add_argument('--pin',action='store_true',help='Accept a note: pin it')
+    q.add_argument('--turn',help='Accept a note: with --session, the turn it settles')
+    q.add_argument('--expected-revision',help='Accept a page edit: the page must be at this revision')
+    q.add_argument('--body-file',type=Path)
     q.add_argument('--edited',action='store_true',help='Accept a page edit: write your merge (from --body-file or stdin) instead, against --expected-revision')
     q.add_argument('--include-private',action='store_true',help=PRIV_HELP)
-    q=ps.add_parser('reject',description='Reject a staged note or page edit',help='Reject a proposal');common(q,True)
-    q.add_argument('id',help='Proposal ID (8 hex digits: a staged note; 12: a page edit)');q.add_argument('--reason',help='Why, one line (a staged note needs it)')
-    q.add_argument('--session',help='Session recording the rejection');q.add_argument('--include-private',action='store_true',help=PRIV_HELP)
-    p=sub('search');p.add_argument('query',nargs='?',default='');p.add_argument('--file',help='Notes about this file or folder: listed in their files property, or named in the body');p.add_argument('--scope',choices=['active','fallback','all'],help='Notes: which domains (default fallback)');p.add_argument('--limit',type=int,help='Most results. Default 5 (notes, sources, transcript), 10 (pages), 200 (list); at most 20, 50, 20, 1000');p.add_argument('--filter',action='append',default=[]);p.add_argument('--rebuild',action='store_true',help='Rebuild the search index first');p.add_argument('--sources',action='store_true',help='Source excerpts from the project knowledge base only');p.add_argument('--explain',action='store_true',help='Add why each note was found: backend, scores, gate and the section the prompt hook would deliver')
-    p.add_argument('--pages',action='store_true',help='Pages of registered folder notebooks only (with --all-domains: every domain)');p.add_argument('--transcript',action='store_true',help="This session's own transcript, for detail a compaction summarized away; needs --session");p.add_argument('--session',help='--transcript: the session ID');p.add_argument('--all',action='store_true',help='--transcript: search the whole transcript, not only what precedes the latest compaction')
-    p.add_argument('--links',action='store_true',help='The [[Title]] link graph between notes (no query)');p.add_argument('--status',choices=['active','resolved','archived','superseded','any'],help='Filter by status (--links: active or any; notes/list: default active)')
-    p.add_argument('--type',type=_type_name,action='append',help='Only this note type (repeatable)');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)');p.add_argument('--project',help='Only notes tagged project/SLUG');p.add_argument('--all-domains',action='store_true',help='Search every domain folder, not only --domain');p.add_argument('--with-summary',action='store_true',help='A list: add summary, files and actions {open, done} to each row');p.add_argument('--offset',type=int,help='A list: skip this many rows')
-    p=sub('read');p.add_argument('reference');p.add_argument('--max-chars',type=int,default=16000);p.add_argument('--metadata-only',action='store_true');p.add_argument('--section',help='Only this section, by heading (as search evidence and prompt lines name it)')
-    p=sub('update');p.add_argument('reference');p.add_argument('--title');p.add_argument('--body');p.add_argument('--body-file','--content-file',dest='body_file',type=Path);p.add_argument('--tag',action='append');p.add_argument('--add-tag',action='append',help='Append a tag without replacing existing tags (repeatable)');p.add_argument('--remove-tag',action='append',help='Remove a tag from existing tags (repeatable)');p.add_argument('--type',type=_type_name);p.add_argument('--context');p.add_argument('--review-by');p.add_argument('--expected-revision',help=REV_HELP);p.add_argument('--payload-file',type=Path);p.add_argument('--session');p.add_argument('--turn')
-    pins=p.add_mutually_exclusive_group();pins.add_argument('--pin',dest='pin',action='store_const',const=True,help=PIN_HELP);pins.add_argument('--unpin',dest='pin',action='store_const',const=False,help='Remove retirement protection (a pin change never counts as checking the note)')
-    rules=p.add_mutually_exclusive_group();rules.add_argument('--rule',dest='rule',action='store_const',const=True,help=RULE_HELP);rules.add_argument('--no-rule',dest='rule',action='store_const',const=False,help='Stop showing the note in full at every session start (a rule change never counts as checking the note)')
+    q=ps.add_parser('reject',description='Reject a staged note or page edit',help='Reject a proposal')
+    common(q,True)
+    q.add_argument('id',help='Proposal ID (8 hex digits: a staged note; 12: a page edit)')
+    q.add_argument('--reason',help='Why, one line (a staged note needs it)')
+    q.add_argument('--session',help='Session recording the rejection')
+    q.add_argument('--include-private',action='store_true',help=PRIV_HELP)
+    p=sub('search')
+    p.add_argument('query',nargs='?',default='')
+    p.add_argument('--file',help='Notes about this file or folder: listed in their files property, or named in the body')
+    p.add_argument('--scope',choices=['active','fallback','all'],help='Notes: which domains (default fallback)')
+    p.add_argument('--limit',type=int,help='Most results. Default 5 (notes, sources, transcript), 10 (pages), 200 (list); at most 20, 50, 20, 1000')
+    p.add_argument('--filter',action='append',default=[])
+    p.add_argument('--rebuild',action='store_true',help='Rebuild the search index first')
+    p.add_argument('--sources',action='store_true',help='Source excerpts from the project knowledge base only')
+    p.add_argument('--explain',action='store_true',help='Add why each note was found: backend, scores, gate and the section the prompt hook would deliver')
+    p.add_argument('--pages',action='store_true',help='Pages of registered folder notebooks only (with --all-domains: every domain)')
+    p.add_argument('--transcript',action='store_true',help="This session's own transcript, for detail a compaction summarized away; needs --session")
+    p.add_argument('--session',help='--transcript: the session ID')
+    p.add_argument('--all',action='store_true',help='--transcript: search the whole transcript, not only what precedes the latest compaction')
+    p.add_argument('--links',action='store_true',help='The [[Title]] link graph between notes (no query)')
+    p.add_argument('--status',choices=['active','resolved','archived','superseded','any'],help='Filter by status (--links: active or any; notes/list: default active)')
+    p.add_argument('--type',type=_type_name,action='append',help='Only this note type (repeatable)')
+    p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)')
+    p.add_argument('--project',help='Only notes tagged project/SLUG')
+    p.add_argument('--all-domains',action='store_true',help='Search every domain folder, not only --domain')
+    p.add_argument('--with-summary',action='store_true',help='A list: add summary, files and actions {open, done} to each row')
+    p.add_argument('--offset',type=int,help='A list: skip this many rows')
+    p=sub('read')
+    p.add_argument('reference')
+    p.add_argument('--max-chars',type=int,default=16000)
+    p.add_argument('--metadata-only',action='store_true')
+    p.add_argument('--section',help='Only this section, by heading (as search evidence and prompt lines name it)')
+    p=sub('update')
+    p.add_argument('reference')
+    p.add_argument('--title')
+    p.add_argument('--body')
+    p.add_argument('--body-file','--content-file',dest='body_file',type=Path)
+    p.add_argument('--tag',action='append')
+    p.add_argument('--add-tag',action='append',help='Append a tag without replacing existing tags (repeatable)')
+    p.add_argument('--remove-tag',action='append',help='Remove a tag from existing tags (repeatable)')
+    p.add_argument('--type',type=_type_name)
+    p.add_argument('--context')
+    p.add_argument('--review-by')
+    p.add_argument('--expected-revision',help=REV_HELP)
+    p.add_argument('--payload-file',type=Path)
+    p.add_argument('--session')
+    p.add_argument('--turn')
+    pins=p.add_mutually_exclusive_group()
+    pins.add_argument('--pin',dest='pin',action='store_const',const=True,help=PIN_HELP)
+    pins.add_argument('--unpin',dest='pin',action='store_const',const=False,help='Remove retirement protection (a pin change never counts as checking the note)')
+    rules=p.add_mutually_exclusive_group()
+    rules.add_argument('--rule',dest='rule',action='store_const',const=True,help=RULE_HELP)
+    rules.add_argument('--no-rule',dest='rule',action='store_const',const=False,help='Stop showing the note in full at every session start (a rule change never counts as checking the note)')
     p.add_argument('--distinct',metavar='REF@REVISION',help='Record that this note and REF (same domain, with the revision you read) are different subjects, so neither replaces the other; needs --why')
     p.add_argument('--why',help='With --distinct: the reason, one line of 8 to 200 characters')
     p.add_argument('--not-distinct',metavar='REF@REVISION',dest='not_distinct',help='Remove the distinct record between this note and REF (kept on either note; with the revision you read), so maintenance may review the pair again')
     for facet in CAPTURE_FACETS:p.add_argument('--'+facet,action='append')
     p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of rejecting the note")
-    sections_args(p,update=True);_file_flags(p)
-    p=sub('supersede');p.add_argument('reference');p.add_argument('--expected-revision',help=REV_HELP);p.add_argument('--by',required=True,metavar='REF@REVISION',help='The note that replaces it, with the revision you read; its links and files are carried over (see --drop-links)');p.add_argument('--drop-links',action='store_true',help='Do not carry the links and files of the replaced note over');p.add_argument('--session');p.add_argument('--turn')
-    p=sub('review');p.add_argument('--kind',action='append',choices=['stale','due','interim','duplicate','warned','noisy'],help='Only this kind of row (repeatable): stale, due, interim, duplicate, warned, noisy');p.add_argument('--limit',type=int,default=20);p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)')
-    p=sub('open');p.add_argument('--due-by',metavar='DATE',help='Only items with a due date on or before DATE (YYYY-MM-DD)');p.add_argument('--owner',help='Only items owned by this name (case-insensitive)');p.add_argument('--sort',choices=['updated','due'],default='updated',help='updated: newest note first (default); due: earliest due date first, undated items last');p.add_argument('--pages',choices=['injectable','searchable','none'],default='injectable',help='Which notebook page tasks join the list: injectable (default: injectable folder notebooks), searchable (searchable ones too) or none (notes only)');p.add_argument('--limit',type=int,default=50);p.add_argument('--all-domains',action='store_true',help='Every domain folder, not parents and global only');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match); page tasks have no tags, so none are listed then')
-    p=sub('check');p.add_argument('reference');p.add_argument('item',nargs='?',help='Text of the action item: exact, or a unique part of it');p.add_argument('--index',type=int,help="1-based position among the note's action items, as open lists it");p.add_argument('--undo',action='store_true',help='Untick instead');p.add_argument('--expected-revision',help=REV_HELP);p.add_argument('--session');p.add_argument('--turn')
-    p=sub('timeline');p.add_argument('reference',nargs='?',help='Anchor note; default: the newest note');p.add_argument('--date',help='YYYY-MM-DD: anchor at the first note on or after this date');p.add_argument('--before',type=int,default=5);p.add_argument('--after',type=int,default=5);p.add_argument('--type',type=_type_name,action='append');p.add_argument('--by',choices=['updated','created'],default='updated');p.add_argument('--all',action='store_true',help='Include superseded, archived and resolved notes')
-    p=sub('ingest');p.add_argument('--source',type=Path,help="Auto-memory folder; default: Claude Code's folder for --cwd");p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of skipping the file");p.add_argument('--allow-similar',action='store_true')
-    p=sub('export');p.add_argument('--out',type=Path,required=True,help='New .zip file, outside the store');p.add_argument('--type',type=_type_name,action='append');p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)');p.add_argument('--all',action='store_true',help='Include superseded, archived and resolved notes')
-    p=sub('import');p.add_argument('file',type=Path)
-    p=sub('confirm');p.add_argument('reference');p.add_argument('--expected-revision',help=REV_HELP);p.add_argument('--session');p.add_argument('--turn')
-    for name in ('resolve','reopen'):p=sub(name);p.add_argument('reference',help='A plan, bug or risk note');p.add_argument('--expected-revision',help=REV_HELP);p.add_argument('--session');p.add_argument('--turn')
-    p=sub('restore');p.add_argument('reference',help='An archived note: it returns to notes/, pinned, with its id, body and verification baseline kept (a resolved note uses reopen, a superseded one is read through its successor)');p.add_argument('--expected-revision',help=REV_HELP);p.add_argument('--session');p.add_argument('--turn')
-    p=sub('stats');p.add_argument('--days',type=int,default=30,help='Window, at most 30 (the diary keeps 30 days)');p.add_argument('--limit',type=int,default=10)
-    p=sub('logs');p.add_argument('--level',choices=['debug','info','warning','error'],default='info',help='Lowest level shown');p.add_argument('--kind',choices=['hook','command','internal']);p.add_argument('--event',help='Hook event, command name or internal call site');p.add_argument('--days',type=int,default=1,help='Last N x 24 hours, at most 30 (logs keep 30 days)');p.add_argument('--limit',type=int,default=50)
-    p=sub('delete');p.add_argument('reference');p.add_argument('--expected-revision',help=REV_HELP)
-    p=sub('archive');p.add_argument('reference',help='A note to retire without a replacement (a plan, bug or risk that is finished uses resolve)');p.add_argument('--expected-revision',help=REV_HELP);p.add_argument('--payload-file',type=Path);p.add_argument('--session');p.add_argument('--turn')
+    sections_args(p,update=True)
+    _file_flags(p)
+    p=sub('supersede')
+    p.add_argument('reference')
+    p.add_argument('--expected-revision',help=REV_HELP)
+    p.add_argument('--by',required=True,metavar='REF@REVISION',help='The note that replaces it, with the revision you read; its links and files are carried over (see --drop-links)')
+    p.add_argument('--drop-links',action='store_true',help='Do not carry the links and files of the replaced note over')
+    p.add_argument('--session')
+    p.add_argument('--turn')
+    p=sub('review')
+    p.add_argument('--kind',action='append',choices=['stale','due','interim','duplicate','warned','noisy'],help='Only this kind of row (repeatable): stale, due, interim, duplicate, warned, noisy')
+    p.add_argument('--limit',type=int,default=20)
+    p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain')
+    p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)')
+    p=sub('open')
+    p.add_argument('--due-by',metavar='DATE',help='Only items with a due date on or before DATE (YYYY-MM-DD)')
+    p.add_argument('--owner',help='Only items owned by this name (case-insensitive)')
+    p.add_argument('--sort',choices=['updated','due'],default='updated',help='updated: newest note first (default); due: earliest due date first, undated items last')
+    p.add_argument('--pages',choices=['injectable','searchable','none'],default='injectable',help='Which notebook page tasks join the list: injectable (default: injectable folder notebooks), searchable (searchable ones too) or none (notes only)')
+    p.add_argument('--limit',type=int,default=50)
+    p.add_argument('--all-domains',action='store_true',help='Every domain folder, not parents and global only')
+    p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match); page tasks have no tags, so none are listed then')
+    p=sub('check')
+    p.add_argument('reference')
+    p.add_argument('item',nargs='?',help='Text of the action item: exact, or a unique part of it')
+    p.add_argument('--index',type=int,help="1-based position among the note's action items, as open lists it")
+    p.add_argument('--undo',action='store_true',help='Untick instead')
+    p.add_argument('--expected-revision',help=REV_HELP)
+    p.add_argument('--session')
+    p.add_argument('--turn')
+    p=sub('timeline')
+    p.add_argument('reference',nargs='?',help='Anchor note; default: the newest note')
+    p.add_argument('--date',help='YYYY-MM-DD: anchor at the first note on or after this date')
+    p.add_argument('--before',type=int,default=5)
+    p.add_argument('--after',type=int,default=5)
+    p.add_argument('--type',type=_type_name,action='append')
+    p.add_argument('--by',choices=['updated','created'],default='updated')
+    p.add_argument('--all',action='store_true',help='Include superseded, archived and resolved notes')
+    p=sub('ingest')
+    p.add_argument('--source',type=Path,help="Auto-memory folder; default: Claude Code's folder for --cwd")
+    p.add_argument('--redact',action='store_true',help="Replace credentials with <redacted type='KIND'/> instead of skipping the file")
+    p.add_argument('--allow-similar',action='store_true')
+    p=sub('export')
+    p.add_argument('--out',type=Path,required=True,help='New .zip file, outside the store')
+    p.add_argument('--type',type=_type_name,action='append')
+    p.add_argument('--tag',action='append',default=[],help='Only notes with this tag (repeatable: all must match)')
+    p.add_argument('--all',action='store_true',help='Include superseded, archived and resolved notes')
+    p=sub('import')
+    p.add_argument('file',type=Path)
+    p=sub('confirm')
+    p.add_argument('reference')
+    p.add_argument('--expected-revision',help=REV_HELP)
+    p.add_argument('--session')
+    p.add_argument('--turn')
+    for name in ('resolve','reopen'):
+        p=sub(name)
+        p.add_argument('reference',help='A plan, bug or risk note')
+        p.add_argument('--expected-revision',help=REV_HELP)
+        p.add_argument('--session')
+        p.add_argument('--turn')
+    p=sub('restore')
+    p.add_argument('reference',help='An archived note: it returns to notes/, pinned, with its id, body and verification baseline kept (a resolved note uses reopen, a superseded one is read through its successor)')
+    p.add_argument('--expected-revision',help=REV_HELP)
+    p.add_argument('--session')
+    p.add_argument('--turn')
+    p=sub('stats')
+    p.add_argument('--days',type=int,default=30,help='Window, at most 30 (the diary keeps 30 days)')
+    p.add_argument('--limit',type=int,default=10)
+    p=sub('logs')
+    p.add_argument('--level',choices=['debug','info','warning','error'],default='info',help='Lowest level shown')
+    p.add_argument('--kind',choices=['hook','command','internal'])
+    p.add_argument('--event',help='Hook event, command name or internal call site')
+    p.add_argument('--days',type=int,default=1,help='Last N x 24 hours, at most 30 (logs keep 30 days)')
+    p.add_argument('--limit',type=int,default=50)
+    p=sub('delete')
+    p.add_argument('reference')
+    p.add_argument('--expected-revision',help=REV_HELP)
+    p=sub('archive')
+    p.add_argument('reference',help='A note to retire without a replacement (a plan, bug or risk that is finished uses resolve)')
+    p.add_argument('--expected-revision',help=REV_HELP)
+    p.add_argument('--payload-file',type=Path)
+    p.add_argument('--session')
+    p.add_argument('--turn')
     # A direct write replacing the bodies of several notes (a prose rewrite); titles never change.
-    p=sub('rewrite');p.add_argument('--payload-file',type=Path,help='JSON list of {"ref", "revision", "body"}; default: stdin')
-    p=sub('merge');p.add_argument('--payload-file',type=Path,help='JSON {"target": "DOMAIN:ID@REVISION", "sources": ["DOMAIN:ID@REVISION", ...], "body": "..."}; default: stdin')
-    p=sub('history');p.add_argument('--note');p.add_argument('--limit',type=int,default=20);p.add_argument('--include-private',action='store_true',help=PRIV_HELP);p.add_argument('--markdown',action='store_true',help='Return {ok, rows, markdown} with a dated list a person can read')
-    p=sub('recap');p.add_argument('--days',type=int,default=7,help='Days back, 1 to 90');p.add_argument('--project',help='Project slug');p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain')
-    p=sub('log');p.add_argument('--project',help='Project slug');p.add_argument('--since',help='ISO date or time');p.add_argument('--until',help='ISO date or time, inclusive');p.add_argument('--note',help='One note (REF or ID, deleted notes too)');p.add_argument('--type',help='Note type or session');p.add_argument('--event',help='created, updated, confirmed, superseded, resolved, archived, reopened, deleted, promoted, moved, undone or session');p.add_argument('--limit',type=int,default=50)
-    p=sub('undo');p.add_argument('operation_id');p.add_argument('--include-private',action='store_true',help=PRIV_HELP)
-    _doc_parsers(sub('doc'),common)
-    p=sub('recover');p.add_argument('operation_id');p.add_argument('--direction',choices=['forward','backward'],default='forward');p.add_argument('--abandon',action='store_true',help='Stop treating the operation as pending; no note file is changed')
+    p=sub('rewrite')
+    p.add_argument('--payload-file',type=Path,help='JSON list of {"ref", "revision", "body"}; default: stdin')
+    p=sub('merge')
+    p.add_argument('--payload-file',type=Path,help='JSON {"target": "DOMAIN:ID@REVISION", "sources": ["DOMAIN:ID@REVISION", ...], "body": "..."}; default: stdin')
+    p=sub('history')
+    p.add_argument('--note')
+    p.add_argument('--limit',type=int,default=20)
     p.add_argument('--include-private',action='store_true',help=PRIV_HELP)
-    p=sub('diff');p.add_argument('operation_id');p.add_argument('--include-private',action='store_true',help=PRIV_HELP)
+    p.add_argument('--markdown',action='store_true',help='Return {ok, rows, markdown} with a dated list a person can read')
+    p=sub('recap')
+    p.add_argument('--days',type=int,default=7,help='Days back, 1 to 90')
+    p.add_argument('--project',help='Project slug')
+    p.add_argument('--all-domains',action='store_true',help='Every domain folder, not only --domain')
+    p=sub('log')
+    p.add_argument('--project',help='Project slug')
+    p.add_argument('--since',help='ISO date or time')
+    p.add_argument('--until',help='ISO date or time, inclusive')
+    p.add_argument('--note',help='One note (REF or ID, deleted notes too)')
+    p.add_argument('--type',help='Note type or session')
+    p.add_argument('--event',help='created, updated, confirmed, superseded, resolved, archived, reopened, deleted, promoted, moved, undone or session')
+    p.add_argument('--limit',type=int,default=50)
+    p=sub('undo')
+    p.add_argument('operation_id')
+    p.add_argument('--include-private',action='store_true',help=PRIV_HELP)
+    _doc_parsers(sub('doc'),common)
+    p=sub('recover')
+    p.add_argument('operation_id')
+    p.add_argument('--direction',choices=['forward','backward'],default='forward')
+    p.add_argument('--abandon',action='store_true',help='Stop treating the operation as pending; no note file is changed')
+    p.add_argument('--include-private',action='store_true',help=PRIV_HELP)
+    p=sub('diff')
+    p.add_argument('operation_id')
+    p.add_argument('--include-private',action='store_true',help=PRIV_HELP)
     p=sub('doctor')
-    p=sub('backup');p.add_argument('--keep',type=int,default=7)
+    p=sub('backup')
+    p.add_argument('--keep',type=int,default=7)
     p=sub('housekeep')
-    p=sub('restore-backup');p.add_argument('file',type=Path)
-    p=sub('migrate');g=p.add_mutually_exclusive_group(required=True)
-    g.add_argument('--schema',action='store_true',help='Upgrade bindings, the tag taxonomy and the schema version');g.add_argument('--note-types',action='store_true',help="Rename notes to their type's filename prefix")
+    p=sub('restore-backup')
+    p.add_argument('file',type=Path)
+    p=sub('migrate')
+    g=p.add_mutually_exclusive_group(required=True)
+    g.add_argument('--schema',action='store_true',help='Upgrade bindings, the tag taxonomy and the schema version')
+    g.add_argument('--note-types',action='store_true',help="Rename notes to their type's filename prefix")
     g.add_argument('--baseline',action='store_true',help='Keep the old verification baseline of notes whose checked date predates their last update')
-    p=sub('rebuild');p.add_argument('name',nargs='?')
-    p=sub('rebaseline');p.add_argument('--dry-run',action='store_true',help='list each stale note and whether its change is relevant, write nothing')
+    p=sub('rebuild')
+    p.add_argument('name',nargs='?')
+    p=sub('rebaseline')
+    p.add_argument('--dry-run',action='store_true',help='list each stale note and whether its change is relevant, write nothing')
     p.add_argument('--scheduled',action='store_true',help=argparse.SUPPRESS)
-    p=sub('maintenance');ms=p.add_subparsers(dest='action',required=True,metavar='ACTION')
-    q=ms.add_parser('status',description='Show maintenance status and budget',help='Show maintenance status');common(q,True)
-    q=ms.add_parser('preview',description='Preview notes eligible for maintenance',help='Preview eligible notes');common(q,True)
+    p=sub('maintenance')
+    ms=p.add_subparsers(dest='action',required=True,metavar='ACTION')
+    q=ms.add_parser('status',description='Show maintenance status and budget',help='Show maintenance status')
+    common(q,True)
+    q=ms.add_parser('preview',description='Preview notes eligible for maintenance',help='Preview eligible notes')
+    common(q,True)
     q.add_argument('--limit',type=int,default=10,help='At most this many rows (default 10)')
-    q=ms.add_parser('run',description='Run automatic maintenance',help='Run maintenance');common(q,True)
+    q=ms.add_parser('run',description='Run automatic maintenance',help='Run maintenance')
+    common(q,True)
     q.add_argument('--dry-run',action='store_true',help='Call the model and validate decisions without changing notes')
     q.add_argument('--scheduled',action='store_true',help=argparse.SUPPRESS)
-    q=ms.add_parser('enable',description='Enable automatic maintenance',help='Enable maintenance');common(q,True)
+    q=ms.add_parser('enable',description='Enable automatic maintenance',help='Enable maintenance')
+    common(q,True)
     q.add_argument('--all-domains',action='store_true',help='Every configured non-global domain')
     q.add_argument('--model',help='Model alias (default sonnet)')
     q.add_argument('--max-notes-per-day',type=int,help='Notes reviewed per day (default 10)')
     q.add_argument('--timeout-seconds',type=int,help='Run time limit (default 300)')
     q.add_argument('--daily-budget-usd',help='Spending limit per day as a decimal string (default "1.00")')
-    q=ms.add_parser('disable',description='Disable automatic maintenance',help='Disable maintenance');common(q,True)
-    q=ms.add_parser('history',description='Show past maintenance runs',help='Show run history');common(q,True)
+    q=ms.add_parser('disable',description='Disable automatic maintenance',help='Disable maintenance')
+    common(q,True)
+    q=ms.add_parser('history',description='Show past maintenance runs',help='Show run history')
+    common(q,True)
     q.add_argument('--limit',type=int,default=10,help='At most this many runs (default 10)')
     q.add_argument('--run',help='One run by ID, with its per-note decisions')
-    p=sub('semantic');ss=p.add_subparsers(dest='action',required=True,metavar='ACTION')
-    q=ss.add_parser('status',description='Show semantic search status',help='Show semantic status');common(q,True)
-    q=ss.add_parser('install',description='Install a local semantic embedding model',help='Install embedding model');common(q,True)
+    p=sub('semantic')
+    ss=p.add_subparsers(dest='action',required=True,metavar='ACTION')
+    q=ss.add_parser('status',description='Show semantic search status',help='Show semantic status')
+    common(q,True)
+    q=ss.add_parser('install',description='Install a local semantic embedding model',help='Install embedding model')
+    common(q,True)
     q.add_argument('--model',help='Model to install (default: the recommended one)')
     q.add_argument('--from',dest='source',type=Path,help='Folder already holding the model files, for an offline install; hashes are still verified')
-    q=ss.add_parser('remove',description='Remove the semantic embedding model',help='Remove embedding model');common(q,True)
-    q=ss.add_parser('rebuild',description='Rebuild semantic embeddings across domains',help='Rebuild embeddings');common(q,True)
-    q=ss.add_parser('native',description='Show or toggle native sqlite-vec KNN acceleration',help='Toggle native KNN');common(q,True)
+    q=ss.add_parser('remove',description='Remove the semantic embedding model',help='Remove embedding model')
+    common(q,True)
+    q=ss.add_parser('rebuild',description='Rebuild semantic embeddings across domains',help='Rebuild embeddings')
+    common(q,True)
+    q=ss.add_parser('native',description='Show or toggle native sqlite-vec KNN acceleration',help='Toggle native KNN')
+    common(q,True)
     q.add_argument('value',nargs='?',choices=['on','off'],help='on or off')
-    p=sub('validate');p.add_argument('name',nargs='?')
-    p=sub('query');p.add_argument('sql')
-    p=sub('taxonomy');ts=p.add_subparsers(dest='action',required=True,metavar='ACTION')
-    q=ts.add_parser('show',description='Show the tag taxonomy (default)',help='Show the taxonomy (default)');common(q,True)
-    q=ts.add_parser('add',description='Register one or more tags (direct, undoable)',help='Register tags');common(q,True)
+    p=sub('validate')
+    p.add_argument('name',nargs='?')
+    p=sub('query')
+    p.add_argument('sql')
+    p=sub('taxonomy')
+    ts=p.add_subparsers(dest='action',required=True,metavar='ACTION')
+    q=ts.add_parser('show',description='Show the tag taxonomy (default)',help='Show the taxonomy (default)')
+    common(q,True)
+    q=ts.add_parser('add',description='Register one or more tags (direct, undoable)',help='Register tags')
+    common(q,True)
     q.add_argument('tags',nargs='+',metavar='TAG')
-    p=sub('project');p.add_argument('action',choices=['create','update','archive']);p.add_argument('--payload-file',type=Path)
-    p=sub('projects');p.add_argument('--status',choices=['active','paused','archived','any'],default='any')
-    p=sub('system');p.add_argument('action',choices=['create','update','retire']);p.add_argument('--payload-file',type=Path)
-    p=sub('systems');p.add_argument('--status',choices=['active','deprecated','retired','any'],default='any')
-    p=sub('type');p.add_argument('action',choices=['create','update','retire']);p.add_argument('--payload-file',type=Path)
-    p=sub('types');p.add_argument('--all',action='store_true',help='Include retired custom types')
-    p=sub('source');p.add_argument('action',choices=['add','remove','implicit']);p.add_argument('--payload-file',type=Path)
+    p=sub('project')
+    p.add_argument('action',choices=['create','update','archive'])
+    p.add_argument('--payload-file',type=Path)
+    p=sub('projects')
+    p.add_argument('--status',choices=['active','paused','archived','any'],default='any')
+    p=sub('system')
+    p.add_argument('action',choices=['create','update','retire'])
+    p.add_argument('--payload-file',type=Path)
+    p=sub('systems')
+    p.add_argument('--status',choices=['active','deprecated','retired','any'],default='any')
+    p=sub('type')
+    p.add_argument('action',choices=['create','update','retire'])
+    p.add_argument('--payload-file',type=Path)
+    p=sub('types')
+    p.add_argument('--all',action='store_true',help='Include retired custom types')
+    p=sub('source')
+    p.add_argument('action',choices=['add','remove','implicit'])
+    p.add_argument('--payload-file',type=Path)
     p=sub('sources')
-    p=sub('source-sync');p.add_argument('name',nargs='?',help='One source; default: all of the domain');p.add_argument('--rebuild',action='store_true',help='Drop and re-read what was indexed (all sources, or just NAME; a remote NAME is also fetched afresh)')
+    p=sub('source-sync')
+    p.add_argument('name',nargs='?',help='One source; default: all of the domain')
+    p.add_argument('--rebuild',action='store_true',help='Drop and re-read what was indexed (all sources, or just NAME; a remote NAME is also fetched afresh)')
     p.add_argument('--all-remote',action='store_true',help='Also pull every confluence and notion source of the domain from the network (a remote NAME is always pulled; plain source-sync never touches the network)')
-    p=sub('ingest-scan');p.add_argument('--source',help='One source (a `sources` name); default: all of the domain');p.add_argument('--limit',type=int,default=50);p.add_argument('--changed',action='store_true',help='Only files with no digest yet or a stale one')
-    p=sub('ingest-skip');p.add_argument('--payload-file',type=Path)
-    p=sub('ask');p.add_argument('query',nargs='+',help='A question about the project');p.add_argument('--limit',type=int,default=5,help='Notes and source excerpts shown, at most, of each')
-    p=sub('views');vs=p.add_subparsers(dest='action',required=True,metavar='ACTION')
-    q=vs.add_parser('list',description='List registered views (default)',help='List views (default)');common(q,True)
+    p=sub('ingest-scan')
+    p.add_argument('--source',help='One source (a `sources` name); default: all of the domain')
+    p.add_argument('--limit',type=int,default=50)
+    p.add_argument('--changed',action='store_true',help='Only files with no digest yet or a stale one')
+    p=sub('ingest-skip')
+    p.add_argument('--payload-file',type=Path)
+    p=sub('ask')
+    p.add_argument('query',nargs='+',help='A question about the project')
+    p.add_argument('--limit',type=int,default=5,help='Notes and source excerpts shown, at most, of each')
+    p=sub('views')
+    vs=p.add_subparsers(dest='action',required=True,metavar='ACTION')
+    q=vs.add_parser('list',description='List registered views (default)',help='List views (default)')
+    common(q,True)
     q.add_argument('--all-domains',action='store_true',help='Every domain, not only --domain')
-    q=vs.add_parser('add',description='Register a note view or query view',help='Add a view');common(q,True)
+    q=vs.add_parser('add',description='Register a note view or query view',help='Add a view')
+    common(q,True)
     q.add_argument('reference',nargs='?',help='The note (REF, ID prefix or exact title); omit with --spec-file for a query view')
     q.add_argument('--title',help="The view's short title (default: the note title; a query view needs one)")
     q.add_argument('--spec-file',type=Path,help='With no REF: a query view from this JSON file')
-    q=vs.add_parser('update',description='Update a query view',help='Update a query view');common(q,True)
+    q=vs.add_parser('update',description='Update a query view',help='Update a query view')
+    common(q,True)
     q.add_argument('reference',help='Query view ID (q-xxxxxxxx; views lists them)')
-    q.add_argument('--title',help='New title');q.add_argument('--spec-file',type=Path,help='Replace the query spec')
-    q=vs.add_parser('remove',description='Remove a registered view',help='Remove a view');common(q,True)
+    q.add_argument('--title',help='New title')
+    q.add_argument('--spec-file',type=Path,help='Replace the query spec')
+    q=vs.add_parser('remove',description='Remove a registered view',help='Remove a view')
+    common(q,True)
     q.add_argument('reference',help='Note REF/ID/title, or query view ID (q-xxxxxxxx)')
-    q=vs.add_parser('render',description='Render one view or all views',help='Render views');common(q,True)
+    q=vs.add_parser('render',description='Render one view or all views',help='Render views')
+    common(q,True)
     q.add_argument('reference',nargs='?',help='The note (REF, ID prefix or exact title)')
     q.add_argument('--all',action='store_true',help='Render every registered view')
     q.add_argument('--target',choices=['local','artifact'],default='local',help="local (dark, reloads itself) or artifact (follows the viewer's theme)")
     q.add_argument('--format',choices=['html','json'],default='html',help='The page, or the view model as JSON')
     q.add_argument('--out',type=Path,help='Write here instead of the standard path')
-    q=vs.add_parser('published',description='Record where an artifact view was published',help='Record published URL');common(q,True)
-    q.add_argument('reference',help='The note (REF, ID prefix or exact title)');q.add_argument('--url',required=True,help='Where the artifact page lives')
-    p=sub('wiki');p.add_argument('--archived',action='store_true',help='Include retired notes')
-    p.add_argument('--format',choices=['html','json'],default='html',help='The page, or the wiki model as JSON (json without --out prints it)');p.add_argument('--out',type=Path,help='Write here instead of <store>/.views/<domain>/wiki.html (agent edition: agent-wiki.html)')
+    q=vs.add_parser('published',description='Record where an artifact view was published',help='Record published URL')
+    common(q,True)
+    q.add_argument('reference',help='The note (REF, ID prefix or exact title)')
+    q.add_argument('--url',required=True,help='Where the artifact page lives')
+    p=sub('wiki')
+    p.add_argument('--archived',action='store_true',help='Include retired notes')
+    p.add_argument('--format',choices=['html','json'],default='html',help='The page, or the wiki model as JSON (json without --out prints it)')
+    p.add_argument('--out',type=Path,help='Write here instead of <store>/.views/<domain>/wiki.html (agent edition: agent-wiki.html)')
     p.add_argument('--theme',choices=['purple','emerald','emerald-light'],help='The theme the page starts in (default: follow the system); the page has a picker')
-    p.add_argument('--agent',action='store_true',help='The agent-written edition: show the saved one (no model call), or with --build write it');p.add_argument('--project',help='--agent: one project slug instead of the whole domain')
-    p.add_argument('--build',action='store_true',help='--agent: call the model to plan and write the pages (costs money; main agent only; the harness asks first)');p.add_argument('--restructure',action='store_true',help='--build: plan the sections and pages again (default: keep them and write only new or changed pages)')
-    p.add_argument('--model',help='--build: the Claude model alias (default sonnet)');p.add_argument('--budget',help='--build: most to spend, in USD (default 5.00); the build stops when it is used and the next one continues')
-    p.add_argument('--dry-run',action='store_true',help='--build: print the calls it would make, packet sizes and the budget; spends nothing');p.add_argument('--progress',action='store_true',help='--build: one JSON line per finished call on stderr')
-    p=sub('batch');p.add_argument('--payload-file',type=Path)
-    p=sub('retag');p.add_argument('--payload-file',type=Path,help='JSON {"OLD_TAG": "NEW_TAG", ...}; default: stdin')
-    p=sub('remap');p.add_argument('--payload-file',type=Path)
-    p=sub('promote');p.add_argument('refs',nargs='*',metavar='REF@REVISION',help='Project notes to move to the global domain, each with the revision you read');p.add_argument('--suggest',action='store_true',help='List candidates with reasons; writes nothing');p.add_argument('--only',help='With --suggest: one domain instead of all')
-    for name in sorted(SWITCH):p=sub(name);p.add_argument('--session',help='Session ID (defaults to $CLAUDE_CODE_SESSION_ID when set; bare status shows store status)')
-    p=sub('capture-finalize');p.add_argument('--session',help='Session ID (defaults to $CLAUDE_CODE_SESSION_ID when set)');p.add_argument('--turn',help='Defaults to the latest prompt of the session');p.add_argument('--note',action='append',default=[])
+    p.add_argument('--agent',action='store_true',help='The agent-written edition: show the saved one (no model call), or with --build write it')
+    p.add_argument('--project',help='--agent: one project slug instead of the whole domain')
+    p.add_argument('--build',action='store_true',help='--agent: call the model to plan and write the pages (costs money; main agent only; the harness asks first)')
+    p.add_argument('--restructure',action='store_true',help='--build: plan the sections and pages again (default: keep them and write only new or changed pages)')
+    p.add_argument('--model',help='--build: the Claude model alias (default sonnet)')
+    p.add_argument('--budget',help='--build: most to spend, in USD (default 5.00); the build stops when it is used and the next one continues')
+    p.add_argument('--dry-run',action='store_true',help='--build: print the calls it would make, packet sizes and the budget; spends nothing')
+    p.add_argument('--progress',action='store_true',help='--build: one JSON line per finished call on stderr')
+    p=sub('batch')
+    p.add_argument('--payload-file',type=Path)
+    p=sub('retag')
+    p.add_argument('--payload-file',type=Path,help='JSON {"OLD_TAG": "NEW_TAG", ...}; default: stdin')
+    p=sub('remap')
+    p.add_argument('--payload-file',type=Path)
+    p=sub('promote')
+    p.add_argument('refs',nargs='*',metavar='REF@REVISION',help='Project notes to move to the global domain, each with the revision you read')
+    p.add_argument('--suggest',action='store_true',help='List candidates with reasons; writes nothing')
+    p.add_argument('--only',help='With --suggest: one domain instead of all')
+    for name in sorted(SWITCH):
+        p=sub(name)
+        p.add_argument('--session',help='Session ID (defaults to $CLAUDE_CODE_SESSION_ID when set; bare status shows store status)')
+    p=sub('capture-finalize')
+    p.add_argument('--session',help='Session ID (defaults to $CLAUDE_CODE_SESSION_ID when set)')
+    p.add_argument('--turn',help='Defaults to the latest prompt of the session')
+    p.add_argument('--note',action='append',default=[])
     p=sub('domains')
     p=sub('version')
-    p=sub('serve');p.add_argument('--stdio',action='store_true',required=True,help='JSON-lines requests on stdin, one reply line each on stdout')
-    p=sub('sync');p.add_argument('vault',type=Path)
-    p=sub('overlay-build');p.add_argument('vault',type=Path)
-    p=sub('overlay-teardown');p.add_argument('vault',type=Path)
-    p=sub('overlay-sync-all');p.add_argument('--primary',help='Domain whose view the shared dashboards show (built last)')
+    p=sub('serve')
+    p.add_argument('--stdio',action='store_true',required=True,help='JSON-lines requests on stdin, one reply line each on stdout')
+    p=sub('sync')
+    p.add_argument('vault',type=Path)
+    p=sub('overlay-build')
+    p.add_argument('vault',type=Path)
+    p=sub('overlay-teardown')
+    p.add_argument('vault',type=Path)
+    p=sub('overlay-sync-all')
+    p.add_argument('--primary',help='Domain whose view the shared dashboards show (built last)')
     parser.subs=subs   # main() reads the command names from it
     return parser
 
@@ -999,8 +1332,12 @@ def _normalize_argv(argv):
     while i<len(tokens):
         tok=tokens[i]
         if tok in ('-h','--help'):return tokens
-        if tok in _GLOBAL_VAL_OPTS:i+=2;continue
-        if tok=='--json' or any(tok.startswith(o+'=') for o in _GLOBAL_VAL_OPTS):i+=1;continue
+        if tok in _GLOBAL_VAL_OPTS:
+            i+=2
+            continue
+        if tok=='--json' or any(tok.startswith(o+'=') for o in _GLOBAL_VAL_OPTS):
+            i+=1
+            continue
         if tok.startswith('-'):return tokens
         break
     if i>=len(tokens) or tokens[i] not in _DEFAULT_SUBACTION:return tokens
@@ -1009,19 +1346,27 @@ def _normalize_argv(argv):
     while j<len(tokens):
         tok=tokens[j]
         if tok in ('-h','--help'):return tokens
-        if tok in _GLOBAL_VAL_OPTS:j+=2;continue
-        if tok=='--json' or any(tok.startswith(o+'=') for o in _GLOBAL_VAL_OPTS):j+=1;continue
+        if tok in _GLOBAL_VAL_OPTS:
+            j+=2
+            continue
+        if tok=='--json' or any(tok.startswith(o+'=') for o in _GLOBAL_VAL_OPTS):
+            j+=1
+            continue
         if tok in actions:return tokens
-        if tok.startswith('-'):tokens.insert(j,default);return tokens
+        if tok.startswith('-'):
+            tokens.insert(j,default)
+            return tokens
         return tokens   # unrecognized positional: let argparse report invalid choice
-    tokens.append(default);return tokens
+    tokens.append(default)
+    return tokens
 
 def main(argv=None):
     for stream in (sys.stdout,sys.stderr):
         if hasattr(stream,'reconfigure') and (stream.encoding or '').lower().replace('-','')!='utf8':
             try:stream.reconfigure(encoding='utf-8')
             except (ValueError,OSError):pass
-    parser=build_parser();subs=parser.subs
+    parser=build_parser()
+    subs=parser.subs
     given=list(argv) if argv is not None else list(sys.argv[1:])
     try:args=parser.parse_args(_normalize_argv(given))
     except _ArgumentError as exc:
@@ -1048,22 +1393,26 @@ def main(argv=None):
         if args.command=='proposals' and args.action=='accept' and _proposal_kind(getattr(args,'id',None))=='note':args=_accept_note(parser,args)   # one command for both kinds; a note runs as the capture it always was
         if args.command=='help':
             from .instructions import help_topic
-            _emit(help_topic(args.topic),args);return 0
+            _emit(help_topic(args.topic),args)
+            return 0
         if args.command=='setup':
             from .storage import setup
             if args.actor in {'subagent','viewer'}:raise ValueError('Subagents are read-only' if args.actor=='subagent' else 'Viewers are read-only')
-            _emit(setup(args.location,args.non_interactive,args.source),args);return 0
+            _emit(setup(args.location,args.non_interactive,args.source),args)
+            return 0
         if args.command=='upgrade':
             if args.actor in {'subagent','viewer'}:raise ValueError('Subagents are read-only' if args.actor=='subagent' else 'Viewers are read-only')
             from .upgrade import run as upgrade
-            _emit(upgrade(rewire=args.rewire),args);return 0
+            _emit(upgrade(rewire=args.rewire),args)
+            return 0
         from .storage import resolve_root
         root=resolve_root(args.root)[0]
         if args.root is not None:
             from .storage import require_store
             require_store(root,args.command)
         from . import logs
-        logs.use(root);invocation['root']=root
+        logs.use(root)
+        invocation['root']=root
         cmd=args.command
         _check_type_args(args,root)
         try:
@@ -1109,787 +1458,28 @@ def main(argv=None):
             if session and _session_state(root,session).get('off'):
                 raise ValueError('memory_off: Living Memory is off for this session; run alm on to use it again')
         if cmd=='serve':return serve(root,cwd,set(subs.choices)-{'serve','setup'})
-        if cmd in SWITCH:result=_switch(root,cmd,session,domain);invocation['result']=result;_emit(result,args);return 0
-        if cmd=='bind':
-            from .init_domain import init_domain
-            init_domain(args.name,args.prefix,root);result={'ok':True,'domain':args.name,'status':'bound'}
-        elif cmd=='config':
-            from . import settings
-            if args.action=='get':result=settings.get(root,args.key)
-            else:result=settings.set_(root,args.key,args.value)
-        elif cmd=='doc':result=_doc(args,root,domain,cwd)
-        elif cmd=='unbind':
-            from .init_domain import unbind_domain,unbind_prefix
-            if args.prefix:result={'ok':True,'domain':args.name,'prefix':unbind_prefix(args.name,args.prefix,root),'status':'prefix_removed'}
-            else:result={'ok':True,'domain':unbind_domain(args.name,root),'status':'unbound'}
-        elif cmd in ('capture','propose'):
-            from .notes import capture
-            structured=any(getattr(args,k) for k in SECTION_ARGS)
-            proposal=None
-            if cmd=='capture' and args.from_proposal:
-                from . import proposals
-                proposal=proposals.get(root,args.from_proposal)
-                if proposal.get('status')!='pending':raise ValueError(f"Proposal {args.from_proposal} is already {proposal.get('status')}")
-                # The draft's domain is the default target, set before files and sources resolve against it: an edit changes the text,
-                # not where the draft was meant to go. --domain, --global or a positional domain still choose another.
-                if not args.domain and not getattr(args,'to_global',False) and proposal.get('domain'):domain=proposal['domain']
-            edited=bool(args.items or args.content_file or structured or args.payload_file)
-            if proposal and not edited:
-                # Saved as staged. An edit passes the whole note, so a lone --title or --tag would be half an edit: refuse it.
-                beside=[flag for flag,given in (('--title',args.title),('--tag',args.tag),('--type',args.type),('--file',args.file),('--files',args.files)) if given]
-                if beside:raise ValueError('To edit a proposal pass the whole note (--title with --summary or a body) beside --from-proposal; '+', '.join(beside)+' alone would be lost')
-                if not getattr(args,'accepting',False):raise ValueError(f'capture --from-proposal takes the whole edited note beside it; to save the staged draft as it is, run proposals accept {args.from_proposal}')
-                data=dict(proposal['note'],domain=proposal.get('domain') or domain)
-                if args.rule:data['rule']=True   # the main agent may make the staged draft a rule; capture checks its type
-                if args.pin:data['pinned']=True
-                if args.turn and not args.session:raise ValueError('--turn needs --session')
-                if args.session:data.update(session_id=args.session,turn_id=_turn(root,args.session,args.turn))
-            elif args.items or args.content_file or structured:
-                # With --title, a positional value is a mistake (most often a second value after one --detail flag); read as the
-                # positional domain/title/body form it would silently replace the title or body, or name a wrong domain.
-                if args.title and args.items:
-                    raise ValueError(f"capture --title takes no positional values, got {len(args.items)} ({str(args.items[0])[:60]!r}...): "
-                                     "pass each bullet with its own flag (--detail 'A' --detail 'B')")
-                if len(args.items)==3:domain,title,body=args.items
-                elif len(args.items)==2:title,body=args.items
-                elif args.content_file and args.title:title=args.title;body=args.content_file.read_text(encoding='utf-8')
-                elif structured and (args.title or len(args.items)==1):title=args.title or args.items[0];body=''
-                else:raise ValueError('Use title body, domain title body, --title with --summary/--detail, or a JSON payload')
-                body=_sectioned(args,body,args.type or 'knowledge',root) or body
-                tags=args.tag+[t.strip() for t in args.tags.split(',') if t.strip()]
-                tags += _facet_tags(args,CAPTURE_FACETS)
-                data={'title':title,'body':body,'tags':tags,'prefix':args.prefix,'type':args.type or 'knowledge','context':args.context,'idempotency_key':args.idempotency_key,'domain':domain}
-                if args.turn and not args.session:raise ValueError('--turn needs --session')
-                if args.session and cmd=='capture':data.update(session_id=args.session,turn_id=_turn(root,args.session,args.turn))
-                if args.allow_similar:data['allow_similar']=True
-                if args.supersedes:data['supersedes']=args.supersedes
-                if args.drop_links:data['drop_links']=True
-                if args.pin:data['pinned']=True
-                if args.rule:data['rule']=True
-                if args.review_by:data['review_by']=args.review_by
-                files,_=_file_args(args,domain,root)
-                if files:data['files']=files
-                if args.shell_command:data['commands']=args.shell_command
-                if args.source:
-                    from .digests import describe
-                    data['sources']=[describe(root,domain,v,cwd) for v in args.source]
-                    if len(args.source)==1 and not args.idempotency_key:data['idempotency_key']=f"digest:{data['sources'][0]['path']}:{data['sources'][0]['sha256']}"   # a rerun finds its digest
-            else:
-                # A payload carries its own fields, so a flag beside it would be dropped without a word: refuse it.
-                # The session is the exception: the private-text check, the origin and the receipt depend on it.
-                beside=[('--title',args.title),('--tag',args.tag),('--tags',args.tags),('--prefix',args.prefix),('--type',args.type),('--context',args.context),
-                        ('--idempotency-key',args.idempotency_key),('--allow-similar',args.allow_similar),('--supersedes',args.supersedes),('--drop-links',args.drop_links),
-                        ('--review-by',args.review_by),('--file',args.file),('--files',args.files),('--command',args.shell_command),('--source',args.source),('--pin',args.pin),('--rule',args.rule)]+[('--'+f,getattr(args,f)) for f in CAPTURE_FACETS]
-                ignored=[flag for flag,given in beside if given]
-                if ignored:raise ValueError('A JSON payload carries its own fields; put these in the payload instead of passing '+', '.join(ignored))
-                if args.turn and not args.session:raise ValueError('--turn needs --session')
-                data=_payload(args)
-                for item in (data if isinstance(data,list) else [data]) if args.session else ():
-                    if isinstance(item,dict) and not item.get('session_id'):
-                        item['session_id']=args.session
-                        if args.turn and not item.get('turn_id'):item['turn_id']=args.turn
-            if proposal and isinstance(data,list):raise ValueError('--from-proposal settles one proposal with one note')
-            for item in data if isinstance(data,list) else [data]:
-                # Each note a capture retires is written too: it needs the revision the caller read (a staged proposal carries it from its author).
-                old=item.get('supersedes') if isinstance(item,dict) else None
-                for given in ([old] if isinstance(old,str) else old or []):_with_revision(given,'--supersedes')
-            if cmd=='propose':
-                result=_propose(root,data,domain,session,getattr(args,'to_global',False),args.redact)
-                invocation['result']=result;_emit(result,args);return 0
-            batch=data if isinstance(data,list) else [data]
-            if not 1<=len(batch)<=20:raise ValueError('Capture batch must contain 1..20 items')
-            results=[]
-            with store_lock(root):
-                if proposal:
-                    from . import proposals
-                    # Checked again under the lock, so two settlements of one proposal cannot both save a note.
-                    if proposals.get(root,args.from_proposal).get('status')!='pending':raise ValueError(f'Proposal {args.from_proposal} was settled meanwhile')
-                for item in batch:
-                    item=dict(item);selected=item.pop('domain',domain);session=item.pop('session_id',None);turn=item.pop('turn_id',None)
-                    if getattr(args,'to_global',False):
-                        from .common import global_domain
-                        selected=global_domain(root)
-                    if session and not turn:turn=_turn(root,session,None)
-                    if not selected:raise ValueError('Project is unbound; pass --domain or bind it')
-                    inferred=_infer_tags(item,root,item.get('type')=='brief' and not item.get('files') and selected in _global_names(root));redacted=_redact(item) if args.redact else []
-                    # Project attribution: capture only. cwd counts only for a session (serve passes the app's own cwd to every request).
-                    from . import projects
-                    ptags,candidates=projects.infer(item,selected,root,_session_state(root,session).get('touched',[]) if session else (),cwd if session else None)
-                    if ptags:item['tags']=list(item.get('tags') or [])+ptags;inferred=inferred+ptags
-                    # System attribution follows the same rules; a note may belong to a project and a system.
-                    from . import systems
-                    stags,system_candidates=systems.infer(item,selected,root,_session_state(root,session).get('touched',[]) if session else (),cwd if session else None)
-                    if stags:item['tags']=list(item.get('tags') or [])+stags;inferred=inferred+stags
-                    if session:
-                        from .private import check as private_check
-                        private_check(_session_state(root,session),item);item['origin']=_origin(root,session)
-                    outcome=capture(domain=selected,root=root,**item);outcome.pop('path',None)
-                    # A duplicate found in, or promoted to, another domain is that domain's note.
-                    landed=outcome.get('domain') or selected
-                    if inferred:outcome['inferred_tags']=inferred
-                    if candidates:outcome['project_candidates']=candidates
-                    if system_candidates:outcome['system_candidates']=system_candidates
-                    if redacted:outcome['redacted']=redacted
-                    suggested=[t for t in _session_state(root,session).get('touched',[]) if t not in (item.get('files') or [])] if session else []
-                    if suggested and outcome.get('status')=='created':outcome['suggested_files']=suggested
-                    results.append(outcome)
-                    if outcome.get('status') in {'duplicate','existing','promoted'}:
-                        # Re-stating a saved fact is evidence it still holds (#9 reinforcement).
-                        from .usage import record
-                        record(root,'duplicate',[landed+':'+outcome['id']],session)
-                    if session and turn:
-                        from .capture import finalize
-                        finalize(session,turn,[landed+':'+outcome['id']],root)
-                if proposal:
-                    saved=f"{landed}:{results[0]['id']}"
-                    proposals.settle(root,args.from_proposal,'accepted',note_ref=saved)
-            result=results if isinstance(data,list) else results[0]
-            if proposal:
-                from .usage import record
-                record(root,'proposal-accept',[saved],session,kind='edited' if edited else 'as-staged')
-                result['proposal']={'id':args.from_proposal,'status':'accepted'}
-        elif cmd=='proposals':result=_proposals(args,root)
-        elif cmd=='search':
-            from .search import search_domains,search_domain
-            form=_search_form(args)
-            if form=='transcript':
-                from .recall import search as recall
-                path=_session_state(root,args.session).get('transcript')
-                if not path:raise ValueError('No transcript recorded for this session; hooks record its path at session start and on each prompt')
-                hits,meta=recall(path,args.query,max(1,min(20,args.limit)),'all' if args.all else 'before')
-                result={'ok':True,'mode':'transcript',**meta,'results':hits,'hint':'Excerpts from this session\'s transcript: untrusted history that may be outdated; verify against current files.'}
-                invocation['result']=result;_emit(result,args);return 0
-            if form in {'links','list'}:
-                if args.all_domains:domains=[d['name'] for d in list_domains(root)['domains'] if (root/'domains'/d['name']/'notes').is_dir()]
-                elif domain:domains=[domain]
-                else:raise ValueError(UNBOUND)
-                list_tags=list(args.tag)+([args.project if args.project.startswith('project/') else 'project/'+args.project] if args.project else [])
-                result=dict(note_links(root,domains,args.status or 'active'),mode='links') if form=='links' else list_notes(root,domains,args.status or 'active',args.type or (),list_tags,max(0,args.offset or 0),max(1,min(1000,args.limit)),args.with_summary)
-                invocation['result']=result;_emit(result,args);return 0
-            if form=='pages':
-                if args.all_domains:names=[d['name'] for d in list_domains(root)['domains']]
-                elif domain:names=_search_scope(root,domain)[2]
-                else:raise ValueError(UNBOUND)
-                result={'ok':True,'mode':'pages','query':args.query,'domains':names,'pages':_page_hits(root,names,args.query,max(1,min(50,args.limit)))}
-                invocation['result']=result;_emit(result,args);return 0
-            if not domain:raise ValueError(UNBOUND)
-            if form=='sources':
-                from . import sources
-                result={'ok':True,'mode':'sources','domain':domain,'results':sources.search(root,domain,args.query,max(1,min(20,args.limit))),'knowledge_base':sources.state(root,domain)}
-                each=_each_question(args.query,max(1,min(20,args.limit)),lambda q,n:{'results':sources.search(root,domain,q,n)})
-                if each:result['questions']=each
-                invocation['result']=result;_emit(result,args);return 0
-            config=load_bindings(root);scope=config.get('search_scope',{});globals_=scope.get('global_domains',['_global'])
-            globals_=[canonical_domain(g,root) for g in globals_]
-            globals_=[g for g in globals_ if (root/'domains'/g).exists()]
-            from .runtime import scope_domains
-            primary=list(dict.fromkeys([domain]+scope_domains(domain,config)+globals_));foreign=scope.get('foreign_domains',[])
-            if any('=' not in value for value in args.filter):raise ValueError("Search filters are KEY=VALUE with KEY one of prefix, status, tag, type, file (for example --filter type=decision)")
-            filters={}
-            def _add_filter(k,v):
-                if k in ('tag','type'):
-                    prev=filters.get(k)
-                    if prev is None:filters[k]=v
-                    elif isinstance(prev,list):prev.append(v)
-                    else:filters[k]=[prev,v]
-                else:filters[k]=v
-            for value in args.filter:
-                k,v=value.split('=',1);_add_filter(k,v)
-            if set(filters)-{'prefix','status','tag','type','file'}:raise ValueError('Unsupported search filter: use prefix, status, tag, type or file')
-            for t in args.type or ():_add_filter('type',t)
-            for t in args.tag or ():_add_filter('tag',t)
-            if args.project:_add_filter('tag',args.project if args.project.startswith('project/') else 'project/'+args.project)
-            if args.status:_add_filter('status',args.status)
-            if args.file:
-                from .common import domain_prefixes,display_path
-                given=Path(args.file).expanduser()
-                wanted=(display_path(given.resolve(),domain_prefixes(domain,config)) or args.file) if given.is_absolute() else args.file
-                from .runtime import child_domains,child_path
-                kids_of=child_domains(domain,config)   # a child's notes name files relative to the child's folder, in every scope
-                if not args.query.strip():
-                    # Lists notes about a file; --filter narrows a query's results, so it needs a query.
-                    if filters:raise ValueError('--filter needs a query; with --file alone, use --scope to choose domains')
-                    from .search import file_notes
-                    domains=list(dict.fromkeys(sorted(config.get('domains',{}))+globals_)) if args.scope=='all' else primary
-                    n=max(1,min(100,args.limit));kids=kids_of
-                    hits=file_notes(wanted,[d for d in domains if d not in kids],root,n);fallback=False
-                    for kid in kids:   # a child's notes name files relative to the child's folder
-                        c=child_path(wanted,domain,kid,config)
-                        if c is not None:hits+=[dict(h,file=c) for h in file_notes(c,[kid],root,n)]
-                    hits=sorted(sorted(hits,key=lambda h:h.get('updated',''),reverse=True),key=lambda h:h.get('match')!='files')[:n]
-                    if not hits and args.scope=='fallback' and foreign:domains=foreign;hits=file_notes(wanted,domains,root,max(1,min(100,args.limit)));fallback=True
-                    from . import digests
-                    digests.mark(hits,root,config)   # as for every search: a digest of a file in a hidden or private notebook is withheld
-                    for hit in hits:
-                        if hit.get('withheld'):hit['snippet']=hit['stale']
-                    result={'ok':True,'mode':'file','file':wanted,'domains':domains,'fallback':fallback,'results':hits}
-                    invocation['result']=result;_emit(result,args);return 0
-                filters['file']={'*':wanted,**{k:child_path(wanted,domain,k,config) for k in kids_of}} if kids_of else wanted
-            result=_note_hits(root,domain,args.query,args.scope,args.limit,args.rebuild,filters,config,globals_,primary,foreign,args.explain)
-            if not filters:result['pages']=_page_hits(root,primary,args.query,max(1,min(20,args.limit)))
-            each=None if filters else _each_question(args.query,max(1,min(20,args.limit)),lambda q,n:dict({k:v for k,v in _note_hits(root,domain,q,args.scope,n,args.rebuild,filters,config,globals_,primary,foreign).items() if k in {'results','relevant'}},pages=_page_hits(root,primary,q,n)))
-            if each:result['questions']=each
-        elif cmd=='read':
-            from .notes import find_note
-            d,n=_reference(args.reference,domain,root);path,note=find_note(n,d,root)
-            result={k:v for k,v in note.items() if k not in {'body','path','digest','file_hashes'}}
-            from .digests import stale_note
-            stale=stale_note(note,root)   # a digest's source file, or a hashed file the note lists, changed since it was written
-            if stale:result['stale']=stale
-            from .worklist import currency_of
-            try:
-                info=currency_of(note,root)   # per-file source states (a map's: the cached finding, no git)
-                if info:result['currency']=info
-            except Exception as exc:
-                from .logs import swallowed
-                swallowed('cli.read.currency',exc,root)
-            if args.section:
-                # One section, as the prompt hook's evidence lines name it: "Why", or a path like "Notes > Deeper detail".
-                # File line numbers are given only when the file still holds exactly the body served.
-                from .units import extract,_norm,_sections,role_of
-                from .repository import parse_text
-                wanted=_norm(args.section);body=note['body']
-                found=[(p,h,rows) for p,h,rows in _sections(body)[1:] if h and (_norm(' > '.join(p))==wanted or _norm(h)==wanted)]
-                if not found:raise ValueError(f"no section {args.section!r} in this note; sections: {', '.join(' > '.join(p) for p,h,_ in _sections(body)[1:] if h) or 'none'}")
-                path_,heading,rows=found[0];text='\n'.join(t for _,t in rows).strip()
-                try:same=(parse_text(Path(path).read_text(encoding='utf-8-sig'),path) or {}).get('body')==body
-                except (OSError,UnicodeDecodeError):same=False
-                spans={}
-                for u in extract(dict(note,path=path)) if same else []:spans.setdefault(u['heading'],u['lines'])
-                span=spans.get(' > '.join(path_));last=max(n for n,t in rows if t.strip())
-                result.update(section={'heading':' > '.join(path_),'role':role_of(heading),'lines':[span[0],span[0]+last-rows[0][0]] if span else None},
-                              body=text[:max(0,min(64000,args.max_chars))],truncated=len(text)>max(0,min(64000,args.max_chars)))
-            elif not args.metadata_only:result.update(body=note['body'][:max(0,min(64000,args.max_chars))],truncated=len(note['body'])>max(0,min(64000,args.max_chars)))
-            if args.actor!='viewer':
-                from .usage import record
-                record(root,'read',[f'{d}:{n}'])
-        elif cmd=='domains':result=list_domains(root)
-        elif cmd=='version':
-            from .installer_lifecycle import CORE_RELEASE,installed_stamp
-            result={'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'proposals':1,'restore':1,'pin':1,'rule':1,'direct_writes':2,'revisions':1,'note_types':1,'history':3,'items':{'fields':2},'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']},'wiki_agent':{'version':1},'systems':{'project':1},'views':{'version':2,'kinds':['note','query']},
-                                                                                                                                         'docs':{'version':1,'max_page_bytes':4194304,'folder_policy':2,'accept_edited':True,'folder_proposals':1}}}
-        elif cmd=='update':
-            from .notes import change
-            d,n=_reference(args.reference,domain,root)
-            if args.tag and (args.add_tag or args.remove_tag):raise ValueError('--tag replaces all tags and cannot be combined with --add-tag or --remove-tag')
-            values=_payload(args) if args.payload_file or not any(getattr(args,k) is not None for k in ('title','body','body_file','tag','add_tag','remove_tag','type','context','review_by','pin','rule','file','files','shell_command','source','subject','concern','platform','technology','project','system','distinct','not_distinct')+SECTION_ARGS+AMEND_ARGS+ITEM_ARGS) else {}
-            if args.title is not None:values['title']=args.title
-            if args.body is not None:values['body']=args.body
-            if args.body_file:values['body']=args.body_file.read_text(encoding='utf-8-sig')
-            # Read, rebuild and write under one lock: a concurrent update between them would otherwise be lost.
-            with store_lock(root):
-                from .notes import find_note
-                current=find_note(n,d,root)[1];stored=current['body'];replaced={}
-                if any(getattr(args,k) for k in SECTION_ARGS+AMEND_ARGS) or _item_args(args):
-                    # Sections given on the command line change only themselves; the rest of the body is kept.
-                    values['body']=_update_body(args,values['body'] if 'body' in values else stored,args.type or current.get('type'),root)
-                if isinstance(values.get('body'),str):replaced=_replaced(args,stored,values['body'])
-                facet_tags=_facet_tags(args,CAPTURE_FACETS)
-                if args.add_tag or args.remove_tag or ((args.project or args.system) and not args.tag and not any(getattr(args,f) for f in FACET_FLAGS)):
-                    merged=list(current.get('tags') or [])
-                    for t in (args.add_tag or [])+facet_tags:
-                        if t not in merged:merged.append(t)
-                    drop=set(args.remove_tag or [])
-                    values['tags']=[t for t in merged if t not in drop]
-                else:
-                    tags=(args.tag or [])+facet_tags
-                    if tags:values['tags']=tags
-                for key in ('type','context','review_by'):
-                    if getattr(args,key) is not None:values[key]=getattr(args,key)
-                if args.pin is not None:values['pinned']=args.pin
-                if args.rule is not None:values['rule']=args.rule
-                revision=_need_revision(values.pop('expected_revision',None) or args.expected_revision,args.reference)
-                if args.shell_command:values['commands']=list(find_note(n,d,root)[1].get('commands') or [])+args.shell_command
-                redacted=_redact(values) if args.redact else []
-                if args.session:
-                    from .private import check as private_check
-                    private_check(_session_state(root,args.session),values)
-                files,suggested=_file_args(args,d,root,find_note(n,d,root)[1].get('files') or [])
-                if files is not None:values['files']=files
-                if args.source:
-                    from .digests import describe
-                    new=[describe(root,d,v,cwd) for v in args.source]   # the file's hash now; a path already listed takes the new hash
-                    values['sources']=[s for s in find_note(n,d,root)[1].get('sources') or [] if s['path'] not in {x['path'] for x in new}]+new
-                if 'actor' in values:raise ValueError('Cannot update: actor')
-                other=None
-                if args.distinct or args.not_distinct:
-                    from .notes import distinct_with,distinct_without
-                    if args.distinct and args.not_distinct:raise ValueError('Pass --distinct or --not-distinct, not both')
-                    if args.why and not args.distinct:raise ValueError('--why goes with --distinct')
-                    from .notes import split_revision
-                    other_ref,other_revision=split_revision(args.distinct or args.not_distinct)
-                    od,on=_reference(other_ref,domain,root)
-                    if od!=d:raise ValueError('A distinct pair must be two notes in the same domain')
-                    if on==n:raise ValueError('A note cannot be distinct from itself')
-                    mine=find_note(n,d,root)[1]
-                    if args.distinct:
-                        if not args.why:raise ValueError('--distinct needs --why with the reason, one line of 8 to 200 characters')
-                        why=args.why
-                        if args.redact:
-                            from .repository import redact as redact_text
-                            why,kinds=redact_text(why);redacted+=[{'kind':k,'field':'why'} for k in kinds]
-                        if args.session:
-                            from .private import overlap
-                            if overlap(_session_state(root,args.session),[('why',why)]):raise ValueError('private_content conflict: why repeats text the user marked <private>; leave it out of memory')
-                        values['distinct_from']=distinct_with(mine,d,on,why,'user')
-                    else:
-                        theirs=find_note(on,d,root)[1]
-                        if not any(_same_pair(e,d,on) for e in mine.get('distinct_from') or []) and not any(_same_pair(e,d,n) for e in theirs.get('distinct_from') or []):
-                            raise ValueError(f'{d}:{n} and {d}:{on} are not marked distinct')
-                        if any(_same_pair(e,d,on) for e in mine.get('distinct_from') or []):values['distinct_from']=distinct_without(mine,d,on)
-                        if any(_same_pair(e,d,n) for e in theirs.get('distinct_from') or []):other=(on,distinct_without(theirs,d,n))
-                if other:
-                    # Both notes change in one journaled transaction, after the expected revision is checked: one undo reverts the pair.
-                    from .notes import _change_set,_commit
-                    from .notes import check_revision
-                    check_revision(current['revision'],revision,f'{d}:{n}')
-                    # The other note is written too, so it needs the revision the caller read of it.
-                    if not other_revision:raise ValueError(f'revision_required: {d}:{other[0]} is changed too; pass it as REF@REVISION (read it first)')
-                    changes,expected={},{}
-                    if values:
-                        changes,expected,_=_change_set(n,d,'update',root,revision,**values)
-                    more,more_expected,target=_change_set(other[0],d,'update',root,other_revision,pending=changes,distinct_from=other[1])
-                    changes.update(more)
-                    for rel,rev in more_expected.items():expected.setdefault(rel,rev)
-                    result=_commit(d,changes,'update',root,expected);result.update(id=n if values else other[0],path=str(find_note(n if values else other[0],d,root)[0]),status='update')
-                else:result=change(n,d,'update',root,revision,rehash=not _item_only(args,values),**values)
-            if replaced:result['replaced']=replaced
-            if redacted:result['redacted']=redacted
-            if suggested:result['suggested_files']=suggested
-            _receipt(args,d,n,root,'update')
-        elif cmd=='supersede':
-            from .notes import change
-            revision=_need_revision(args.expected_revision,args.reference);by,by_revision=_with_revision(args.by,'--by')
-            d,n=_reference(args.reference,domain,root);bd,bn=_reference(by,domain,root)
-            if bd!=d:raise ValueError('A note can only be superseded by a note in the same domain')
-            result=change(n,d,'supersede',root,revision,superseded_by=bn,drop_links=args.drop_links,successor_revision=by_revision)
-            from .usage import record
-            record(root,'supersede',[f'{d}:{n}'],args.session)
-            _receipt(args,d,bn,root)
-        elif cmd=='review':
-            from .worklist import worklist,KINDS
-            if args.all_domains:domains=[d['name'] for d in list_domains(root)['domains'] if (root/'domains'/d['name']/'notes').is_dir()]
-            elif domain:domains=[domain]
-            else:raise ValueError(UNBOUND)
-            # Read-only for every actor: the worklist writes no usage rows, so a viewer's browsing is no evidence either.
-            found=worklist(root,domains,args.kind or None,max(1,min(100,args.limit)),args.tag,working_tree=True)
-            result={'ok':True,'domain':None if args.all_domains else domain,'due':found['total'],'stale_digests':found['counts'].get('stale',0),'kinds':list(KINDS),'counts':found['counts'],'notes':found['items'],
-                    'hint':_maintenance_hint(root)+'Each note lists why (kinds, reason) and an action (each row carries its revision; pass --expected-revision REV on every write). Still true -> confirm REF --expected-revision REV; changed -> update REF --expected-revision REV; replaced -> supersede REF --expected-revision REV --by NEW@REV; finished -> resolve REF --expected-revision REV. A STALE note: read its files, then update REF --expected-revision REV (or confirm REF --expected-revision REV if it still holds). '
-                           'For an obsolete note, archive REF (undo OPERATION reverses it); for a duplicate (pair), merge them (the harness asks the user first; undo OPERATION reverses it). Stale notes come first, never-confirmed notes nobody has read lately lead the due ones.'}
-        elif cmd=='open':
-            from .notes import open_work,short_ref
-            from .runtime import scope_domains
-            if args.all_domains:scope=[d['name'] for d in list_domains(root)['domains'] if (root/'domains'/d['name']/'notes').is_dir()]
-            elif domain:
-                from .common import global_domains
-                scope=[domain]+scope_domains(domain,load_bindings(root))+global_domains(root)
-            else:raise ValueError(UNBOUND)
-            found=open_work(list(dict.fromkeys(scope)),root,args.tag)
-            from . import clock
-            from .note_format import item_fields,valid_date
-            if args.due_by and not valid_date(args.due_by):raise ValueError('--due-by must be a YYYY-MM-DD date')
-            today=clock.today().isoformat()
-            items=[];wanted=lambda fields:not (args.due_by and not (fields['due'] and fields['due']<=args.due_by) or args.owner and (fields['owner'] or '').casefold()!=args.owner.strip().casefold())
-            for d,n,listed in found:
-                for i,text in listed:
-                    task,fields,_=item_fields(text);due=fields['due']
-                    if not wanted(fields):continue
-                    items.append({'kind':'note','ref':f"{d}:{n['id']}",'short_ref':short_ref(d,n['id']),'title':n['title'],'type':n['type'],'updated':str(n.get('updated',''))[:10],'revision':n['revision'],'index':i,'item':text,'task':task,**fields,'overdue':due<today if due else None})
-            stale=False
-            if args.pages!='none' and not args.tag:
-                # Page tasks: registered folder notebooks of these domains, at the levels --pages names; no ref or index, a page is ticked by editing it.
-                from . import docs_index
-                names=[d['name'] for d in list_domains(root)['domains']] if args.all_domains else list(dict.fromkeys(scope))
-                rows,stale=docs_index.task_rows(root,names,open_only=True,levels=('injectable','searchable') if args.pages=='searchable' else ('injectable',),limit=None)
-                for t in sorted(rows,key=lambda t:(t['domain'],t['notebook'],t['path'],t['line'])):
-                    fields={k:t[k] for k in ('due','owner','priority')}
-                    if wanted(fields):items.append({'kind':'page','domain':t['domain'],'notebook':t['notebook'],'path':t['path'],'title':t['title'],'line':t['line'],'item':t['text'],'task':t['task'],**fields,'overdue':t['due']<today if t['due'] else None})
-            if args.sort=='due':items.sort(key=lambda row:(row['due'] is None,row['due'] or ''))   # stable: ties keep the newest note first, then the pages in path order
-            result={'ok':True,'domain':None if args.all_domains else domain,'notes':len({row['ref'] for row in items if row['kind']=='note'}),'count':len(items),'items':items[:max(1,min(500,args.limit))],
-                    'hint':"Tick one when done: check REF 'item text' --expected-revision REVISION (or --index N; each row carries its note's revision); --undo unticks."+(' A page task (kind page) is ticked by editing its page.' if any(row['kind']=='page' for row in items) else '')}
-            if stale:result['pages_stale']=True
-        elif cmd=='check':
-            from .notes import check_action
-            d,n=_reference(args.reference,domain,root)
-            if (args.item is None)==(args.index is None):raise ValueError('Name the item by its text or pass --index N (not both)')
-            result=check_action(n,d,root,args.item,args.index,not args.undo,_need_revision(args.expected_revision,args.reference));result.pop('path',None)
-            if result.get('status')!='unchanged':_receipt(args,d,n,root,'check')
-        elif cmd=='timeline':
-            from .notes import short_ref
-            if not domain:raise ValueError(UNBOUND)
-            if args.reference and args.date:raise ValueError('Anchor on a REF or a --date, not both')
-            when=lambda n:str(n.get(args.by) or n.get('created') or '')
-            anchor_id=None
-            if args.reference:
-                d,anchor_id=_reference(args.reference,domain,root)
-                if d!=domain:raise ValueError('timeline lists one domain; pass --domain '+d)
-            notes=[n for n in inventory(domain,root,retired=args.all or bool(anchor_id)) if args.all or n.get('status','active')=='active' or n['id']==anchor_id]
-            notes=sorted((n for n in notes if not args.type or n.get('type') in args.type or n['id']==anchor_id),key=lambda n:(when(n),n['id']))
-            if not notes:raise ValueError('No notes to list')
-            if anchor_id:at=next(i for i,n in enumerate(notes) if n['id']==anchor_id)
-            elif args.date:
-                from datetime import date as _date
-                try:_date.fromisoformat(args.date)
-                except ValueError:raise ValueError('--date must be YYYY-MM-DD') from None
-                at=next((i for i,n in enumerate(notes) if when(n)[:10]>=args.date),len(notes)-1)
-            else:at=len(notes)-1
-            before,after=max(0,min(50,args.before)),max(0,min(50,args.after))
-            rows=[{'ref':f"{domain}:{n['id']}",'short_ref':short_ref(domain,n['id']),'date':when(n)[:10],'type':n.get('type'),'title':n['title'],'status':n.get('status','active'),'revision':n.get('revision'),**({'anchor':True} if i==at else {})}
-                  for i,n in enumerate(notes) if at-before<=i<=at+after]
-            result={'ok':True,'domain':domain,'by':args.by,'anchor':rows[min(at,before)]['ref'],'notes':rows}
-        elif cmd=='ingest':
-            from .ingest import ingest,default_source
-            if not domain:raise ValueError(UNBOUND)
-            result=ingest(root,domain,args.source or default_source(cwd),args.redact,args.allow_similar)
-        elif cmd=='export':
-            from .bundle import export
-            if not domain:raise ValueError(UNBOUND)
-            result=export(root,domain,args.out,args.type or (),args.tag,args.all)
-        elif cmd=='import':
-            from .bundle import import_bundle
-            # The bundle's own domain unless --domain names another; the cwd binding does not choose it.
-            result=import_bundle(root,args.file,args.domain)
-        elif cmd=='confirm':
-            from .notes import confirm
-            d,n=_reference(args.reference,domain,root)
-            result=confirm(n,d,root,_need_revision(args.expected_revision,args.reference));result.pop('path',None)
-            # Confirming is a memory decision for the turn even when the note was already confirmed today.
-            _receipt(args,d,n,root,'confirm' if result.get('status')!='unchanged' else None)
-        elif cmd in {'resolve','reopen'}:
-            # Finished work leaves the active set in one journaled, undoable step; reopen brings it back.
-            from .notes import change,short_ref
-            d,n=_reference(args.reference,domain,root)
-            result=change(n,d,cmd,root,_need_revision(args.expected_revision,args.reference));result.pop('path',None)
-            if cmd=='resolve':result['hint']=f'Resolved notes leave session context and search. `reopen {short_ref(d,n)}` brings it back.'
-            _receipt(args,d,n,root,cmd)
-        elif cmd=='restore':
-            # Forward restoration of an archived note: one journaled, undoable step, like reopen.
-            from .notes import change
-            d,n=_reference(args.reference,domain,root)
-            result=change(n,d,'restore',root,_need_revision(args.expected_revision,args.reference));result.pop('path',None)
-            result['hint']='The note is active and pinned, so automatic maintenance will not retire it until `update REF --unpin`.'
-            _receipt(args,d,n,root,'restore')
-        elif cmd=='stats':
-            from .usage import stats
-            from .runtime import parent_domains
-            if not domain:raise ValueError(UNBOUND)
-            from .common import global_domains
-            result=stats(root,list(dict.fromkeys([domain]+parent_domains(domain,load_bindings(root))+global_domains(root))),max(1,min(30,args.days)),max(1,min(100,args.limit)))
-        elif cmd=='delete':
-            # A direct, journaled delete: the journal keeps the note's bytes, so undo OPERATION brings it back.
-            from .notes import change
-            d,n=_reference(args.reference,domain,root)
-            result=change(n,d,'delete',root,_need_revision(args.expected_revision,args.reference))
-        elif cmd=='archive':
-            # Retiring a note without a replacement: one journaled, undoable step, like resolve.
-            from .notes import change
-            d,n=_reference(args.reference,domain,root);values=_payload(args) if args.payload_file else {}
-            if 'actor' in values:raise ValueError('Cannot archive with an actor field: the controller records who acts')
-            result=change(n,d,'archive',root,_need_revision(values.pop('expected_revision',None) or args.expected_revision,args.reference),**values);result.pop('path',None);result['undo']='undo '+result['operation_id']
-            _receipt(args,d,n,root)
-        elif cmd=='rewrite':
-            from .notes import rewrite
-            result=rewrite(_payload(args),domain,root)
-        elif cmd=='merge':
-            from .governance import merge
-            data=_payload(args)
-            if not isinstance(data,dict) or not isinstance(data.get('target'),str) or not isinstance(data.get('sources'),list) or not isinstance(data.get('body'),str):
-                raise ValueError('merge takes {"target": "DOMAIN:ID@REVISION", "sources": ["DOMAIN:ID@REVISION", ...], "body": "..."}')
-            for given in [data['target'],*data['sources']]:
-                if not isinstance(given,str):raise ValueError('Merge references are strings: DOMAIN:ID@REVISION')
-                _with_revision(given,'merge')
-            result=merge(root,data)
-        elif cmd=='history':
-            from .governance import history
-            note_id=None
-            if args.note:
-                try:note_id=_reference(args.note,domain,root)[1]
-                except ValueError:
-                    # A deleted note has no file left to resolve, but its journals still name it by full ID.
-                    note_id=args.note.rpartition(':')[2]
-                    if not __import__('re').fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',note_id):raise
-            result=history(root,note_id,args.limit,include_private=args.include_private)
-            if args.markdown:
-                from .activity import markdown
-                result={'ok':True,'rows':result,'markdown':markdown(result)}
-        elif cmd=='recap':
-            from .recap import recap
-            if not 1<=args.days<=90:raise ValueError('--days must be 1 to 90')
-            if args.all_domains:scope=[d['name'] for d in list_domains(root)['domains'] if (root/'domains'/d['name']/'notes').is_dir()]
-            elif domain:scope=[domain]
-            else:raise ValueError(UNBOUND)
-            result=recap(root,scope,args.days,args.project)
-        elif cmd=='log':
-            import re
-            from .activity import log
-            note=args.note
-            if note:
-                try:note=_reference(note,domain,root)[1]
-                except ValueError:
-                    # A deleted note has no file left to resolve, but its journals still name it by full ID.
-                    note=note.rpartition(':')[2]
-                    if not re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',note):raise
-            result=log(root,canonical_domain(args.domain,root) if args.domain else None,args.project,args.since,args.until,note,args.type,args.event,args.limit)
-        elif cmd=='undo':
-            from .governance import undo,operation_root
-            # Install and harness setup journal in the install folder and the harness homes (i- and s- IDs); undo finds them there.
-            result=undo(operation_root(root,args.operation_id),args.operation_id,args.include_private)
-        elif cmd=='recover':
-            from .repository import recover,reconcile,abandon
-            import re
-            from .docs import journal_private
-            if re.fullmatch(r'[A-Za-z0-9_-]{1,100}',args.operation_id) and not args.include_private:
-                try:pending=read_json(root/'.operations'/args.operation_id/'journal.json',None)
-                except ValueError:pending=None
-                from .folder_policy import REGISTRY,loosens
-                import base64
-                images=[e.get(side) for e in (pending or {}).get('effects') or [] if isinstance(e,dict) and e.get('path')==REGISTRY for side in ('before','after')] if isinstance(pending,dict) else []
-                reopens=any(loosens(root,base64.b64decode(i).decode('utf-8','replace') if i else None) for i in images)   # either direction may be the one taken
-                if isinstance(pending,dict) and (journal_private(root,pending,authorize=True) or reopens):
-                    raise ValueError(f'not_found: operation {args.operation_id} changed a private notebook; pass --include-private from a user terminal or local client to recover it')
-            if args.abandon:result=abandon(root,args.operation_id)
-            else:result=recover(root,args.operation_id,args.direction)
-            row=read_json(root/'.operations'/args.operation_id/'journal.json')
-            from .governance import reconciled_domains
-            for d in reconciled_domains(e['path'] for e in row['effects']):reconcile(d,root)
-        elif cmd=='diff':
-            import base64,difflib,re
-            if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',args.operation_id):raise ValueError('Invalid operation ID')
-            row=read_json(root/'.operations'/args.operation_id/'journal.json');result=[]
-            if not isinstance(row,dict):raise ValueError(f'not_found: no operation {args.operation_id}')
-            from .docs import is_private_path
-            for e in row['effects']:
-                # Folder notebook bookkeeping is left out unless --include-private; an attachment an older operation moved shows as hashes.
-                if not args.include_private and is_private_path(e['path']):result.append({'redacted':True});continue
-                if e.get('blob'):result.append({'path':e['path'],'binary':True,'before_sha256':e['before_hash'],'after_sha256':e['after_hash'],'diff':''});continue
-                before=base64.b64decode(e['before']).decode('utf-8',errors='replace') if e['before'] else '';after=base64.b64decode(e['after']).decode('utf-8',errors='replace') if e['after'] else ''
-                result.append({'path':e['path'],'diff':''.join(difflib.unified_diff(before.splitlines(True),after.splitlines(True)))[:8000]})
-        elif cmd=='doctor':result=doctor(root,cwd,args.root,domain)
-        elif cmd=='logs':
-            rows,matched=logs.entries(root,args.level,args.kind,args.event,max(1,min(30,args.days)),max(1,min(1000,args.limit)))
-            result={'ok':True,'level_setting':logs.setting(),'matched':matched,'entries':rows}
-        elif cmd=='backup':
-            from .backup import backup
-            result=backup(root,max(1,min(100,args.keep)))
-            from .common import atomic_write
-            from datetime import datetime,timezone   # real time, like backup.maybe_backup that reads this marker; not the test clock
-            atomic_write(root/'hooks'/'last-backup.json',canonical_json({'at':datetime.now(timezone.utc).isoformat(),'backup':Path(result['backup']).name}))
-        elif cmd=='housekeep':
-            from .runtime import housekeep
-            result=housekeep(root)
-        elif cmd=='restore-backup':
-            from .backup import restore_backup
-            result=restore_backup(root,args.file)
-        elif cmd=='migrate':
-            from .migration import migrate_schema,migrate_note_types,migrate_baseline
-            result=(migrate_schema if args.schema else migrate_note_types if args.note_types else migrate_baseline)(root)
-        elif cmd in {'rebuild','validate'}:
-            d=args.name or domain
-            if not d:raise ValueError(UNBOUND)
-            from .validate import reconcile,validate_domain
-            result=reconcile(d,root) if cmd=='rebuild' else {'issues':validate_domain(d,root)}
-        elif cmd=='rebaseline':
-            from . import rebaseline
-            if args.scheduled and args.dry_run:raise ValueError('--scheduled does not take --dry-run')
-            result=rebaseline.scheduled(root) if args.scheduled else rebaseline.sweep(root,[domain] if getattr(args,'domain',None) else None,args.dry_run)
-        elif cmd=='maintenance':
-            from . import maintenance
-            a=args.action
-            if a=='status':result=maintenance.status(root)
-            elif a=='preview':result=maintenance.preview(root,args.limit,domains=[domain] if domain else None)
-            elif a=='history':result=maintenance.history(root,args.limit,args.run)
-            elif a=='run':
-                result=maintenance.run(root,args.dry_run,allow_disabled=args.dry_run,domains=[domain] if domain else None)
-                maintenance.log_run(root,result,args.scheduled)
-            elif a=='disable':result=maintenance.disable(root)
-            else:
-                settings={k:getattr(args,k) for k in ('model','max_notes_per_day','timeout_seconds','daily_budget_usd') if getattr(args,k) is not None}
-                names=[]
-                if args.all_domains:
-                    from .common import global_domains
-                    skip=set(global_domains(root));names=[d['name'] for d in list_domains(root)['domains'] if d['bound'] and d['name'] not in skip and (root/'domains'/d['name']/'notes').is_dir()]
-                if args.domain or not args.all_domains:
-                    if not domain:raise ValueError(UNBOUND)
-                    names.append(domain)
-                result=maintenance.enable(root,list(dict.fromkeys(names)),bool(args.domain),settings)
-        elif cmd=='semantic':
-            from . import semantic
-            if args.action=='install':result=semantic.install(root,args.model or semantic.DEFAULT_MODEL,args.source)
-            elif args.action=='native':
-                from . import vectors
-                if args.value:vectors.set_enabled(root,args.value=='on')
-                result=semantic.status(root)
-            elif args.action=='rebuild':rebuilt=semantic.rebuild_all(root,units=True);result={**semantic.status(root),'rebuilt':rebuilt}
-            else:result=semantic.remove(root) if args.action=='remove' else semantic.status(root)
-        elif cmd=='query':
-            from .search import readonly_query
-            if not domain:raise ValueError(UNBOUND)
-            result=readonly_query(domain,args.sql,root)
-        elif cmd=='project':
-            from .projects import project_write
-            result=project_write(root,args.action,_payload(args))
-        elif cmd=='projects':
-            from .projects import listing
-            result=listing(root,args.status)
-        elif cmd=='type':
-            from .type_registry import type_write
-            result=type_write(root,args.action,_payload(args))
-        elif cmd=='types':
-            from .type_registry import listing
-            result=listing(root,args.all)
-        elif cmd=='system':
-            from .systems import system_write
-            result=system_write(root,args.action,_payload(args))
-        elif cmd=='systems':
-            from .systems import listing
-            result=listing(root,args.status)
-        elif cmd=='source':
-            from .sources import source_write
-            result=source_write(root,args.action,_payload(args),domain)
-            result['hint']='source-sync then indexes it.'
-        elif cmd=='sources':
-            from .sources import listing
-            result=listing(root,domain)
-        elif cmd=='ingest-scan':
-            from .digests import scan
-            if not domain:raise ValueError(UNBOUND)
-            result=scan(root,domain,args.source,max(1,min(100000,args.limit)),args.changed,load_bindings(root))
-        elif cmd=='ingest-skip':
-            from .digests import record_skips,clear_skips
-            if not domain:raise ValueError(UNBOUND)
-            data=_payload(args);items=data.get('skipped') if isinstance(data,dict) else data;clear=data.get('clear') if isinstance(data,dict) else None
-            if (items is None and clear is None) or not isinstance(items or [],list) or not isinstance(clear or [],list):raise ValueError('ingest-skip takes {"skipped": [{"path", "reason"}, ...], "clear": ["path", ...]}')
-            with store_lock(root):result={'ok':True,'domain':domain,'recorded':record_skips(root,domain,items or [],cwd,load_bindings(root)),'cleared':clear_skips(root,domain,clear or [],cwd,load_bindings(root))}
-        elif cmd=='source-sync':
-            from .sources import sync
-            if not domain:raise ValueError(UNBOUND)
-            result=sync(root,domain,args.name,args.rebuild,all_remote=args.all_remote,network=args.actor not in {'subagent','viewer'})
-        elif cmd=='ask':
-            if not domain:raise ValueError(UNBOUND)
-            result=_ask(root,domain,' '.join(args.query),args.limit)
-        elif cmd=='views':
-            from . import views
-            action=args.action or 'list'
-            ref=getattr(args,'reference',None)
-            spec_file=getattr(args,'spec_file',None)
-            if action=='list':
-                if not domain and not args.all_domains:raise ValueError(UNBOUND)
-                result=views.listing(root,None if args.all_domains else domain)
-            elif action=='render' and args.all:
-                if ref:raise ValueError('Name one note or pass --all, not both')
-                if args.out:raise ValueError('--out needs exactly one view')
-                rows=views.render(root,views.note_rows(root),args.target,None,args.format)
-                result={'ok':True,'count':len(rows),**({'models':[r['model'] for r in rows]} if args.format=='json' else {'rendered':rows})}
-            elif action=='update' or (action=='add' and not ref):
-                if action=='add':
-                    if not spec_file or not args.title:raise ValueError('views add without a note needs --spec-file FILE and --title T')
-                    result=views.add_query(root,args.title,_spec_file(spec_file))
-                elif not ref or not views.QUERY_ID.fullmatch(ref):raise ValueError('views update needs a query view ID (q-xxxxxxxx; views lists them)')
-                else:result=views.update_query(root,ref,_spec_file(spec_file) if spec_file else None,args.title)
-            elif ref and views.QUERY_ID.fullmatch(ref) and action in {'remove','render'}:
-                if action=='render':raise ValueError('query_views_run_in_hivemind: a query view is evaluated by an external UI client; ALM stores its spec')
-                result=views.remove(root,ref)
-            else:
-                if not ref:raise ValueError(f'views {action} needs a note: REF, ID prefix or exact title')
-                try:d,n=_reference(ref,domain,root)
-                except ValueError:
-                    # A view whose note was deleted can still be removed by its registered ID, or an 8+ character prefix of it.
-                    import re
-                    prefix=ref.split(':')[-1].lower()
-                    orphan=[v for v in views.note_rows(root) if v['note'].startswith(prefix)] if action=='remove' and re.fullmatch(r'[0-9a-f][0-9a-f-]{7,}',prefix) else []
-                    if len(orphan)!=1 or views._find(orphan[0],root):raise
-                    d,n=orphan[0]['domain'],orphan[0]['note']
-                registered=next((v for v in views.note_rows(root) if v['note']==n),None)
-                if action=='add':result=views.add(root,d,n,args.title)
-                elif action=='remove':result=views.remove(root,n)
-                elif action=='published':
-                    if not args.url:raise ValueError('views published needs --url')
-                    result=views.published(root,n,args.url,views.project_key(cwd))
-                else:
-                    if not registered and not (args.format=='json' or args.out):raise ValueError('That note has no view; add one with views add REF, or pass --out or --format json')
-                    from .notes import find_note
-                    entry=registered or views.transient(dict(find_note(n,d,root)[1],domain=d))
-                    rows=views.render(root,[entry],args.target,args.out,args.format)
-                    result={'ok':True,'model':rows[0]['model']} if args.format=='json' else {'ok':True,'target':args.target}
-                    if 'path' in rows[0]:result['path']=rows[0]['path']
-        elif cmd=='wiki':
-            from . import wiki
-            if not domain:raise ValueError(UNBOUND)
-            if args.agent:
-                from . import wiki_agent
-                if args.build:
-                    def progress(event):print(json.dumps(event,separators=(',',':')),file=sys.stderr,flush=True)
-                    result=wiki_agent.build(root,domain,args.project,args.restructure,args.model or wiki_agent.DEFAULT_MODEL,wiki_agent.DEFAULT_BUDGET if args.budget is None else args.budget,args.dry_run,progress if args.progress else None)
-                elif args.format=='json' and not args.out:result={'ok':True,'model':wiki_agent.read_model(root,domain,args.project)}
-                else:result=wiki_agent.export(domain,root,args.project,args.out,args.format,args.theme)
-            elif args.format=='json' and not args.out:result={'ok':True,'model':wiki.wiki_model(domain,root,args.archived)}
-            else:result=wiki.export(domain,root,args.archived,args.out,args.format,args.theme)
-        elif cmd=='taxonomy' and args.action=='add':
-            from .tag_taxonomy import add_tags
-            result=add_tags(args.tags,root)
-        elif cmd=='taxonomy':
-            result=read_json(root/'tag_taxonomy.json',{'tags':[]})
-        elif cmd=='batch':
-            import contextlib,io
-            batch=_payload(args)
-            if not isinstance(batch,list) or not 1<=len(batch)<=20:raise ValueError('Batch requires 1..20 argv objects')
-            result=[]
-            from .runtime import _subcommand
-            for item in batch:
-                if set(item)!={'argv'} or not isinstance(item['argv'],list) or any(not isinstance(v,str) for v in item['argv']) or not item['argv'] or _subcommand(item['argv']) in {'batch','serve'}:raise ValueError('Invalid batch command')
-                out=io.StringIO();error=io.StringIO()
-                prefix=['--root',str(root),'--cwd',str(cwd),'--actor',args.actor]+(['--domain',domain] if domain else [])
-                with contextlib.redirect_stdout(out),contextlib.redirect_stderr(error):
-                    _IN_BATCH[0]+=1
-                    try:code=main(prefix+item['argv'])
-                    except SystemExit as exc:code=exc.code
-                    finally:_IN_BATCH[0]-=1
-                result.append({'exit_code':code,'result':json.loads(out.getvalue()) if out.getvalue().strip() else None,'error':error.getvalue()[:1000] or None})
-        elif cmd=='retag':
-            from .governance import retag
-            result=retag(root,_payload(args))
-        elif cmd=='remap':
-            from .governance import remap
-            mappings=_payload(args)
-            for mapping in mappings if isinstance(mappings,list) else ():
-                if isinstance(mapping,dict) and not mapping.get('revision'):
-                    before=mapping.get('before') or {}
-                    raise ValueError(f"revision_required: each mapping needs the revision you read of {before.get('domain')}:{before.get('id')} as \"revision\"")
-            result=remap(root,mappings)
-        elif cmd=='promote':
-            from .governance import promote_suggest,promote
-            if args.suggest:
-                if args.refs:raise ValueError('--suggest takes no references')
-                result=promote_suggest(root,canonical_domain(args.only,root) if args.only else None)
-            elif not args.refs:raise ValueError('Name the notes to promote, or pass --suggest')
-            else:result=promote(root,[ref+'@'+revision for ref,revision in (_with_revision(r,'promote') for r in args.refs)])
-        elif cmd=='capture-finalize':
-            from .capture import finalize
-            fin_session=args.session or os.environ.get(SESSION_ENV)
-            if not fin_session:raise ValueError('capture-finalize needs --session SESSION')
-            result=finalize(fin_session,_turn(root,fin_session,args.turn),[':'.join(_reference(n,domain,root)) for n in args.note],root)
-        elif cmd=='overlay-sync-all':
-            from .sync import sync_all
-            result=sync_all(root,'manual',args.primary)
-        elif cmd=='overlay-teardown':
-            from .sync import teardown
-            result=teardown(args.vault)
-        elif cmd in {'sync','overlay-build'}:
-            if not domain:raise ValueError(UNBOUND)
-            from .sync import sync,build_overlay
-            if cmd=='sync':
-                from .sync import forget_page_mirror,write_status
-                result=sync(domain,args.vault,root);forget_page_mirror(domain,root)   # the retired page mirror's state file goes at the next sync
-                write_status(domain,args.vault,root)
-            else:result=build_overlay(domain,args.vault,root)
-        else:raise ValueError('Unsupported command')
+        if cmd in SWITCH:
+            result=_switch(root,cmd,session,domain)
+            invocation['result']=result
+            _emit(result,args)
+            return 0
+        handler=_COMMAND_HANDLERS.get(cmd)
+        if handler is None:
+            raise ValueError('Unsupported command')
+        result=handler(args,root,domain,cwd,session,subs)
         code=1 if cmd=='wiki' and isinstance(result,dict) and result.get('ok') is False else 0   # a build that stopped on an error
-        invocation['result']=result;invocation['code']=code;_emit(result,args);return code
+        invocation['result']=result
+        invocation['code']=code
+        _emit(result,args)
+        return code
     except (OSError,ValueError,TimeoutError,KeyError,TypeError) as exc:
-        message=str(exc);code=error_code(message,exc)
-        invocation.update(code=report_error(message,code,args.json,f'alm {args.command}'),error={'code':code,'message':message});return invocation['code']
+        message=str(exc)
+        code=error_code(message,exc)
+        invocation.update(code=report_error(message,code,args.json,f'alm {args.command}'),error={'code':code,'message':message})
+        return invocation['code']
     except BaseException as exc:
-        invocation.update(code=exc.code if isinstance(exc,SystemExit) and isinstance(exc.code,int) else 1,crash=None if isinstance(exc,SystemExit) else exc);raise
+        invocation.update(code=exc.code if isinstance(exc,SystemExit) and isinstance(exc.code,int) else 1,crash=None if isinstance(exc,SystemExit) else exc)
+        raise
     finally:_log_command(invocation,args)
 
 def _log_command(run,args):
@@ -1901,7 +1491,10 @@ def _log_command(run,args):
     import re
     from . import logs
     from .runtime import session_hash
-    code=run.get('code',0);crash=run.get('crash');session=getattr(args,'session',None);error=None
+    code=run.get('code',0)
+    crash=run.get('crash')
+    session=getattr(args,'session',None)
+    error=None
     if crash is not None:error=logs.error_fields(crash)
     elif run.get('error'):
         # The message's leading snake_case token (stale_revision, possible_duplicate, private_content, ...) is
@@ -1909,7 +1502,8 @@ def _log_command(run,args):
         reason=re.match(r'[a-z]+_[a-z_]+(?=$|[: ])',run['error']['message'])
         error=dict(run['error'],message=logs.message(run['error']['message']),reason=reason[0] if reason else None)
     level='error' if crash is not None else 'warning' if code else 'debug' if args.actor=='viewer' else 'info'
-    extra={};result=run.get('result')
+    extra={}
+    result=run.get('result')
     if logs.enabled('debug') and isinstance(result,dict):
         count=lambda key:len(result[key]) if isinstance(result.get(key),(list,dict)) else None
         ref=f"{result['domain']}:{result['id']}" if result.get('domain') and result.get('id') else result.get('ref')
@@ -1920,4 +1514,1047 @@ def _log_command(run,args):
         extra['content']=logs.content({'argv':run.get('argv'),'result':result,'error':(run.get('error') or {}).get('message')})
     logs.write(level,'command',args.command,root,actor=args.actor,domain=run.get('domain'),session=session_hash(session) if session else None,
                ms=round((time.perf_counter()-run['start'])*1000,1),exit_code=code,error=error,**extra)
+def _cmd_bind(args,root,domain,cwd,session,subs):
+    from .init_domain import init_domain
+    init_domain(args.name,args.prefix,root)
+    return {'ok':True,'domain':args.name,'status':'bound'}
+
+def _cmd_config(args,root,domain,cwd,session,subs):
+    from . import settings
+    if args.action=='get':
+        return settings.get(root,args.key)
+    return settings.set_(root,args.key,args.value)
+
+def _cmd_unbind(args,root,domain,cwd,session,subs):
+    from .init_domain import unbind_domain,unbind_prefix
+    if args.prefix:
+        return {'ok':True,'domain':args.name,'prefix':unbind_prefix(args.name,args.prefix,root),'status':'prefix_removed'}
+    return {'ok':True,'domain':unbind_domain(args.name,root),'status':'unbound'}
+
+def _cmd_capture(args,root,domain,cwd,session,subs):
+    from .notes import capture
+    cmd=args.command
+    structured=any(getattr(args,k) for k in SECTION_ARGS)
+    proposal=None
+    if cmd=='capture' and args.from_proposal:
+        from . import proposals
+        proposal=proposals.get(root,args.from_proposal)
+        if proposal.get('status')!='pending':
+            raise ValueError(f"Proposal {args.from_proposal} is already {proposal.get('status')}")
+        if not args.domain and not getattr(args,'to_global',False) and proposal.get('domain'):
+            domain=proposal['domain']
+    edited=bool(args.items or args.content_file or structured or args.payload_file)
+    if proposal and not edited:
+        beside=[flag for flag,given in (('--title',args.title),('--tag',args.tag),('--type',args.type),('--file',args.file),('--files',args.files)) if given]
+        if beside:
+            raise ValueError('To edit a proposal pass the whole note (--title with --summary or a body) beside --from-proposal; '+', '.join(beside)+' alone would be lost')
+        if not getattr(args,'accepting',False):
+            raise ValueError(f'capture --from-proposal takes the whole edited note beside it; to save the staged draft as it is, run proposals accept {args.from_proposal}')
+        data=dict(proposal['note'],domain=proposal.get('domain') or domain)
+        if args.rule:
+            data['rule']=True
+        if args.pin:
+            data['pinned']=True
+        if args.turn and not args.session:
+            raise ValueError('--turn needs --session')
+        if args.session:
+            data.update(session_id=args.session,turn_id=_turn(root,args.session,args.turn))
+    elif args.items or args.content_file or structured:
+        if args.title and args.items:
+            raise ValueError(f"capture --title takes no positional values, got {len(args.items)} ({str(args.items[0])[:60]!r}...): "
+                             "pass each bullet with its own flag (--detail 'A' --detail 'B')")
+        if len(args.items)==3:
+            domain,title,body=args.items
+        elif len(args.items)==2:
+            title,body=args.items
+        elif args.content_file and args.title:
+            title=args.title
+            body=args.content_file.read_text(encoding='utf-8')
+        elif structured and (args.title or len(args.items)==1):
+            title=args.title or args.items[0]
+            body=''
+        else:
+            raise ValueError('Use title body, domain title body, --title with --summary/--detail, or a JSON payload')
+        body=_sectioned(args,body,args.type or 'knowledge',root) or body
+        tags=args.tag+[t.strip() for t in args.tags.split(',') if t.strip()]
+        tags+=_facet_tags(args,CAPTURE_FACETS)
+        data={'title':title,'body':body,'tags':tags,'prefix':args.prefix,'type':args.type or 'knowledge','context':args.context,'idempotency_key':args.idempotency_key,'domain':domain}
+        if args.turn and not args.session:
+            raise ValueError('--turn needs --session')
+        if args.session and cmd=='capture':
+            data.update(session_id=args.session,turn_id=_turn(root,args.session,args.turn))
+        if args.allow_similar:
+            data['allow_similar']=True
+        if args.supersedes:
+            data['supersedes']=args.supersedes
+        if args.drop_links:
+            data['drop_links']=True
+        if args.pin:
+            data['pinned']=True
+        if args.rule:
+            data['rule']=True
+        if args.review_by:
+            data['review_by']=args.review_by
+        files,_=_file_args(args,domain,root)
+        if files:
+            data['files']=files
+        if args.shell_command:
+            data['commands']=args.shell_command
+        if args.source:
+            from .digests import describe
+            data['sources']=[describe(root,domain,v,cwd) for v in args.source]
+            if len(args.source)==1 and not args.idempotency_key:
+                data['idempotency_key']=f"digest:{data['sources'][0]['path']}:{data['sources'][0]['sha256']}"
+    else:
+        beside=[('--title',args.title),('--tag',args.tag),('--tags',args.tags),('--prefix',args.prefix),('--type',args.type),('--context',args.context),
+                ('--idempotency-key',args.idempotency_key),('--allow-similar',args.allow_similar),('--supersedes',args.supersedes),('--drop-links',args.drop_links),
+                ('--review-by',args.review_by),('--file',args.file),('--files',args.files),('--command',args.shell_command),('--source',args.source),('--pin',args.pin),('--rule',args.rule)]+[('--'+f,getattr(args,f)) for f in CAPTURE_FACETS]
+        ignored=[flag for flag,given in beside if given]
+        if ignored:
+            raise ValueError('A JSON payload carries its own fields; put these in the payload instead of passing '+', '.join(ignored))
+        if args.turn and not args.session:
+            raise ValueError('--turn needs --session')
+        data=_payload(args)
+        for item in (data if isinstance(data,list) else [data]) if args.session else ():
+            if isinstance(item,dict) and not item.get('session_id'):
+                item['session_id']=args.session
+                if args.turn and not item.get('turn_id'):
+                    item['turn_id']=args.turn
+    if proposal and isinstance(data,list):
+        raise ValueError('--from-proposal settles one proposal with one note')
+    for item in data if isinstance(data,list) else [data]:
+        old=item.get('supersedes') if isinstance(item,dict) else None
+        for given in ([old] if isinstance(old,str) else old or []):
+            _with_revision(given,'--supersedes')
+    if cmd=='propose':
+        return _propose(root,data,domain,session,getattr(args,'to_global',False),args.redact)
+    batch=data if isinstance(data,list) else [data]
+    if not 1<=len(batch)<=20:
+        raise ValueError('Capture batch must contain 1..20 items')
+    results=[]
+    with store_lock(root):
+        if proposal:
+            from . import proposals
+            if proposals.get(root,args.from_proposal).get('status')!='pending':
+                raise ValueError(f'Proposal {args.from_proposal} was settled meanwhile')
+        for item in batch:
+            item=dict(item)
+            selected=item.pop('domain',domain)
+            session=item.pop('session_id',None)
+            turn=item.pop('turn_id',None)
+            if getattr(args,'to_global',False):
+                from .common import global_domain
+                selected=global_domain(root)
+            if session and not turn:
+                turn=_turn(root,session,None)
+            if not selected:
+                raise ValueError('Project is unbound; pass --domain or bind it')
+            inferred=_infer_tags(item,root,item.get('type')=='brief' and not item.get('files') and selected in _global_names(root))
+            redacted=_redact(item) if args.redact else []
+            from . import projects
+            ptags,candidates=projects.infer(item,selected,root,_session_state(root,session).get('touched',[]) if session else (),cwd if session else None)
+            if ptags:
+                item['tags']=list(item.get('tags') or [])+ptags
+                inferred=inferred+ptags
+            from . import systems
+            stags,system_candidates=systems.infer(item,selected,root,_session_state(root,session).get('touched',[]) if session else (),cwd if session else None)
+            if stags:
+                item['tags']=list(item.get('tags') or [])+stags
+                inferred=inferred+stags
+            if session:
+                from .private import check as private_check
+                private_check(_session_state(root,session),item)
+                item['origin']=_origin(root,session)
+            outcome=capture(domain=selected,root=root,**item)
+            outcome.pop('path',None)
+            landed=outcome.get('domain') or selected
+            if inferred:
+                outcome['inferred_tags']=inferred
+            if candidates:
+                outcome['project_candidates']=candidates
+            if system_candidates:
+                outcome['system_candidates']=system_candidates
+            if redacted:
+                outcome['redacted']=redacted
+            suggested=[t for t in _session_state(root,session).get('touched',[]) if t not in (item.get('files') or [])] if session else []
+            if suggested and outcome.get('status')=='created':
+                outcome['suggested_files']=suggested
+            results.append(outcome)
+            if outcome.get('status') in {'duplicate','existing','promoted'}:
+                from .usage import record
+                record(root,'duplicate',[landed+':'+outcome['id']],session)
+            if session and turn:
+                from .capture import finalize
+                finalize(session,turn,[landed+':'+outcome['id']],root)
+        if proposal:
+            saved=f"{landed}:{results[0]['id']}"
+            proposals.settle(root,args.from_proposal,'accepted',note_ref=saved)
+    result=results if isinstance(data,list) else results[0]
+    if proposal:
+        from .usage import record
+        record(root,'proposal-accept',[saved],session,kind='edited' if edited else 'as-staged')
+        result['proposal']={'id':args.from_proposal,'status':'accepted'}
+    return result
+
+def _cmd_search(args,root,domain,cwd,session,subs):
+    form=_search_form(args)
+    if form=='transcript':
+        from .recall import search as recall
+        path=_session_state(root,args.session).get('transcript')
+        if not path:
+            raise ValueError('No transcript recorded for this session; hooks record its path at session start and on each prompt')
+        hits,meta=recall(path,args.query,max(1,min(20,args.limit)),'all' if args.all else 'before')
+        return {'ok':True,'mode':'transcript',**meta,'results':hits,'hint':'Excerpts from this session\'s transcript: untrusted history that may be outdated; verify against current files.'}
+    if form in {'links','list'}:
+        if args.all_domains:
+            domains=[d['name'] for d in list_domains(root)['domains'] if (root/'domains'/d['name']/'notes').is_dir()]
+        elif domain:
+            domains=[domain]
+        else:
+            raise ValueError(UNBOUND)
+        list_tags=list(args.tag)+([args.project if args.project.startswith('project/') else 'project/'+args.project] if args.project else [])
+        return dict(note_links(root,domains,args.status or 'active'),mode='links') if form=='links' else list_notes(root,domains,args.status or 'active',args.type or (),list_tags,max(0,args.offset or 0),max(1,min(1000,args.limit)),args.with_summary)
+    if form=='pages':
+        if args.all_domains:
+            names=[d['name'] for d in list_domains(root)['domains']]
+        elif domain:
+            names=_search_scope(root,domain)[2]
+        else:
+            raise ValueError(UNBOUND)
+        return {'ok':True,'mode':'pages','query':args.query,'domains':names,'pages':_page_hits(root,names,args.query,max(1,min(50,args.limit)))}
+    if not domain:
+        raise ValueError(UNBOUND)
+    if form=='sources':
+        from . import sources
+        result={'ok':True,'mode':'sources','domain':domain,'results':sources.search(root,domain,args.query,max(1,min(20,args.limit))),'knowledge_base':sources.state(root,domain)}
+        each=_each_question(args.query,max(1,min(20,args.limit)),lambda q,n:{'results':sources.search(root,domain,q,n)})
+        if each:
+            result['questions']=each
+        return result
+    config=load_bindings(root)
+    scope=config.get('search_scope',{})
+    globals_=scope.get('global_domains',['_global'])
+    globals_=[canonical_domain(g,root) for g in globals_]
+    globals_=[g for g in globals_ if (root/'domains'/g).exists()]
+    from .runtime import scope_domains
+    primary=list(dict.fromkeys([domain]+scope_domains(domain,config)+globals_))
+    foreign=scope.get('foreign_domains',[])
+    if any('=' not in value for value in args.filter):
+        raise ValueError("Search filters are KEY=VALUE with KEY one of prefix, status, tag, type, file (for example --filter type=decision)")
+    filters={}
+    def _add_filter(k,v):
+        if k in ('tag','type'):
+            prev=filters.get(k)
+            if prev is None:
+                filters[k]=v
+            elif isinstance(prev,list):
+                prev.append(v)
+            else:
+                filters[k]=[prev,v]
+        else:
+            filters[k]=v
+    for value in args.filter:
+        k,v=value.split('=',1)
+        _add_filter(k,v)
+    if set(filters)-{'prefix','status','tag','type','file'}:
+        raise ValueError('Unsupported search filter: use prefix, status, tag, type or file')
+    for t in args.type or ():
+        _add_filter('type',t)
+    for t in args.tag or ():
+        _add_filter('tag',t)
+    if args.project:
+        _add_filter('tag',args.project if args.project.startswith('project/') else 'project/'+args.project)
+    if args.status:
+        _add_filter('status',args.status)
+    if args.file:
+        from .common import domain_prefixes,display_path
+        given=Path(args.file).expanduser()
+        wanted=(display_path(given.resolve(),domain_prefixes(domain,config)) or args.file) if given.is_absolute() else args.file
+        from .runtime import child_domains,child_path
+        kids_of=child_domains(domain,config)
+        if not args.query.strip():
+            if filters:
+                raise ValueError('--filter needs a query; with --file alone, use --scope to choose domains')
+            from .search import file_notes
+            domains=list(dict.fromkeys(sorted(config.get('domains',{}))+globals_)) if args.scope=='all' else primary
+            n=max(1,min(100,args.limit))
+            kids=kids_of
+            hits=file_notes(wanted,[d for d in domains if d not in kids],root,n)
+            fallback=False
+            for kid in kids:
+                c=child_path(wanted,domain,kid,config)
+                if c is not None:
+                    hits+=[dict(h,file=c) for h in file_notes(c,[kid],root,n)]
+            hits=sorted(sorted(hits,key=lambda h:h.get('updated',''),reverse=True),key=lambda h:h.get('match')!='files')[:n]
+            if not hits and args.scope=='fallback' and foreign:
+                domains=foreign
+                hits=file_notes(wanted,domains,root,max(1,min(100,args.limit)))
+                fallback=True
+            from . import digests
+            digests.mark(hits,root,config)
+            for hit in hits:
+                if hit.get('withheld'):
+                    hit['snippet']=hit['stale']
+            return {'ok':True,'mode':'file','file':wanted,'domains':domains,'fallback':fallback,'results':hits}
+        filters['file']={'*':wanted,**{k:child_path(wanted,domain,k,config) for k in kids_of}} if kids_of else wanted
+    result=_note_hits(root,domain,args.query,args.scope,args.limit,args.rebuild,filters,config,globals_,primary,foreign,args.explain)
+    if not filters:
+        result['pages']=_page_hits(root,primary,args.query,max(1,min(20,args.limit)))
+    each=None if filters else _each_question(args.query,max(1,min(20,args.limit)),lambda q,n:dict({k:v for k,v in _note_hits(root,domain,q,args.scope,n,args.rebuild,filters,config,globals_,primary,foreign).items() if k in {'results','relevant'}},pages=_page_hits(root,primary,q,n)))
+    if each:
+        result['questions']=each
+    return result
+
+def _cmd_read(args,root,domain,cwd,session,subs):
+    from .notes import find_note
+    d,n=_reference(args.reference,domain,root)
+    path,note=find_note(n,d,root)
+    result={k:v for k,v in note.items() if k not in {'body','path','digest','file_hashes'}}
+    from .digests import stale_note
+    stale=stale_note(note,root)
+    if stale:
+        result['stale']=stale
+    from .worklist import currency_of
+    try:
+        info=currency_of(note,root)
+        if info:
+            result['currency']=info
+    except Exception as exc:
+        from .logs import swallowed
+        swallowed('cli.read.currency',exc,root)
+    if args.section:
+        from .units import extract,_norm,_sections,role_of
+        from .repository import parse_text
+        wanted=_norm(args.section)
+        body=note['body']
+        found=[(p,h,rows) for p,h,rows in _sections(body)[1:] if h and (_norm(' > '.join(p))==wanted or _norm(h)==wanted)]
+        if not found:
+            raise ValueError(f"no section {args.section!r} in this note; sections: {', '.join(' > '.join(p) for p,h,_ in _sections(body)[1:] if h) or 'none'}")
+        path_,heading,rows=found[0]
+        text='\n'.join(t for _,t in rows).strip()
+        try:
+            same=(parse_text(Path(path).read_text(encoding='utf-8-sig'),path) or {}).get('body')==body
+        except (OSError,UnicodeDecodeError):
+            same=False
+        spans={}
+        for u in extract(dict(note,path=path)) if same else []:
+            spans.setdefault(u['heading'],u['lines'])
+        span=spans.get(' > '.join(path_))
+        last=max(n for n,t in rows if t.strip())
+        result.update(section={'heading':' > '.join(path_),'role':role_of(heading),'lines':[span[0],span[0]+last-rows[0][0]] if span else None},
+                      body=text[:max(0,min(64000,args.max_chars))],truncated=len(text)>max(0,min(64000,args.max_chars)))
+    elif not args.metadata_only:
+        result.update(body=note['body'][:max(0,min(64000,args.max_chars))],truncated=len(note['body'])>max(0,min(64000,args.max_chars)))
+    if args.actor!='viewer':
+        from .usage import record
+        record(root,'read',[f'{d}:{n}'])
+    return result
+
+def _cmd_version(args,root,domain,cwd,session,subs):
+    from .installer_lifecycle import CORE_RELEASE,installed_stamp
+    return {'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'proposals':1,'restore':1,'pin':1,'rule':1,'direct_writes':2,'revisions':1,'note_types':1,'history':3,'items':{'fields':2},'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']},'wiki_agent':{'version':1},'systems':{'project':1},'views':{'version':2,'kinds':['note','query']},
+            'docs':{'version':1,'max_page_bytes':4194304,'folder_policy':2,'accept_edited':True,'folder_proposals':1}}}
+
+def _cmd_update(args,root,domain,cwd,session,subs):
+    from .notes import change
+    d,n=_reference(args.reference,domain,root)
+    if args.tag and (args.add_tag or args.remove_tag):
+        raise ValueError('--tag replaces all tags and cannot be combined with --add-tag or --remove-tag')
+    values=_payload(args) if args.payload_file or not any(getattr(args,k) is not None for k in ('title','body','body_file','tag','add_tag','remove_tag','type','context','review_by','pin','rule','file','files','shell_command','source','subject','concern','platform','technology','project','system','distinct','not_distinct')+SECTION_ARGS+AMEND_ARGS+ITEM_ARGS) else {}
+    if args.title is not None:
+        values['title']=args.title
+    if args.body is not None:
+        values['body']=args.body
+    if args.body_file:
+        values['body']=args.body_file.read_text(encoding='utf-8-sig')
+    with store_lock(root):
+        from .notes import find_note
+        current=find_note(n,d,root)[1]
+        stored=current['body']
+        replaced={}
+        if any(getattr(args,k) for k in SECTION_ARGS+AMEND_ARGS) or _item_args(args):
+            values['body']=_update_body(args,values['body'] if 'body' in values else stored,args.type or current.get('type'),root)
+        if isinstance(values.get('body'),str):
+            replaced=_replaced(args,stored,values['body'])
+        facet_tags=_facet_tags(args,CAPTURE_FACETS)
+        if args.add_tag or args.remove_tag or ((args.project or args.system) and not args.tag and not any(getattr(args,f) for f in FACET_FLAGS)):
+            merged=list(current.get('tags') or [])
+            for t in (args.add_tag or [])+facet_tags:
+                if t not in merged:
+                    merged.append(t)
+            drop=set(args.remove_tag or [])
+            values['tags']=[t for t in merged if t not in drop]
+        else:
+            tags=(args.tag or [])+facet_tags
+            if tags:
+                values['tags']=tags
+        for key in ('type','context','review_by'):
+            if getattr(args,key) is not None:
+                values[key]=getattr(args,key)
+        if args.pin is not None:
+            values['pinned']=args.pin
+        if args.rule is not None:
+            values['rule']=args.rule
+        revision=_need_revision(values.pop('expected_revision',None) or args.expected_revision,args.reference)
+        if args.shell_command:
+            values['commands']=list(find_note(n,d,root)[1].get('commands') or [])+args.shell_command
+        redacted=_redact(values) if args.redact else []
+        if args.session:
+            from .private import check as private_check
+            private_check(_session_state(root,args.session),values)
+        files,suggested=_file_args(args,d,root,find_note(n,d,root)[1].get('files') or [])
+        if files is not None:
+            values['files']=files
+        if args.source:
+            from .digests import describe
+            new=[describe(root,d,v,cwd) for v in args.source]
+            values['sources']=[s for s in find_note(n,d,root)[1].get('sources') or [] if s['path'] not in {x['path'] for x in new}]+new
+        if 'actor' in values:
+            raise ValueError('Cannot update: actor')
+        other=None
+        if args.distinct or args.not_distinct:
+            from .notes import distinct_with,distinct_without,split_revision
+            if args.distinct and args.not_distinct:
+                raise ValueError('Pass --distinct or --not-distinct, not both')
+            if args.why and not args.distinct:
+                raise ValueError('--why goes with --distinct')
+            other_ref,other_revision=split_revision(args.distinct or args.not_distinct)
+            od,on=_reference(other_ref,domain,root)
+            if od!=d:
+                raise ValueError('A distinct pair must be two notes in the same domain')
+            if on==n:
+                raise ValueError('A note cannot be distinct from itself')
+            mine=find_note(n,d,root)[1]
+            if args.distinct:
+                if not args.why:
+                    raise ValueError('--distinct needs --why with the reason, one line of 8 to 200 characters')
+                why=args.why
+                if args.redact:
+                    from .repository import redact as redact_text
+                    why,kinds=redact_text(why)
+                    redacted+=[{'kind':k,'field':'why'} for k in kinds]
+                if args.session:
+                    from .private import overlap
+                    if overlap(_session_state(root,args.session),[('why',why)]):
+                        raise ValueError('private_content conflict: why repeats text the user marked <private>; leave it out of memory')
+                values['distinct_from']=distinct_with(mine,d,on,why,'user')
+            else:
+                theirs=find_note(on,d,root)[1]
+                if not any(_same_pair(e,d,on) for e in mine.get('distinct_from') or []) and not any(_same_pair(e,d,n) for e in theirs.get('distinct_from') or []):
+                    raise ValueError(f'{d}:{n} and {d}:{on} are not marked distinct')
+                if any(_same_pair(e,d,on) for e in mine.get('distinct_from') or []):
+                    values['distinct_from']=distinct_without(mine,d,on)
+                if any(_same_pair(e,d,n) for e in theirs.get('distinct_from') or []):
+                    other=(on,distinct_without(theirs,d,n))
+        if other:
+            from .notes import _change_set,_commit,check_revision
+            check_revision(current['revision'],revision,f'{d}:{n}')
+            if not other_revision:
+                raise ValueError(f'revision_required: {d}:{other[0]} is changed too; pass it as REF@REVISION (read it first)')
+            changes,expected={},{}
+            if values:
+                changes,expected,_=_change_set(n,d,'update',root,revision,**values)
+            more,more_expected,_=_change_set(other[0],d,'update',root,other_revision,pending=changes,distinct_from=other[1])
+            changes.update(more)
+            for rel,rev in more_expected.items():
+                expected.setdefault(rel,rev)
+            result=_commit(d,changes,'update',root,expected)
+            result.update(id=n if values else other[0],path=str(find_note(n if values else other[0],d,root)[0]),status='update')
+        else:
+            result=change(n,d,'update',root,revision,rehash=not _item_only(args,values),**values)
+    if replaced:
+        result['replaced']=replaced
+    if redacted:
+        result['redacted']=redacted
+    if suggested:
+        result['suggested_files']=suggested
+    _receipt(args,d,n,root,'update')
+    return result
+
+def _cmd_supersede(args,root,domain,cwd,session,subs):
+    from .notes import change
+    revision=_need_revision(args.expected_revision,args.reference)
+    by,by_revision=_with_revision(args.by,'--by')
+    d,n=_reference(args.reference,domain,root)
+    bd,bn=_reference(by,domain,root)
+    if bd!=d:
+        raise ValueError('A note can only be superseded by a note in the same domain')
+    result=change(n,d,'supersede',root,revision,superseded_by=bn,drop_links=args.drop_links,successor_revision=by_revision)
+    from .usage import record
+    record(root,'supersede',[f'{d}:{n}'],args.session)
+    _receipt(args,d,bn,root)
+    return result
+
+def _cmd_review(args,root,domain,cwd,session,subs):
+    from .worklist import worklist,KINDS
+    if args.all_domains:
+        domains=[d['name'] for d in list_domains(root)['domains'] if (root/'domains'/d['name']/'notes').is_dir()]
+    elif domain:
+        domains=[domain]
+    else:
+        raise ValueError(UNBOUND)
+    found=worklist(root,domains,args.kind or None,max(1,min(100,args.limit)),args.tag,working_tree=True)
+    return {'ok':True,'domain':None if args.all_domains else domain,'due':found['total'],'stale_digests':found['counts'].get('stale',0),'kinds':list(KINDS),'counts':found['counts'],'notes':found['items'],
+            'hint':_maintenance_hint(root)+'Each note lists why (kinds, reason) and an action (each row carries its revision; pass --expected-revision REV on every write). Still true -> confirm REF --expected-revision REV; changed -> update REF --expected-revision REV; replaced -> supersede REF --expected-revision REV --by NEW@REV; finished -> resolve REF --expected-revision REV. A STALE note: read its files, then update REF --expected-revision REV (or confirm REF --expected-revision REV if it still holds). '
+                   'For an obsolete note, archive REF (undo OPERATION reverses it); for a duplicate (pair), merge them (the harness asks the user first; undo OPERATION reverses it). Stale notes come first, never-confirmed notes nobody has read lately lead the due ones.'}
+
+def _cmd_open(args,root,domain,cwd,session,subs):
+    from .notes import open_work,short_ref
+    from .runtime import scope_domains
+    if args.all_domains:
+        scope=[d['name'] for d in list_domains(root)['domains'] if (root/'domains'/d['name']/'notes').is_dir()]
+    elif domain:
+        from .common import global_domains
+        scope=[domain]+scope_domains(domain,load_bindings(root))+global_domains(root)
+    else:
+        raise ValueError(UNBOUND)
+    found=open_work(list(dict.fromkeys(scope)),root,args.tag)
+    from . import clock
+    from .note_format import item_fields,valid_date
+    if args.due_by and not valid_date(args.due_by):
+        raise ValueError('--due-by must be a YYYY-MM-DD date')
+    today=clock.today().isoformat()
+    items=[]
+    wanted=lambda fields:not (args.due_by and not (fields['due'] and fields['due']<=args.due_by) or args.owner and (fields['owner'] or '').casefold()!=args.owner.strip().casefold())
+    for d,n,listed in found:
+        for i,text in listed:
+            task,fields,_=item_fields(text)
+            due=fields['due']
+            if not wanted(fields):
+                continue
+            items.append({'kind':'note','ref':f"{d}:{n['id']}",'short_ref':short_ref(d,n['id']),'title':n['title'],'type':n['type'],'updated':str(n.get('updated',''))[:10],'revision':n['revision'],'index':i,'item':text,'task':task,**fields,'overdue':due<today if due else None})
+    stale=False
+    if args.pages!='none' and not args.tag:
+        from . import docs_index
+        names=[d['name'] for d in list_domains(root)['domains']] if args.all_domains else list(dict.fromkeys(scope))
+        rows,stale=docs_index.task_rows(root,names,open_only=True,levels=('injectable','searchable') if args.pages=='searchable' else ('injectable',),limit=None)
+        for t in sorted(rows,key=lambda t:(t['domain'],t['notebook'],t['path'],t['line'])):
+            fields={k:t[k] for k in ('due','owner','priority')}
+            if wanted(fields):
+                items.append({'kind':'page','domain':t['domain'],'notebook':t['notebook'],'path':t['path'],'title':t['title'],'line':t['line'],'item':t['text'],'task':t['task'],**fields,'overdue':t['due']<today if t['due'] else None})
+    if args.sort=='due':
+        items.sort(key=lambda row:(row['due'] is None,row['due'] or ''))
+    result={'ok':True,'domain':None if args.all_domains else domain,'notes':len({row['ref'] for row in items if row['kind']=='note'}),'count':len(items),'items':items[:max(1,min(500,args.limit))],
+            'hint':"Tick one when done: check REF 'item text' --expected-revision REVISION (or --index N; each row carries its note's revision); --undo unticks."+(' A page task (kind page) is ticked by editing its page.' if any(row['kind']=='page' for row in items) else '')}
+    if stale:
+        result['pages_stale']=True
+    return result
+
+def _cmd_check(args,root,domain,cwd,session,subs):
+    from .notes import check_action
+    d,n=_reference(args.reference,domain,root)
+    if (args.item is None)==(args.index is None):
+        raise ValueError('Name the item by its text or pass --index N (not both)')
+    result=check_action(n,d,root,args.item,args.index,not args.undo,_need_revision(args.expected_revision,args.reference))
+    result.pop('path',None)
+    if result.get('status')!='unchanged':
+        _receipt(args,d,n,root,'check')
+    return result
+
+def _cmd_timeline(args,root,domain,cwd,session,subs):
+    from .notes import short_ref
+    if not domain:
+        raise ValueError(UNBOUND)
+    if args.reference and args.date:
+        raise ValueError('Anchor on a REF or a --date, not both')
+    when=lambda n:str(n.get(args.by) or n.get('created') or '')
+    anchor_id=None
+    if args.reference:
+        d,anchor_id=_reference(args.reference,domain,root)
+        if d!=domain:
+            raise ValueError('timeline lists one domain; pass --domain '+d)
+    notes=[n for n in inventory(domain,root,retired=args.all or bool(anchor_id)) if args.all or n.get('status','active')=='active' or n['id']==anchor_id]
+    notes=sorted((n for n in notes if not args.type or n.get('type') in args.type or n['id']==anchor_id),key=lambda n:(when(n),n['id']))
+    if not notes:
+        raise ValueError('No notes to list')
+    if anchor_id:
+        at=next(i for i,n in enumerate(notes) if n['id']==anchor_id)
+    elif args.date:
+        from datetime import date as _date
+        try:
+            _date.fromisoformat(args.date)
+        except ValueError:
+            raise ValueError('--date must be YYYY-MM-DD') from None
+        at=next((i for i,n in enumerate(notes) if when(n)[:10]>=args.date),len(notes)-1)
+    else:
+        at=len(notes)-1
+    before,after=max(0,min(50,args.before)),max(0,min(50,args.after))
+    rows=[{'ref':f"{domain}:{n['id']}",'short_ref':short_ref(domain,n['id']),'date':when(n)[:10],'type':n.get('type'),'title':n['title'],'status':n.get('status','active'),'revision':n.get('revision'),**({'anchor':True} if i==at else {})}
+          for i,n in enumerate(notes) if at-before<=i<=at+after]
+    return {'ok':True,'domain':domain,'by':args.by,'anchor':rows[min(at,before)]['ref'],'notes':rows}
+
+def _cmd_state_change(args,root,domain,cwd,session,subs):
+    cmd=args.command
+    if cmd=='confirm':
+        from .notes import confirm
+        d,n=_reference(args.reference,domain,root)
+        result=confirm(n,d,root,_need_revision(args.expected_revision,args.reference))
+        result.pop('path',None)
+        _receipt(args,d,n,root,'confirm' if result.get('status')!='unchanged' else None)
+        return result
+    from .notes import change,short_ref
+    d,n=_reference(args.reference,domain,root)
+    if cmd in {'resolve','reopen'}:
+        result=change(n,d,cmd,root,_need_revision(args.expected_revision,args.reference))
+        result.pop('path',None)
+        if cmd=='resolve':
+            result['hint']=f'Resolved notes leave session context and search. `reopen {short_ref(d,n)}` brings it back.'
+        _receipt(args,d,n,root,cmd)
+        return result
+    if cmd=='restore':
+        result=change(n,d,'restore',root,_need_revision(args.expected_revision,args.reference))
+        result.pop('path',None)
+        result['hint']='The note is active and pinned, so automatic maintenance will not retire it until `update REF --unpin`.'
+        _receipt(args,d,n,root,'restore')
+        return result
+    if cmd=='delete':
+        return change(n,d,'delete',root,_need_revision(args.expected_revision,args.reference))
+    values=_payload(args) if args.payload_file else {}
+    if 'actor' in values:
+        raise ValueError('Cannot archive with an actor field: the controller records who acts')
+    result=change(n,d,'archive',root,_need_revision(values.pop('expected_revision',None) or args.expected_revision,args.reference),**values)
+    result.pop('path',None)
+    result['undo']='undo '+result['operation_id']
+    _receipt(args,d,n,root)
+    return result
+
+def _cmd_merge(args,root,domain,cwd,session,subs):
+    from .governance import merge
+    data=_payload(args)
+    if not isinstance(data,dict) or not isinstance(data.get('target'),str) or not isinstance(data.get('sources'),list) or not isinstance(data.get('body'),str):
+        raise ValueError('merge takes {"target": "DOMAIN:ID@REVISION", "sources": ["DOMAIN:ID@REVISION", ...], "body": "..."}')
+    for given in [data['target'],*data['sources']]:
+        if not isinstance(given,str):
+            raise ValueError('Merge references are strings: DOMAIN:ID@REVISION')
+        _with_revision(given,'merge')
+    return merge(root,data)
+
+def _cmd_history(args,root,domain,cwd,session,subs):
+    import re
+    from .governance import history
+    note_id=None
+    if args.note:
+        try:
+            note_id=_reference(args.note,domain,root)[1]
+        except ValueError:
+            note_id=args.note.rpartition(':')[2]
+            if not re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',note_id):
+                raise
+    result=history(root,note_id,args.limit,include_private=args.include_private)
+    if args.markdown:
+        from .activity import markdown
+        return {'ok':True,'rows':result,'markdown':markdown(result)}
+    return result
+
+def _cmd_log(args,root,domain,cwd,session,subs):
+    import re
+    from .activity import log
+    note=args.note
+    if note:
+        try:
+            note=_reference(note,domain,root)[1]
+        except ValueError:
+            note=note.rpartition(':')[2]
+            if not re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',note):
+                raise
+    return log(root,canonical_domain(args.domain,root) if args.domain else None,args.project,args.since,args.until,note,args.type,args.event,args.limit)
+
+def _cmd_recover(args,root,domain,cwd,session,subs):
+    from .repository import recover,reconcile,abandon
+    import re
+    from .docs import journal_private
+    if re.fullmatch(r'[A-Za-z0-9_-]{1,100}',args.operation_id) and not args.include_private:
+        try:
+            pending=read_json(root/'.operations'/args.operation_id/'journal.json',None)
+        except ValueError:
+            pending=None
+        from .folder_policy import REGISTRY,loosens
+        import base64
+        images=[e.get(side) for e in (pending or {}).get('effects') or [] if isinstance(e,dict) and e.get('path')==REGISTRY for side in ('before','after')] if isinstance(pending,dict) else []
+        reopens=any(loosens(root,base64.b64decode(i).decode('utf-8','replace') if i else None) for i in images)
+        if isinstance(pending,dict) and (journal_private(root,pending,authorize=True) or reopens):
+            raise ValueError(f'not_found: operation {args.operation_id} changed a private notebook; pass --include-private from a user terminal or local client to recover it')
+    result=abandon(root,args.operation_id) if args.abandon else recover(root,args.operation_id,args.direction)
+    row=read_json(root/'.operations'/args.operation_id/'journal.json')
+    from .governance import reconciled_domains
+    for d in reconciled_domains(e['path'] for e in row['effects']):
+        reconcile(d,root)
+    return result
+
+def _cmd_diff(args,root,domain,cwd,session,subs):
+    import base64,difflib,re
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',args.operation_id):
+        raise ValueError('Invalid operation ID')
+    row=read_json(root/'.operations'/args.operation_id/'journal.json')
+    if not isinstance(row,dict):
+        raise ValueError(f'not_found: no operation {args.operation_id}')
+    from .docs import is_private_path
+    result=[]
+    for e in row['effects']:
+        if not args.include_private and is_private_path(e['path']):
+            result.append({'redacted':True})
+            continue
+        if e.get('blob'):
+            result.append({'path':e['path'],'binary':True,'before_sha256':e['before_hash'],'after_sha256':e['after_hash'],'diff':''})
+            continue
+        before=base64.b64decode(e['before']).decode('utf-8',errors='replace') if e['before'] else ''
+        after=base64.b64decode(e['after']).decode('utf-8',errors='replace') if e['after'] else ''
+        result.append({'path':e['path'],'diff':''.join(difflib.unified_diff(before.splitlines(True),after.splitlines(True)))[:8000]})
+    return result
+
+def _cmd_maintenance(args,root,domain,cwd,session,subs):
+    from . import maintenance
+    a=args.action
+    if a=='status':
+        return maintenance.status(root)
+    if a=='preview':
+        return maintenance.preview(root,args.limit,domains=[domain] if domain else None)
+    if a=='history':
+        return maintenance.history(root,args.limit,args.run)
+    if a=='run':
+        result=maintenance.run(root,args.dry_run,allow_disabled=args.dry_run,domains=[domain] if domain else None)
+        maintenance.log_run(root,result,args.scheduled)
+        return result
+    if a=='disable':
+        return maintenance.disable(root)
+    settings={k:getattr(args,k) for k in ('model','max_notes_per_day','timeout_seconds','daily_budget_usd') if getattr(args,k) is not None}
+    names=[]
+    if args.all_domains:
+        from .common import global_domains
+        skip=set(global_domains(root))
+        names=[d['name'] for d in list_domains(root)['domains'] if d['bound'] and d['name'] not in skip and (root/'domains'/d['name']/'notes').is_dir()]
+    if args.domain or not args.all_domains:
+        if not domain:
+            raise ValueError(UNBOUND)
+        names.append(domain)
+    return maintenance.enable(root,list(dict.fromkeys(names)),bool(args.domain),settings)
+
+def _cmd_semantic(args,root,domain,cwd,session,subs):
+    from . import semantic
+    if args.action=='install':
+        return semantic.install(root,args.model or semantic.DEFAULT_MODEL,args.source)
+    if args.action=='native':
+        from . import vectors
+        if args.value:
+            vectors.set_enabled(root,args.value=='on')
+        return semantic.status(root)
+    if args.action=='rebuild':
+        rebuilt=semantic.rebuild_all(root,units=True)
+        return {**semantic.status(root),'rebuilt':rebuilt}
+    return semantic.remove(root) if args.action=='remove' else semantic.status(root)
+
+def _cmd_views(args,root,domain,cwd,session,subs):
+    from . import views
+    action=args.action or 'list'
+    ref=getattr(args,'reference',None)
+    spec_file=getattr(args,'spec_file',None)
+    if action=='list':
+        if not domain and not args.all_domains:
+            raise ValueError(UNBOUND)
+        return views.listing(root,None if args.all_domains else domain)
+    if action=='render' and args.all:
+        if ref:
+            raise ValueError('Name one note or pass --all, not both')
+        if args.out:
+            raise ValueError('--out needs exactly one view')
+        rows=views.render(root,views.note_rows(root),args.target,None,args.format)
+        return {'ok':True,'count':len(rows),**({'models':[r['model'] for r in rows]} if args.format=='json' else {'rendered':rows})}
+    if action=='update' or (action=='add' and not ref):
+        if action=='add':
+            if not spec_file or not args.title:
+                raise ValueError('views add without a note needs --spec-file FILE and --title T')
+            return views.add_query(root,args.title,_spec_file(spec_file))
+        if not ref or not views.QUERY_ID.fullmatch(ref):
+            raise ValueError('views update needs a query view ID (q-xxxxxxxx; views lists them)')
+        return views.update_query(root,ref,_spec_file(spec_file) if spec_file else None,args.title)
+    if ref and views.QUERY_ID.fullmatch(ref) and action in {'remove','render'}:
+        if action=='render':
+            raise ValueError('query_views_run_in_hivemind: a query view is evaluated by an external UI client; ALM stores its spec')
+        return views.remove(root,ref)
+    if not ref:
+        raise ValueError(f'views {action} needs a note: REF, ID prefix or exact title')
+    try:
+        d,n=_reference(ref,domain,root)
+    except ValueError:
+        import re
+        prefix=ref.split(':')[-1].lower()
+        orphan=[v for v in views.note_rows(root) if v['note'].startswith(prefix)] if action=='remove' and re.fullmatch(r'[0-9a-f][0-9a-f-]{7,}',prefix) else []
+        if len(orphan)!=1 or views._find(orphan[0],root):
+            raise
+        d,n=orphan[0]['domain'],orphan[0]['note']
+    registered=next((v for v in views.note_rows(root) if v['note']==n),None)
+    if action=='add':
+        return views.add(root,d,n,args.title)
+    if action=='remove':
+        return views.remove(root,n)
+    if action=='published':
+        if not args.url:
+            raise ValueError('views published needs --url')
+        return views.published(root,n,args.url,views.project_key(cwd))
+    if not registered and not (args.format=='json' or args.out):
+        raise ValueError('That note has no view; add one with views add REF, or pass --out or --format json')
+    from .notes import find_note
+    entry=registered or views.transient(dict(find_note(n,d,root)[1],domain=d))
+    rows=views.render(root,[entry],args.target,args.out,args.format)
+    result={'ok':True,'model':rows[0]['model']} if args.format=='json' else {'ok':True,'target':args.target}
+    if 'path' in rows[0]:
+        result['path']=rows[0]['path']
+    return result
+
+def _cmd_wiki(args,root,domain,cwd,session,subs):
+    from . import wiki
+    if not domain:
+        raise ValueError(UNBOUND)
+    if args.agent:
+        from . import wiki_agent
+        if args.build:
+            def progress(event):
+                print(json.dumps(event,separators=(',',':')),file=sys.stderr,flush=True)
+            return wiki_agent.build(root,domain,args.project,args.restructure,args.model or wiki_agent.DEFAULT_MODEL,wiki_agent.DEFAULT_BUDGET if args.budget is None else args.budget,args.dry_run,progress if args.progress else None)
+        if args.format=='json' and not args.out:
+            return {'ok':True,'model':wiki_agent.read_model(root,domain,args.project)}
+        return wiki_agent.export(domain,root,args.project,args.out,args.format,args.theme)
+    if args.format=='json' and not args.out:
+        return {'ok':True,'model':wiki.wiki_model(domain,root,args.archived)}
+    return wiki.export(domain,root,args.archived,args.out,args.format,args.theme)
+
+def _cmd_batch(args,root,domain,cwd,session,subs):
+    import contextlib,io
+    batch=_payload(args)
+    if not isinstance(batch,list) or not 1<=len(batch)<=20:
+        raise ValueError('Batch requires 1..20 argv objects')
+    result=[]
+    from .runtime import _subcommand
+    for item in batch:
+        if set(item)!={'argv'} or not isinstance(item['argv'],list) or any(not isinstance(v,str) for v in item['argv']) or not item['argv'] or _subcommand(item['argv']) in {'batch','serve'}:
+            raise ValueError('Invalid batch command')
+        out=io.StringIO()
+        error=io.StringIO()
+        prefix=['--root',str(root),'--cwd',str(cwd),'--actor',args.actor]+(['--domain',domain] if domain else [])
+        with contextlib.redirect_stdout(out),contextlib.redirect_stderr(error):
+            _IN_BATCH[0]+=1
+            try:
+                code=main(prefix+item['argv'])
+            except SystemExit as exc:
+                code=exc.code
+            finally:
+                _IN_BATCH[0]-=1
+        result.append({'exit_code':code,'result':json.loads(out.getvalue()) if out.getvalue().strip() else None,'error':error.getvalue()[:1000] or None})
+    return result
+
+def _cmd_registry(args,root,domain,cwd,session,subs):
+    cmd=args.command
+    if cmd=='project':
+        from .projects import project_write
+        return project_write(root,args.action,_payload(args))
+    if cmd=='projects':
+        from .projects import listing
+        return listing(root,args.status)
+    if cmd=='type':
+        from .type_registry import type_write
+        return type_write(root,args.action,_payload(args))
+    if cmd=='types':
+        from .type_registry import listing
+        return listing(root,args.all)
+    if cmd=='system':
+        from .systems import system_write
+        return system_write(root,args.action,_payload(args))
+    if cmd=='systems':
+        from .systems import listing
+        return listing(root,args.status)
+    if cmd=='source':
+        from .sources import source_write
+        result=source_write(root,args.action,_payload(args),domain)
+        result['hint']='source-sync then indexes it.'
+        return result
+    if cmd=='sources':
+        from .sources import listing
+        return listing(root,domain)
+    if cmd=='taxonomy':
+        if args.action=='add':
+            from .tag_taxonomy import add_tags
+            return add_tags(args.tags,root)
+        return read_json(root/'tag_taxonomy.json',{'tags':[]})
+    raise ValueError('Unsupported command')
+
+def _cmd_sync_ops(args,root,domain,cwd,session,subs):
+    cmd=args.command
+    if cmd=='overlay-sync-all':
+        from .sync import sync_all
+        return sync_all(root,'manual',args.primary)
+    if cmd=='overlay-teardown':
+        from .sync import teardown
+        return teardown(args.vault)
+    if not domain:
+        raise ValueError(UNBOUND)
+    from .sync import sync,build_overlay
+    if cmd=='sync':
+        from .sync import forget_page_mirror,write_status
+        result=sync(domain,args.vault,root)
+        forget_page_mirror(domain,root)
+        write_status(domain,args.vault,root)
+        return result
+    return build_overlay(domain,args.vault,root)
+
+def _cmd_store_ops(args,root,domain,cwd,session,subs):
+    cmd=args.command
+    if cmd=='logs':
+        from . import logs
+        rows,matched=logs.entries(root,args.level,args.kind,args.event,max(1,min(30,args.days)),max(1,min(1000,args.limit)))
+        return {'ok':True,'level_setting':logs.setting(),'matched':matched,'entries':rows}
+    if cmd=='backup':
+        from .backup import backup
+        result=backup(root,max(1,min(100,args.keep)))
+        from .common import atomic_write
+        from datetime import datetime,timezone
+        atomic_write(root/'hooks'/'last-backup.json',canonical_json({'at':datetime.now(timezone.utc).isoformat(),'backup':Path(result['backup']).name}))
+        return result
+    if cmd=='housekeep':
+        from .runtime import housekeep
+        return housekeep(root)
+    if cmd=='restore-backup':
+        from .backup import restore_backup
+        return restore_backup(root,args.file)
+    if cmd=='migrate':
+        from .migration import migrate_schema,migrate_note_types,migrate_baseline
+        return (migrate_schema if args.schema else migrate_note_types if args.note_types else migrate_baseline)(root)
+    if cmd in {'rebuild','validate'}:
+        d=args.name or domain
+        if not d:
+            raise ValueError(UNBOUND)
+        from .validate import reconcile,validate_domain
+        return reconcile(d,root) if cmd=='rebuild' else {'issues':validate_domain(d,root)}
+    if cmd=='rebaseline':
+        from . import rebaseline
+        if args.scheduled and args.dry_run:
+            raise ValueError('--scheduled does not take --dry-run')
+        return rebaseline.scheduled(root) if args.scheduled else rebaseline.sweep(root,[domain] if getattr(args,'domain',None) else None,args.dry_run)
+    raise ValueError('Unsupported command')
+
+def _cmd_governance_ops(args,root,domain,cwd,session,subs):
+    cmd=args.command
+    if cmd=='rewrite':
+        from .notes import rewrite
+        return rewrite(_payload(args),domain,root)
+    if cmd=='undo':
+        from .governance import undo,operation_root
+        return undo(operation_root(root,args.operation_id),args.operation_id,args.include_private)
+    if cmd=='retag':
+        from .governance import retag
+        return retag(root,_payload(args))
+    if cmd=='remap':
+        from .governance import remap
+        mappings=_payload(args)
+        for mapping in mappings if isinstance(mappings,list) else ():
+            if isinstance(mapping,dict) and not mapping.get('revision'):
+                before=mapping.get('before') or {}
+                raise ValueError(f"revision_required: each mapping needs the revision you read of {before.get('domain')}:{before.get('id')} as \"revision\"")
+        return remap(root,mappings)
+    if cmd=='promote':
+        from .governance import promote_suggest,promote
+        if args.suggest:
+            if args.refs:
+                raise ValueError('--suggest takes no references')
+            return promote_suggest(root,canonical_domain(args.only,root) if args.only else None)
+        if not args.refs:
+            raise ValueError('Name the notes to promote, or pass --suggest')
+        return promote(root,[ref+'@'+revision for ref,revision in (_with_revision(r,'promote') for r in args.refs)])
+    raise ValueError('Unsupported command')
+
+def _cmd_ingest_ops(args,root,domain,cwd,session,subs):
+    cmd=args.command
+    if cmd=='import':
+        from .bundle import import_bundle
+        return import_bundle(root,args.file,args.domain)
+    if not domain:
+        raise ValueError(UNBOUND)
+    if cmd=='ingest':
+        from .ingest import ingest,default_source
+        return ingest(root,domain,args.source or default_source(cwd),args.redact,args.allow_similar)
+    if cmd=='export':
+        from .bundle import export
+        return export(root,domain,args.out,args.type or (),args.tag,args.all)
+    if cmd=='ingest-scan':
+        from .digests import scan
+        return scan(root,domain,args.source,max(1,min(100000,args.limit)),args.changed,load_bindings(root))
+    if cmd=='ingest-skip':
+        from .digests import record_skips,clear_skips
+        data=_payload(args)
+        items=data.get('skipped') if isinstance(data,dict) else data
+        clear=data.get('clear') if isinstance(data,dict) else None
+        if (items is None and clear is None) or not isinstance(items or [],list) or not isinstance(clear or [],list):
+            raise ValueError('ingest-skip takes {"skipped": [{"path", "reason"}, ...], "clear": ["path", ...]}')
+        with store_lock(root):
+            return {'ok':True,'domain':domain,'recorded':record_skips(root,domain,items or [],cwd,load_bindings(root)),'cleared':clear_skips(root,domain,clear or [],cwd,load_bindings(root))}
+    if cmd=='source-sync':
+        from .sources import sync
+        return sync(root,domain,args.name,args.rebuild,all_remote=args.all_remote,network=args.actor not in {'subagent','viewer'})
+    raise ValueError('Unsupported command')
+
+def _cmd_misc(args,root,domain,cwd,session,subs):
+    cmd=args.command
+    if cmd=='doc':
+        return _doc(args,root,domain,cwd)
+    if cmd=='proposals':
+        return _proposals(args,root)
+    if cmd=='domains':
+        return list_domains(root)
+    if cmd=='doctor':
+        return doctor(root,cwd,args.root,domain)
+    if cmd=='stats':
+        from .usage import stats
+        from .runtime import parent_domains
+        if not domain:
+            raise ValueError(UNBOUND)
+        from .common import global_domains
+        return stats(root,list(dict.fromkeys([domain]+parent_domains(domain,load_bindings(root))+global_domains(root))),max(1,min(30,args.days)),max(1,min(100,args.limit)))
+    if cmd=='recap':
+        from .recap import recap
+        if not 1<=args.days<=90:
+            raise ValueError('--days must be 1 to 90')
+        if args.all_domains:
+            scope=[d['name'] for d in list_domains(root)['domains'] if (root/'domains'/d['name']/'notes').is_dir()]
+        elif domain:
+            scope=[domain]
+        else:
+            raise ValueError(UNBOUND)
+        return recap(root,scope,args.days,args.project)
+    if cmd=='query':
+        from .search import readonly_query
+        if not domain:
+            raise ValueError(UNBOUND)
+        return readonly_query(domain,args.sql,root)
+    if cmd=='ask':
+        if not domain:
+            raise ValueError(UNBOUND)
+        return _ask(root,domain,' '.join(args.query),args.limit)
+    if cmd=='capture-finalize':
+        from .capture import finalize
+        fin_session=args.session or os.environ.get(SESSION_ENV)
+        if not fin_session:
+            raise ValueError('capture-finalize needs --session SESSION')
+        return finalize(fin_session,_turn(root,fin_session,args.turn),[':'.join(_reference(n,domain,root)) for n in args.note],root)
+    raise ValueError('Unsupported command')
+
+_COMMAND_HANDLERS={
+    'bind':_cmd_bind,'unbind':_cmd_unbind,'config':_cmd_config,
+    'capture':_cmd_capture,'propose':_cmd_capture,'search':_cmd_search,'read':_cmd_read,
+    'version':_cmd_version,'update':_cmd_update,'supersede':_cmd_supersede,'review':_cmd_review,
+    'open':_cmd_open,'check':_cmd_check,'timeline':_cmd_timeline,'merge':_cmd_merge,
+    'history':_cmd_history,'log':_cmd_log,'recover':_cmd_recover,'diff':_cmd_diff,
+    'maintenance':_cmd_maintenance,'semantic':_cmd_semantic,'views':_cmd_views,'wiki':_cmd_wiki,'batch':_cmd_batch,
+    'confirm':_cmd_state_change,'resolve':_cmd_state_change,'reopen':_cmd_state_change,
+    'restore':_cmd_state_change,'delete':_cmd_state_change,'archive':_cmd_state_change,
+    'project':_cmd_registry,'projects':_cmd_registry,'type':_cmd_registry,'types':_cmd_registry,
+    'system':_cmd_registry,'systems':_cmd_registry,'source':_cmd_registry,'sources':_cmd_registry,'taxonomy':_cmd_registry,
+    'overlay-sync-all':_cmd_sync_ops,'overlay-teardown':_cmd_sync_ops,'sync':_cmd_sync_ops,'overlay-build':_cmd_sync_ops,
+    'logs':_cmd_store_ops,'backup':_cmd_store_ops,'housekeep':_cmd_store_ops,'restore-backup':_cmd_store_ops,
+    'migrate':_cmd_store_ops,'rebuild':_cmd_store_ops,'validate':_cmd_store_ops,'rebaseline':_cmd_store_ops,
+    'rewrite':_cmd_governance_ops,'undo':_cmd_governance_ops,'retag':_cmd_governance_ops,
+    'remap':_cmd_governance_ops,'promote':_cmd_governance_ops,
+    'ingest':_cmd_ingest_ops,'export':_cmd_ingest_ops,'import':_cmd_ingest_ops,
+    'ingest-scan':_cmd_ingest_ops,'ingest-skip':_cmd_ingest_ops,'source-sync':_cmd_ingest_ops,
+    'doc':_cmd_misc,'proposals':_cmd_misc,'domains':_cmd_misc,'doctor':_cmd_misc,'stats':_cmd_misc,
+    'recap':_cmd_misc,'query':_cmd_misc,'ask':_cmd_misc,'capture-finalize':_cmd_misc,
+}
 if __name__=='__main__':raise SystemExit(main())

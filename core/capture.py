@@ -17,7 +17,11 @@ def prune(root,days=RETENTION_DAYS):
     import os
     turns_dir=Path(root)/'.turns'
     if not turns_dir.is_dir():return 0
-    now_ts=time.time();cutoff=now_ts-days*86400;lock_cutoff=now_ts-86400;reminded_cutoff=now_ts-min(days,7)*86400;removed=0
+    now_ts=time.time()
+    cutoff=now_ts-days*86400
+    lock_cutoff=now_ts-86400
+    reminded_cutoff=now_ts-min(days,7)*86400
+    removed=0
     try:entries=list(os.scandir(turns_dir))
     except OSError:return 0
     for entry in entries:
@@ -26,25 +30,30 @@ def prune(root,days=RETENTION_DAYS):
             mtime=entry.stat(follow_symlinks=False).st_mtime
             name=entry.name
             limit=lock_cutoff if name.endswith('.lock') else reminded_cutoff if name.endswith('.reminded') else cutoff
-            if mtime<limit:os.unlink(entry.path);removed+=1
+            if mtime<limit:
+                os.unlink(entry.path)
+                removed+=1
         except OSError:pass
     return removed
 
 def finalize(session,turn,notes=(),root=None):
-    root=Path(root or memory_root());key=turn_key(session,turn)
+    root=Path(root or memory_root())
+    key=turn_key(session,turn)
     from .notes import find_note
     resolved=[]
     for reference in notes:
         domain,note_id=reference.split(':',1)
         resolved.append(domain+':'+find_note(note_id,domain,root)[1]['id'])  # short refs are stored in full
     notes=resolved
-    existing=status(session,turn,root);added=list(notes)
+    existing=status(session,turn,root)
+    added=list(notes)
     if existing:
         # A second capture in the same turn joins the receipt. A bare finalize after a capture records the agent's
         # "nothing durable" for what is still pending (a statement, a document), which an unrelated capture does not settle.
         added=[n for n in notes if n not in existing.get('notes',[])]
         if not notes and not existing.get('dismissed') and existing.get('outcome')=='saved':
-            atomic_write(root/'.turns'/(key+'.json'),canonical_json(dict(existing,dismissed=True)));return {'ok':True,'status':'dismissed'}
+            atomic_write(root/'.turns'/(key+'.json'),canonical_json(dict(existing,dismissed=True)))
+            return {'ok':True,'status':'dismissed'}
         if not added:return {'ok':True,'status':'already_finalized'}
         row=dict(existing,notes=(list(existing.get('notes',[]))+added)[:20],outcome='saved')
     else:
@@ -71,7 +80,8 @@ def _signal_capture(root,session,turn,notes):
     try:
         from .runtime import _pointer
         state=read_json(_pointer(root,session),{}) or {}
-        signal=state.get('signal');reminded=state.get('reminded') or {}
+        signal=state.get('signal')
+        reminded=state.get('reminded') or {}
         # A capture that answers a Stop reminder: the reminder already cleared the turn's signal.
         if not signal and reminded.get('turn')==turn:signal=reminded.get('signal')
         if signal and turn in list(state.get('open_turns') or [])+[state.get('turn'),reminded.get('turn')]:

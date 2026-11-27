@@ -23,12 +23,15 @@ def registered(root):
     """{compare key of the resolved folder: entry} of the registered folder notebooks that are not removed. Cached until the
     registry file changes. A damaged registry raises ValueError."""
     path=Path(root)/REGISTRY
-    try:info=os.stat(path);stamp=(info.st_mtime_ns,info.st_size)
+    try:
+        info=os.stat(path)
+        stamp=(info.st_mtime_ns,info.st_size)
     except OSError:stamp=None
     held=_REGISTRY.get(str(root))
     if held and held[0]==stamp:return held[1]
     found={} if stamp is None else {k:e for k,e in _strictest(load(root)['folders']).items() if not e.get('removed')}
-    _REGISTRY[str(root)]=(stamp,found);return found
+    _REGISTRY[str(root)]=(stamp,found)
+    return found
 
 
 def _no_dot_parts(rel):
@@ -101,10 +104,12 @@ def propose_file(root,file,body,cwd=None,base_revision=None,note=None,session=No
     if note is not None and (not isinstance(note,str) or len(note)>2000):raise ValueError('A proposal note is at most 2000 characters')
     with store_lock(root):
         hit=resolve(root,file,cwd,include_private)
-        data=_bytes(hit['full']);current=_sha(data)
+        data=_bytes(hit['full'])
+        current=_sha(data)
         if current is not None and base_revision is None:raise ValueError('--base-revision is required for a page that exists: read it first')
         if base_revision is not None and current!=base_revision:raise ValueError(f"stale_revision: {hit['rel']} changed since revision {base_revision[:12]}; read it again")
-        pid=uuid.uuid4().hex[:12];domain,nb=hit['domain'],hit['nb']
+        pid=uuid.uuid4().hex[:12]
+        domain,nb=hit['domain'],hit['nb']
         value={'schema':1,'kind':'folder','id':pid,'domain':domain,'notebook':nb,'folder':hit['folder'],'path':hit['rel'],'base_revision':base_revision,
                'base':_b64(data),'body':body.decode('utf-8'),'note':note,'created':now(),'status':'pending',
                'session':hashlib.sha256(session.encode()).hexdigest()[:16] if session else None}
@@ -181,7 +186,9 @@ def _old_state(value):
 def rows(root,domains,nb=None,include_private=False,status='pending',session=None):
     """Listing rows of the folder proposals of these domains. Orphaned: the folder is not registered any more. Applied: for an
     accepted one, whether the page was written (it is not when the process stopped between the two steps; proposals accept finishes it)."""
-    out=[];policy=Policy(root);wanted=hashlib.sha256(session.encode()).hexdigest()[:16] if session else None
+    out=[]
+    policy=Policy(root)
+    wanted=hashlib.sha256(session.encode()).hexdigest()[:16] if session else None
     for domain in domains:
         for file in sorted(Path(root).glob(f'domains/{domain}/folder-proposals/*/*.json')):
             if not docs.PROPOSAL_ID.fullmatch(file.stem) or (nb and file.parts[-2]!=nb):continue
@@ -218,12 +225,15 @@ def accept(root,pid,file,value,expected=None,include_private=False,body=None):
     if status not in ('pending','accepted'):raise ValueError(f'Proposal {pid} is {status}')
     folder,_=folder_of(root,value)
     if folder is None:raise ValueError(f"not_found: the folder notebook {value.get('folder')} is no longer registered; reject proposal {pid}")
-    rel=_page(value,strict=False);path=_safe(folder,rel)
+    rel=_page(value,strict=False)
+    path=_safe(folder,rel)
     if path is None:raise ValueError('Links and junctions are not allowed inside a notebook')
     if not path.exists():
         for part in rel.split('/'):docs._check_part(part)
-    domain,nb=file.parts[-4],file.parts[-2];prel=_rel(domain,nb,pid)   # where _find_proposal found it, not what the record says
-    data=_bytes(path);current=_sha(data)
+    domain,nb=file.parts[-4],file.parts[-2]  # where _find_proposal found it, not what the record says
+    prel=_rel(domain,nb,pid)
+    data=_bytes(path)
+    current=_sha(data)
     if status=='accepted':
         old,_=_old_state(value)
         if current==value.get('revision'):return {'ok':True,'unchanged':True,'revision':current}
@@ -245,7 +255,8 @@ def accept(root,pid,file,value,expected=None,include_private=False,body=None):
                          {prel:digest(file.read_bytes())})
     try:written=_put(folder,rel,text,current)
     except BaseException:
-        undo(root,receipt['operation_id'],True,revert_files=False);raise
+        undo(root,receipt['operation_id'],True,revert_files=False)
+        raise
     if not written:
         undo(root,receipt['operation_id'],True,revert_files=False)
         raise ValueError(f'stale_revision: {rel} changed while the proposal was applied; read it again')
@@ -257,7 +268,8 @@ def accept(root,pid,file,value,expected=None,include_private=False,body=None):
 def reject(root,pid,file,value,reason=None,include_private=False):
     check_visible(root,value,include_private)
     if value.get('status')!='pending':raise ValueError(f"Proposal {pid} is {value.get('status')}")
-    domain,nb=file.parts[-4],file.parts[-2];prel=_rel(domain,nb,pid)   # where _find_proposal found it, not what the record says
+    domain,nb=file.parts[-4],file.parts[-2]  # where _find_proposal found it, not what the record says
+    prel=_rel(domain,nb,pid)
     settled=dict(value,domain=domain,notebook=nb,status='rejected',settled=now(),reason=(reason or '')[:200] or None)
     return docs._commit(root,{prel:docs._proposal_text(settled)},'doc_reject',_meta(domain,nb),
                         {'domain':domain,'notebook':nb,'proposal':pid},{prel:digest(file.read_bytes())})
@@ -274,9 +286,12 @@ def revert_accept(root,journal,include_private=False):
     check_visible(root,new_record,include_private)
     folder,_=folder_of(root,new_record)
     if folder is None:raise ValueError(f"not_found: the folder notebook {new_record.get('folder')} is no longer registered, so its page cannot be put back; restore it from backups or version history")
-    rel=_page(new_record,strict=False);path=_safe(folder,rel)
+    rel=_page(new_record,strict=False)
+    path=_safe(folder,rel)
     if path is None:raise ValueError('Links and junctions are not allowed inside a notebook')
-    old_hash,old_bytes=_old_state(new_record);revision=new_record.get('revision');current=_sha(_bytes(path))
+    old_hash,old_bytes=_old_state(new_record)
+    revision=new_record.get('revision')
+    current=_sha(_bytes(path))
     if current==old_hash:return None   # the accept never wrote it, or it was put back already
     if current!=revision:raise ValueError(f'{rel} changed since the accept, so it is not put back; restore it from backups or version history')
     if old_hash is not None and old_bytes is None:raise ValueError(f'{rel} was too large to keep, so it cannot be put back here; restore it from backups or version history')

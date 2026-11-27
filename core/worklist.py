@@ -8,7 +8,7 @@ only the explicit `review` path, working_tree=True, runs one bounded `git diff H
 from __future__ import annotations
 from collections import Counter
 from . import clock
-from datetime import date,timedelta
+from datetime import timedelta
 from pathlib import Path
 
 KINDS=('stale','due','interim','duplicate','warned','noisy')
@@ -50,16 +50,19 @@ def _map_currency(note,root,bindings,cache,working_tree=False):
     from .maps import repo_of,fingerprint,working_tree_changes
     from .common import head_oid
     repo=repo_of(note,note['domain'],bindings)
-    row=cache.get(_ref(note));entry=row['e'] if row else None
+    row=cache.get(_ref(note))
+    entry=row['e'] if row else None
     if entry and entry.get('fp')!=fingerprint(note):entry=None   # the note changed since (a repointed map): its row and that row's checkout describe something else
     if entry and row.get('f') and Path(row['f']).is_dir():repo=Path(row['f'])   # the checkout the finding was computed in (a clone or worktree of the note's repo), even when the original one is gone
     if repo is None or not repo.is_dir():return {'state':'unavailable','changed':[],'working_tree':[]}
     head=head_oid(repo)
     if not (entry and head and entry.get('head')==head and not entry.get('failed')):entry=None
-    changed=list(entry.get('changed') or []) if entry else [];tree=[]
+    changed=list(entry.get('changed') or []) if entry else []
+    tree=[]
     if working_tree:
         found=working_tree_changes(note,repo,bindings)
-        tree=[p for p in found or [] if p not in changed];changed+=tree
+        tree=[p for p in found or [] if p not in changed]
+        changed+=tree
     return {'state':'changed' if changed else 'current' if entry else 'unchecked','changed':changed,'working_tree':tree}
 
 STATE_ORDER=('changed','missing','unavailable','unchecked','current')
@@ -88,11 +91,15 @@ def _stale(pool,root,bindings,working_tree=False,infos=None):
     from .note_types import KEYED_TYPES
     from .maps import stale_clause
     from .folder_policy import Policy
-    found={};cache=None;policy=None;hashed=False
+    found={}
+    cache=None
+    policy=None
+    hashed=False
     for note in pool:
         if note.get('sources') or note.get('file_hashes'):
             policy=policy or Policy(root)   # one per scan: it caches the folders it has judged
-            text=stale_note(note,root,bindings,policy,flush=False);hashed=True
+            text=stale_note(note,root,bindings,policy,flush=False)
+            hashed=True
             if text:found[_ref(note)]=text
         elif note.get('type') in KEYED_TYPES:
             if cache is None:cache=_cache(root)
@@ -129,7 +136,9 @@ def _code_stamp():
     import hashlib,os
     rows=[]
     for path in sorted(Path(__file__).parent.glob('*.py')):
-        try:st=os.stat(path);rows.append(f'{path.name}:{st.st_size}:{st.st_mtime_ns}')
+        try:
+            st=os.stat(path)
+            rows.append(f'{path.name}:{st.st_size}:{st.st_mtime_ns}')
         except OSError:pass
     return hashlib.sha256('\n'.join(rows).encode()).hexdigest()[:16]
 
@@ -139,18 +148,25 @@ def _quality(pool,root):
     unwritable cache only costs a recompute."""
     import json
     from .notes import quality_checks
-    path=Path(root)/'.cache'/'quality-checks.json';code=_code_stamp()
+    path=Path(root)/'.cache'/'quality-checks.json'
+    code=_code_stamp()
     try:held=json.loads(path.read_text(encoding='utf-8'))
     except (OSError,ValueError):held=None
     kept=held['results'] if isinstance(held,dict) and held.get('code')==code and isinstance(held.get('results'),dict) else {}
-    out={};seen={};added=False
+    out={}
+    seen={}
+    added=False
     for n in pool:
-        rev=str(n.get('revision') or '');hit=kept.get(rev) if rev else None
-        if not (isinstance(hit,list) and all(isinstance(m,str) for m in hit)):hit=quality_checks(n);added=added or bool(rev)
+        rev=str(n.get('revision') or '')
+        hit=kept.get(rev) if rev else None
+        if not (isinstance(hit,list) and all(isinstance(m,str) for m in hit)):
+            hit=quality_checks(n)
+            added=added or bool(rev)
         if rev:seen[rev]=hit
         out[_ref(n)]=hit
     if added and Path(root).is_dir():
-        results={k:v for k,v in kept.items() if k not in seen};results.update(seen)   # this pool's notes last, so the cap drops others first
+        results={k:v for k,v in kept.items() if k not in seen}  # this pool's notes last, so the cap drops others first
+        results.update(seen)
         while len(results)>QUALITY_CACHE_MAX:results.pop(next(iter(results)))
         try:
             from .common import atomic_write
@@ -163,7 +179,8 @@ def _quality(pool,root):
 def _warned(pool,root=None):
     """root: the store whose quality cache to use; without one every note is checked."""
     from .notes import quality_checks
-    found={};checked=_quality(pool,root) if root is not None else {_ref(n):quality_checks(n) for n in pool}
+    found={}
+    checked=_quality(pool,root) if root is not None else {_ref(n):quality_checks(n) for n in pool}
     for n in pool:
         messages=checked[_ref(n)]
         if messages and not _confirmed_since(n,n.get('updated')):
@@ -184,17 +201,22 @@ def _duplicates(pool):
     word stems, and a small sketch of each body's shingles), so the scan is not quadratic."""
     from .notes import TitleScorer,pair_score,_title_words,_shingles,NEAR_BODY,NEAR_TITLE,distinct
     from .note_types import effective_type,KEYED_TYPES
-    found={};by_domain={}
+    found={}
+    by_domain={}
     for n in pool:
         if not n.get('sources') and effective_type(n) not in KEYED_TYPES and n.get('title'):by_domain.setdefault(n['domain'],[]).append(n)
     for domain,notes in by_domain.items():
-        scorer=TitleScorer(notes);words=[_title_words(n['title']) for n in notes];shingles=[_shingles(n.get('body','')) for n in notes]
-        titles={};sketches={}
+        scorer=TitleScorer(notes)
+        words=[_title_words(n['title']) for n in notes]
+        shingles=[_shingles(n.get('body','')) for n in notes]
+        titles={}
+        sketches={}
         for i,n in enumerate(notes):
             kind=effective_type(n)
             for stem in words[i]:titles.setdefault((kind,stem),[]).append(i)
             for h in sorted(hash(g) for g in shingles[i])[:SKETCH]:sketches.setdefault((kind,h),[]).append(i)
-        shared=Counter();same_body=set()
+        shared=Counter()
+        same_body=set()
         for posting in titles.values():
             if 1<len(posting)<=STEM_CAP:
                 for a in range(len(posting)):
@@ -204,12 +226,19 @@ def _duplicates(pool):
                 for a in range(len(posting)):
                     for b in range(a+1,len(posting)):same_body.add((posting[a],posting[b]))
         for i,j in sorted({k for k,c in shared.items() if c>=2 or words[k[0]]==words[k[1]]}|same_body):
-            a,b=notes[i],notes[j];kind=effective_type(a)
+            a,b=notes[i],notes[j]
+            kind=effective_type(a)
             if distinct(a,b):continue   # judged different subjects (update --distinct, or maintenance)
             score=pair_score(scorer,a['title'],b['title'],kind,kind) if shared.get((i,j)) else 0.0
-            x,y=shingles[i],shingles[j];body=len(x&y)/len(x|y) if x and y else 0.0
-            if score>=DUPLICATE_TITLE:why=f"title {score:.2f} like";same=score>=NEAR_TITLE and body>=NEAR_BODY
-            elif body>=NEAR_BODY:why='body nearly identical to';score=1.0;same=True
+            x,y=shingles[i],shingles[j]
+            body=len(x&y)/len(x|y) if x and y else 0.0
+            if score>=DUPLICATE_TITLE:
+                why=f"title {score:.2f} like"
+                same=score>=NEAR_TITLE and body>=NEAR_BODY
+            elif body>=NEAR_BODY:
+                why='body nearly identical to'
+                score=1.0
+                same=True
             else:continue
             older,newer=(a,b) if str(a.get('updated') or '')<=str(b.get('updated') or '') else (b,a)
             if _confirmed_since(older,newer.get('updated')) or _confirmed_since(newer,newer.get('updated')):continue
@@ -246,7 +275,9 @@ def worklist(root,domains,kinds=None,limit=100,tags=None,cheap=False,notes=None,
     (the explicit `review`) also looks for uncommitted edits to the files a map cites. Writes no note and no usage rows (only the derived quality cache), and runs git only for working_tree."""
     from .repository import inventory
     from .common import load_bindings
-    root=Path(root);today=today or clock.today();domains=list(dict.fromkeys(domains))
+    root=Path(root)
+    today=today or clock.today()
+    domains=list(dict.fromkeys(domains))
     wanted=[k for k in KINDS if not kinds or k in kinds]
     if cheap:wanted=[k for k in wanted if k!='duplicate']
     if notes is None:
@@ -255,11 +286,18 @@ def worklist(root,domains,kinds=None,limit=100,tags=None,cheap=False,notes=None,
             try:notes+=[dict(n,domain=d) for n in inventory(d,root)]
             except (OSError,ValueError):continue
     pool=[n for n in notes if n.get('status','active')=='active' and all(t in (n.get('tags') or []) for t in tags or ())]
-    by_ref={_ref(n):n for n in pool};found={};order=[];infos={}
+    by_ref={_ref(n):n for n in pool}
+    found={}
+    order=[]
+    infos={}
     def add(kind,ref,reason,**extra):
         if ref not in by_ref:return
-        if ref not in found:found[ref]={'kinds':[],'reasons':[],'extra':{}};order.append(ref)
-        found[ref]['kinds'].append(kind);found[ref]['reasons'].append(reason);found[ref]['extra'].update(extra)
+        if ref not in found:
+            found[ref]={'kinds':[],'reasons':[],'extra':{}}
+            order.append(ref)
+        found[ref]['kinds'].append(kind)
+        found[ref]['reasons'].append(reason)
+        found[ref]['extra'].update(extra)
     from . import usage
     rows=usage.events(root,NOISE_DAYS,today) if 'due' in wanted or 'noisy' in wanted else None   # one read of the diary for both
     if 'stale' in wanted:
@@ -279,10 +317,16 @@ def worklist(root,domains,kinds=None,limit=100,tags=None,cheap=False,notes=None,
     rank=lambda ref:min(KINDS.index(k) for k in found[ref]['kinds'])
     # Stable: within a kind the order each computation gave (review order for due) stays.
     # Slice to limit BEFORE calling _maintenance() / _action() so SessionStart and review only evaluate returned rows (REL-P4).
-    order=sorted(order,key=rank);total=len(order);items=[]
+    order=sorted(order,key=rank)
+    total=len(order)
+    items=[]
     for ref in order[:max(1,limit)]:
-        n=by_ref[ref];row=found[ref];extra=dict(row['extra']);same=extra.pop('_same',False)
-        pair=extra.get('pair');kinds_=[k for k in KINDS if k in row['kinds']]
+        n=by_ref[ref]
+        row=found[ref]
+        extra=dict(row['extra'])
+        same=extra.pop('_same',False)
+        pair=extra.get('pair')
+        kinds_=[k for k in KINDS if k in row['kinds']]
         item={'ref':ref,'title':n['title'],'type':n.get('type'),'updated':str(n.get('updated',''))[:10],'review_by':n.get('review_by'),
               'confirmed':last_confirmed(n),'pinned':n.get('pinned') is True,'revision':n['revision'],'domain':n['domain'],'kinds':kinds_,'reason':'; '.join(row['reasons']),
               'action':_action(kinds_,n,dict(pair,same=same) if pair else None),**extra}
@@ -290,11 +334,13 @@ def worklist(root,domains,kinds=None,limit=100,tags=None,cheap=False,notes=None,
         items.append(item)
     counts={k:sum(1 for r in found.values() if k in r['kinds']) for k in wanted}
     if not cheap:
-        bindings=load_bindings(root);cache=_cache(root)
+        bindings=load_bindings(root)
+        cache=_cache(root)
         for item in items:
             try:info=currency_of(by_ref[item['ref']],root,bindings,cache,working_tree,infos.get(item['ref']))
             except Exception as exc:
                 from .logs import swallowed
-                swallowed('worklist.currency',exc,root);info=None
+                swallowed('worklist.currency',exc,root)
+                info=None
             if info:item['currency']=info
     return {'items':items,'counts':counts,'total':total}

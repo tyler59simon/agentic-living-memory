@@ -126,7 +126,8 @@ def check(harness,setup):
         return None
     handler,script=ours[0]
     program,argument=_interpreter(handler,harness)
-    runs=_runs(program,argument);here=_same(script,ROOT/'hooks'/(harness+'_hooks.py'))
+    runs=_runs(program,argument)
+    here=_same(script,ROOT/'hooks'/(harness+'_hooks.py'))
     result={'config':str(path),'wired':True,'handlers':len(ours),'script':script,'script_exists':Path(script).is_file(),
             'interpreter':' '.join(part for part in (program,argument if LAUNCHER_VERSION.fullmatch(argument or '') else '') if part),
             'interpreter_ok':runs,'this_copy':here,'problems':[]}

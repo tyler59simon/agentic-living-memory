@@ -32,23 +32,30 @@ def _place(src,dst):
     """Move src to dst unless something is at dst (a file saved meanwhile is never replaced): FileExistsError then. Windows
     rename never replaces; elsewhere a hard link is made and src removed, or, on a filesystem without hard links, dst is
     checked just before an ordinary rename."""
-    if os.name=='nt':retry_sharing(lambda:os.rename(src,dst));return
+    if os.name=='nt':
+        retry_sharing(lambda:os.rename(src,dst))
+        return
     try:os.link(src,dst)
     except FileExistsError:raise
     except OSError:
         if os.path.lexists(dst):raise FileExistsError(dst)
-        retry_sharing(lambda:os.rename(src,dst));return
+        retry_sharing(lambda:os.rename(src,dst))
+        return
     retry_sharing(lambda:os.unlink(src))
 
 
 def _put_back(aside,path):
     """Return a file moved aside to its place, or, when a new save is there, beside it under a name of its own."""
-    try:_place(aside,path);return
+    try:
+        _place(aside,path)
+        return
     except FileExistsError:pass
     stamp=time.strftime('%Y%m%d-%H%M%S')
     for n in range(1,1000):
         kept=path.with_name(f'{path.stem} (kept {stamp}{"" if n==1 else f" {n}"}){path.suffix}')
-        try:_place(aside,kept);return
+        try:
+            _place(aside,kept)
+            return
         except FileExistsError:continue
     raise FileExistsError(path)
 
@@ -73,7 +80,8 @@ def _put(base,rel,data,expect):
         try:changed=_sha(_bytes(aside))!=expect
         except OSError:changed=True   # cannot be judged: put back
         if changed:   # changed just before the rename: put back, or beside a save made since
-            _put_back(aside,path);return False
+            _put_back(aside,path)
+            return False
     try:
         if data is not None:
             fd,temp=tempfile.mkstemp(prefix='.',suffix='.mirror',dir=path.parent)

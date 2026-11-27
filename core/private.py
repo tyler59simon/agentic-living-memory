@@ -32,10 +32,12 @@ def remember(state,prompt):
     """Add the prompt's private spans to the session state; True if it had any."""
     found=spans(prompt)
     if not found:return False
-    private=state.get('private') or {};salt=private.get('salt') or secrets.token_hex(16)
+    private=state.get('private') or {}
+    salt=private.get('salt') or secrets.token_hex(16)
     stored=_spans(private)
     for span in found:
-        words=_words(span);size=min(SHINGLE,len(words))
+        words=_words(span)
+        size=min(SHINGLE,len(words))
         stored.append(list(dict.fromkeys((size,_hash(salt,words[i:i+size])) for i in range(len(words)-size+1))))
     for i in range(len(stored)):   # oldest first, down to the floor, until the total fits
         excess=sum(map(len,stored))-MAX_SHINGLES
@@ -47,7 +49,8 @@ def remember(state,prompt):
 def overlap(state,fields):
     """The first field (label -> text) that repeats a private span, else None."""
     private=(state or {}).get('private') or {}
-    salt=private.get('salt');wanted={}
+    salt=private.get('salt')
+    wanted={}
     for span in _spans(private):
         for size,value in span:wanted.setdefault(int(size),set()).add(value)
     if not salt or not wanted:return None

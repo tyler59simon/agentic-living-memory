@@ -1,10 +1,10 @@
-﻿"""Governed canonical note operations; all persistence goes through transactions."""
+"""Governed canonical note operations; all persistence goes through transactions."""
 from __future__ import annotations
-import argparse,json,os,re,uuid
+import os,re,uuid
 from datetime import date
 from . import clock
 from pathlib import Path
-from .common import memory_root,safe_domain,canonical_domain
+from .common import memory_root,canonical_domain
 from .repository import inventory,parse,serialize,validate,read_json,transaction,reconcile,store_lock,now,digest,clean_files,clean_commands,clean_sources
 from .note_types import prefix_for,normalize,effective_type,default_review_by,keep_baseline,KEYED_TYPES,takes_actions,check_type
 from .note_format import format_body,without_actions,summary_text,note_takes_actions
@@ -16,8 +16,8 @@ LINK_UPDATE_MAX=100   # notes whose links one move may rewrite; a larger move ne
 
 def slug(value):return re.sub(r'[^a-z0-9]+','-',value.casefold()).strip('-')[:64] or 'note'
 def taxonomy(root):
-    data=read_json(Path(root)/'tag_taxonomy.json',{'tags':[]});tags=data.get('tags',[]) if isinstance(data,dict) else data
-    return set(tags)
+    from .tag_taxonomy import load_tags
+    return set(load_tags(root))
 # Injected lines show the first 8 characters of an ID (filenames already end in them); commands accept any unique prefix that long.
 SHORT_ID=8
 ID_PREFIX=re.compile(r'[0-9a-f][0-9a-f-]{%d,}'%(SHORT_ID-1),re.I)
@@ -74,7 +74,8 @@ def _find_note_index(note_id,domain,root):
                 rows=db.execute('SELECT id,path FROM notes WHERE lower(id) LIKE ? LIMIT 2',(note_id.lower()+'%',)).fetchall()
         finally:db.close()
         if len(rows)!=1:return None
-        found_id,raw_path=rows[0];path=Path(raw_path)
+        found_id,raw_path=rows[0]
+        path=Path(raw_path)
         if not path.is_file():return None
         note=parse(path)
         if note and note.get('id')==found_id:return path,note
@@ -94,7 +95,8 @@ def resolve_ref(value,domain=None,root=None,search_domains=()):
     """(domain, full ID) for DOMAIN:ID, DOMAIN:PREFIX, a bare ID or prefix in the active domain,
     or an active note's exact title (case-insensitive) in the active or search domains.
     A title may itself contain a colon, so an unmatched DOMAIN:ID falls through to titles."""
-    value=str(value).strip();head,sep,tail=value.partition(':')
+    value=str(value).strip()
+    head,sep,tail=value.partition(':')
     lookup=None
     if sep and head and not any(c.isspace() for c in head):
         try:explicit=canonical_domain(head,root)
@@ -120,7 +122,8 @@ def resolve_ref(value,domain=None,root=None,search_domains=()):
         if elsewhere:return elsewhere[0][0],elsewhere[0][1]['id']
     domains=list(dict.fromkeys([d for d in (domain,*search_domains) if d]))
     if not domains:raise ValueError('Pass domain:id, --domain, or --cwd for a bound project')
-    wanted=value.casefold();titled=[]
+    wanted=value.casefold()
+    titled=[]
     for d in domains:
         try:titled+=[(d,n) for n in inventory(d,root) if n.get('status','active')=='active' and n['title'].strip().casefold()==wanted]
         except (OSError,ValueError):continue
@@ -145,7 +148,8 @@ def _commit(domain,changes,kind,root,expected=None):
 def _commit_many(domains,changes,kind,root,expected=None,operation_id=None):
     """One journaled transaction across domains (a promotion moves a note between two), then each
     domain's derived state."""
-    changes=dict(changes);domains=list(dict.fromkeys([*domains,*touched_domains(changes)]))   # a link rewrite can reach into another domain
+    changes=dict(changes)  # a link rewrite can reach into another domain
+    domains=list(dict.fromkeys([*domains,*touched_domains(changes)]))
     for domain in domains:changes[f'domains/{domain}/.derived-dirty']='dirty\n'
     receipt=transaction(root,changes,kind,expected,operation_id)
     revisions=note_revisions(changes)
@@ -155,15 +159,19 @@ def _commit_many(domains,changes,kind,root,expected=None,operation_id=None):
         except Exception as exc:
             from .logs import swallowed
             swallowed('notes.reconcile',exc,root)
-            receipt['warning']='canonical_committed_index_dirty';receipt['detail']=str(exc)
+            receipt['warning']='canonical_committed_index_dirty'
+            receipt['detail']=str(exc)
     return receipt
 
 def ensure_global(root):
     """The global domain's folders, created on first use; returns its name."""
     from .common import global_domain
-    root=Path(root);name=global_domain(root);folder=root/'domains'/name
+    root=Path(root)
+    name=global_domain(root)
+    folder=root/'domains'/name
     if not (folder/'notes').is_dir():
-        (folder/'notes').mkdir(parents=True,exist_ok=True);(folder/'archive').mkdir(exist_ok=True)
+        (folder/'notes').mkdir(parents=True,exist_ok=True)
+        (folder/'archive').mkdir(exist_ok=True)
         reconcile(name,root)
     return name
 
@@ -204,7 +212,8 @@ def scope_hint(note):
 
 def promotion_cleaned(note):
     """A copy of a project note as it reads in the global domain: no project/ tags and no `files`, `repo` or `file_hashes`."""
-    note=dict(note);note['tags']=[t for t in note.get('tags',[]) if not str(t).startswith('project/')]
+    note=dict(note)
+    note['tags']=[t for t in note.get('tags',[]) if not str(t).startswith('project/')]
     for key in ('files','repo','file_hashes'):note.pop(key,None)
     return note
 
@@ -235,13 +244,20 @@ def _move_set(moves,root):
     and optionally 'status', 'superseded_by', 'supersedes'}. IDs and filenames are kept; relative Markdown
     links in the moved notes and in the notes left behind follow the move."""
     from .migration import rewrite_type_links
-    root=Path(root);targets={};steps=[];changes={};expected={}
+    root=Path(root)
+    targets={}
+    steps=[]
+    changes={}
+    expected={}
     for move in moves:
-        note=move['note'];source=Path(note['path']);status=move.get('status') or note.get('status','active')
+        note=move['note']
+        source=Path(note['path'])
+        status=move.get('status') or note.get('status','active')
         destination=root/'domains'/move['target']/('notes' if status=='active' else 'archive')/source.name
         if destination.exists() or destination in targets.values():
             raise ValueError('Promotion filename collision: '+destination.relative_to(root).as_posix())
-        targets[source.resolve()]=destination;steps.append((move,source,destination,status))
+        targets[source.resolve()]=destination
+        steps.append((move,source,destination,status))
     moved={move['note']['id'] for move in moves}
     for move,source,destination,status in steps:
         note=dict(move['note'])
@@ -251,7 +267,9 @@ def _move_set(moves,root):
         if move.get('supersedes'):note['supersedes']=sorted(set(note.get('supersedes',[]))|set(move['supersedes']))
         note['body']=rewrite_type_links(note['body'],destination,targets,moved_from=source)
         validate(note,move['target'],root)
-        rel=source.relative_to(root).as_posix();changes[rel]=None;expected[rel]=move['note']['revision']
+        rel=source.relative_to(root).as_posix()
+        changes[rel]=None
+        expected[rel]=move['note']['revision']
         changes[destination.relative_to(root).as_posix()]=serialize(note)
     for domain in sorted({move['note']['domain'] for move in moves}):
         for referring in inventory(domain,root,retired=True):
@@ -259,7 +277,8 @@ def _move_set(moves,root):
             new=rewrite_type_links(referring['body'],Path(referring['path']),targets)
             if new!=referring['body']:
                 rel=Path(referring['path']).relative_to(root).as_posix()
-                changes[rel]=serialize({**keep_baseline(dict(referring)),'body':new,'updated':now()});expected[rel]=referring['revision']
+                changes[rel]=serialize({**keep_baseline(dict(referring)),'body':new,'updated':now()})
+                expected[rel]=referring['revision']
     return changes,expected
 
 def _review_date(value):
@@ -280,7 +299,8 @@ def title_similarity(a,b):
     """Jaccard overlap, or containment when the shorter title has at least three words."""
     x,y=_title_words(a),_title_words(b)
     if not x or not y:return 0.0
-    shared=len(x&y);score=shared/len(x|y)
+    shared=len(x&y)
+    score=shared/len(x|y)
     if min(len(x),len(y))>=3:score=max(score,shared/min(len(x),len(y)))
     return score
 
@@ -304,15 +324,22 @@ _FENCE_OPEN=re.compile(r' {0,3}(`{3,}(?=[^`]*$)|~{3,})[ \t]*(\S*)')
 def without_mermaid(text):
     """Text with each ```mermaid block blanked: a diagram's node and state names (Pending --> Done, todo) are labels,
     not the note's state. Fences are tracked line by line, so a mermaid opener shown inside another block is not one."""
-    out=[];fence=None;skip=False
+    out=[]
+    fence=None
+    skip=False
     for line in str(text or '').split('\n'):
         if fence is None:
             m=_FENCE_OPEN.match(line)
-            if m:fence=m.group(1);skip=m.group(2).lower()=='mermaid'
-            out.append('' if skip else line);continue
+            if m:
+                fence=m.group(1)
+                skip=m.group(2).lower()=='mermaid'
+            out.append('' if skip else line)
+            continue
         closing=re.match(r' {0,3}('+re.escape(fence[0])+'{'+str(len(fence))+r',})[ \t]*$',line)
         out.append('' if skip else line)
-        if closing:fence=None;skip=False
+        if closing:
+            fence=None
+            skip=False
     return '\n'.join(out)
 
 def is_interim(note):
@@ -322,7 +349,8 @@ def is_interim(note):
     body=without_mermaid(note.get('body'))
     if HYPOTHESIS.search(body):return True
     if note.get('type') not in INTERIM_TYPES:return False
-    title=str(note.get('title') or '');summary=summary_text(body)
+    title=str(note.get('title') or '')
+    summary=summary_text(body)
     if not (STRONG.search(title+'\n'+body) or WEAK.search(title+'\n'+(summary or body[:400]))):return False
     return not any(not INTERIM.search(m[1]) for m in RESOLUTION.finditer(body))
 
@@ -345,7 +373,8 @@ QUALITY_CHECKS=(
 
 def quality_checks(note):
     """The content checks of QUALITY_CHECKS that a note trips (no style checks); the review worklist recomputes these."""
-    title=note.get('title','');body=without_mermaid(note.get('body',''))
+    title=note.get('title','')
+    body=without_mermaid(note.get('body',''))
     settled=any(not INTERIM.search(m[1]) for m in RESOLUTION.finditer(body))
     found=[]
     for pattern,message in QUALITY_CHECKS:
@@ -382,12 +411,16 @@ class TitleScorer:
     def __init__(self,notes):
         import math
         from collections import Counter
-        self.n=len(notes);self._words={};self._rare_limit=max(2,0.1*self.n)
+        self.n=len(notes)
+        self._words={}
+        self._rare_limit=max(2,0.1*self.n)
         df=Counter()
         for n in notes:
             title=n['title']
             w=self._words.get(title)
-            if w is None:w=frozenset(_title_words(title));self._words[title]=w
+            if w is None:
+                w=frozenset(_title_words(title))
+                self._words[title]=w
             df.update(w)
         self.df=df
         self._idf_sq={t:(math.log((self.n+1)/(c+1))+1)**2 for t,c in df.items()}
@@ -397,7 +430,8 @@ class TitleScorer:
         return math.log((self.n+1)/(self.df.get(token,0)+1))+1
     def rare(self,token):return self.df.get(token,0)<=self._rare_limit
     def vetoed(self,x,y):
-        left=[t for t in x-y if self.rare(t)];right=[t for t in y-x if self.rare(t)]
+        left=[t for t in x-y if self.rare(t)]
+        right=[t for t in y-x if self.rare(t)]
         # Substituted rare words on both sides, or an added identifier on either side.
         return bool(left and right) or any(_identifier(t) for t in left+right)
     @staticmethod
@@ -411,7 +445,8 @@ class TitleScorer:
     def _fold(cls,x,y):
         """y with inflections of x's words replaced by them ("using" and "use" are one word; the light
         stemmer keeps short stems apart)."""
-        diff_x=x-y;diff_y=y-x
+        diff_x=x-y
+        diff_y=y-x
         if not diff_x or not diff_y:return y
         by_base={}
         for u in sorted(diff_y):
@@ -423,17 +458,21 @@ class TitleScorer:
             bucket=by_base.get(cls._base(t))
             if bucket:
                 u=bucket.pop(0)
-                out.discard(u);out.add(t)
+                out.discard(u)
+                out.add(t)
         return out
     def _get_words(self,title):
         w=self._words.get(title)
-        if w is None:w=frozenset(_title_words(title));self._words[title]=w
+        if w is None:
+            w=frozenset(_title_words(title))
+            self._words[title]=w
         return w
     def score(self,a,b,lenient=False):
         """lenient: words that differ only as identifiers ("Sprint 3" / "Sprint 4") count as the same, for numbered status notes."""
         x,y=self._get_words(a),self._get_words(b)
         if lenient:
-            drop={t for t in x^y if _identifier(t)};x,y=x-drop,y-drop
+            drop={t for t in x^y if _identifier(t)}
+            x,y=x-drop,y-drop
         if not x or not y:return 0.0
         y=self._fold(x,y)
         if x==y:return 1.0
@@ -441,7 +480,8 @@ class TitleScorer:
         shared=x&y
         if len(shared)<2 or self.vetoed(x,y):return 0.0
         import math
-        idf_sq=self._idf_sq;default=self._default_idf_sq
+        idf_sq=self._idf_sq
+        default=self._default_idf_sq
         ws=sum(idf_sq.get(t,default) for t in shared)
         wx=sum(idf_sq.get(t,default) for t in x)
         wy=sum(idf_sq.get(t,default) for t in y)
@@ -449,7 +489,9 @@ class TitleScorer:
 
 def similar_title(title,notes,threshold=0.8):
     """Near-duplicate guard: the active note whose title scores highest, if it reaches the threshold."""
-    scorer=TitleScorer(notes);best=None;top=0.0
+    scorer=TitleScorer(notes)
+    best=None
+    top=0.0
     for note in notes:
         score=scorer.score(title,note['title'])
         if score>top:best,top=note,score
@@ -481,12 +523,17 @@ def _file_hashes(note,domain,root,keep=None,fresh=False):
     and files that were never hashed and are missing get none."""
     if note.get('type') not in FILE_HASH_TYPES:return []
     from .digests import locate,file_sha256
-    bindings=read_json(Path(root)/'bindings.json',{});digested={s['path'] for s in note.get('sources') or []};out=[]
+    bindings=read_json(Path(root)/'bindings.json',{})
+    digested={s['path'] for s in note.get('sources') or []}
+    out=[]
     for path in clean_files(note.get('files')):
         if len(out)>=HASHED_FILES_MAX:break
         if path in digested or len(path)>300 or chr(10) in path or any(c in path for c in '*?['):continue
-        if keep and path in keep and not fresh:out.append({'path':path,'sha256':keep[path]});continue
-        found,_=locate(root,domain,path,bindings);sha=file_sha256(found) if found else None
+        if keep and path in keep and not fresh:
+            out.append({'path':path,'sha256':keep[path]})
+            continue
+        found,_=locate(root,domain,path,bindings)
+        sha=file_sha256(found) if found else None
         if sha:
             from .rebaseline import keep as keep_baseline_file
             keep_baseline_file(root,found,sha)
@@ -504,7 +551,8 @@ def _set_identity(note,files,domain,root,moved=True):
     An update that leaves `files` alone (moved=False) keeps the identity when the folder is gone: the note was shared from another clone."""
     from .maps import note_identity,_resolve
     bindings=read_json(Path(root)/'bindings.json',{})
-    identity=note_identity(files,domain,bindings);folder=_resolve(files[0],domain,bindings) if files else None
+    identity=note_identity(files,domain,bindings)
+    folder=_resolve(files[0],domain,bindings) if files else None
     if identity:note['repo']=identity
     elif moved or (folder is not None and folder.is_dir()):note.pop('repo',None)
 
@@ -565,7 +613,8 @@ def _cross_domain(title,body,domain,root):
     globals_=set(global_domains(root))
     others=[d for d in domain_folders(root) if d!=domain]
     order=lambda d:(0 if d in globals_ else 1 if related(d,domain,root) else 2,d)
-    wanted=title.strip().casefold();wanted_body=body.strip()
+    wanted=title.strip().casefold()
+    wanted_body=body.strip()
     for other in sorted(others,key=order):
         notes=_active_titles(other,root)
         if not notes:continue
@@ -579,7 +628,8 @@ def _cross_domain(title,body,domain,root):
 def _cross_similar(title,body,note_type,domain,root):
     """Like _cross_domain, for title-similar notes (skipped with allow_similar)."""
     from .common import global_domains
-    globals_=set(global_domains(root));to_global=domain in globals_
+    globals_=set(global_domains(root))
+    to_global=domain in globals_
     order=lambda d:(0 if d in globals_ else 1 if related(d,domain,root) else 2,d)
     for other in sorted((d for d in domain_folders(root) if d!=domain),key=order):
         notes=[n for n in _active_titles(other,root) if not (note_type in KEYED_TYPES and effective_type(n)==note_type)]
@@ -627,9 +677,12 @@ def _carry_pointers(body,files,old_notes,dest):
     for old in old_notes:
         for line in sections(old.get('body') or '').get('links','').splitlines():
             line=rewrite_type_links(line.strip(),dest,{},moved_from=Path(old['path']))
-            if line and key(line) not in have:have.add(key(line));links.append(line)
+            if line and key(line) not in have:
+                have.add(key(line))
+                links.append(line)
     if links:body=amend(body,links=links)
-    mine=clean_files(files);more=[f for old in old_notes for f in clean_files(old.get('files'))]
+    mine=clean_files(files)
+    more=[f for old in old_notes for f in clean_files(old.get('files'))]
     merged=clean_files(mine+more)
     return body,(merged or files),[re.sub(r'^(?:[-*+]|\d+\.)\s+','',l) for l in links],[f for f in merged if f not in mine]
 
@@ -642,32 +695,33 @@ def _related_hits(note,domain,root,skip,domains=None):
     score), strong and owed_bar (rank 1, strong, and a second signal: pair_score >= 0.5 or a similarity well above the model's threshold;
     body coverage alone never counts). One search over the note's title and summary through the relevance gate in `domains` (default
     [domain]). Advisory: never raises, and digests and keyed types get none."""
-    kind=note.get('type');group=RELATED_GROUPS.get(kind,kind)
+    kind=note.get('type')
+    group=RELATED_GROUPS.get(kind,kind)
     if kind in KEYED_TYPES or note.get('sources'):return []
     try:
         from .search import search_domains,relevance_gate,strong,STRONG_MARGIN
         from .semantic import threshold
-        domains=list(domains or [domain]);near=threshold(root)
+        domains=list(domains or [domain])
+        near=threshold(root)
         query=f"{note['title']} {summary_text(note.get('body') or '') or ''}"
         hits=search_domains(query,domains,6+3*(len(domains)-1),root,keep=relevance_gate(query,root))
         found=[h for h in hits if not (h['domain']==domain and h['id']==note['id']) and not (h['domain']==domain and h['id'] in skip)
                and not h.get('sources') and h.get('type') not in KEYED_TYPES and RELATED_GROUPS.get(h.get('type'),h.get('type'))==group]
-        scorers={};out=[]
+        scorers={}
+        out=[]
         for rank,h in enumerate(found,1):
             if h['domain'] not in scorers:scorers[h['domain']]=TitleScorer([n for n in inventory(h['domain'],root) if n.get('status','active')=='active'])
             pair=pair_score(scorers[h['domain']],note['title'],h['title'],kind,h.get('type'))
-            sim=h.get('similarity');is_strong=bool(strong(h,root))
+            sim=h.get('similarity')
+            is_strong=bool(strong(h,root))
             second=pair>=0.5 or (near is not None and sim is not None and sim>=near+STRONG_MARGIN)
             out.append({**h,'rank':rank,'gate':h.get('gate'),'coverage':h.get('coverage'),'similarity':sim,'pair_score':round(pair,3),
                         'strong':is_strong,'owed_bar':rank==1 and is_strong and bool(second)})
         return out
     except Exception as exc:
         from .logs import swallowed
-        swallowed('notes.related',exc,root);return []
-
-def _related(note,domain,root,skip):
-    """Up to 3 active notes of the same type group the new note may replace (see _related_hits). Advisory: never raises."""
-    return _related_listing(_related_hits(note,domain,root,skip),domain)
+        swallowed('notes.related',exc,root)
+        return []
 
 def _related_listing(hits,domain):
     return [{'ref':f"{domain}:{h['id']}",'title':h['title'],'type':h['type']} for h in hits[:3]]
@@ -758,7 +812,8 @@ def _user_brief_hint(note,domain,root):
         return f"no user brief yet ({prefs} global preferences): capture --global --type brief --title 'User brief' --summary '...' {details}"
     except Exception as exc:
         from .logs import swallowed
-        swallowed('notes.user_brief_hint',exc,root);return None
+        swallowed('notes.user_brief_hint',exc,root)
+        return None
 
 RULES_WARN=15
 
@@ -776,12 +831,16 @@ def _rule_hint(note,domain,root):
                 f"only their titles; unmark one that need not be in front of every session with update REF --no-rule")
     except Exception as exc:
         from .logs import swallowed
-        swallowed('notes.rule_hint',exc,root);return None
+        swallowed('notes.rule_hint',exc,root)
+        return None
 
 def capture(title,body,tags,domain,root=None,**metadata):
-    root=Path(root or memory_root()).resolve();domain=canonical_domain(domain,root)
+    root=Path(root or memory_root()).resolve()
+    domain=canonical_domain(domain,root)
     with store_lock(root):
-        selected_type=metadata.pop('type','knowledge');check_type(selected_type,root);derived=prefix_for(selected_type,root=root)
+        selected_type=metadata.pop('type','knowledge')
+        check_type(selected_type,root)
+        derived=prefix_for(selected_type,root=root)
         # The rule flag is checked before any duplicate answer, so a refused value never comes back as a match.
         from .repository import RULE_TYPES,rule_type_error
         rule=metadata.pop('rule',False)
@@ -806,13 +865,21 @@ def capture(title,body,tags,domain,root=None,**metadata):
                         except (OSError,ValueError):known[d]={}
                     if nid in known[d]:return d,known[d][nid]
                 return None
-            head=f'{ref} already holds this note';last,at=note,where;seen={note['id']};missing=None
+            head=f'{ref} already holds this note'
+            last,at=note,where
+            seen={note['id']}
+            missing=None
             while last.get('status')=='superseded' and last.get('superseded_by'):
-                sid=str(last['superseded_by']).rpartition(':')[2];found=lookup(sid)
-                if not found:missing=sid;break
+                sid=str(last['superseded_by']).rpartition(':')[2]
+                found=lookup(sid)
+                if not found:
+                    missing=sid
+                    break
                 if found[1]['id'] in seen:break
-                at,last=found;seen.add(last['id'])
-            by=short_ref(at,last['id']);status=last.get('status','active')
+                at,last=found
+                seen.add(last['id'])
+            by=short_ref(at,last['id'])
+            status=last.get('status','active')
             if last is not note:head+=f' and is superseded by {by}'
             if missing:warning=f'{head}; {by} is superseded by {missing[:8]}, which no longer exists, so no live note can be marked as this rule'
             elif status=='superseded':warning=f'{head} and is superseded; read {by} to find the note that replaced it'
@@ -831,11 +898,14 @@ def capture(title,body,tags,domain,root=None,**metadata):
         if domain==global_domains(root)[0]:ensure_global(root)
         elif domain not in registered and domain not in {'global','_global'}:raise ValueError('Domain is not registered; run bind first')
         body=format_body(body)
-        key=metadata.pop('idempotency_key',None);allow_similar=bool(metadata.pop('allow_similar',False))
-        supersedes=metadata.pop('supersedes',None) or [];drop_links=bool(metadata.pop('drop_links',False))
+        key=metadata.pop('idempotency_key',None)
+        allow_similar=bool(metadata.pop('allow_similar',False))
+        supersedes=metadata.pop('supersedes',None) or []
+        drop_links=bool(metadata.pop('drop_links',False))
         if isinstance(supersedes,str):supersedes=[supersedes]
         existing=inventory(domain,root,retired=True)
-        resolved=[];superseded_revisions={}
+        resolved=[]
+        superseded_revisions={}
         for given in supersedes:
             ref,revision=split_revision(given)
             try:other,ref_id=resolve_ref(ref,domain,root)
@@ -881,7 +951,8 @@ def capture(title,body,tags,domain,root=None,**metadata):
         absorbed=None
         found=_cross_domain(title,body,domain,root) or (None if allow_similar or digesting else _cross_similar(title,body,selected_type,domain,root))
         if found:
-            action,other,match=found;ref=f"{other}:{match['id']}"
+            action,other,match=found
+            ref=f"{other}:{match['id']}"
             if action in {'duplicate','promote'} and effective_type(match)!=selected_type:
                 raise ValueError(f'Existing note {ref} has a different type; update that note instead')
             if action=='duplicate':return matched({'ok':True,'id':match['id'],'domain':other,'ref':ref,'status':'duplicate','path':match['path']},match,other)
@@ -895,7 +966,13 @@ def capture(title,body,tags,domain,root=None,**metadata):
                 raise ValueError(f"possible_duplicate conflict: similar to {ref} \"{match['title']}\" in another project. If it holds for both "
                                  f"projects, run `promote {ref}` and then update it; pass allow_similar only for a genuinely distinct note")
             absorbed=(other,match)   # 'supersede': the new global note replaces the project one
-        review_by=metadata.pop('review_by',None);context=metadata.pop('context','');files=metadata.pop('files',None);origin=metadata.pop('origin',None);commands=metadata.pop('commands',None);sources=metadata.pop('sources',None);pinned=metadata.pop('pinned',False)
+        review_by=metadata.pop('review_by',None)
+        context=metadata.pop('context','')
+        files=metadata.pop('files',None)
+        origin=metadata.pop('origin',None)
+        commands=metadata.pop('commands',None)
+        sources=metadata.pop('sources',None)
+        pinned=metadata.pop('pinned',False)
         if metadata:raise ValueError('Unsupported capture metadata: '+', '.join(metadata))
         carried=carried_files=[]
         if supersedes and not drop_links:
@@ -907,7 +984,8 @@ def capture(title,body,tags,domain,root=None,**metadata):
             if conflict:raise ValueError(conflict)
         replaces=supersedes+([absorbed[1]['id']] if absorbed else [])
         path,note,text=build_note(title,body,tags,domain,root,selected_type,context=context,key=key,review_by=review_by,supersedes=replaces,files=files,origin=origin,commands=commands,sources=sources,pinned=pinned,rule=rule)
-        changes={path.relative_to(root).as_posix():text};expected={}
+        changes={path.relative_to(root).as_posix():text}
+        expected={}
         for old in supersedes:
             # The new note and the retirement of what it replaces commit together.
             old_changes,old_expected,_=_change_set(old,domain,'supersede',root,superseded_revisions.get(old),successor=note,pending=changes)
@@ -916,7 +994,8 @@ def capture(title,body,tags,domain,root=None,**metadata):
         if absorbed:
             # The project note moves into the global archive as superseded, so its history stays with its successor.
             moved,moved_expected=_move_set([{'note':absorbed[1],'target':domain,'status':'superseded','superseded_by':note['id']}],root)
-            changes.update(moved);expected.update(moved_expected)
+            changes.update(moved)
+            expected.update(moved_expected)
             result=_commit_many([domain,absorbed[0]],changes,'capture_promote',root,expected)
             result['promoted']=[f"{absorbed[0]}:{absorbed[1]['id']}"]
         else:
@@ -936,7 +1015,10 @@ def capture(title,body,tags,domain,root=None,**metadata):
         result['related_hint']=f"if this replaces one of them: supersede REF --expected-revision ITS_REV --by {domain}:{note['id']}@{mine}; a different subject: nothing to do"
     warnings=quality_warnings(note)
     if warnings:result['quality_warnings']=warnings
-    if supersedes:result['superseded']=[f'{domain}:{old}' for old in supersedes];result['carried_links']=carried;result['carried_files']=carried_files
+    if supersedes:
+        result['superseded']=[f'{domain}:{old}' for old in supersedes]
+        result['carried_links']=carried
+        result['carried_files']=carried_files
     user=_user_brief_hint(note,domain,root)
     if user:result['user_brief']=user
     rules=_rule_hint(note,domain,root)
@@ -1014,10 +1096,12 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
     elif action=='confirm':
         # "Still true": a dated confirmation and a fresh review date, without touching content or `updated`.
         if note.get('status','active')!='active':raise ValueError('Only active notes can be confirmed')
-        today=clock.today().isoformat();confirmed=[d for d in note.get('confirmed') or [] if isinstance(d,str) and d!=today]
+        today=clock.today().isoformat()
+        confirmed=[d for d in note.get('confirmed') or [] if isinstance(d,str) and d!=today]
         note['confirmed']=(confirmed+[today])[-CONFIRM_KEEP:]
         if note.get('sources'):note['sources']=_rehashed(note,domain,root)   # still true of the file as it is now
-        _set_file_hashes(note,domain,root,{h['path']:h['sha256'] for h in note.get('file_hashes') or []},fresh=True);note['checked']=now()   # a map or brief reads current from here until the next commit
+        _set_file_hashes(note,domain,root,{h['path']:h['sha256'] for h in note.get('file_hashes') or []},fresh=True)  # a map or brief reads current from here until the next commit
+        note['checked']=now()
         review=default_review_by(note['type'],root=root)
         if review:note['review_by']=review
         elif note.get('review_by'):
@@ -1038,7 +1122,8 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
         if status=='resolved':raise ValueError(f'Use reopen {short_ref(domain,note_id)} for a resolved note')
         if status=='superseded':raise ValueError(f"Superseded by {domain}:{note.get('superseded_by')}; read it, or capture a replacement")
         if status!='archived':raise ValueError('Only archived notes can be restored')
-        note['status']='active';note['pinned']=True
+        note['status']='active'
+        note['pinned']=True
         if isinstance(note.get('last_retirement'),dict):note['last_retirement']={**note['last_retirement'],'restored_at':now(),'restored_by':actor}
         if note['type'] in KEYED_TYPES:
             from .maps import capture_conflict
@@ -1082,7 +1167,8 @@ def _change_set(note_id,domain,action,root,expected_revision=None,successor=None
             if files:successor_note['files']=files
         else:links,pointed=[],[]
         if isinstance(carried,dict):carried.update(carried_links=links,carried_files=pointed)
-        keep_baseline(successor_note);successor_note['updated']=now()
+        keep_baseline(successor_note)
+        successor_note['updated']=now()
         changes[successor_path.relative_to(root).as_posix()]=serialize(successor_note)
         expected[successor_path.relative_to(root).as_posix()]=successor_note['revision']
     if target!=path:_move_links(root,domain,note_id,path,target,changes,expected,pending)
@@ -1093,7 +1179,8 @@ def _move_links(root,domain,note_id,path,target,changes,expected,pending):
     current text, in this domain and in every other domain folder. Archive, resolve, reopen and restore all come here. Edits go into `changes`,
     and the revision of each note read from disk into `expected`. More than LINK_UPDATE_MAX rewrites is refused before anything is written."""
     from .migration import rewrite_type_links
-    moved={};rewritten=0
+    moved={}
+    rewritten=0
     if any(text is None for text in pending.values()):
         from .repository import parse_text
         for rel,text in pending.items():
@@ -1104,17 +1191,22 @@ def _move_links(root,domain,note_id,path,target,changes,expected,pending):
     for d in [domain,*others]:
         for referring in inventory(d,root,retired=True):
             if referring['id']==note_id:continue
-            rel=Path(referring['path']).relative_to(root).as_posix();original=rel
+            rel=Path(referring['path']).relative_to(root).as_posix()
+            original=rel
             if rel in pending and pending[rel] is None:
                 # An earlier step moved this note (e.g. retired it too): rewrite its new copy, not the old file.
                 if referring['id'] not in moved:continue
-                rel=moved[referring['id']];referring={**referring,'path':str(root/rel)}
+                rel=moved[referring['id']]
+                referring={**referring,'path':str(root/rel)}
             current=parse_changed(changes.get(rel,pending.get(rel)),referring)
-            old=current['body'];new=rewrite_type_links(old,Path(referring['path']),{path.resolve():target})
+            old=current['body']
+            new=rewrite_type_links(old,Path(referring['path']),{path.resolve():target})
             if new!=old:
                 rewritten+=1
                 if rewritten>LINK_UPDATE_MAX:raise ValueError(f'too_many_link_updates: more than {LINK_UPDATE_MAX} notes link to this one; move it through a reviewed operation of its own')
-                keep_baseline(current);current['body']=new;current['updated']=now()
+                keep_baseline(current)
+                current['body']=new
+                current['updated']=now()
                 changes[rel]=serialize(current)
                 if rel==original:expected[rel]=referring['revision']
 
@@ -1131,7 +1223,8 @@ def change(note_id,domain,action,root=None,expected_revision=None,rehash=True,ac
         carried={}
         actor=actor or 'agent'
         changes,expected,target=_change_set(note_id,domain,action,root,expected_revision,carried=carried,rehash=rehash,actor=actor,**values)
-        result=_commit(domain,changes,action,root,expected);result.update(id=note_id,path=str(target),status=action,**carried)
+        result=_commit(domain,changes,action,root,expected)
+        result.update(id=note_id,path=str(target),status=action,**carried)
         if action=='delete':result.update(path=None,undo='undo '+result['operation_id'])
         if action=='update' and ('body' in values or 'title' in values):
             from .repository import parse
@@ -1159,7 +1252,11 @@ def rewrite(items,domain=None,root=None):
     if not isinstance(items,list) or not items:raise ValueError('rewrite needs a JSON list of {"ref", "revision", "body"}')
     if len(items)>REWRITE_MAX:raise ValueError(f'rewrite takes at most {REWRITE_MAX} notes; split the batch')
     with store_lock(root):
-        changes={};domains=set();rewritten=[];unchanged=[];seen=set()
+        changes={}
+        domains=set()
+        rewritten=[]
+        unchanged=[]
+        seen=set()
         for item in items:
             if not isinstance(item,dict):raise ValueError('Each item is an object with ref, revision and body')
             if 'title' in item:raise ValueError('rewrite never changes titles: [[links]] and filenames depend on them')
@@ -1182,8 +1279,11 @@ def rewrite(items,domain=None,root=None):
             if note.get('review_by'):after['review_by']=note['review_by']
             else:after.pop('review_by',None)
             text=serialize(after)
-            if text==path.read_bytes().decode('utf-8'):unchanged.append(ref);continue
-            changes[rel]=text;domains.add(d)
+            if text==path.read_bytes().decode('utf-8'):
+                unchanged.append(ref)
+                continue
+            changes[rel]=text
+            domains.add(d)
             entry={'ref':ref,'title':note['title'],'type':note['type']}
             warnings=quality_warnings(after)
             if warnings:entry['quality_warnings']=warnings
@@ -1260,7 +1360,8 @@ def check_action(note_id,domain,root=None,item=None,index=None,done=True,expecte
         _,note=find_note(note_id,domain,root)
         if expected_revision:check_revision(note['revision'],expected_revision,f'{domain}:{note_id}')
         if not takes_actions(note.get('type'),root):raise ValueError('Only plan, bug and risk notes, and custom types that take them, have action items')
-        items=action_items(note['body']);chosen=pick_item(items,item,index)
+        items=action_items(note['body'])
+        chosen=pick_item(items,item,index)
         if items[chosen][0]==done:
             return {'ok':True,'id':note['id'],'status':'unchanged','item':items[chosen][1],'done':done}
         result=change(note['id'],domain,'update',root,note['revision'],rehash=False,body=set_action(note['body'],chosen,done))
@@ -1270,8 +1371,3 @@ def check_action(note_id,domain,root=None,item=None,index=None,done=True,expecte
             now=(result.get('revisions') or {}).get(f"{domain}:{note['id']}") or 'REV'
             result['hint']=f'Every Action Item is done. If the work is finished, run `resolve {ref} --expected-revision {now}` so the note leaves the active set; if not, add the next step with `update {ref} --expected-revision {now} --add-action`.'
         return result
-
-def main(argv=None):
-    from .cli import main as command
-    return command(argv)
-if __name__=='__main__':raise SystemExit(main())

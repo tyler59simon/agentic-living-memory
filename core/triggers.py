@@ -12,7 +12,8 @@ GIT_TIMEOUT=2
 def glob_regex(pattern):
     """A glob as a regex: ** is any number of folders, * and ? stay inside one path segment. Case-insensitive.
     (Python 3.10 has no PurePath.full_match.)"""
-    parts=str(pattern).strip().replace('\\','/').strip('/').split('/');out=[]
+    parts=str(pattern).strip().replace('\\','/').strip('/').split('/')
+    out=[]
     for i,part in enumerate(parts):
         last=i==len(parts)-1
         if part=='**':out.append('.*' if last else '(?:[^/]+/)*')
@@ -33,7 +34,8 @@ def decision_docs(paths,bindings):
     "decision_docs": {"include": [...], "exclude": [...]} to replace either default list."""
     config=(bindings or {}).get('decision_docs')
     config=config if isinstance(config,dict) else {}
-    include=_globs(config.get('include'),DEFAULT_INCLUDE);exclude=_globs(config.get('exclude'),DEFAULT_EXCLUDE)
+    include=_globs(config.get('include'),DEFAULT_INCLUDE)
+    exclude=_globs(config.get('exclude'),DEFAULT_EXCLUDE)
     return [p for p in dict.fromkeys(paths) if matches(p,include) and not matches(p,exclude)]
 
 def changed_since(repo,since):

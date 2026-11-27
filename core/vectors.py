@@ -25,14 +25,16 @@ ENV='LIVING_MEMORY_NATIVE'
 SUPPORTED=((0,1,6),(0,2,0))   # sqlite-vec versions whose vec0 syntax and cosine metric this code uses: >= first, < second
 K_MAX=4096                     # vec0's own ceiling on k
 K_START=200
-EVIDENCE=2
 
 def _blob(vector):
-    if sys.byteorder!='little':vector=array.array('f',vector);vector.byteswap()
+    if sys.byteorder!='little':
+        vector=array.array('f',vector)
+        vector.byteswap()
     return vector.tobytes()
 
 def _vector(blob):
-    vector=array.array('f');vector.frombytes(blob)
+    vector=array.array('f')
+    vector.frombytes(blob)
     if sys.byteorder!='little':vector.byteswap()
     return vector
 
@@ -53,7 +55,9 @@ def _library_path():
         found=None
         if folder:
             for suffix in ('.dll','.so','.dylib'):
-                if (folder/('vec0'+suffix)).is_file():found=str(folder/'vec0');break
+                if (folder/('vec0'+suffix)).is_file():
+                    found=str(folder/'vec0')
+                    break
         _library['path']=found
     return _library['path']
 
@@ -65,7 +69,8 @@ def enabled(root):
 
 def set_enabled(root,on):
     from .common import atomic_write,canonical_json
-    folder=Path(root)/'.models';folder.mkdir(parents=True,exist_ok=True)
+    folder=Path(root)/'.models'
+    folder.mkdir(parents=True,exist_ok=True)
     atomic_write(folder/SETTINGS,canonical_json({'native':bool(on)}))
 
 def _parse(version):
@@ -121,22 +126,26 @@ def update(domain,root,notes,model,identity,fingerprint,known=None):
     Callers hold the store lock. known: text sha256 -> embedding the caller already computed (a new note's overview
     text, embedded once for search.sqlite3). Returns a summary dict."""
     from .common import retry_sharing
-    path=path_of(domain,root);dim=model.dim if model else 0
+    path=path_of(domain,root)
+    dim=model.dim if model else 0
     want={'version':str(VERSION),'identity':identity or '','dim':str(dim),'mode':_mode()}
     rebuild=not path.exists()
     if not rebuild:
         try:
             db=sqlite3.connect(path,timeout=5)
             try:
-                meta=_meta(db);rebuild=any(meta.get(k)!=v for k,v in want.items())
+                meta=_meta(db)
+                rebuild=any(meta.get(k)!=v for k,v in want.items())
                 if not rebuild:return _sync(db,notes,model,dim,root,fingerprint,known=known)
             finally:db.close()
         except sqlite3.DatabaseError:rebuild=True   # damaged or not a database: rebuilt below, never trusted
-    fd,name=tempfile.mkstemp(prefix='.vectors-',suffix='.sqlite3',dir=path.parent);os.close(fd)
+    fd,name=tempfile.mkstemp(prefix='.vectors-',suffix='.sqlite3',dir=path.parent)
+    os.close(fd)
     try:
         db=sqlite3.connect(name)
         try:
-            db.executescript(SCHEMA);_put(db,**want,generation=0,native_generation=-1)
+            db.executescript(SCHEMA)
+            _put(db,**want,generation=0,native_generation=-1)
             summary=_sync(db,notes,model,dim,root,fingerprint,fresh=True,known=known)
         finally:db.close()
         retry_sharing(lambda:os.replace(name,path))
@@ -147,27 +156,34 @@ def update(domain,root,notes,model,identity,fingerprint,known=None):
 def _sync(db,notes,model,dim,root,fingerprint,fresh=False,known=None):
     from .units import extract
     db.executescript(SCHEMA)
-    meta=_meta(db);generation=int(meta.get('generation') or 0)
+    meta=_meta(db)
+    generation=int(meta.get('generation') or 0)
     native,_=load(db) if model and enabled(root) else (False,None)
     if native and not _has_knn(db):db.execute(f'CREATE VIRTUAL TABLE unit_knn USING vec0(embedding float[{int(dim)}] distance_metric=cosine)')
     # vec0 rows are kept in step only while they were written with the units; otherwise they are rewritten in full.
     resync=native and str(meta.get('native_generation'))!=str(generation)
     existing=dict(db.execute('SELECT note_id,max(note_revision) FROM unit GROUP BY note_id'))
     current={n['id']:n for n in notes if n.get('id')}
-    touched=set();removed=set();embedded=0;extracted=0
+    touched=set()
+    removed=set()
+    embedded=0
+    extracted=0
     with db:
         for note_id in set(existing)-set(current):
             removed.update(r for (r,) in db.execute('SELECT rowid FROM unit WHERE note_id=?',(note_id,)))
             db.execute('DELETE FROM unit WHERE note_id=?',(note_id,))
         for note_id,note in current.items():
             if existing.get(note_id)==note['revision']:continue
-            units=extract(note);extracted+=1
+            units=extract(note)
+            extracted+=1
             if not USE_UNITS:units=units[:1]
             old={u:(r,s) for r,u,s in db.execute('SELECT rowid,unit_id,sha FROM unit WHERE note_id=?',(note_id,))}
             for unit in units:
                 if model and not db.execute('SELECT 1 FROM blob WHERE sha=?',(unit['sha'],)).fetchone():
                     vector=(known or {}).get(unit['sha'])
-                    if vector is None:vector=model.embed(unit['text']);embedded+=bool(vector)
+                    if vector is None:
+                        vector=model.embed(unit['text'])
+                        embedded+=bool(vector)
                     if vector:db.execute('INSERT INTO blob VALUES(?,?)',(unit['sha'],_blob(vector)))
                 lines=unit['lines'] or [None,None]
                 values=(note_id,note['revision'],unit['role'],unit['heading'],lines[0],lines[1],unit['sha'],unit['excerpt'])
@@ -178,7 +194,9 @@ def _sync(db,notes,model,dim,root,fingerprint,fresh=False,known=None):
                 else:
                     rowid=db.execute('INSERT INTO unit(note_id,note_revision,role,heading,line_start,line_end,sha,excerpt,unit_id) VALUES(?,?,?,?,?,?,?,?,?)',values+(unit['unit_id'],)).lastrowid
                     touched.add(rowid)
-            for rowid,_ in old.values():db.execute('DELETE FROM unit WHERE rowid=?',(rowid,));removed.add(rowid)
+            for rowid,_ in old.values():
+                db.execute('DELETE FROM unit WHERE rowid=?',(rowid,))
+                removed.add(rowid)
         if removed or extracted:
             db.execute('DELETE FROM blob WHERE sha NOT IN (SELECT sha FROM unit)')
         if native:
@@ -200,7 +218,8 @@ def reuse(domain,root,identity):
     rebuild_index uses it for note-level vectors: a note's overview unit embeds exactly its note-level text, so an
     edit that leaves the title and summary alone (a moved section, a property) costs no embedding."""
     import hashlib
-    path=path_of(domain,root);opened={}
+    path=path_of(domain,root)
+    opened={}
     def lookup(text):
         if not identity or not path.exists():return None
         try:
@@ -210,7 +229,9 @@ def reuse(domain,root,identity):
             if not opened['ok']:return None
             row=opened['db'].execute('SELECT vec FROM blob WHERE sha=?',(hashlib.sha256(text.encode('utf-8')).hexdigest(),)).fetchone()
             return _vector(row[0]) if row else None
-        except sqlite3.DatabaseError:opened['ok']=False;return None
+        except sqlite3.DatabaseError:
+            opened['ok']=False
+            return None
     def close():
         if opened.get('db') is not None:opened['db'].close()
     lookup.close=close
@@ -222,7 +243,10 @@ class Index:
     """A read-only view of one domain's unit index for one query. backend is 'native' or 'python'; reason says why
     native was not used (None when it was)."""
     def __init__(self,db,meta,backend,reason):
-        self.db=db;self.meta=meta;self.backend=backend;self.reason=reason
+        self.db=db
+        self.meta=meta
+        self.backend=backend
+        self.reason=reason
         self.vectors=int(meta.get('vectors') or 0)
 
     def close(self):self.db.close()
@@ -233,7 +257,8 @@ class Index:
         if self.backend=='native':
             try:
                 owner={}
-                k=min(self.vectors,K_START,K_MAX);probe=_blob(query)
+                k=min(self.vectors,K_START,K_MAX)
+                probe=_blob(query)
                 while k:
                     # vec0 takes exactly its own `ORDER BY distance`; ties are broken by rowid here.
                     rows=sorted(self.db.execute('SELECT rowid,distance FROM unit_knn WHERE embedding MATCH ? AND k=? ORDER BY distance',(probe,k)),key=lambda r:(r[1],r[0]))
@@ -251,7 +276,9 @@ class Index:
                     chosen=sorted(best.items(),key=lambda r:(-r[1],r[0]))[:top]
                     tied=bool(rows) and chosen and len(rows)==k and rows[-1][1]<=1.0-chosen[-1][1]+1e-9
                     if (len(best)>=top and not tied) or k>=self.vectors:return chosen
-                    if k>=K_MAX:self.backend,self.reason='python','knn_k_cap';break
+                    if k>=K_MAX:
+                        self.backend,self.reason='python','knn_k_cap'
+                        break
                     k=min(self.vectors,k*4,K_MAX)
                 else:return []
             except sqlite3.Error:self.backend,self.reason='python','knn_error'   # served below from the same embeddings
@@ -287,9 +314,15 @@ def open_index(domain,root,fingerprint,identity,dim):
     except sqlite3.DatabaseError:
         if db is not None:db.close()   # an open handle would block the rebuild's replace on Windows
         return None,'unit_index_unreadable'
-    if meta.get('version')!=str(VERSION) or meta.get('mode')!=_mode():db.close();return None,'unit_index_version'
-    if meta.get('identity')!=(identity or '') or meta.get('dim')!=str(dim):db.close();return None,'unit_index_model'
-    if meta.get('notes_fingerprint')!=fingerprint:db.close();return None,'unit_index_stale'
+    if meta.get('version')!=str(VERSION) or meta.get('mode')!=_mode():
+        db.close()
+        return None,'unit_index_version'
+    if meta.get('identity')!=(identity or '') or meta.get('dim')!=str(dim):
+        db.close()
+        return None,'unit_index_model'
+    if meta.get('notes_fingerprint')!=fingerprint:
+        db.close()
+        return None,'unit_index_stale'
     backend,reason='python',None
     if not enabled(root):reason='disabled'
     elif meta.get('native_generation')!=meta.get('generation'):reason='native_stale' if _has_knn(db) else 'native_absent'
@@ -306,8 +339,10 @@ def status(domain,root):
     try:
         db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)
         try:
-            meta=_meta(db);units,notes=db.execute('SELECT count(*),count(DISTINCT note_id) FROM unit').fetchone()
-            knn=_has_knn(db);fresh=knn and meta.get('native_generation')==meta.get('generation')
+            meta=_meta(db)
+            units,notes=db.execute('SELECT count(*),count(DISTINCT note_id) FROM unit').fetchone()
+            knn=_has_knn(db)
+            fresh=knn and meta.get('native_generation')==meta.get('generation')
             if fresh:
                 ok,_=load(db)
                 if ok and db.execute('SELECT count(*) FROM unit_knn').fetchone()[0]!=int(meta.get('vectors') or 0):fresh=False

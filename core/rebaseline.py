@@ -89,7 +89,8 @@ def keep(root,path,sha=None):
         return actual if _put(root,actual,data) else None
     except Exception as exc:
         from .logs import swallowed
-        swallowed('rebaseline.keep',exc,root);return None
+        swallowed('rebaseline.keep',exc,root)
+        return None
 
 def load(root,sha):
     try:return baseline_file(root,sha).read_bytes()
@@ -162,11 +163,18 @@ def citations(body,tracked):
     for m in FILE_CITE.finditer(body):found.append((m.start(),'file',m))
     for m in BARE_CITE.finditer(body):found.append((m.start(),'bare',m))
     for m in LINE_CITE.finditer(body):found.append((m.start(),'line',m))
-    found.sort(key=lambda f:f[0]);out=[];last=None;last_end=0;everything=set(tracked)
+    found.sort(key=lambda f:f[0])
+    out=[]
+    last=None
+    last_end=0
+    everything=set(tracked)
     for _,kind,m in found:
-        named=None;unsure=False
+        named=None
+        unsure=False
         if kind=='file':
-            last=_owners(m[1],tracked);last_end=m.end();first=2
+            last=_owners(m[1],tracked)
+            last_end=m.end()
+            first=2
         else:
             first=1
             if kind=='line':
@@ -175,7 +183,8 @@ def citations(body,tracked):
                 elif names:unsure=True
         files=named if named is not None else last if last is not None else (set(tracked) if len(tracked)==1 else everything)
         if unsure:files=everything
-        a=int(m[first]);b=int(m[first+1]) if m[first+1] else a
+        a=int(m[first])
+        b=int(m[first+1]) if m[first+1] else a
         spans=[m.span(first)]+([m.span(first+1)] if m[first+1] else [])
         if a>b or a<1:continue
         out.append({'files':set(files),'start':a,'end':b,'spans':spans,'ambiguous':unsure or len(files)>1})
@@ -185,7 +194,8 @@ def identifiers(body,symbols=()):
     """Names the note mentions that code would contain: a name alone in backticks (any length, so `ID` and `db` count; of a dotted or
     `::` path, its last part), snake_case and CamelCase words, and any word equal to a symbol the file defines. The other words of a
     backticked command or call are prose (`git add -N` and `item_fields(text)` do not name `git` or `text`). File names and links are left out."""
-    names=set();words=IDENT.findall(NOISE.sub(' ',TICKED.sub(' ',body)))
+    names=set()
+    words=IDENT.findall(NOISE.sub(' ',TICKED.sub(' ',body)))
     for span in TICKED.findall(body):
         span=span.strip()
         if PATHLIKE.search(span):continue
@@ -256,7 +266,8 @@ def assess(body,path,tracked,old,new):
     """{relevant, reason, shifts}: whether the change from text `old` to `new` of tracked file `path` may affect the note, and, when it cannot,
     [(body span, new number)] for its line citations of this file."""
     def relevant(reason):return {'relevant':True,'reason':reason,'shifts':[]}
-    a=old.split('\n');b=new.split('\n')
+    a=old.split('\n')
+    b=new.split('\n')
     ops=_opcodes(a,b)
     changed=[op for op in ops if op[0]!='equal']
     if not changed:return {'relevant':False,'reason':'only line endings or encoding changed','shifts':[]}
@@ -264,13 +275,15 @@ def assess(body,path,tracked,old,new):
     if churn>CHANGE_MAX*max(len(a),1):return relevant(f'{churn} of {len(a)} lines changed')
     cites=[c for c in citations(body,tracked) if path in c['files']]
     if any(c['ambiguous'] for c in cites):return relevant('a line citation may refer to another file')
-    units_old=_units(path,old);units_new=_units(path,new)
+    units_old=_units(path,old)
+    units_new=_units(path,new)
     names=identifiers(body,[u[0] for u in units_old])
     def cites_unit(u):return any(c['start']<=u[2] and c['end']>=u[1] for c in cites) or (u[0] and u[0].rsplit('.',1)[-1] in names)
     cited_units=[u for u in units_old if u[0] and cites_unit(u)]
     if not cites and not cited_units:return relevant('the note cites no line or symbol of this file')
     for _,i1,i2,j1,j2 in changed:
-        lo=i1+1-MARGIN;hi=max(i2,i1+1)+MARGIN
+        lo=i1+1-MARGIN
+        hi=max(i2,i1+1)+MARGIN
         hit=next((c for c in cites if c['start']<=hi and c['end']>=lo),None)
         if hit:return relevant(f"lines {i1+1}-{max(i2,i1+1)} changed, near the cited line {hit['start']}")
         touched=set(IDENT.findall('\n'.join(a[i1:i2]+b[j1:j2])))&names
@@ -280,10 +293,12 @@ def assess(body,path,tracked,old,new):
     for symbol,_,_,text in cited_units:
         if text not in after.get(symbol,[]):return relevant(f'the cited definition {symbol} changed')
     # A cited class covers its members (`RetryPolicy` covers `RetryPolicy.max_tries`): any member changed, added or removed counts.
-    old_members=_members(units_old);new_members=_members(units_new)
+    old_members=_members(units_old)
+    new_members=_members(units_new)
     for owner in {u[0] for u in cited_units}:
         if sorted(old_members.get(owner,[]))!=sorted(new_members.get(owner,[])):return relevant(f'a member of the cited definition {owner} changed')
-    shifts=[];where=_index(b)
+    shifts=[]
+    where=_index(b)
     for c in cites:
         moved=[_shift(c['start'],ops),_shift(c['end'],ops)]
         if None in moved:return relevant(f"the cited line {c['start']} moved in a way that cannot be followed")
@@ -305,11 +320,15 @@ def note_plan(note,root,bindings,deadline=None,dry_run=False):
     from .digests import states,locate,NAMED
     listed=(note.get('sources') or [])+(note.get('file_hashes') or [])
     recorded={s['path']:s['sha256'] for s in listed if s.get('sha256')}
-    found=states(listed,note['domain'],root,bindings);files=[];shifts=[];specs=None
+    found=states(listed,note['domain'],root,bindings)
+    files=[]
+    shifts=[]
+    specs=None
     tracked=list(recorded)
     for path,state in found.items():
         if state=='missing':   # still stale, as digests.changed counts it: only a reviewer can say what a deleted file means
-            files.append({'path':path,'relevant':True,'reason':'the file is missing','sha256':None});continue
+            files.append({'path':path,'relevant':True,'reason':'the file is missing','sha256':None})
+            continue
         if state!='changed':continue
         if NAMED.match(path) and specs is None:
             from .digests import _specs
@@ -320,9 +339,14 @@ def note_plan(note,root,bindings,deadline=None,dry_run=False):
             data=location.read_bytes() if location else None
         except OSError:data=None
         if data is None or len(data)>BASELINE_MAX or not _text(data):
-            row['reason']='the file cannot be compared';files.append(row);continue
+            row['reason']='the file cannot be compared'
+            files.append(row)
+            continue
         old=baseline(root,location,recorded[path],deadline,store=not dry_run)
-        if old is None:row['reason']='no baseline of the version the note was checked against';files.append(row);continue
+        if old is None:
+            row['reason']='no baseline of the version the note was checked against'
+            files.append(row)
+            continue
         verdict=assess(note.get('body') or '',path,tracked,_decode(old),_decode(data))
         row.update(relevant=verdict['relevant'],reason=verdict['reason'],sha256=hashlib.sha256(data).hexdigest(),abs=str(location))
         if not verdict['relevant']:shifts+=verdict['shifts']
@@ -360,18 +384,25 @@ def sweep(root,domains=None,dry_run=False,seconds=None):
     """Assess every active note with a changed file; re-baseline the irrelevant files unless dry_run. Stops at the time budget (seconds, None for
     no limit) and says so. Returns {ok, notes: [{ref, title, files, rebaselined, operation}], rebaselined, still_stale, complete}."""
     from .repository import inventory
-    root=Path(root).resolve();bindings=load_bindings(root)   # find_note returns resolved paths; _write takes them relative to root
+    root=Path(root).resolve()  # find_note returns resolved paths; _write takes them relative to root
+    bindings=load_bindings(root)
     deadline=time.monotonic()+seconds if seconds else None
-    rows=[];done=0;stale=0;complete=True
+    rows=[]
+    done=0
+    stale=0
+    complete=True
     for domain in domains or _domains(root):
         for note in inventory(domain,root):
-            if deadline is not None and time.monotonic()>deadline:complete=False;break
+            if deadline is not None and time.monotonic()>deadline:
+                complete=False
+                break
             if note.get('status','active')!='active' or not ((note.get('sources') or note.get('file_hashes'))):continue
             note=dict(note,domain=domain)
             try:files,body=note_plan(note,root,bindings,deadline,dry_run)
             except Exception as exc:
                 from .logs import swallowed
-                swallowed('rebaseline.note_plan',exc,root);continue
+                swallowed('rebaseline.note_plan',exc,root)
+                continue
             if not files:continue
             irrelevant=[f for f in files if not f['relevant']]
             row={'ref':f"{domain}:{note['id']}",'title':note.get('title'),'files':[{k:f[k] for k in ('path','relevant','reason')} for f in files],'rebaselined':False}
@@ -383,7 +414,8 @@ def sweep(root,domains=None,dry_run=False,seconds=None):
                         for f in irrelevant:keep(root,f['abs'],f['sha256'])
                 except (OSError,ValueError,TimeoutError) as exc:
                     from .logs import swallowed
-                    swallowed('rebaseline.write',exc,root);row['error']=str(exc)[:200]
+                    swallowed('rebaseline.write',exc,root)
+                    row['error']=str(exc)[:200]
             if irrelevant and (dry_run or row['rebaselined']):done+=1
             if any(f['relevant'] for f in files) or (irrelevant and not dry_run and not row['rebaselined']):stale+=1
             rows.append(row)
@@ -406,10 +438,13 @@ def prune(root,now=None):
         for note in inventory(domain,root,retired=True):
             for s in (note.get('sources') or [])+(note.get('file_hashes') or []):
                 if s.get('sha256'):used.add(s['sha256'])
-    cutoff=(now or time.time())-PRUNE_DAYS*86400;removed=0
+    cutoff=(now or time.time())-PRUNE_DAYS*86400
+    removed=0
     for p in folder.glob('*/*'):
         try:
-            if p.name not in used and p.stat().st_mtime<cutoff:p.unlink();removed+=1
+            if p.name not in used and p.stat().st_mtime<cutoff:
+                p.unlink()
+                removed+=1
         except OSError:continue
     return removed
 
@@ -418,36 +453,25 @@ def schedule(root,bindings,*,subagent=False,plan=False,compact=False):
     """The SessionStart check: start a detached `rebaseline --scheduled` at most once per SWEEP_EVERY seconds. Off with
     `"auto_rebaseline": false` at the top level of bindings.json. Returns 'spawned' or why not; never raises, never waits."""
     try:
-        from .runtime import headless
+        from .background import in_cooldown,session_gate,touch_cooldown
         if bindings.get('auto_rebaseline',True) is False:return 'disabled'
-        if subagent:return 'subagent'
-        if headless():return 'headless'
-        if plan:return 'plan_mode'   # the user asked for no changes
-        if compact:return 'compact'
-        if os.environ.get('LIVING_MEMORY_NO_BACKGROUND'):return 'background_disabled'
-        if os.environ.get('LIVING_MEMORY_MAINTENANCE_CHILD'):return 'maintenance_child'
+        blocked=session_gate(subagent=subagent,plan=plan,compact=compact)
+        if blocked:return blocked
         marker=Path(root)/'hooks'/'last-rebaseline.json'
-        try:
-            if time.time()-float(json.loads(marker.read_text(encoding='utf-8'))['at'])<SWEEP_EVERY:return 'cooldown'
-        except (OSError,ValueError,KeyError,TypeError):pass
-        from .common import atomic_write
-        atomic_write(marker,json.dumps({'at':time.time()}))
+        if in_cooldown(marker,SWEEP_EVERY,json_key='at'):return 'cooldown'
+        touch_cooldown(marker,json_key='at')
         _spawn(root)
         return 'spawned'
     except Exception as exc:
         from .logs import swallowed
-        swallowed('rebaseline.schedule',exc,root);return 'error'
+        swallowed('rebaseline.schedule',exc,root)
+        return 'error'
 
 def _spawn(root):
-    script=Path(__file__).resolve().parents[1]/'living_memory.py'
     import sys
-    argv=[sys.executable,str(script),'--root',str(root),'rebaseline','--scheduled']
-    options={'stdin':subprocess.DEVNULL,'stdout':subprocess.DEVNULL,'stderr':subprocess.DEVNULL,'close_fds':True,'cwd':tempfile.gettempdir()}
-    if os.name=='nt':
-        flags=0x00000008|0x00000200
-        try:subprocess.Popen(argv,creationflags=flags|0x01000000,**options)
-        except OSError:subprocess.Popen(argv,creationflags=flags,**options)
-    else:subprocess.Popen(argv,start_new_session=True,**options)
+    from .background import spawn_detached
+    script=Path(__file__).resolve().parents[1]/'living_memory.py'
+    spawn_detached([sys.executable,str(script),'--root',str(root),'rebaseline','--scheduled'])
 
 def scheduled(root):
     """The detached sweep: one at a time (try-once lock), within SWEEP_SECONDS; a sweep that finds the lock held does nothing."""
@@ -462,9 +486,11 @@ def before_review(root,cands,seconds):
     module can clear. `cands` are maintenance candidates ({note, domain}); at most `seconds`. Returns how many notes were written (the run
     then picks again). Off with auto_rebaseline false; never raises."""
     try:
-        root=Path(root).resolve();bindings=load_bindings(root)
+        root=Path(root).resolve()
+        bindings=load_bindings(root)
         if bindings.get('auto_rebaseline',True) is False:return 0
-        deadline=time.monotonic()+max(0.0,seconds);written=0
+        deadline=time.monotonic()+max(0.0,seconds)
+        written=0
         for cand in cands:
             note=cand.get('note') or {}
             if time.monotonic()>deadline:break
@@ -478,4 +504,5 @@ def before_review(root,cands,seconds):
         return written
     except Exception as exc:
         from .logs import swallowed
-        swallowed('rebaseline.before_review',exc,root);return 0
+        swallowed('rebaseline.before_review',exc,root)
+        return 0

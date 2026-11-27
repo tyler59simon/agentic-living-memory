@@ -76,7 +76,9 @@ def source_write(root,action,payload,domain=None):
     extra=set(payload)-FIELDS[action]
     if extra:raise ValueError('Unknown payload fields: '+', '.join(sorted(extra)))
     with store_lock(root):
-        data=load(root);entries=data['sources'];implicit=dict(data.get('implicit',{}))
+        data=load(root)
+        entries=data['sources']
+        implicit=dict(data.get('implicit',{}))
         if action=='implicit':
             named=_bound(root,payload.get('domain') or domain)
             if not isinstance(payload.get('enabled'),bool):raise ValueError('implicit requires enabled true or false')
@@ -123,14 +125,17 @@ def _repos_under(prefix,deadline=None):
     """Git repos at or under a bound folder (a .git folder or file): the folder itself, else those found within
     DISCOVER_DEPTH levels, without descending into a repo, a vendored folder or a hidden one. Bounded in dirs and time."""
     if (prefix/'.git').exists():return [prefix]
-    found=[];queue=[(prefix,0)];seen=0
+    found=[]
+    queue=[(prefix,0)]
+    seen=0
     while queue and seen<DISCOVER_DIRS and not (deadline and time.monotonic()>deadline):
         folder,depth=queue.pop(0)
         try:children=sorted((e for e in os.scandir(folder) if e.is_dir(follow_symlinks=False)),key=lambda e:e.name)
         except OSError:continue
         for entry in children:
             if entry.name in SKIP_DIRS or entry.name.startswith('.'):continue
-            seen+=1;child=Path(entry.path)
+            seen+=1
+            child=Path(entry.path)
             if (child/'.git').exists():found.append(child)
             elif depth+1<DISCOVER_DEPTH:queue.append((child,depth+1))
     return found
@@ -141,10 +146,13 @@ def implicit_sources(domain,bindings,deadline=None):
     repos={}   # common git dir (the checkout itself when unreadable) -> work tree
     for prefix in domain_prefixes(domain,bindings):
         for repo in _repos_under(prefix,deadline):
-            gd=git_dir(repo);key=_common_dir(gd) if gd else repo;held=repos.get(key)
+            gd=git_dir(repo)
+            key=_common_dir(gd) if gd else repo
+            held=repos.get(key)
             if held is None or ((repo/'.git').is_dir() and not (held/'.git').is_dir()):repos[key]=repo
     repos=list(repos.values())
-    names=Counter(r.name for r in repos);found=[]
+    names=Counter(r.name for r in repos)
+    found=[]
     for repo in sorted(repos):
         name=repo.name if names[repo.name]==1 else f'{repo.parent.name}-{repo.name}'
         found.append({'name':name.lower(),'domain':domain,'kind':'folder','path':repo.as_posix(),'include':[],'exclude':[],'implicit':True})
@@ -165,7 +173,8 @@ def resolve(root,domain,bindings=None,deadline=None):
     taken={s['name'] for s in found}
     if registry.get('implicit',{}).get(domain,True) is not False:found+=[s for s in implicit_sources(domain,bindings,deadline) if s['name'] not in taken]
     found+=_notebook_sources(root,domain,found)
-    store=Path(root).resolve();kept=[]
+    store=Path(root).resolve()
+    kept=[]
     for spec in found:   # the memory store is not project source, whatever folder it sits in
         try:
             top=Path(spec['path']).resolve()
@@ -179,14 +188,17 @@ def _covered(path,specs):
     """Whether a source walks into this folder and indexes all its Markdown pages: one rooted at or above it (links and junctions
     resolved) with no hidden, vendored, ignored or excluded folder between, and no include globs."""
     from .folder_policy import key,real
-    path=real(path);k=key(path)
+    path=real(path)
+    k=key(path)
     for s in specs:
         if s.get('kind') in REMOTE or not isinstance(s.get('path'),str):continue
-        root=real(s['path']);top=key(root)
+        root=real(s['path'])
+        top=key(root)
         if k!=top and not k.startswith(top.rstrip(os.sep)+os.sep):continue
         parts=[] if k==top else [p for p in os.path.relpath(path,root).replace(os.sep,'/').split('/') if p and p!='.']
         if any(p in SKIP_DIRS or (p.startswith('.') and p!='.github') for p in parts):continue
-        rules=gitignore(root);exclude=_patterns(s.get('exclude') or [])
+        rules=gitignore(root)
+        exclude=_patterns(s.get('exclude') or [])
         if any(ignored(rules,'/'.join(parts[:i+1]),True) or _any(exclude,'/'.join(parts[:i+1])) for i in range(len(parts))):continue
         if s.get('include'):continue   # include globs may take some pages and not others: the notebook gets a source of its own
         return True
@@ -213,20 +225,26 @@ def _notebook_sources(root,domain,specs):
 # ---- gitignore, globs and the walk ----------------------------------------------------------------------------------
 def _glob_re(pattern):
     """A gitignore-style glob as regex source: * and ? stay within a path segment, ** crosses them, [..] is a class."""
-    out='';i=0
+    out=''
+    i=0
     while i<len(pattern):
         c=pattern[i]
         if c=='*':
             if pattern[i:i+2]=='**':
                 i+=2
-                if pattern[i:i+1]=='/':out+='(?:.*/)?';i+=1
+                if pattern[i:i+1]=='/':
+                    out+='(?:.*/)?'
+                    i+=1
                 else:out+='.*'
                 continue
             out+='[^/]*'
         elif c=='?':out+='[^/]'
         elif c=='[' and pattern.find(']',i+2)>0:
-            j=pattern.find(']',i+2);body=pattern[i+1:j];body='^'+body[1:] if body[:1]=='!' else body
-            out+='['+body.replace('\\','\\\\')+']';i=j
+            j=pattern.find(']',i+2)
+            body=pattern[i+1:j]
+            body='^'+body[1:] if body[:1]=='!' else body
+            out+='['+body.replace('\\','\\\\')+']'
+            i=j
         else:out+=re.escape(c)
         i+=1
     return out
@@ -235,10 +253,13 @@ def _compile(pattern):
     """(regex, negated, directories only) for one gitignore line, else None."""
     text=pattern.strip()
     if not text or text.startswith('#'):return None
-    negated=text.startswith('!');text=text[1:] if negated else text
-    only_dirs=text.endswith('/');text=text.rstrip('/')
+    negated=text.startswith('!')
+    text=text[1:] if negated else text
+    only_dirs=text.endswith('/')
+    text=text.rstrip('/')
     if not text:return None
-    anchored='/' in text;text=text.lstrip('/')
+    anchored='/' in text
+    text=text.lstrip('/')
     return re.compile(('^' if anchored else '(?:^|.*/)')+_glob_re(text)+'$'),negated,only_dirs
 
 def gitignore(folder):
@@ -261,7 +282,8 @@ def _any(regexes,rel):return any(r.match(rel) for r in regexes)
 def _eligible(extensions,name,rel,include):
     """Whether a file is a candidate: matched by an include glob, else of a kind's default extensions (exts: the walk's set of them)."""
     if include:return _any(include,rel)
-    name=name.lower();dot=name.rfind('.')
+    name=name.lower()
+    dot=name.rfind('.')
     if dot<=0:return name in BARE_DOCS
     return name[dot:] in extensions and not name.endswith(('.min.js','.min.css','.map'))
 
@@ -270,7 +292,10 @@ def walk(base,spec,deadline=None,ordered=True,policy=None):
     links, hidden or vendored folders, nothing the top-level .gitignore or the source's exclude globs name. Stops at the deadline.
     With a folder_policy.Policy, a folder notebook that is hidden or private (or inside one) is not entered, and each notebook
     sidecar is yielded as a folder entry ending in /.hivemind with the sidecar's time, so a change of policy makes the index stale."""
-    base=Path(base);rules=gitignore(base);include=_patterns(spec.get('include') or []);exclude=_patterns(spec.get('exclude') or [])
+    base=Path(base)
+    rules=gitignore(base)
+    include=_patterns(spec.get('include') or [])
+    exclude=_patterns(spec.get('exclude') or [])
     extensions=DOC_EXT|(HTML_EXT if spec.get('kind','folder') in {'html-export','git-wiki','confluence','notion'} else CODE_EXT)
     from .folder_policy import SIDECAR_DIR,stricter
     real=policy.real(base) if policy is not None else None   # policy is judged on the folder itself, never on an alias of it
@@ -278,7 +303,9 @@ def walk(base,spec,deadline=None,ordered=True,policy=None):
     while stack:
         rel,level=stack.pop()
         if deadline and time.monotonic()>deadline:return
-        try:entries=os.scandir(base/rel if rel else base);entries=sorted(entries,key=lambda e:e.name,reverse=True) if ordered else list(entries)
+        try:
+            entries=os.scandir(base/rel if rel else base)
+            entries=sorted(entries,key=lambda e:e.name,reverse=True) if ordered else list(entries)
         except OSError:continue
         if policy is not None:
             has=any(e.name==SIDECAR_DIR for e in entries)
@@ -296,9 +323,11 @@ def walk(base,spec,deadline=None,ordered=True,policy=None):
             try:
                 if entry.is_dir(follow_symlinks=False):
                     if entry.name in SKIP_DIRS or (entry.name.startswith('.') and entry.name!='.github') or ignored(rules,path,True) or _any(exclude,path) or getattr(entry,'is_junction',bool)():continue
-                    stack.append((path,level));yield True,path,0,os.stat(entry.path).st_mtime_ns   # not the scan's cached time: a folder's is updated lazily
+                    stack.append((path,level))  # not the scan's cached time: a folder's is updated lazily
+                    yield True,path,0,os.stat(entry.path).st_mtime_ns
                 elif entry.is_file(follow_symlinks=False) and _eligible(extensions,entry.name,path,include) and not ignored(rules,path,False) and not _any(exclude,path):
-                    info=entry.stat();yield False,path,info.st_size,info.st_mtime_ns
+                    info=entry.stat()
+                    yield False,path,info.st_size,info.st_mtime_ns
             except OSError:continue
 
 # ---- text extraction and chunking -----------------------------------------------------------------------------------
@@ -326,18 +355,35 @@ def _html_parser():
             BLOCK=frozenset('p div section article main ul ol li tr table pre blockquote br hr dl dt dd figure figcaption details summary form tbody thead'.split())
             HEADINGS={f'h{i}':i for i in range(1,7)}
             def __init__(self):
-                super().__init__(convert_charrefs=True);self.lines=[];self.cur='';self.at=1;self.skip=None;self.depth=0;self.title='';self.in_title=False;self.heading=0;self.pre=False
+                super().__init__(convert_charrefs=True)
+                self.lines=[]
+                self.cur=''
+                self.at=1
+                self.skip=None
+                self.depth=0
+                self.title=''
+                self.in_title=False
+                self.heading=0
+                self.pre=False
             def _flush(self,prefix=''):
-                text=self.cur.strip();self.cur=''
+                text=self.cur.strip()
+                self.cur=''
                 if text:self.lines.append((self.at,prefix+text))
             def handle_starttag(self,tag,attrs):
                 if self.skip:
                     if tag==self.skip:self.depth+=1
                     return
                 label=' '.join(str(v) for k,v in attrs if k in {'class','id'} and v)
-                if tag in self.SKIP or (tag in {'div','ul','ol','span','section','aside','p','table'} and self.CHROME.search(label)):self.skip=tag;self.depth=1;return
-                if tag=='title':self.in_title=True;return
-                if tag in self.HEADINGS:self._flush();self.heading=self.HEADINGS[tag]
+                if tag in self.SKIP or (tag in {'div','ul','ol','span','section','aside','p','table'} and self.CHROME.search(label)):
+                    self.skip=tag
+                    self.depth=1
+                    return
+                if tag=='title':
+                    self.in_title=True
+                    return
+                if tag in self.HEADINGS:
+                    self._flush()
+                    self.heading=self.HEADINGS[tag]
                 elif tag in self.BLOCK:
                     self._flush('    ' if self.pre else '')
                     if tag=='li':self.cur='- '
@@ -350,32 +396,44 @@ def _html_parser():
                         self.depth-=1
                         if not self.depth:self.skip=None
                     return
-                if tag=='title':self.in_title=False;return
-                if tag in self.HEADINGS and self.heading:self._flush('#'*self.heading+' ');self.heading=0
+                if tag=='title':
+                    self.in_title=False
+                    return
+                if tag in self.HEADINGS and self.heading:
+                    self._flush('#'*self.heading+' ')
+                    self.heading=0
                 elif tag in self.BLOCK:
                     self._flush('    ' if self.pre else '')
                     if tag=='pre':self.pre=False
             def handle_data(self,data):
                 if self.skip:return
-                if self.in_title:self.title+=data;return
+                if self.in_title:
+                    self.title+=data
+                    return
                 if not self.cur.strip():self.at=self.getpos()[0]
                 if self.pre:
                     parts=data.split('\n')
                     for i,part in enumerate(parts):
                         self.cur+=part
-                        if i<len(parts)-1:self._flush('    ');self.at=self.getpos()[0]+i+1
+                        if i<len(parts)-1:
+                            self._flush('    ')
+                            self.at=self.getpos()[0]+i+1
                 else:self.cur+=re.sub(r'\s+',' ',data)
             def close(self):
-                super().close();self._flush()
+                super().close()
+                self._flush()
         _HTML.append(Html)
     return _HTML[0]
 
 def html_rows(text):
     """[(source line, text line)] for an HTML page: the extracted text, led by its <title> as a heading when no heading says it."""
     parser=_html_parser()()
-    try:parser.feed(text);parser.close()
+    try:
+        parser.feed(text)
+        parser.close()
     except Exception:pass   # sloppy markup: keep what was read
-    rows=parser.lines;title=' '.join(parser.title.split())
+    rows=parser.lines
+    title=' '.join(parser.title.split())
     if title and not any(t.lstrip('# ').strip()==title for _,t in rows[:3]):rows.insert(0,(1,'# '+title))
     return rows
 
@@ -386,7 +444,11 @@ FENCE=re.compile(r'^\s{0,3}(```|~~~)')
 
 def _headings(texts,style):
     """[(line index, level, title)] of a document; markdown skips fenced code and front matter."""
-    found=[];fence=None;rst={};n=len(texts);i=0
+    found=[]
+    fence=None
+    rst={}
+    n=len(texts)
+    i=0
     if style=='md' and texts and texts[0].strip()=='---':
         i=next((j+1 for j in range(1,min(n,60)) if texts[j].strip()=='---'),0)
     while i<n:
@@ -394,7 +456,9 @@ def _headings(texts,style):
         if style=='md':
             m=FENCE.match(line)
             if m:fence=None if fence==m[1] else (fence or m[1])
-            if fence:i+=1;continue
+            if fence:
+                i+=1
+                continue
             m=ATX.match(line)
             if m and m[2]:found.append((i,len(m[1]),m[2]))
             elif line.strip() and i+1<n and re.fullmatch(r'=+|-+',texts[i+1].strip() or 'x') and len(texts[i+1].strip())>=3 and not re.match(r'\s*(?:[-*+>|#]|\d+[.)]\s)',line) and (i==0 or not texts[i-1].strip()):
@@ -405,15 +469,18 @@ def _headings(texts,style):
         elif style=='rst':
             bar=RST_BAR.match(texts[i+1]) if i+1<n else None
             if line.strip() and not RST_BAR.match(line) and bar and len(texts[i+1].strip())>=len(line.strip()):
-                level=rst.setdefault(bar[1],len(rst)+1);found.append((i,level,line.strip()))
+                level=rst.setdefault(bar[1],len(rst)+1)
+                found.append((i,level,line.strip()))
         i+=1
     return found
 
 def heading_units(rows,style):
     """[(heading path, rows)] cut at each heading; text before the first heading has an empty path."""
-    texts=[t for _,t in rows];marks=_headings(texts,style)
+    texts=[t for _,t in rows]
+    marks=_headings(texts,style)
     if not marks:return [('',rows)]
-    units=[];path=[]
+    units=[]
+    path=[]
     if marks[0][0]:units.append(('',rows[:marks[0][0]]))
     for k,(i,level,title) in enumerate(marks):
         path=[p for p in path if p[0]<level]+[(level,title)]
@@ -448,7 +515,9 @@ NESTED_CLASS=('java','kotlin','js')
 def code_units(rows,lang):
     """[(symbol, rows)] cut at each top-level definition (and member, in the languages that nest them), with the comment and
     decorator lines directly above it; the lines before the first one form a unit of their own."""
-    texts=[t for _,t in rows];starts=[];top=''
+    texts=[t for _,t in rows]
+    starts=[]
+    top=''
     rules=RULES.get(lang)
     if lang!='sql' and not rules:return [('',rows)]
     for i,line in enumerate(texts):
@@ -458,7 +527,8 @@ def code_units(rows,lang):
             if SQL_START.match(line):
                 before=next((t.strip() for t in reversed(texts[max(0,i-6):i]) if t.strip() and not t.strip().startswith('--')),'')
                 if not before or before.endswith(';'):
-                    named=SQL_NAME.match(line);symbol=(named[1] if named and named[1].lower().startswith('create') else line.strip())[:70]
+                    named=SQL_NAME.match(line)
+                    symbol=(named[1] if named and named[1].lower().startswith('create') else line.strip())[:70]
         else:
             for regex,kind in rules:
                 m=regex.match(line)
@@ -468,7 +538,9 @@ def code_units(rows,lang):
                 if lang=='java' and kind=='def':
                     before=line.split('(')[0].split()
                     if before[0] in STATEMENT or (len(before)<2 and not name[:1].isupper()):continue
-                if kind=='class':top=name;symbol=name
+                if kind=='class':
+                    top=name
+                    symbol=name
                 else:
                     if m.groupdict().get('r'):name=f"{m['r']}.{name}"
                     symbol=f'{top}.{name}' if top and lang in NESTED_CLASS+('python','rust') and line[:1] in {' ','\t'} else name
@@ -493,13 +565,15 @@ def pack(units,docs=False):
     """[(symbol, line_start, line_end, text)]: small neighbouring units merge (a heading alone, in a document; under
     MIN_UNIT characters, in code), large ones split at line boundaries into chunks of about TARGET characters, each
     starting with a few lines of the previous one (OVERLAP characters)."""
-    merged=[];small=150 if docs else MIN_UNIT
+    merged=[]
+    small=150 if docs else MIN_UNIT
     for symbol,rows in units:
         if merged and _size(merged[-1][1])<small and _size(merged[-1][1])+_size(rows)<=TARGET:merged[-1]=(_symbols(merged[-1][0],symbol),merged[-1][1]+rows)
         else:merged.append((symbol,list(rows)))
     out=[]
     for symbol,rows in merged:
-        cur=[];size=0
+        cur=[]
+        size=0
         def emit():
             body=list(cur)
             while body and not body[0][1].strip():body.pop(0)
@@ -509,19 +583,24 @@ def pack(units,docs=False):
             pieces=[line[i:i+TARGET] for i in range(0,len(line),TARGET)] or ['']
             for piece in pieces:
                 if cur and size+len(piece)+1>TARGET:
-                    emit();tail=[];kept=0
+                    emit()
+                    tail=[]
+                    kept=0
                     for row in reversed(cur):
                         if kept+len(row[1])+1>OVERLAP:break
-                        tail.insert(0,row);kept+=len(row[1])+1
+                        tail.insert(0,row)
+                        kept+=len(row[1])+1
                     cur,size=tail,kept
-                cur.append((number,piece));size+=len(piece)+1
+                cur.append((number,piece))
+                size+=len(piece)+1
         if cur:emit()
     return out
 
 def chunk_file(rel,text,kind='folder'):
     """[{symbol, line_start, line_end, text, kind}] for one file's (already redacted) text; kind is the extraction:
     'html', 'doc' (headings), 'code' or 'text'."""
-    ext=os.path.splitext(rel)[1].lower();text=text.replace('\r\n','\n').replace('\r','\n')
+    ext=os.path.splitext(rel)[1].lower()
+    text=text.replace('\r\n','\n').replace('\r','\n')
     rows=[(i+1,l.rstrip()) for i,l in enumerate(text.split('\n'))]
     if ext in HTML_EXT:units,how=heading_units(html_rows(text),'md'),'html'
     elif ext in {'.md','.markdown'}:units,how=heading_units(rows,'md'),'doc'
@@ -530,13 +609,15 @@ def chunk_file(rel,text,kind='folder'):
     elif ext in LANG:units,how=code_units(rows,LANG[ext]),'code'
     else:units,how=[('',rows)],'code' if ext in OTHER_CODE else 'text'
     if kind=='git-wiki' and how in {'doc','html'}:   # a wiki page is named by its file: Retry-Policy.md is "Retry Policy"
-        title=re.sub(r'[-_+]+',' ',os.path.splitext(rel.rsplit('/',1)[-1])[0]).strip();units=[(s or title,r) for s,r in units]
+        title=re.sub(r'[-_+]+',' ',os.path.splitext(rel.rsplit('/',1)[-1])[0]).strip()
+        units=[(s or title,r) for s,r in units]
     return [{'symbol':s,'line_start':a,'line_end':b,'text':t,'kind':how} for s,a,b,t in pack(units,how in {'doc','html'})]
 
 def symbol_units(rel,text):
     """[(symbol, line_start, line_end, text)] of a file's definitions (code) or headings (documents), one per unit and not merged or split as
     chunk_file does: rebaseline compares them one by one. [] for a kind with no units (HTML, other text)."""
-    ext=os.path.splitext(rel)[1].lower();text=text.replace('\r\n','\n').replace('\r','\n')
+    ext=os.path.splitext(rel)[1].lower()
+    text=text.replace('\r\n','\n').replace('\r','\n')
     rows=[(i+1,l.rstrip()) for i,l in enumerate(text.split('\n'))]
     if ext in {'.md','.markdown'}:units=heading_units(rows,'md')
     elif ext=='.rst':units=heading_units(rows,'rst')
@@ -570,7 +651,9 @@ SCHEMA=('CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT)',
 def _create(path):
     db=sqlite3.connect(path,timeout=30)
     for statement in SCHEMA:db.execute(statement)
-    db.execute('INSERT INTO meta VALUES(?,?)',('version',str(VERSION)));db.commit();return db
+    db.execute('INSERT INTO meta VALUES(?,?)',('version',str(VERSION)))
+    db.commit()
+    return db
 
 def _meta(db,key):
     row=db.execute('SELECT value FROM meta WHERE key=?',(key,)).fetchone()
@@ -583,7 +666,9 @@ def _readonly(root,domain,timeout=1.0):
         path=db_path(root,domain)
         if not path.is_file():return None
         db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=timeout)
-        if _meta(db,'version')!=str(VERSION):db.close();return None
+        if _meta(db,'version')!=str(VERSION):
+            db.close()
+            return None
         return db
     except (ValueError,sqlite3.Error):return None
 
@@ -600,7 +685,8 @@ def _has_vectors(db):return bool(db.execute("SELECT 1 FROM sqlite_master WHERE n
 def _apply_vocab(db,delta):
     rows=[(s,n) for s,n in delta.items() if n]
     db.executemany('INSERT INTO vocab VALUES(?,?) ON CONFLICT(stem) DO UPDATE SET df=df+excluded.df',rows)
-    db.execute('DELETE FROM vocab WHERE df<=0');delta.clear()
+    db.execute('DELETE FROM vocab WHERE df<=0')
+    delta.clear()
 
 def _config(spec):return hashlib.sha256(canonical_json([spec['kind'],spec['path'],spec.get('include') or [],spec.get('exclude') or []]).encode()).hexdigest()[:16]
 
@@ -625,13 +711,17 @@ def recorded(db,prefix):
 def moved(reals,name,root_now):
     """Whether a source's folder now resolves elsewhere than where its rows were read (a link or junction retargeted)."""
     from .folder_policy import key
-    then=reals.get(name);return bool(then) and key(then)!=key(root_now)
+    then=reals.get(name)
+    return bool(then) and key(then)!=key(root_now)
 
 
 def _sync_source(db,spec,delta,force=False,policy=None):
     """Bring one source's rows up to date; returns its counts. Only files whose (mtime, size) differ are read, and only
     those whose sha256 differs are re-chunked."""
-    name=spec['name'];base=Path(spec['path']);config=_config(spec);began=time.time()
+    name=spec['name']
+    base=Path(spec['path'])
+    config=_config(spec)
+    began=time.time()
     known=db.execute('SELECT config FROM source WHERE name=?',(name,)).fetchone()
     count=dict.fromkeys(('added','changed','removed','unchanged','skipped','redacted'),0)
     from .folder_policy import real
@@ -641,30 +731,44 @@ def _sync_source(db,spec,delta,force=False,policy=None):
     db.execute('INSERT INTO source(name,kind,root,implicit,config) VALUES(?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET kind=excluded.kind,root=excluded.root,implicit=excluded.implicit,config=excluded.config',
                (name,spec['kind'],spec['path'],int(bool(spec.get('implicit'))),config))
     have={path:(i,m,s,h) for i,path,m,s,h in db.execute('SELECT id,path,mtime_ns,size,sha256 FROM file WHERE source=?',(name,))}
-    seen=set();todo=[]
+    seen=set()
+    todo=[]
     pages={p.get('path'):(p.get('url') or None,p.get('title')) for p in (_pages(base) if spec['kind'] in REMOTE else {}).values() if isinstance(p,dict)}   # a page's URL and title, for its citation
     for is_dir,rel,size,mtime in walk(base,spec,policy=policy):
         if is_dir:continue
-        if len(seen)>=MAX_FILES:count['truncated']=1;break
-        seen.add(rel);old=have.get(rel)
+        if len(seen)>=MAX_FILES:
+            count['truncated']=1
+            break
+        seen.add(rel)
+        old=have.get(rel)
         if old and (old[1],old[2])==(mtime,size):count['unchanged']+=1
         else:todo.append((rel,size,mtime,old))
     # Opening a file is the slow part (virus scanners, network drives) and waits without the GIL, so a batch is read by several threads.
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(READERS) as pool:
         for start in range(0,len(todo),READ_BATCH):
-            group=todo[start:start+READ_BATCH];raw=list(pool.map(lambda item:_read(base,item[0],item[1]),group))
+            group=todo[start:start+READ_BATCH]
+            raw=list(pool.map(lambda item:_read(base,item[0],item[1]),group))
             for (rel,size,mtime,old),data in zip(group,raw):
-                reason=None;digest=None;chunks=[];redacted=0
+                reason=None
+                digest=None
+                chunks=[]
+                redacted=0
                 if data is False:continue   # unreadable now: left as it was
                 if data is None:reason='large'
                 elif b'\0' in data[:8192]:reason='binary'
                 else:
                     digest=hashlib.sha256(data).hexdigest()
                     if old and old[3]==digest:
-                        db.execute('UPDATE file SET mtime_ns=?,size=? WHERE id=?',(mtime,size,old[0]));count['unchanged']+=1;continue
-                    text,redacted=redact_text(_decode(data));chunks=chunk_file(rel,text,spec['kind'])
-                if old:_drop_file(db,old[0],delta);db.execute('DELETE FROM file WHERE id=?',(old[0],));count['changed']+=1
+                        db.execute('UPDATE file SET mtime_ns=?,size=? WHERE id=?',(mtime,size,old[0]))
+                        count['unchanged']+=1
+                        continue
+                    text,redacted=redact_text(_decode(data))
+                    chunks=chunk_file(rel,text,spec['kind'])
+                if old:
+                    _drop_file(db,old[0],delta)
+                    db.execute('DELETE FROM file WHERE id=?',(old[0],))
+                    count['changed']+=1
                 else:count['added']+=1
                 if reason:count['skipped']+=1
                 file_id=db.execute('INSERT INTO file(source,path,mtime_ns,size,sha256,chunks,skipped,redacted,url,title) VALUES(?,?,?,?,?,?,?,?,?,?)',(name,rel,mtime,size,digest,len(chunks),reason,redacted,*pages.get(rel,(None,None)))).lastrowid
@@ -674,31 +778,44 @@ def _sync_source(db,spec,delta,force=False,policy=None):
                                    (file_id,name,rel,c['kind'],c['symbol'],c['line_start'],c['line_end'],hashlib.sha256(c['text'].encode()).hexdigest())).lastrowid
                     db.execute('INSERT INTO chunk_fts(rowid,symbol,path,names,text) VALUES(?,?,?,?,?)',(cid,c['symbol'],rel,_names(c['symbol'],c['text']),c['text']))
                     for s in _stems(c['symbol'],rel,c['text']):delta[s]+=1
-            _apply_vocab(db,delta);db.commit()
+            _apply_vocab(db,delta)
+            db.commit()
     for path,(file_id,*_) in have.items():
-        if path not in seen:_drop_file(db,file_id,delta);db.execute('DELETE FROM file WHERE id=?',(file_id,));count['removed']+=1
+        if path not in seen:
+            _drop_file(db,file_id,delta)
+            db.execute('DELETE FROM file WHERE id=?',(file_id,))
+            count['removed']+=1
     files,chunks=db.execute('SELECT count(*),coalesce(sum(chunks),0) FROM file WHERE source=? AND skipped IS NULL',(name,)).fetchone()
-    db.execute('UPDATE source SET files=?,chunks=?,synced=? WHERE name=?',(files,chunks,now(),name));_set_meta(db,'epoch:'+name,began)   # per source: a sync of another one says nothing about this one's files
+    db.execute('UPDATE source SET files=?,chunks=?,synced=? WHERE name=?',(files,chunks,now(),name))  # per source: a sync of another one says nothing about this one's files
+    _set_meta(db,'epoch:'+name,began)
     if policy is not None:_set_meta(db,'policy:'+name,policy.revision(spec['path']))
-    _set_meta(db,'real:'+name,real(base));_set_meta(db,'origin:'+name,'notebook' if spec.get('notebook') else 'source')   # what the rows were read from, and why
+    _set_meta(db,'real:'+name,real(base))  # what the rows were read from, and why
+    _set_meta(db,'origin:'+name,'notebook' if spec.get('notebook') else 'source')
     return dict(count,name=name,files=files,chunks=chunks)
 
 def _embed(db,root,deadline):
     """Vectors for chunks that have none, while a model is installed: only changed chunks, at most EMBED_MAX and EMBED_SECONDS per sync."""
     from . import semantic
     from .search import _vector_identity
-    model=semantic.load(root);identity=_vector_identity(root) if model else None
+    model=semantic.load(root)
+    identity=_vector_identity(root) if model else None
     have=_has_vectors(db)
     if not model:
-        if have:db.execute('DROP TABLE vec');_set_meta(db,'vectors','')
+        if have:
+            db.execute('DROP TABLE vec')
+            _set_meta(db,'vectors','')
         return None
-    if have and _meta(db,'vectors')!=identity:db.execute('DROP TABLE vec');have=False
+    if have and _meta(db,'vectors')!=identity:
+        db.execute('DROP TABLE vec')
+        have=False
     if not have:db.execute('CREATE TABLE vec(rowid INTEGER PRIMARY KEY,vec BLOB NOT NULL)')
-    _set_meta(db,'vectors',identity);done=0
+    _set_meta(db,'vectors',identity)
+    done=0
     for cid,symbol,text in db.execute('SELECT c.id,f.symbol,f.text FROM chunk c JOIN chunk_fts f ON f.rowid=c.id LEFT JOIN vec v ON v.rowid=c.id WHERE v.rowid IS NULL LIMIT ?',(EMBED_MAX,)).fetchall():
         if time.monotonic()>deadline:break
         vector=model.embed((symbol+'\n'+text)[:2000])
-        db.execute('INSERT INTO vec VALUES(?,?)',(cid,semantic.to_blob(vector) if vector else b''));done+=1
+        db.execute('INSERT INTO vec VALUES(?,?)',(cid,semantic.to_blob(vector) if vector else b''))
+        done+=1
     return {'embedded':done,'pending':db.execute('SELECT count(*) FROM chunk c LEFT JOIN vec v ON v.rowid=c.id WHERE v.rowid IS NULL').fetchone()[0]}
 
 def _lock(root,domain,timeout):return file_lock(Path(root)/'hooks'/f'sources-{domain}.lock',timeout=timeout)
@@ -710,7 +827,8 @@ def sync(root,domain,name=None,rebuild=False,wait=300,all_remote=False,network=T
     The network is reached only here and only on request: a remote (confluence, notion) source named by `name`, or every
     one of the domain's with all_remote, is pulled into its cache first (network=False refuses); otherwise remote sources
     are just re-indexed from the cache they already have. A pull that failed is raised after the index is brought up to date."""
-    root=Path(root).resolve();domain=canonical_domain(domain,root)
+    root=Path(root).resolve()
+    domain=canonical_domain(domain,root)
     pulled=[s for s in resolve(root,domain) if s['kind'] in REMOTE and ((s['name']==name) if name else all_remote)] if name or all_remote else []
     if pulled and not network:raise ValueError('Subagents and viewers cannot sync a remote source (it reaches the network); run it as the main agent')
     from .connectors import pull,prune
@@ -722,40 +840,66 @@ def sync(root,domain,name=None,rebuild=False,wait=300,all_remote=False,network=T
         try:prune(root,{s['name'] for s in load(root)['sources']})   # the cache of a source that was removed
         except ValueError:pass
     if pulls:
-        result['pulled']=pulls;failed=[f"{p['name']}: {p['error']}" for p in pulls if p['error']]
+        result['pulled']=pulls
+        failed=[f"{p['name']}: {p['error']}" for p in pulls if p['error']]
         if failed:raise ValueError('Remote sync failed, the cache kept what it had: '+'; '.join(failed))
     return result
 
 def _sync(root,domain,name,rebuild):
-    started=time.time();clock=time.perf_counter();specs=resolve(root,domain)
+    started=time.time()
+    clock=time.perf_counter()
+    specs=resolve(root,domain)
     if name:
         specs=[s for s in specs if s['name']==name]
         if not specs:raise ValueError(f'Unknown source {name}')
-    target=db_path(root,domain);target.parent.mkdir(parents=True,exist_ok=True)
-    fresh=(rebuild and not name) or not target.is_file();db=None;temp=None
+    target=db_path(root,domain)
+    target.parent.mkdir(parents=True,exist_ok=True)
+    fresh=(rebuild and not name) or not target.is_file()
+    db=None
+    temp=None
     try:
         if not fresh:
             try:
                 db=sqlite3.connect(target,timeout=30)
-                if _meta(db,'version')!=str(VERSION):db.close();db=None;fresh=True
-            except sqlite3.Error:db=None;fresh=True
+                if _meta(db,'version')!=str(VERSION):
+                    db.close()
+                    db=None
+                    fresh=True
+            except sqlite3.Error:
+                db=None
+                fresh=True
         if fresh:
-            fd,temp=tempfile.mkstemp(prefix='.sources-',suffix='.sqlite3',dir=target.parent);os.close(fd);os.unlink(temp);db=_create(temp)
-        delta=Counter();results=[]
+            fd,temp=tempfile.mkstemp(prefix='.sources-',suffix='.sqlite3',dir=target.parent)
+            os.close(fd)
+            os.unlink(temp)
+            db=_create(temp)
+        delta=Counter()
+        results=[]
         from .folder_policy import Policy
         policy=Policy(root)
         if policy.broken:raise ValueError('notebook-folders.json is damaged, so folder notebooks cannot be told apart and nothing is indexed until it is repaired; run doctor')
-        for spec in specs:results.append(_sync_source(db,spec,delta,force=bool(rebuild and name),policy=policy));_apply_vocab(db,delta);db.commit()
+        for spec in specs:
+            results.append(_sync_source(db,spec,delta,force=bool(rebuild and name),policy=policy))
+            _apply_vocab(db,delta)
+            db.commit()
         if not name:
             for (gone,) in db.execute('SELECT name FROM source').fetchall():
                 if gone not in {s['name'] for s in specs}:
                     for (file_id,) in db.execute('SELECT id FROM file WHERE source=?',(gone,)).fetchall():_drop_file(db,file_id,delta)
-                    db.execute('DELETE FROM file WHERE source=?',(gone,));db.execute('DELETE FROM source WHERE name=?',(gone,));db.execute('DELETE FROM meta WHERE key IN (?,?,?,?)',('epoch:'+gone,'policy:'+gone,'real:'+gone,'origin:'+gone))
+                    db.execute('DELETE FROM file WHERE source=?',(gone,))
+                    db.execute('DELETE FROM source WHERE name=?',(gone,))
+                    db.execute('DELETE FROM meta WHERE key IN (?,?,?,?)',('epoch:'+gone,'policy:'+gone,'real:'+gone,'origin:'+gone))
             _apply_vocab(db,delta)
         vectors=_embed(db,root,time.monotonic()+EMBED_SECONDS)
-        _set_meta(db,'synced',now());_set_meta(db,'synced_epoch',started);db.commit()
-        totals=db.execute('SELECT coalesce(sum(files),0),coalesce(sum(chunks),0) FROM source').fetchone();db.close();db=None
-        if temp:os.replace(temp,target);temp=None
+        _set_meta(db,'synced',now())
+        _set_meta(db,'synced_epoch',started)
+        db.commit()
+        totals=db.execute('SELECT coalesce(sum(files),0),coalesce(sum(chunks),0) FROM source').fetchone()
+        db.close()
+        db=None
+        if temp:
+            os.replace(temp,target)
+            temp=None
     finally:
         if db is not None:db.close()
         if temp and os.path.exists(temp):os.unlink(temp)
@@ -774,22 +918,29 @@ def state(root,domain):
 
 def listing(root,domain=None,bindings=None):
     """Registered and implicit sources (of one domain, else every registered one) with what the index holds for each."""
-    root=Path(root);warnings=[];rows=[]
+    root=Path(root)
+    warnings=[]
+    rows=[]
     try:registry=load(root)
-    except ValueError as exc:registry={'sources':[]};warnings.append(str(exc))
+    except ValueError as exc:
+        registry={'sources':[]}
+        warnings.append(str(exc))
     specs=resolve(root,domain,bindings) if domain else [_located(root,s) for s in registry['sources'] if s.get('kind') in KINDS]
-    held={};moved_away=set()
+    held={}
+    moved_away=set()
     from .folder_policy import Policy,SERVED
     policy=Policy(root)
     db=_readonly(root,domain) if domain else None
     if db:
         try:   # counts leave out the files of notebooks that are hidden or private now, and rows read from a folder a link no longer reaches
             reals=recorded(db,'real:')
-            roots={n:policy.real(r) for n,r in db.execute('SELECT name,root FROM source')};counted={}
+            roots={n:policy.real(r) for n,r in db.execute('SELECT name,root FROM source')}
+            counted={}
             moved_away={n for n,r in roots.items() if moved(reals,n,r)}
             for name,path,chunks in db.execute('SELECT source,path,chunks FROM file WHERE skipped IS NULL'):
                 if name in roots and name not in moved_away and not policy.broken and policy.file(os.path.join(roots[name],path))[0] in (None,)+SERVED:
-                    f,c=counted.get(name,(0,0));counted[name]=(f+1,c+(chunks or 0))
+                    f,c=counted.get(name,(0,0))
+                    counted[name]=(f+1,c+(chunks or 0))
             held={n:counted.get(n,(0,0))+(s,) for n,s in db.execute('SELECT name,synced FROM source')}
         except sqlite3.Error:pass
         finally:db.close()
@@ -801,7 +952,8 @@ def listing(root,domain=None,bindings=None):
         elif when and s['name'] in moved_away:row['state']='folder moved; reindexed at the next sync'   # a link or junction now leads elsewhere
         if s['kind'] in REMOTE:   # nothing is fetched here: the numbers are those of the last explicit `source-sync NAME`
             from .connectors import summary,MAX_PAGES
-            remote=summary(root,s['name']);row.update(base_url=s.get('base_url'),token_env=s.get('token_env'),remote=remote,state='indexed' if when else 'not synced' if not remote['synced'] else 'fetched, not indexed')
+            remote=summary(root,s['name'])
+            row.update(base_url=s.get('base_url'),token_env=s.get('token_env'),remote=remote,state='indexed' if when else 'not synced' if not remote['synced'] else 'fetched, not indexed')
             if remote['error']:warnings.append(f"{s['name']}: last remote sync failed ({remote['error'].get('at')}): {remote['error'].get('message')}")
             if remote['truncated']:warnings.append(f"{s['name']}: only the first {MAX_PAGES} pages were cached")
         elif not Path(s['path']).is_dir():warnings.append(f"{s['name']}: folder does not exist: {s['path']}")
@@ -818,13 +970,15 @@ def stale(root,domain,bindings=None,limit=STALE_SECONDS):
         from .folder_policy import Policy
         policy=Policy(root)
         if policy.broken:return False   # source-sync refuses to index until the registry is repaired
-        deadline=time.monotonic()+limit;specs=resolve(root,domain,bindings,deadline)
+        deadline=time.monotonic()+limit
+        specs=resolve(root,domain,bindings,deadline)
         info=state(root,domain)
         if not specs:return bool(info and info['sources'])   # nothing resolves now: rows of sources that went away are still there to prune
         if not info:return True
         db=_readonly(root,domain)
         try:
-            held=dict(db.execute('SELECT name,config FROM source').fetchall());epochs={k[6:]:v for k,v in db.execute("SELECT key,value FROM meta WHERE key LIKE 'epoch:%'")}
+            held=dict(db.execute('SELECT name,config FROM source').fetchall())
+            epochs={k[6:]:v for k,v in db.execute("SELECT key,value FROM meta WHERE key LIKE 'epoch:%'")}
             policies={k[7:]:v for k,v in db.execute("SELECT key,value FROM meta WHERE key LIKE 'policy:%'")}
             reals={k[5:]:v for k,v in db.execute("SELECT key,value FROM meta WHERE key LIKE 'real:%'")}
         finally:db.close()
@@ -836,7 +990,9 @@ def stale(root,domain,bindings=None,limit=STALE_SECONDS):
         for spec in specs:
             try:began=float(epochs.get(spec['name']) or 0)   # when this source's own last sync began (none: an index from before that was kept)
             except ValueError:began=0.0
-            cutoff=int(began*1e9);oldest=min(oldest,began);top=Path(spec['path'])
+            cutoff=int(began*1e9)
+            oldest=min(oldest,began)
+            top=Path(spec['path'])
             if spec['kind'] in REMOTE and not top.is_dir():continue   # not pulled yet: nothing to read
             if top.stat().st_mtime_ns>cutoff or any(g.is_file() and g.stat().st_mtime_ns>cutoff for g in (top/'.git'/'HEAD',top/'.git'/'index',top/'.gitignore')):return True   # a commit, checkout or add; an edited .gitignore moves no folder's time
             for _,_,_,mtime in walk(top,spec,deadline,False,policy):
@@ -845,7 +1001,8 @@ def stale(root,domain,bindings=None,limit=STALE_SECONDS):
         return time.monotonic()>deadline and time.time()-oldest>86400
     except Exception as exc:
         from .logs import swallowed
-        swallowed('sources.stale',exc,root);return False
+        swallowed('sources.stale',exc,root)
+        return False
 
 def syncing(root,domain):
     """True while another process holds the domain's sync lock."""
@@ -857,32 +1014,26 @@ def spawn(root,domain):
     """Start `source-sync` as a detached background process, at most once per SPAWN_COOLDOWN seconds per domain. Never waits
     and never raises; True when a process was started. LIVING_MEMORY_NO_BACKGROUND=1 turns it off."""
     try:
+        from .background import in_cooldown,spawn_detached,touch_cooldown
         if os.environ.get('LIVING_MEMORY_NO_BACKGROUND') or syncing(root,domain):return False
         marker=Path(root)/'hooks'/f'sources-{domain}.spawned'
-        try:
-            if time.time()-float(marker.read_text())<SPAWN_COOLDOWN:return False
-        except (OSError,ValueError):pass
+        if in_cooldown(marker,SPAWN_COOLDOWN):return False
         script=Path(__file__).resolve().parents[1]/'living_memory.py'
-        argv=[sys.executable,str(script),'--root',str(root),'--domain',domain,'source-sync']
-        options={'stdin':subprocess.DEVNULL,'stdout':subprocess.DEVNULL,'stderr':subprocess.DEVNULL,'close_fds':True,'cwd':tempfile.gettempdir()}   # not the store: a running process would block deleting or moving it
-        if os.name=='nt':
-            # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, and out of the host's job object when it allows that (CREATE_BREAKAWAY_FROM_JOB).
-            flags=0x00000008|0x00000200
-            try:subprocess.Popen(argv,creationflags=flags|0x01000000,**options)
-            except OSError:subprocess.Popen(argv,creationflags=flags,**options)
-        else:subprocess.Popen(argv,start_new_session=True,**options)
-        atomic_write(marker,str(time.time()))
+        spawn_detached([sys.executable,str(script),'--root',str(root),'--domain',domain,'source-sync'])
+        touch_cooldown(marker)
         return True
     except Exception as exc:
         from .logs import swallowed
-        swallowed('sources.spawn',exc,root);return False
+        swallowed('sources.spawn',exc,root)
+        return False
 
 def session_line(root,domain,bindings,trace=None):
     """The SessionStart line about the knowledge base ('' when the domain has no sources or nothing indexable), starting a
     background sync when one is due."""
     clock=time.perf_counter()
     try:
-        due=stale(root,domain,bindings);started=spawn(root,domain) if due else False
+        due=stale(root,domain,bindings)
+        started=spawn(root,domain) if due else False
         info=state(root,domain)
         if isinstance(trace,dict):trace.update(stale=due,spawned=started,files=info['files'] if info else None,ms=round((time.perf_counter()-clock)*1000,1))
         if info and info['files']:return f"Knowledge base: {info['files']} files indexed (synced {str(info['synced'])[:10]}); for questions about the project, CMD ask '...'"
@@ -916,17 +1067,26 @@ def _window(text,line_start,wanted,width):
     score=[sum(1 for w in re.findall(r'[^\W_]+',split_camel(l).casefold()) if stem(w) in wanted) for l in lines]
     best=(-1,0,0)
     for i in range(len(lines)):
-        size=0;total=0;j=i
-        while j<len(lines) and (size+len(lines[j])+1<=width or j==i):size+=len(lines[j])+1;total+=score[j];j+=1
+        size=0
+        total=0
+        j=i
+        while j<len(lines) and (size+len(lines[j])+1<=width or j==i):
+            size+=len(lines[j])+1
+            total+=score[j]
+            j+=1
         if total>best[0]:best=(total,i,j)
-    _,i,j=best;piece='\n'.join(lines[i:j])
+    _,i,j=best
+    piece='\n'.join(lines[i:j])
     if len(piece)>width:
-        hit=next((m.start() for m in re.finditer(r'[^\W_]+',piece) if stem(m[0].casefold()) in wanted),0);a=max(0,hit-width//4);piece=('… ' if a else '')+piece[a:a+width]+' …'
+        hit=next((m.start() for m in re.finditer(r'[^\W_]+',piece) if stem(m[0].casefold()) in wanted),0)
+        a=max(0,hit-width//4)
+        piece=('… ' if a else '')+piece[a:a+width]+' …'
     return piece,line_start+i,line_start+j-1
 
 def _covers(stemset,term):
     from .search import stem
-    s=stem(term);return s in stemset or (s[:-1] if s.endswith('e') else s+'e') in stemset or (s[:-1]+'i' if s.endswith('y') else s) in stemset
+    s=stem(term)
+    return s in stemset or (s[:-1] if s.endswith('e') else s+'e') in stemset or (s[:-1]+'i' if s.endswith('y') else s) in stemset
 
 # one test rule for search demotion and ingest-scan's classify (fixtures are test data, whatever their extension)
 TEST_PATH=re.compile(r'(?i)(?:^|/)(?:tests?|__tests__|spec|fixtures?|testdata)/|(?:^|/)test_[^/]*$|_test\.[^/]*$|\.(?:spec|test)\.[^/]*$|Test\.java$')
@@ -953,10 +1113,15 @@ def search(root,domain,query,limit=5,vocab=None,informative=False,gate=None,leas
     from .folder_policy import Policy,SERVED
     db=_readonly(root,domain)
     if not db:return []
-    policy=policy or Policy(root);owners={}
-    if policy.broken:db.close();return []
+    policy=policy or Policy(root)
+    owners={}
+    if policy.broken:
+        db.close()
+        return []
     from .folder_policy import key
-    reals=recorded(db,'real:');origins=recorded(db,'origin:');first={}
+    reals=recorded(db,'real:')
+    origins=recorded(db,'origin:')
+    first={}
     def keep(top,source,path):
         root_now=policy.real(top)
         if moved(reals,source,root_now):return False   # the source's folder now resolves elsewhere: its rows were read from another folder
@@ -973,7 +1138,8 @@ def search(root,domain,query,limit=5,vocab=None,informative=False,gate=None,leas
     try:hits=search_db(db,root,query,limit,vocab,informative,gate,least,width,near,dropped,keep)
     finally:db.close()
     for h in hits if pages else ():
-        folder,title,level=owners[(h['source'],h['path'])];h.update(notebook=Path(folder).as_posix(),notebook_title=title,reach=level)
+        folder,title,level=owners[(h['source'],h['path'])]
+        h.update(notebook=Path(folder).as_posix(),notebook_title=title,reach=level)
     return hits
 
 def search_db(db,root,query,limit=5,vocab=None,informative=False,gate=None,least=2,width=SNIPPET,near=None,dropped=None,keep=None):
@@ -986,19 +1152,26 @@ def search_db(db,root,query,limit=5,vocab=None,informative=False,gate=None,least
         words=idf_terms(split_camel(query),(total,df)) if informative else [w for w in words if df_of(df,w)]
         if gate is not None and len(words)<max(2,least):return []   # too few words to vouch for a chunk
         weight={w:math.log((total+1)/(df_of(df,w)+1))+0.1 for w in words}
-        wanted={stem(w) for w in words};rows=[];listed=set()
-        roots={n:r for n,r in db.execute('SELECT name,root FROM source')};judged={}
+        wanted={stem(w) for w in words}
+        rows=[]
+        listed=set()
+        roots={n:r for n,r in db.execute('SELECT name,root FROM source')}
+        judged={}
         def kept(r):
             if keep is None:return True
             if (r[1],r[2]) not in judged:judged[(r[1],r[2])]=keep(roots.get(r[1],''),r[1],r[2])
             return judged[(r[1],r[2])]
         for joiner in (' AND ',' OR ') if words else ():
-            match=joiner.join('"'+w+'"' for w in words);found=[];offset=0
+            match=joiner.join('"'+w+'"' for w in words)
+            found=[]
+            offset=0
             while True:   # without keep, one page of 60; with it, pages until 60 rows pass or CANDIDATE_SCAN rows were read
                 batch=db.execute('SELECT c.id,c.source,c.path,c.kind,c.symbol,c.line_start,c.line_end,f.text,bm25(chunk_fts,6.0,3.0,1.5,1.0),fl.url,fl.title FROM chunk_fts f JOIN chunk c ON c.id=f.rowid JOIN file fl ON fl.id=c.file_id WHERE chunk_fts MATCH ? ORDER BY bm25(chunk_fts,6.0,3.0,1.5,1.0) LIMIT 60 OFFSET ?',(match,offset)).fetchall()
-                found+=[r for r in batch if kept(r)];offset+=len(batch)
+                found+=[r for r in batch if kept(r)]
+                offset+=len(batch)
                 if keep is None or len(batch)<60 or len(found)>=60 or offset>=CANDIDATE_SCAN:break
-            rows+=[r for r in found[:60] if r[0] not in listed];listed|={r[0] for r in found[:60]}
+            rows+=[r for r in found[:60] if r[0] not in listed]
+            listed|={r[0] for r in found[:60]}
             if len(rows)>=limit*3 or len(words)==1:break
         lexical=len(rows)
         # An explicit question (no gate) also gets the chunks nearest it in meaning, found on their own: a chunk that says
@@ -1006,16 +1179,21 @@ def search_db(db,root,query,limit=5,vocab=None,informative=False,gate=None,least
         if gate is None:rows+=[r for r in _semantic_rows(db,root,query,SEMANTIC_TOP if keep is None else SEMANTIC_TOP*10) if r[0] not in listed and kept(r)][:SEMANTIC_TOP]
         if not rows:return []
         rows=_tests_last(_fuse_vectors(db,root,query,rows,lexical),query)
-        out=[];per_file={};taken=[];similar=_chunk_similarity(db,root,query,[r[0] for r in rows[:40]]) if near is not None else {}
+        out=[]
+        per_file={}
+        taken=[]
+        similar=_chunk_similarity(db,root,query,[r[0] for r in rows[:40]]) if near is not None else {}
         for cid,source,path,kind,symbol,start,end,text,score,url,title in rows[:40]:
-            have=_stems(symbol,path,text);hit=[w for w in words if _covers(have,w)]
+            have=_stems(symbol,path,text)
+            hit=[w for w in words if _covers(have,w)]
             share=sum(weight[w] for w in hit)/sum(weight.values()) if weight else 0.0
             if gate is not None and (len(hit)<max(2,least) or share<gate):continue
             if cid in similar and similar[cid]<near:
                 if dropped is not None:dropped.append({'ref':f'{source}:{path}:{start}','similarity':round(similar[cid],3)})
                 continue
             if per_file.get((source,path),0)>=2 or any(s==source and p==path and a<=end and start<=b for s,p,a,b in taken):continue
-            per_file[(source,path)]=per_file.get((source,path),0)+1;taken.append((source,path,start,end))
+            per_file[(source,path)]=per_file.get((source,path),0)+1
+            taken.append((source,path,start,end))
             piece,a,b=_window(text,start,wanted,width)
             if kind=='html':a,b=start,end
             out.append({'type':'source','label':'source excerpt','source':source,'path':path,'file':(Path(roots.get(source,''))/path).as_posix(),'kind':kind,'symbol':symbol,'line_start':a,'line_end':b,
@@ -1058,7 +1236,9 @@ def _semantic_rows(db,root,query,limit=SEMANTIC_TOP):
         if not model or not _has_vectors(db) or _meta(db,'vectors')!=_vector_identity(root):return []
         wanted=_query_vector(model,query)
         if wanted is None:return []
-        size=model.dim*4;native=vectors.enabled(root) and vectors.load(db)[0];floor=semantic.threshold(root)
+        size=model.dim*4
+        native=vectors.enabled(root) and vectors.load(db)[0]
+        floor=semantic.threshold(root)
         if native:
             probe=vectors._blob(wanted)
             if floor is not None:
@@ -1079,7 +1259,8 @@ def _fuse_vectors(db,root,query,rows,lexical=None):
     try:
         from . import semantic
         from .search import _query_vector
-        model=semantic.load(root);lexical=len(rows) if lexical is None else lexical
+        model=semantic.load(root)
+        lexical=len(rows) if lexical is None else lexical
         if not model or not rows or not _has_vectors(db):return rows
         wanted=_query_vector(model,query)
         if wanted is None:return rows

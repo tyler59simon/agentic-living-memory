@@ -1,11 +1,11 @@
-﻿"""Scoped canonical retrieval; SQLite is a disposable derived view."""
+"""Scoped canonical retrieval; SQLite is a disposable derived view."""
 from __future__ import annotations
 import hashlib,json,math,re,sqlite3,struct,tempfile,os
 from collections import Counter
 from functools import lru_cache
 from pathlib import Path
-from .common import memory_root,safe_domain,canonical_domain
-from .repository import inventory,parse as parse_note,store_lock,digest
+from .common import memory_root,canonical_domain
+from .repository import inventory,store_lock,digest
 
 # Function words plus conversational filler, so "how is the webcam issue going" searches for "webcam".
 STOP=set('''a an the please explain how our works what why when where who which is are was were be been being am do does did done
@@ -16,9 +16,12 @@ run now just get got know think want like help some thing things also then has h
 current currently state latest again more much very really'''.split())
 MAX_TERMS=32
 # Resolved bugs and risks the prompt hook and file hints still offer (their fix is the point), at this share of their fused score.
-RESOLVED_TYPES=('bug','risk');RESOLVED_FACTOR=0.5;RESOLVED_DEMOTION=1   # a strong match is demoted by rank places instead (search_domains)
+RESOLVED_TYPES=('bug','risk')  # a strong match is demoted by rank places instead (search_domains)
+RESOLVED_FACTOR=0.5
+RESOLVED_DEMOTION=1
 # A relevance-gate verdict is strong (search.strong) when the title matched, or coverage / similarity clears these bars; tuned on tests/fixtures/eval_cross.json.
-STRONG_COVERAGE=0.75;STRONG_MARGIN=0.1
+STRONG_COVERAGE=0.75
+STRONG_MARGIN=0.1
 # Body coverage also needs a meaning score no lower than the model's threshold minus this (EVAL-1, tuned on the real-store
 # fixture 2026-11-15: wrongly kept hits scored 0.17 to 0.35, every expected note 0.44 or more).
 COVERAGE_FLOOR_MARGIN=0.05
@@ -42,11 +45,13 @@ def stems(text):return {stem(t) for t in set(re.findall(r'[^\W_]+',text.casefold
 
 def df_of(vocab,token):
     """How many notes carry this word. The light stemmer and FTS5's porter differ on a final e ("rotates"/"rotate"), so both spellings count."""
-    s=stem(token);return max(vocab.get(s,0),vocab.get(s[:-1] if s.endswith('e') else s+'e',0))
+    s=stem(token)
+    return max(vocab.get(s,0),vocab.get(s[:-1] if s.endswith('e') else s+'e',0))
 
 def _weighted(text,vocab):
     """[(log(N/df), position, term)] for the distinct terms some note carries, leaving out words most notes carry."""
-    total,df=vocab;ranked=[]
+    total,df=vocab
+    ranked=[]
     for position,t in enumerate(dict.fromkeys(terms(text))):
         n=df_of(df,t)
         if n and not (total>=COMMON_MIN_NOTES and n>COMMON_SHARE*total):ranked.append((math.log(total/n),position,t))
@@ -116,7 +121,8 @@ def _unchanged(note_path,revision):
 def active_notes(refs,root=None):
     """{'domain:id': (title, type)} for the active notes among these refs, from the derived index (a hook never
     parses the whole store for a title). A missing index or a retired note is simply absent."""
-    root=Path(root or memory_root()).resolve();found={}
+    root=Path(root or memory_root()).resolve()
+    found={}
     for domain in dict.fromkeys(r.split(':',1)[0] for r in refs):
         ids=[r.split(':',1)[1] for r in refs if r.startswith(domain+':')]
         try:
@@ -142,7 +148,8 @@ def files_notes(paths,domains,root=None,per_file=2,resolved=False):
 
 def _file_hits(paths,domains,root,limit,ensure_fresh,resolved=False):
     from .notes import is_interim
-    root=Path(root or memory_root()).resolve();ranked={p:[] for p in paths}
+    root=Path(root or memory_root()).resolve()
+    ranked={p:[] for p in paths}
     for domain in dict.fromkeys(domains):
         try:folder=domain_dir(domain,root)
         except ValueError:continue
@@ -168,9 +175,13 @@ def _file_hits(paths,domains,root,limit,ensure_fresh,resolved=False):
                 listed=json.loads(files) if files and files!='[]' else []
                 digest_sources=json.loads(digested) if digested and digested!='[]' else []
                 file_hashes=json.loads(hashed) if hashed and hashed!='[]' else []
-            except ValueError:listed=[];digest_sources=[];file_hashes=[]
+            except ValueError:
+                listed=[]
+                digest_sources=[]
+                file_hashes=[]
             entries=[normalize_file(f).casefold() for f in listed+[s['path'] for s in digest_sources+file_hashes]]
-            plain=None;intact=None
+            plain=None
+            intact=None
             for path,wanted_cf in norm_paths:
                 if (not wanted_cf and bool(entries)) or (wanted_cf and any(e==wanted_cf or e.startswith(wanted_cf+'/') for e in entries)):group=0
                 else:
@@ -189,7 +200,8 @@ def _file_hits(paths,domains,root,limit,ensure_fresh,resolved=False):
                 ranked[path].append((group,str(updated or ''),hit))
     out={}
     for path,found in ranked.items():
-        found.sort(key=lambda r:r[1],reverse=True);found.sort(key=lambda r:(r[0],r[2].get('status')=='resolved'))   # a resolved note follows the active ones in its group
+        found.sort(key=lambda r:r[1],reverse=True)  # a resolved note follows the active ones in its group
+        found.sort(key=lambda r:(r[0],r[2].get('status')=='resolved'))
         out[path]=[hit for _,_,hit in found[:max(1,limit)]]
     return out
 def _embedding_text(note):
@@ -224,7 +236,8 @@ def note_commands(note):
         return extract(note['title'],note['body'],explicit)
     except Exception as exc:   # a derived hint must never stop an index rebuild
         from .logs import swallowed
-        swallowed('search.note_commands',exc,None);return explicit
+        swallowed('search.note_commands',exc,None)
+        return explicit
 
 def _index_note(db,domain,n,model,kept,reuse,fresh):
     """Insert one note into a new search index (row, full-text row, lookup tables and vector); return its stems for the vocabulary."""
@@ -247,7 +260,8 @@ def _index_note(db,domain,n,model,kept,reuse,fresh):
     if not model:return words
     blob=kept.get((n['id'],n['revision']))
     if blob is None:
-        text=_embedding_text(n);vector=reuse(text)   # same text, same model: the overview unit's embedding
+        text=_embedding_text(n)  # same text, same model: the overview unit's embedding
+        vector=reuse(text)
         if vector is None:
             vector=model.embed(text)
             if vector:fresh[hashlib.sha256(text.encode('utf-8')).hexdigest()]=vector   # the unit index reuses it below
@@ -266,13 +280,19 @@ def rebuild_index(domain,root=None,skipped=None):
     """Rebuild the domain's search index; returns how many notes it holds. A note it cannot hold is left out and,
     when skipped is a list, appended to it as (path, error)."""
     from . import semantic
-    root=Path(root or memory_root()).resolve(); directory=domain_dir(domain,root);directory.mkdir(parents=True,exist_ok=True)
+    root=Path(root or memory_root()).resolve()
+    directory=domain_dir(domain,root)
+    directory.mkdir(parents=True,exist_ok=True)
     with store_lock(root):
-        notes=inventory(domain,root,retired=True);model=semantic.load(root)
-        identity=_vector_identity(root) if model else None;kept=_stored_vectors(directory/'search.sqlite3',identity)
+        notes=inventory(domain,root,retired=True)
+        model=semantic.load(root)
+        identity=_vector_identity(root) if model else None
+        kept=_stored_vectors(directory/'search.sqlite3',identity)
         from . import vectors
-        reuse=vectors.reuse(domain,root,identity);fresh={}
-        fd,name=tempfile.mkstemp(prefix='.search-',suffix='.sqlite3',dir=directory);os.close(fd)
+        reuse=vectors.reuse(domain,root,identity)
+        fresh={}
+        fd,name=tempfile.mkstemp(prefix='.search-',suffix='.sqlite3',dir=directory)
+        os.close(fd)
         db=sqlite3.connect(name)
         try:
             db.execute('PRAGMA journal_mode=WAL')
@@ -289,7 +309,9 @@ def rebuild_index(domain,root=None,skipped=None):
             db.execute("CREATE VIRTUAL TABLE notes_fts USING fts5(title,tags,body,tokenize='porter unicode61')")
             db.execute('CREATE TABLE metadata(fingerprint TEXT,vectors TEXT)')
             if model:db.execute('CREATE TABLE vectors(rowid INTEGER PRIMARY KEY,vec BLOB NOT NULL)')
-            indexed=[];df=Counter();db.execute('BEGIN')   # one transaction: each note's savepoint below must not commit on its own
+            indexed=[]  # one transaction: each note's savepoint below must not commit on its own
+            df=Counter()
+            db.execute('BEGIN')
             for n in notes:
                 # A note whose metadata the index cannot hold (tags: null, status: [1], ...) is left out, not fatal:
                 # validate lists it, and rebuilding search for every other note matters more (GOV-3).
@@ -297,21 +319,28 @@ def rebuild_index(domain,root=None,skipped=None):
                 try:
                     words=_index_note(db,domain,n,model,kept,reuse,fresh)
                 except (TypeError,AttributeError,ValueError,sqlite3.Error) as exc:
-                    db.execute('ROLLBACK TO note');db.execute('RELEASE note')
+                    db.execute('ROLLBACK TO note')
+                    db.execute('RELEASE note')
                     if skipped is not None:skipped.append((n.get('path'),f'{type(exc).__name__}: {exc}'))
                     from .logs import swallowed
-                    swallowed('search.rebuild_index',exc,root);continue
-                db.execute('RELEASE note');df.update(words);indexed.append(n)
+                    swallowed('search.rebuild_index',exc,root)
+                    continue
+                db.execute('RELEASE note')
+                df.update(words)
+                indexed.append(n)
             db.executemany('INSERT INTO vocab VALUES(?,?)',df.items())
             db.execute(f'PRAGMA user_version={INDEX_VERSION}')   # update_index changes only an index this code built
             fingerprint=_fingerprint(notes,_vector_identity(root))
-            db.execute('INSERT INTO metadata VALUES(?,?)',(fingerprint,identity));db.commit();db.close()
+            db.execute('INSERT INTO metadata VALUES(?,?)',(fingerprint,identity))
+            db.commit()
+            db.close()
             target=directory/'search.sqlite3'
             from .common import retry_sharing
             _unlink_wal(target)
             retry_sharing(lambda:os.replace(name,target))
         finally:
-            db.close();reuse.close()   # before the unit index update, which may replace that file
+            db.close()  # before the unit index update, which may replace that file
+            reuse.close()
             if os.path.exists(name):os.unlink(name)
             _unlink_wal(name)
         # The unit index follows the note index; a failure costs section-level matches, never the write.
@@ -329,7 +358,9 @@ def update_index(domain,root=None,skipped=None):
     copying the whole database or loading bodies of unchanged rows (REL-P2). An index built by other code (user_version),
     with another model, or unreadable is rebuilt in full instead. Returns how many notes it holds."""
     from . import semantic
-    root=Path(root or memory_root()).resolve();directory=domain_dir(domain,root);path=directory/'search.sqlite3'
+    root=Path(root or memory_root()).resolve()
+    directory=domain_dir(domain,root)
+    path=directory/'search.sqlite3'
     with store_lock(root):
         if not path.exists():return rebuild_index(domain,root,skipped)
         notes=inventory(domain,root,retired=True)
@@ -337,7 +368,8 @@ def update_index(domain,root=None,skipped=None):
         try:
             db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)
             try:
-                version=db.execute('PRAGMA user_version').fetchone()[0];stored,stored_identity=db.execute('SELECT fingerprint,vectors FROM metadata').fetchone()
+                version=db.execute('PRAGMA user_version').fetchone()[0]
+                stored,stored_identity=db.execute('SELECT fingerprint,vectors FROM metadata').fetchone()
                 rows={r[0]:r[1:] for r in db.execute('SELECT id,rowid,sha256,revision,path,status FROM notes')}
                 tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             finally:db.close()
@@ -350,16 +382,21 @@ def update_index(domain,root=None,skipped=None):
         moved={n['id'] for n in changed}
         gone=[i for i in rows if i not in current or i in moved]
         if stored==fingerprint and not changed and not gone:return len(rows)
-        model=semantic.load(root);identity=_vector_identity(root) if model else None
+        model=semantic.load(root)
+        identity=_vector_identity(root) if model else None
         if identity!=stored_identity:return rebuild_index(domain,root,skipped)   # another model (or none): every stored vector is stale
         from . import vectors
-        reuse=vectors.reuse(domain,root,identity);fresh={};kept={}
-        db=None;listed=len(skipped) if skipped is not None else 0
+        reuse=vectors.reuse(domain,root,identity)
+        fresh={}
+        kept={}
+        db=None
+        listed=len(skipped) if skipped is not None else 0
         try:
             db=sqlite3.connect(path,timeout=5)
             db.execute('PRAGMA journal_mode=WAL')
             db.execute('PRAGMA synchronous=NORMAL')
-            df=Counter();db.execute('BEGIN')
+            df=Counter()
+            db.execute('BEGIN')
             if gone:
                 # Fetch title and body ONLY for notes being removed or replaced, never for unchanged notes.
                 gone_rowids=[rows[nid][0] for nid in gone]
@@ -376,24 +413,31 @@ def update_index(domain,root=None,skipped=None):
                         db.execute('DELETE FROM vectors WHERE rowid=?',(rowid,))
                     db.execute('DELETE FROM note_files WHERE note_id=?',(note_id,))
                     db.execute('DELETE FROM note_commands WHERE note_id=?',(note_id,))
-                    db.execute('DELETE FROM notes_fts WHERE rowid=?',(rowid,));db.execute('DELETE FROM notes WHERE rowid=?',(rowid,))
+                    db.execute('DELETE FROM notes_fts WHERE rowid=?',(rowid,))
+                    db.execute('DELETE FROM notes WHERE rowid=?',(rowid,))
                     if status=='active' and rowid in gone_text:
-                        t,b=gone_text[rowid];df.subtract(stems(t+' '+b))
+                        t,b=gone_text[rowid]
+                        df.subtract(stems(t+' '+b))
             for n in changed:
                 db.execute('SAVEPOINT note')
                 try:words=_index_note(db,domain,n,model,kept,reuse,fresh)
                 except (TypeError,AttributeError,ValueError,sqlite3.Error) as exc:
-                    db.execute('ROLLBACK TO note');db.execute('RELEASE note')
+                    db.execute('ROLLBACK TO note')
+                    db.execute('RELEASE note')
                     if skipped is not None:skipped.append((n.get('path'),f'{type(exc).__name__}: {exc}'))
                     from .logs import swallowed
-                    swallowed('search.update_index',exc,root);continue
-                db.execute('RELEASE note');df.update(words)
+                    swallowed('search.update_index',exc,root)
+                    continue
+                db.execute('RELEASE note')
+                df.update(words)
             for stem_,delta in df.items():
                 if delta:db.execute('INSERT INTO vocab VALUES(?,?) ON CONFLICT(stem) DO UPDATE SET df=df+excluded.df',(stem_,delta))
             db.execute('DELETE FROM vocab WHERE df<=0')
             db.execute('UPDATE metadata SET fingerprint=?',(fingerprint,))
             held={r[0] for r in db.execute('SELECT id FROM notes')}
-            db.commit();db.close();db=None
+            db.commit()
+            db.close()
+            db=None
         except sqlite3.DatabaseError as exc:
             # Damage the checks above cannot see: roll back and rebuild from the notes.
             from .logs import swallowed
@@ -402,8 +446,10 @@ def update_index(domain,root=None,skipped=None):
             if db is not None:
                 try:db.rollback()
                 except sqlite3.Error:pass
-                db.close();db=None
-            reuse.close();reuse=None
+                db.close()
+                db=None
+            reuse.close()
+            reuse=None
             return rebuild_index(domain,root,skipped)
         finally:
             if db is not None:db.close()
@@ -434,20 +480,23 @@ def refresh_stale(domain,root=None):
     with store_lock(root):
         notes=inventory(domain,root,retired=True)
         if len(notes)>REFRESH_MAX or _fresh(domain,root,notes):return False
-        rebuild_index(domain,root);return True
+        rebuild_index(domain,root)
+        return True
 
 def _fallback(tokens,notes):
     if not tokens:return []
     wanted={stem(t) for t in tokens}
     counts=[Counter([stem(t) for t in terms(n['title'])]*5+[stem(t) for t in terms(' '.join(n.get('tags',[])))]*3+[stem(t) for t in terms(n['body'])]) for n in notes]
-    average=sum(sum(c.values()) for c in counts)/max(1,len(counts));result=[]
+    average=sum(sum(c.values()) for c in counts)/max(1,len(counts))
+    result=[]
     frequency_of={t:sum(bool(c[t]) for c in counts) for t in wanted}
     for note,count in zip(notes,counts):
         score=0.0
         for t in wanted:
             frequency=count[t]
             if not frequency:continue
-            df=frequency_of[t];idf=math.log(1+(len(notes)-df+0.5)/(df+0.5))
+            df=frequency_of[t]
+            idf=math.log(1+(len(notes)-df+0.5)/(df+0.5))
             score+=idf*frequency*2.2/(frequency+1.2*(0.25+0.75*sum(count.values())/max(1,average)))
         if score:result.append((note,score))
     return sorted(result,key=lambda item:item[1],reverse=True)
@@ -514,7 +563,9 @@ def snippet(body,tokens,width=SNIPPET):
 def vocabulary(domains,root=None,wanted=None):
     """(N, {stem: df}) over the active notes of these domains, from their indexes (read-only: a hook never rebuilds).
     An index built before the vocabulary table existed adds nothing. wanted, when given, limits the stems read."""
-    root=Path(root or memory_root()).resolve();total=0;df=Counter()
+    root=Path(root or memory_root()).resolve()
+    total=0
+    df=Counter()
     ask=sorted({v for w in (wanted or ()) for v in (stem(w),stem(w)[:-1] if stem(w).endswith('e') else stem(w)+'e')})
     for domain in dict.fromkeys(domains):
         try:
@@ -527,7 +578,8 @@ def vocabulary(domains,root=None,wanted=None):
                 else:rows=[r for i in range(0,len(ask),500) for r in db.execute(f"SELECT stem,df FROM vocab WHERE stem IN ({','.join('?'*len(ask[i:i+500]))})",ask[i:i+500])]
             finally:db.close()
         except (ValueError,sqlite3.Error):continue
-        total+=count;df.update(dict(rows))
+        total+=count
+        df.update(dict(rows))
     return total,dict(df)
 
 def _row_to_note(domain,row):
@@ -582,27 +634,37 @@ def _search_index_readonly(query,tokens,domain,limit,root,filters,resolved):
         if filters:
             active=[n for n in active if _filter_matches(n,filters)]
         if not active:
-            LAST_SEMANTIC[domain]={'backend':'lexical'};return []
-        ids={n['id']:n for n in active};found=[];listed=set()
+            LAST_SEMANTIC[domain]={'backend':'lexical'}
+            return []
+        ids={n['id']:n for n in active}
+        found=[]
+        listed=set()
         for joiner in (' AND ',' OR '):
             match=joiner.join('"'+t+'"' for t in tokens)
             batch=db.execute('SELECT n.id,bm25(notes_fts,5.0,3.0,1.0),n.rowid FROM notes_fts JOIN notes n ON n.rowid=notes_fts.rowid WHERE notes_fts MATCH ? ORDER BY bm25(notes_fts,5.0,3.0,1.0)',(match,)).fetchall()
-            found+=[row for row in batch if row[0] in ids and row[0] not in listed];listed|={row[0] for row in batch}
+            found+=[row for row in batch if row[0] in ids and row[0] not in listed]
+            listed|={row[0] for row in batch}
             if sum(ids[r[0]].get('status','active')=='active' for r in found)>=limit or len(tokens)==1:break
         ranked=[(ids[note_id],-score) for note_id,score,_ in found]
         similarity,units,semantic_info=_semantic(db,query,ids,root,domain,[note_id for note_id,_,_ in found])
         engine='fts5'
         if similarity is not None:
-            engine='fts5+semantic';ranked=_fuse(ranked,similarity,ids)
+            engine='fts5+semantic'
+            ranked=_fuse(ranked,similarity,ids)
         room=max(1,min(100,limit))
         if resolved:
-            spent={'active':0,'resolved':0};kept=[]
+            spent={'active':0,'resolved':0}
+            kept=[]
             for note,score in ranked:
                 kind='resolved' if note.get('status','active')=='resolved' else 'active'
-                if spent[kind]<room+5:spent[kind]+=1;kept.append((note,score))   # small slack in case a row fails _unchanged
-            shortlist=kept;max_out=2*room
+                if spent[kind]<room+5:  # small slack in case a row fails _unchanged
+                    spent[kind]+=1
+                    kept.append((note,score))
+            shortlist=kept
+            max_out=2*room
         else:
-            shortlist=ranked[:room+5];max_out=room
+            shortlist=ranked[:room+5]
+            max_out=room
         cand_rowids=[note['_rowid'] for note,_ in shortlist]
         per_row,informative,common=_coverage_fts(db,tokens,cand_rowids)
         coverage={note['id']:per_row.get(note['_rowid'],0)/max(1,len(informative)) if informative else 0.0 for note,_ in shortlist}
@@ -615,7 +677,8 @@ def _search_index_readonly(query,tokens,domain,limit,root,filters,resolved):
     finally:
         db.close()
     wanted={stem(t) for t in tokens if t not in common}
-    output=[];spent={'active':0,'resolved':0}
+    output=[]
+    spent={'active':0,'resolved':0}
     for note,score in shortlist:
         if not _unchanged(note['path'],note['revision']):continue
         kind='resolved' if note.get('status','active')=='resolved' else 'active'
@@ -641,37 +704,53 @@ def _search_index_readonly(query,tokens,domain,limit,root,filters,resolved):
 
 def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False,resolved=False,ensure_fresh=True):
     from .notes import is_interim
-    root=Path(root or memory_root()).resolve();tokens=query_terms(query)
+    root=Path(root or memory_root()).resolve()
+    tokens=query_terms(query)
     domain=canonical_domain(domain,root)
     if not tokens:return []
     if not ensure_fresh and not rebuild:
         return _search_index_readonly(query,tokens,domain,limit,root,filters,resolved)
     with store_lock(root):
-        notes=inventory(domain,root,retired=True);fresh=_fresh(domain,root,notes)
-        if not fresh and rebuild:rebuild_index(domain,root);fresh=True
+        notes=inventory(domain,root,retired=True)
+        fresh=_fresh(domain,root,notes)
+        if not fresh and rebuild:
+            rebuild_index(domain,root)
+            fresh=True
         if filters and not fresh:raise ValueError('stale_filtered_index: rebuild required before filtered search')
         # resolved: a resolved bug or risk stays a candidate (the prompt hook's lookup); everything else retired stays out
         active=[n for n in notes if n.get('status','active')=='active' or (resolved and n.get('status')=='resolved' and n.get('type') in RESOLVED_TYPES)]
         if filters:
             # Filters narrow the active notes; retired ones need an explicit status filter.
             active=[n for n in (notes if 'status' in filters else active) if _filter_matches(n,filters)]
-        ranked=[];engine='canonical_bm25';coverage={};common=set();similarity=None;units={};semantic_info={'backend':'lexical'}
+        ranked=[]
+        engine='canonical_bm25'
+        coverage={}
+        common=set()
+        similarity=None
+        units={}
+        semantic_info={'backend':'lexical'}
         if fresh:
-            engine='fts5';db=sqlite3.connect((domain_dir(domain,root)/'search.sqlite3').as_uri()+'?mode=ro',uri=True)
+            engine='fts5'
+            db=sqlite3.connect((domain_dir(domain,root)/'search.sqlite3').as_uri()+'?mode=ro',uri=True)
             try:
-                ids={n['id']:n for n in active};found=[];listed=set()
+                ids={n['id']:n for n in active}
+                found=[]
+                listed=set()
                 # Notes with every term first; when they do not fill the limit, notes with some terms follow, so one
                 # weak all-terms match cannot hide a note whose title carries most of the query.
                 for joiner in (' AND ',' OR '):
                     match=joiner.join('"'+t+'"' for t in tokens)
                     batch=db.execute('SELECT n.id,bm25(notes_fts,5.0,3.0,1.0),n.rowid FROM notes_fts JOIN notes n ON n.rowid=notes_fts.rowid WHERE notes_fts MATCH ? ORDER BY bm25(notes_fts,5.0,3.0,1.0)',(match,)).fetchall()
-                    found+=[row for row in batch if row[0] in ids and row[0] not in listed];listed|={row[0] for row in batch}
+                    found+=[row for row in batch if row[0] in ids and row[0] not in listed]
+                    listed|={row[0] for row in batch}
                     if sum(ids[r[0]].get('status','active')=='active' for r in found)>=limit or len(tokens)==1:break   # resolved notes fill no slot
-                rows=found;ranked=[(ids[note_id],-score) for note_id,score,_ in rows]
+                rows=found
+                ranked=[(ids[note_id],-score) for note_id,score,_ in rows]
                 similarity,units,semantic_info=_semantic(db,query,ids,root,domain,[note_id for note_id,_,_ in rows])
                 rowids_by_id={note_id:rowid for note_id,_,rowid in rows}
                 if similarity is not None:
-                    engine='fts5+semantic';ranked=_fuse(ranked,similarity,ids)
+                    engine='fts5+semantic'
+                    ranked=_fuse(ranked,similarity,ids)
                     missing=[note['id'] for note,_ in ranked if note['id'] not in rowids_by_id]
                     if missing:
                         marks=','.join('?'*len(missing))
@@ -681,15 +760,21 @@ def search_domain(query,domain,limit=3,root=None,filters=None,rebuild=False,reso
                 coverage={note['id']:per_row.get(rowids_by_id.get(note['id']),0)/max(1,len(informative)) if informative else 0.0 for note,_ in ranked}
             finally:db.close()
         else:
-            ranked=_fallback(tokens,active);common=_common_fallback(tokens,notes)
+            ranked=_fallback(tokens,active)
+            common=_common_fallback(tokens,notes)
         wanted={stem(t) for t in tokens if t not in common}
-        output=[];room=max(1,min(100,limit))
+        output=[]
+        room=max(1,min(100,limit))
         if resolved:   # a resolved note never takes an active note's slot: each kind keeps up to `limit` hits, in ranked order
-            spent={'active':0,'resolved':0};kept=[]
+            spent={'active':0,'resolved':0}
+            kept=[]
             for note,score in ranked:
                 kind='resolved' if note.get('status','active')=='resolved' else 'active'
-                if spent[kind]<room:spent[kind]+=1;kept.append((note,score))
-            ranked=kept;room=2*room
+                if spent[kind]<room:
+                    spent[kind]+=1
+                    kept.append((note,score))
+            ranked=kept
+            room=2*room
         for note,score in ranked[:room]:
             title=stems(note['title'])
             if note['id'] not in coverage:coverage[note['id']]=len(wanted&(title|stems(note['body'])))/len(wanted) if wanted else 0.0
@@ -715,7 +800,8 @@ def sibling_search(query,domain,root=None,limit=5):
     gives []; a stale one may name a note that changed since, which the caller checks (_unchanged). Hits are search_domain's hits
     (gate keys included) for the same query, without units or sources."""
     from .notes import is_interim
-    root=Path(root or memory_root()).resolve();tokens=query_terms(query)
+    root=Path(root or memory_root()).resolve()
+    tokens=query_terms(query)
     try:path=domain_dir(domain,root)/'search.sqlite3'
     except ValueError:return []
     if not tokens or not path.exists():return []
@@ -726,11 +812,13 @@ def sibling_search(query,domain,root=None,limit=5):
             for note_id,title,kind,updated,note_path,revision in db.execute("SELECT id,title,type,updated,path,revision FROM notes WHERE status='active' AND type IN ('knowledge','bug','runbook') AND tags NOT LIKE '%\"project/%'"):
                 ids[note_id]={'id':note_id,'title':title,'type':kind,'updated':updated,'path':note_path,'revision':revision,'status':'active'}
             if not ids:return []
-            found=[];listed=set()
+            found=[]
+            listed=set()
             for joiner in (' AND ',' OR '):   # as search_domain: notes with every term first, then notes with some
                 match=joiner.join('"'+t+'"' for t in tokens)
                 batch=db.execute('SELECT n.id,bm25(notes_fts,5.0,3.0,1.0),n.rowid FROM notes_fts JOIN notes n ON n.rowid=notes_fts.rowid WHERE notes_fts MATCH ? ORDER BY bm25(notes_fts,5.0,3.0,1.0)',(match,)).fetchall()
-                found+=[row for row in batch if row[0] in ids and row[0] not in listed];listed|={row[0] for row in batch}
+                found+=[row for row in batch if row[0] in ids and row[0] not in listed]
+                listed|={row[0] for row in batch}
                 if len(found)>=limit or len(tokens)==1:break
             ranked=[(ids[note_id],-score) for note_id,score,_ in found]
             per_row,informative,common=_coverage_fts(db,tokens)
@@ -738,16 +826,19 @@ def sibling_search(query,domain,root=None,limit=5):
             from . import semantic
             similarity,_,info=_semantic(db,query,ids,root,domain,[note_id for note_id,_,_ in found]) if semantic.load(root) else (None,{},{'backend':'lexical'})   # no model: nothing to score, so no unit index is opened
             if similarity is not None:
-                ranked=_fuse(ranked,similarity,ids);rowids=dict(db.execute('SELECT id,rowid FROM notes').fetchall())
+                ranked=_fuse(ranked,similarity,ids)
+                rowids=dict(db.execute('SELECT id,rowid FROM notes').fetchall())
                 for note,_ in ranked:
                     if note['id'] not in coverage:coverage[note['id']]=per_row.get(rowids[note['id']],0)/max(1,len(informative)) if informative else 0.0
             ranked=ranked[:max(1,min(100,limit))]
             bodies={i:(b,t) for i,b,t in db.execute(f"SELECT id,body,tags FROM notes WHERE id IN ({','.join('?'*len(ranked))})",[n['id'] for n,_ in ranked])} if ranked else {}
         finally:db.close()
     except (sqlite3.Error,TypeError,IndexError):return []
-    wanted={stem(t) for t in tokens if t not in common};output=[]
+    wanted={stem(t) for t in tokens if t not in common}
+    output=[]
     for note,score in ranked:
-        title=stems(note['title']);body,tags=bodies.get(note['id'],('','[]'))
+        title=stems(note['title'])
+        body,tags=bodies.get(note['id'],('','[]'))
         try:tags=json.loads(tags or '[]')
         except ValueError:tags=[]
         output.append({'id':note['id'],'domain':domain,'path':note['path'],'title':note['title'],'type':note['type'],'updated':str(note['updated'] or '')[:10],'tags':tags,
@@ -794,7 +885,8 @@ def _semantic(db,query,ids,root,domain,lexical):
     unit index falls back to the note-level vectors; nothing here raises for a missing model or extension."""
     import time
     from . import semantic,vectors
-    started=time.perf_counter();info={'backend':'lexical'}
+    started=time.perf_counter()
+    info={'backend':'lexical'}
     model=semantic.load(root)
     identity=_vector_identity(root) if model else None
     try:fingerprint=db.execute('SELECT fingerprint FROM metadata').fetchone()[0]
@@ -828,11 +920,17 @@ def _semantic(db,query,ids,root,domain,lexical):
 def _fuse(ranked,similarity,ids):
     """Reciprocal rank fusion of the lexical order and the semantic top: 1/(k+lexical rank) + 1/(k+semantic rank).
     Ties keep the lexical order: word matches are the better-tested signal."""
-    fused={};notes={};lexical={}
-    for rank,(note,_) in enumerate(ranked,1):fused[note['id']]=1/(RRF_K+rank);notes[note['id']]=note;lexical[note['id']]=rank
+    fused={}
+    notes={}
+    lexical={}
+    for rank,(note,_) in enumerate(ranked,1):
+        fused[note['id']]=1/(RRF_K+rank)
+        notes[note['id']]=note
+        lexical[note['id']]=rank
     top=sorted((i for i,s in similarity.items() if s>0),key=lambda i:(-similarity[i],i))[:SEMANTIC_TOP]
     for rank,note_id in enumerate(top,1):
-        fused[note_id]=fused.get(note_id,0)+1/(RRF_K+rank);notes.setdefault(note_id,ids[note_id])
+        fused[note_id]=fused.get(note_id,0)+1/(RRF_K+rank)
+        notes.setdefault(note_id,ids[note_id])
     order=sorted(fused,key=lambda i:(-round(fused[i],12),lexical.get(i,len(ranked)+1),i))
     return [(notes[i],fused[i]) for i in order]
 
@@ -851,7 +949,8 @@ def search_domains(query,domains,limit=3,root=None,filters=None,rebuild=False,we
         found=search_domain(query,domain,max(20,limit),root,mine,rebuild,resolved,ensure_fresh=ensure_fresh)
         for hit in keep(found) if keep else found:
             placed=hit.get('status')=='resolved' and strong(hit,root)
-            hit['score']=weight/(60+hit['rank'])*(RESOLVED_FACTOR if hit.get('status')=='resolved' and not placed else 1);hits.append(hit)
+            hit['score']=weight/(60+hit['rank'])*(RESOLVED_FACTOR if hit.get('status')=='resolved' and not placed else 1)
+            hits.append(hit)
     # Fused scores sit close together (rank 1 is 2/61, rank 10 is 2/70; the strength nudge below is worth several places), so the half
     # score sinks a resolved note below every kept active hit. One that strongly matches is scored in full and merged by domain weight;
     # its position there, before reinforcement (a retired note gathers none), plus RESOLVED_DEMOTION is where it goes in the final order.
@@ -861,7 +960,8 @@ def search_domains(query,domains,limit=3,root=None,filters=None,rebuild=False,we
     from . import usage
     if usage.USE_STRENGTH and hits:
         # Reinforcement breaks near-ties: notes in use recently and repeatedly rise a little.
-        power=usage.strength_map(Path(root or memory_root()),{h['domain'] for h in hits});top=max(power.values(),default=0) or 1
+        power=usage.strength_map(Path(root or memory_root()),{h['domain'] for h in hits})
+        top=max(power.values(),default=0) or 1
         for hit in hits:hit['score']*=1+usage.STRENGTH_NUDGE*power.get(f"{hit['domain']}:{hit['id']}",0)/top
     ranked=sorted(hits,key=lambda h:(-h['score'],h['domain'],h['id']))
     for position,hit in placed:
@@ -879,11 +979,14 @@ def relevance_gate(query,root,trace=None,body=True,least=0):
     match by chance ("each", "one", "change"), so only its title (or its meaning) can vouch for the note. least is
     the number of query words body coverage must find: a short piece of a long prompt covers itself too easily."""
     from .semantic import threshold
-    count=len({stem(t) for t in query_terms(query or '')});near=threshold(root)
+    count=len({stem(t) for t in query_terms(query or '')})
+    near=threshold(root)
     def relevant(hits):
         kept=[]
         for hit in hits:
-            overlap=hit.get('titleOverlap',0);title=hit.get('titleTerms',0);informative=hit.get('queryTerms',count)
+            overlap=hit.get('titleOverlap',0)
+            title=hit.get('titleTerms',0)
+            informative=hit.get('queryTerms',count)
             if not informative:gate='dropped:no_informative'   # only words that appear in most notes
             # One-word prompts ("continue", "yes") inject only on a title hit.
             elif informative==1:gate='kept:title' if overlap else 'dropped:one_word_no_title'
@@ -913,7 +1016,8 @@ def strong(hit,root):
     if gate=='kept:coverage':return hit.get('coverage',0)>=STRONG_COVERAGE
     if gate=='kept:semantic':
         from .semantic import threshold
-        near=threshold(root);return near is not None and hit.get('similarity',0)>=near+STRONG_MARGIN
+        near=threshold(root)
+        return near is not None and hit.get('similarity',0)>=near+STRONG_MARGIN
     return False
 def note_hits(refs,root=None,query=None):
     """Search-shaped hits for these 'domain:id' refs, active notes and resolved bugs and risks, in the order given, with their units scored
@@ -921,8 +1025,10 @@ def note_hits(refs,root=None,query=None):
     prompt ("why?") whose topic is the notes the previous prompt found."""
     from . import semantic,vectors
     from .notes import is_interim
-    root=Path(root or memory_root()).resolve();found={}
-    model=semantic.load(root);identity=_vector_identity(root) if model else None
+    root=Path(root or memory_root()).resolve()
+    found={}
+    model=semantic.load(root)
+    identity=_vector_identity(root) if model else None
     wanted=_query_vector(model,query) if model and query else None
     for domain in dict.fromkeys(r.split(':',1)[0] for r in refs):
         ids=[r.split(':',1)[1] for r in refs if r.startswith(domain+':')]
@@ -932,7 +1038,8 @@ def note_hits(refs,root=None,query=None):
             db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)
             try:
                 fingerprint=db.execute('SELECT fingerprint FROM metadata').fetchone()[0]
-                marks=','.join('?'*len(ids));live="(status='active' OR (status='resolved' AND type IN ('bug','risk')))"
+                marks=','.join('?'*len(ids))
+                live="(status='active' OR (status='resolved' AND type IN ('bug','risk')))"
                 try:rows=db.execute(f"SELECT id,title,type,updated,body,revision,tags,sources,file_hashes,status FROM notes WHERE {live} AND id IN ({marks})",ids).fetchall()
                 except sqlite3.OperationalError:rows=[r[:7]+('','',r[7]) for r in db.execute(f"SELECT id,title,type,updated,body,revision,tags,status FROM notes WHERE {live} AND id IN ({marks})",ids)]   # an index from before digests or file hashes
             finally:db.close()
@@ -944,8 +1051,12 @@ def note_hits(refs,root=None,query=None):
         for note_id,title,kind,updated,body,revision,tags,digested,hashed,state in rows:
             hit={'id':note_id,'domain':domain,'title':title,'type':kind or 'knowledge','updated':str(updated or '')[:10],'status':state or 'active',
                  'revision':revision,'snippet':snippet(body,[]),'engine':'topic','units':units.get(note_id,[])}
-            try:digest_sources=json.loads(digested or '[]');file_hashes=json.loads(hashed or '[]')
-            except ValueError:digest_sources=[];file_hashes=[]
+            try:
+                digest_sources=json.loads(digested or '[]')
+                file_hashes=json.loads(hashed or '[]')
+            except ValueError:
+                digest_sources=[]
+                file_hashes=[]
             if digest_sources:hit['sources']=digest_sources
             if file_hashes:hit['file_hashes']=file_hashes
             if is_interim({'type':kind,'title':title,'body':body}):hit['interim']=True
@@ -958,11 +1069,14 @@ def recent_notes(domain,limit=3,root=None):
     return notes
 def readonly_query(domain,sql,root=None):
     import time
-    path=domain_dir(domain,root)/'search.sqlite3';db=sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True)
+    path=domain_dir(domain,root)/'search.sqlite3'
+    db=sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True)
     try:
-        db.execute('PRAGMA query_only=ON');deadline=time.monotonic()+5
+        db.execute('PRAGMA query_only=ON')
+        deadline=time.monotonic()+5
         db.set_progress_handler(lambda:int(time.monotonic()>deadline),1000)
         allowed={sqlite3.SQLITE_SELECT,sqlite3.SQLITE_READ,sqlite3.SQLITE_FUNCTION,sqlite3.SQLITE_RECURSIVE}
         db.set_authorizer(lambda action,*args:sqlite3.SQLITE_OK if action in allowed and not(action==sqlite3.SQLITE_FUNCTION and str(args[1]).lower() in {'load_extension','writefile','readfile'}) else sqlite3.SQLITE_DENY)
-        cur=db.execute(sql);return {'columns':[c[0] for c in cur.description or []],'rows':cur.fetchmany(100)}
+        cur=db.execute(sql)
+        return {'columns':[c[0] for c in cur.description or []],'rows':cur.fetchmany(100)}
     finally:db.close()

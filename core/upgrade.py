@@ -46,12 +46,14 @@ def run(rewire=False):
     stamp=installed_stamp()
     if not stamp or not stamp.get('source') or not stamp.get('commit'):
         raise ValueError('upgrade works from an installed copy made from a git checkout; this copy records none. Run install.py from your checkout instead.')
-    source=stamp['source'];old=stamp['commit']
+    source=stamp['source']
+    old=stamp['commit']
     if not Path(source).is_dir():raise ValueError(f'The checkout this copy was installed from ({source}) is gone; clone it again and run install.py from it.')
     status=_git(source,'status','--porcelain')
     if status is None:raise ValueError(f'{source} is not a git checkout git can read')
     if status:raise ValueError(f'{source} has uncommitted changes; commit or stash them first')
-    branch=head_branch(source);wanted=default_branch(source)
+    branch=head_branch(source)
+    wanted=default_branch(source)
     if branch!=wanted:raise ValueError(f'{source} is on {branch or "a detached HEAD"}; upgrade installs only from {wanted}. Switch to {wanted} first.')
     code,out,err=_run(['git','-C',source,'pull','--ff-only'],source,PULL_TIMEOUT)
     if code:raise ValueError(f'git pull --ff-only failed in {source}: '+((err or out).strip().splitlines() or [f'exit {code}'])[-1])
@@ -67,12 +69,16 @@ def run(rewire=False):
             wired,errors=_rewire(python,steps)
             result['rewired']=wired
             if errors:result['warnings']=['rewire failed: '+e for e in errors]
-            else:result['next_steps']=[];result['wiring_current']=sorted(set(current)|set(wired))
+            else:
+                result['next_steps']=[]
+                result['wiring_current']=sorted(set(current)|set(wired))
         return {**result,'status':'current','commits':0}
     count=_git(source,'rev-list','--count',f'{old}..{new}')
     result['commits']=int(count) if count and count.isdigit() else None
-    receipt=_install(python,source);summary=receipt.get('summary') or {}
-    steps=summary.get('next_steps') or [];current=summary.get('wiring_current') or []
+    receipt=_install(python,source)
+    summary=receipt.get('summary') or {}
+    steps=summary.get('next_steps') or []
+    current=summary.get('wiring_current') or []
     result.update(files=summary.get('files'),next_steps=steps,wiring_current=current,
                   operation_id=receipt.get('operation_id'),undo=receipt.get('undo'))
     for key in ('warnings','notice'):
@@ -81,5 +87,7 @@ def run(rewire=False):
         wired,errors=_rewire(python,steps)
         result['rewired']=wired
         if errors:result.setdefault('warnings',[]).extend('rewire failed: '+e for e in errors)
-        else:result['next_steps']=[];result['wiring_current']=sorted(set(current)|set(wired))
+        else:
+            result['next_steps']=[]
+            result['wiring_current']=sorted(set(current)|set(wired))
     return {**result,'status':'upgraded','restart':RESTART}

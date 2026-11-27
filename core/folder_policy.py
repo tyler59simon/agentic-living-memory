@@ -64,7 +64,8 @@ def _strictest(entries):
     agree on which of two rows for one folder holds (a tombstone counts at its level)."""
     out={}
     for e in entries:
-        k=key(real(e['path']));held=out.get(k)
+        k=key(real(e['path']))
+        held=out.get(k)
         if held is None or STRICT[level_of(e.get('visibility'),bool(e.get('private')))]>STRICT[level_of(held.get('visibility'),bool(held.get('private')))]:out[k]=e
     return out
 
@@ -101,7 +102,8 @@ def merge_registry(root,text):
     except ValueError:return _text(live)
     out=_strictest(given['folders'])
     for k,e in _strictest(live).items():
-        level=level_of(e.get('visibility'),bool(e.get('private')));held=out.get(k)
+        level=level_of(e.get('visibility'),bool(e.get('private')))
+        held=out.get(k)
         if held is None:
             if level in ('hidden','private'):out[k]=e
         elif STRICT[level]>STRICT[level_of(held.get('visibility'),bool(held.get('private')))]:out[k]=e
@@ -134,7 +136,8 @@ def sidecar(folder):
     try:info=os.stat(path)
     except (FileNotFoundError,NotADirectoryError):return None
     except OSError:return ('hidden',None)   # there but unreadable (permissions): judged as hidden, never as absent
-    stamp=(info.st_mtime_ns,info.st_size);held=_SIDECARS.get(path)
+    stamp=(info.st_mtime_ns,info.st_size)
+    held=_SIDECARS.get(path)
     if held and held[0]==stamp:return held[1]
     try:
         with open(path,'rb') as f:data=json.loads(f.read(256*1024).decode('utf-8-sig'))
@@ -151,13 +154,18 @@ class Policy:
     """The policy of folders and files as the registry and the sidecars say now. One instance per search or sync: it caches
     each folder it has judged."""
     def __init__(self,root):
-        self.broken=False;self.entries={};self._real={}
+        self.broken=False
+        self.entries={}
+        self._real={}
         try:data=load(root)
-        except ValueError:self.broken=True;data={'folders':[]}
+        except ValueError:
+            self.broken=True
+            data={'folders':[]}
         for k,e in _strictest(data['folders']).items():   # two entries for one folder (an alias, a hand edit): the stricter wins
             self.entries[k]=(level_of(e.get('visibility'),bool(e.get('private'))),e)
         for vault in managed_vaults(root):   # the notebook mirror: its pages are served from the store, never as a second copy
-            k=key(real(os.path.join(vault,MIRROR)));held=self.entries.get(k)
+            k=key(real(os.path.join(vault,MIRROR)))
+            held=self.entries.get(k)
             self.entries[k]=(stricter('hidden',held[0] if held else None),dict(held[1] if held else {'path':os.path.join(vault,MIRROR)},mirror=True))
         self._folders={}
 
@@ -169,7 +177,8 @@ class Policy:
 
     def registered(self,path):
         """The registry's level for exactly this folder, or None."""
-        held=self.entries.get(key(path));return held[0] if held else None
+        held=self.entries.get(key(path))
+        return held[0] if held else None
 
     def own(self,path,has_sidecar=None):
         """(level, title) of this folder as a notebook in its own right, or None. has_sidecar=False skips the file check
@@ -196,8 +205,11 @@ class Policy:
     def revision(self,top):
         """A hash of the registry entries at, under or above a source folder, and of the policy the folders above it give it
         (their sidecars included): a source's index is stale when it changes."""
-        top=self.real(top);k=key(top);rows=sorted((p,lvl) for p,(lvl,_) in self.entries.items() if p==k or p.startswith(k+os.sep) or k.startswith(p+os.sep))
-        parent=os.path.dirname(os.path.normpath(top));above=self.folder(parent)[0] if key(parent)!=k else None
+        top=self.real(top)
+        k=key(top)
+        rows=sorted((p,lvl) for p,(lvl,_) in self.entries.items() if p==k or p.startswith(k+os.sep) or k.startswith(p+os.sep))
+        parent=os.path.dirname(os.path.normpath(top))
+        above=self.folder(parent)[0] if key(parent)!=k else None
         return hashlib.sha256(json.dumps([rows,above]).encode()).hexdigest()[:16]
 
     def registered_sources(self,domain):
@@ -241,8 +253,10 @@ def set_folder(root,path,domain,visibility=None,private=None):
     root=Path(root).resolve()
     if visibility is not None and visibility not in LEVELS:raise ValueError('Visibility is hidden, searchable or injectable')
     with store_lock(root):
-        canonical=_canonical_folder(root,path);named=_bound(root,domain)
-        entries=load(root)['folders'];k=key(canonical)
+        canonical=_canonical_folder(root,path)
+        named=_bound(root,domain)
+        entries=load(root)['folders']
+        k=key(canonical)
         old=_strictest(entries).get(k)
         if visibility is None:   # kept from the entry; one Living Memory cannot read counts as hidden
             visibility=('searchable' if old is None else old.get('visibility') if old.get('visibility') in LEVELS else 'hidden')
@@ -266,7 +280,8 @@ def unset_folder(root,path,forget=False):
     root=Path(root).resolve()
     with store_lock(root):
         if not Path(path).expanduser().is_absolute():raise ValueError('The folder must be an absolute path')
-        entries=load(root)['folders'];k=key(Path(path).expanduser().resolve())
+        entries=load(root)['folders']
+        k=key(Path(path).expanduser().resolve())
         old=_strictest(entries).get(k)
         if old is None:raise ValueError(f'not_found: no folder notebook {path}')
         level=level_of(old.get('visibility'),bool(old.get('private')))

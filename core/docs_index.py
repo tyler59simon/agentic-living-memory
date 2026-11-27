@@ -59,14 +59,16 @@ def _walk_pages(folder,deadline=None,unread=None,inner=()):
     listed. A subfolder that cannot be listed is added to `unread` (its pages are unknown, not gone); without that list it raises too."""
     from .docs import _is_link
     from .folder_policy import key
-    found={};stack=['']
+    found={}
+    stack=['']
     while stack:
         if deadline is not None and time.monotonic()>deadline:return None
         rel=stack.pop()
         try:entries=list(os.scandir(folder/rel if rel else folder))
         except OSError:
             if not rel or unread is None:raise
-            unread.append(rel);continue
+            unread.append(rel)
+            continue
         for e in entries:
             path=f'{rel}/{e.name}' if rel else e.name
             try:
@@ -87,7 +89,9 @@ def _lock(root,domain,timeout):
 def _create(path):
     db=sqlite3.connect(path,timeout=30)
     for statement in SCHEMA:db.execute(statement)
-    db.execute('INSERT INTO meta VALUES(?,?)',('version',str(VERSION)));db.commit();return db
+    db.execute('INSERT INTO meta VALUES(?,?)',('version',str(VERSION)))
+    db.commit()
+    return db
 
 
 def _sound(db):
@@ -105,9 +109,12 @@ def _open_writable(root,domain,rebuild=False):
             if _sound(db):return db
         except sqlite3.Error:pass
         if db is not None:db.close()   # a damaged or older file is replaced below, which Windows refuses while it is open
-    fd,temp=tempfile.mkstemp(prefix=TEMP_PREFIX,suffix='.sqlite3',dir=target.parent);os.close(fd);os.unlink(temp)
+    fd,temp=tempfile.mkstemp(prefix=TEMP_PREFIX,suffix='.sqlite3',dir=target.parent)
+    os.close(fd)
+    os.unlink(temp)
     try:
-        _create(temp).close();os.replace(temp,target)
+        _create(temp).close()
+        os.replace(temp,target)
     finally:
         if os.path.exists(temp):os.unlink(temp)
     return sqlite3.connect(target,timeout=30)
@@ -142,14 +149,20 @@ def properties(text):
     `- item` lines gives one pair per value. Nested maps and anything else are skipped, never guessed."""
     m=FRONT.match(text)
     if not m:return []
-    out=[];key=None
+    out=[]
+    key=None
     for line in m[1].splitlines():
         if not line.strip() or line.lstrip().startswith('#'):continue
         item=re.match(r'^\s+-\s+(.*)$',line) or re.match(r'^-\s+(.*)$',line)
-        if item and key:out.append((key,_scalar(item[1])));continue
+        if item and key:
+            out.append((key,_scalar(item[1])))
+            continue
         pair=re.match(r'^([A-Za-z0-9_][\w .-]{0,63}?)\s*:(?:\s+(.*))?$',line)
-        if not pair:key=None;continue
-        key=pair[1].strip();value=(pair[2] or '').strip()
+        if not pair:
+            key=None
+            continue
+        key=pair[1].strip()
+        value=(pair[2] or '').strip()
         if not value:continue   # a block list (or a nested map) follows
         if value.startswith('[') and value.endswith(']'):out+=[(key,_scalar(v)) for v in value[1:-1].split(',') if v.strip()]
         else:out.append((key,_scalar(value)))
@@ -161,16 +174,23 @@ def tasks(text):
     """[(line, done, text, due, owner, priority)] of a page's task lines (`- [ ]`, `- [x]`), outside fenced code and frontmatter.
     text is what follows the box, cut at 500 characters; the fields are read from that text by note_format.item_fields."""
     from .note_format import item_fields
-    out=[];fence=None;lines=text.replace('\r\n','\n').replace('\r','\n').split('\n')
-    start=FRONT.match(text);skip=start[0].count('\n') if start else 0
+    out=[]
+    fence=None
+    lines=text.replace('\r\n','\n').replace('\r','\n').split('\n')
+    start=FRONT.match(text)
+    skip=start[0].count('\n') if start else 0
     for number,line in enumerate(lines,1):
         if number<=skip:continue
         f=sources.FENCE.match(line)
-        if f:fence=None if fence==f[1] else (fence or f[1]);continue
+        if f:
+            fence=None if fence==f[1] else (fence or f[1])
+            continue
         if fence:continue
         m=TASK.match(line)
         if m:
-            cut=m[2][:500];fields=item_fields(cut)[1];out.append((number,m[1]!=' ',cut,fields['due'],fields['owner'],fields['priority']))
+            cut=m[2][:500]
+            fields=item_fields(cut)[1]
+            out.append((number,m[1]!=' ',cut,fields['due'],fields['owner'],fields['priority']))
             if len(out)>=MAX_TASKS:break
     return out
 
@@ -192,7 +212,8 @@ def under(rel,folders):
 
 # ---- refresh --------------------------------------------------------------------------------------------------------
 def _drop(db,file_id):
-    db.execute('DELETE FROM task WHERE file_id=?',(file_id,));db.execute('DELETE FROM file WHERE id=?',(file_id,))
+    db.execute('DELETE FROM task WHERE file_id=?',(file_id,))
+    db.execute('DELETE FROM file WHERE id=?',(file_id,))
 
 
 def _index_page(db,nb,folder,rel,size,mtime,old):
@@ -201,7 +222,8 @@ def _index_page(db,nb,folder,rel,size,mtime,old):
     except OSError:return False
     sha=hashlib.sha256(data).hexdigest()
     if old and old[3]==sha:
-        db.execute('UPDATE file SET mtime_ns=?,size=? WHERE id=?',(mtime,size,old[0]));return True
+        db.execute('UPDATE file SET mtime_ns=?,size=? WHERE id=?',(mtime,size,old[0]))
+        return True
     if old:_drop(db,old[0])
     clean=sources.redact_text(_decode(data))[0]
     file_id=db.execute('INSERT INTO file(source,path,mtime_ns,size,sha256,title) VALUES(?,?,?,?,?,?)',(nb,rel,mtime,size,sha,title_of(clean,rel))).lastrowid
@@ -213,7 +235,8 @@ def refresh(root,domain,walk_until=None,index_until=None,rebuild=False,lock_time
     """Bring the index up to date within the deadlines (time.monotonic() values; None: no limit). progress: walk one notebook and index
     one page even past the deadlines. Returns {stale, indexed, removed}, with `error` when the index could not be opened or replaced
     (another process held it, or Windows refused to replace a file a reader has open); stale is True then, and when work was left."""
-    root=Path(root);result={'stale':False,'indexed':0,'removed':0}
+    root=Path(root)
+    result={'stale':False,'indexed':0,'removed':0}
     if not db_path(root,domain).is_file() and not _folder_notebooks(root,domain):return result
     try:
         with _lock(root,domain,lock_timeout):
@@ -222,7 +245,8 @@ def refresh(root,domain,walk_until=None,index_until=None,rebuild=False,lock_time
             try:return _refresh(db,root,domain,present,walk_until,index_until,result,progress)
             finally:db.close()
     except (TimeoutError,OSError,sqlite3.Error) as exc:
-        result.update(stale=True,error=str(exc) or type(exc).__name__);return result
+        result.update(stale=True,error=str(exc) or type(exc).__name__)
+        return result
 
 
 def _refresh(db,root,domain,present,walk_until,index_until,result,progress=True):
@@ -231,34 +255,53 @@ def _refresh(db,root,domain,present,walk_until,index_until,result,progress=True)
     all_registered={k for k,(_,e) in Policy(root).entries.items() if not e.get('removed')} if present else set()
     for (gone,) in db.execute('SELECT name FROM source').fetchall():
         if gone not in present:
-            for (file_id,) in db.execute('SELECT id FROM file WHERE source=?',(gone,)).fetchall():_drop(db,file_id);result['removed']+=1
+            for (file_id,) in db.execute('SELECT id FROM file WHERE source=?',(gone,)).fetchall():
+                _drop(db,file_id)
+                result['removed']+=1
             db.execute('DELETE FROM source WHERE name=?',(gone,))
     names=sorted(present)
     cursor=sources._meta(db,'cursor') or ''
     if cursor in names:names=names[names.index(cursor):]+names[:names.index(cursor)]
-    todo=[];walked=0;cut=None;unread=0;listed=set()
+    todo=[]
+    walked=0
+    cut=None
+    unread=0
+    listed=set()
     for nb in names:
-        if walk_until is not None and (walked or not progress) and time.monotonic()>walk_until:cut=nb;break
+        if walk_until is not None and (walked or not progress) and time.monotonic()>walk_until:
+            cut=nb
+            break
         skipped=[]
         try:listing=_walk_pages(present[nb],walk_until if (walked or not progress) else None,skipped,all_registered-{key(present[nb])})   # the first notebook is finished, so a call makes progress
-        except OSError:unread+=1;continue   # this notebook cannot be listed now: its rows stay as they are
+        except OSError:  # this notebook cannot be listed now: its rows stay as they are
+            unread+=1
+            continue
         unread+=bool(skipped)
-        if listing is None:cut=nb;break
-        walked+=1;listed.add(nb)
+        if listing is None:
+            cut=nb
+            break
+        walked+=1
+        listed.add(nb)
         db.execute('INSERT INTO source(name,root) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET root=excluded.root',(nb,present[nb].as_posix()))
         have={p:(i,m,s,h) for i,p,m,s,h in db.execute('SELECT id,path,mtime_ns,size,sha256 FROM file WHERE source=?',(nb,))}
         for rel,(size,mtime) in sorted(listing.items()):
             old=have.get(rel)
             if not old or (old[1],old[2])!=(mtime,size):todo.append((nb,rel,size,mtime,old))
         for rel,(file_id,*_) in have.items():
-            if rel not in listing and not under(rel,skipped):_drop(db,file_id);result['removed']+=1   # a page in a folder that could not be listed stays
+            if rel not in listing and not under(rel,skipped):  # a page in a folder that could not be listed stays
+                _drop(db,file_id)
+                result['removed']+=1
     sources._set_meta(db,'cursor',cut or '')
     try:failed=set(json.loads(sources._meta(db,'failed') or '[]'))
     except ValueError:failed=set()
     todo.sort(key=lambda t:f'{t[0]}/{t[1]}' in failed)   # pages that could not be read last time go last, so they never hold up the others
-    left=0;tried=0;now_failed=[]
+    left=0
+    tried=0
+    now_failed=[]
     for nb,rel,size,mtime,old in todo:
-        if index_until is not None and (tried or not progress) and time.monotonic()>index_until:left+=1;continue   # one page always, so each call makes progress
+        if index_until is not None and (tried or not progress) and time.monotonic()>index_until:  # one page always, so each call makes progress
+            left+=1
+            continue
         tried+=1
         if _index_page(db,nb,present[nb],rel,size,mtime,old):result['indexed']+=1
         else:now_failed.append(f'{nb}/{rel}')
@@ -296,10 +339,14 @@ def _allowances(root):
 def refresh_all(root,domains):
     """Refresh each domain within one shared budget (WALK_SECONDS, then INDEX_SECONDS), the one that had the progress allowance
     longest ago first; only that one may pass the budget to make progress. True when any of them was left unfinished."""
-    start=time.monotonic();walk_until=start+WALK_SECONDS;index_until=walk_until+INDEX_SECONDS;stale=False
+    start=time.monotonic()
+    walk_until=start+WALK_SECONDS
+    index_until=walk_until+INDEX_SECONDS
+    stale=False
     wanted=[d for d in domains if db_path(root,d).is_file() or _folder_notebooks(root,d)]
     from .common import atomic_write
-    had=_allowances(root);order=sorted(wanted,key=lambda d:had.get(d,0.0))
+    had=_allowances(root)
+    order=sorted(wanted,key=lambda d:had.get(d,0.0))
     if order:   # recorded before the refresh, so a domain whose refresh fails still passes the allowance on
         try:atomic_write(Path(root)/ALLOWANCE,json.dumps(dict(had,**{order[0]:time.time()}),sort_keys=True))
         except OSError:pass
@@ -316,7 +363,8 @@ def task_rows(root,domains,open_only=False,limit=500,refresh=True,levels=None):
     page is judged by the strictest policy over its folder and the folders above it."""
     from .folder_policy import Policy,key
     from .note_format import item_fields
-    stale=refresh_all(root,domains) if refresh else False;out=[]
+    stale=refresh_all(root,domains) if refresh else False
+    out=[]
     policy=Policy(root)
     for domain in domains:
         allowed=visible(root,domain,policy)

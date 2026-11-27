@@ -27,7 +27,9 @@ def _norm(path):
 
 def match_path(path,projects):
     """The active project whose repo folder contains path (longest repo prefix wins), else None. Pure: no filesystem access."""
-    target=_norm(path);best=None;size=-1
+    target=_norm(path)
+    best=None
+    size=-1
     if not target.is_absolute():return None
     for project in projects:
         if project.get('status')!='active':continue
@@ -55,7 +57,8 @@ def infer_tags(item,domain,root,entries,facet,touched=(),cwd=None):
     capture). More than MAX_AUTO matches add nothing and return the slugs as candidates. Only active entries with a registered tag count."""
     if any(str(t).startswith(facet+'/') for t in item.get('tags') or []):return [],[]
     from .notes import taxonomy
-    known=taxonomy(root);eligible=[p for p in entries if p.get('status')=='active' and f"{facet}/{p['slug']}" in known]
+    known=taxonomy(root)
+    eligible=[p for p in entries if p.get('status')=='active' and f"{facet}/{p['slug']}" in known]
     if not eligible:return [],[]
     for level in ([f for v in item.get('files') or [] for f in resolve_file(v,domain,root)],[f for v in touched for f in resolve_file(v,domain,root)],[str(cwd)] if cwd else []):
         found=sorted({m['slug'] for m in (match_path(f,eligible) for f in level) if m})
@@ -70,7 +73,8 @@ def _repos(repos):
     """Validated repo folders: at most 10 absolute paths, forward slashes, no trailing slash, no duplicates."""
     if not isinstance(repos,list) or len(repos)>10 or any(not isinstance(r,str) or not r.strip() for r in repos):raise ValueError('repos must be a list of at most 10 absolute folder paths')
     if any(not Path(r).is_absolute() for r in repos):raise ValueError('repos must be absolute paths')
-    fixed=[r.replace('\\','/') for r in repos];fixed=[r.rstrip('/') if len(r.rstrip('/'))>2 else r for r in fixed]
+    fixed=[r.replace('\\','/') for r in repos]
+    fixed=[r.rstrip('/') if len(r.rstrip('/'))>2 else r for r in fixed]
     return list(dict.fromkeys(fixed))
 
 def _clean(values,base):
@@ -106,7 +110,10 @@ def project_write(root,action,payload):
     slug=payload.get('slug')
     if not isinstance(slug,str) or not SLUG.fullmatch(slug):raise ValueError('slug must match [a-z0-9][a-z0-9-]{0,39}')
     with store_lock(root):
-        entries=load(root)['projects'];current=next((p for p in entries if p['slug']==slug),None);others=[p for p in entries if p['slug']!=slug];stamp=now()
+        entries=load(root)['projects']
+        current=next((p for p in entries if p['slug']==slug),None)
+        others=[p for p in entries if p['slug']!=slug]
+        stamp=now()
         if action=='create':
             if current:raise ValueError(f'Project {slug} already exists')
             for key in ('name','repos'):
@@ -116,20 +123,24 @@ def project_write(root,action,payload):
             if set(charter)-{'domain','title','body'}:raise ValueError('charter accepts domain, title and body')
             entry=_clean({k:v for k,v in payload.items() if k!='charter'},{'slug':slug,'status':'active','repos':[],'aliases':[],'description':'','created':stamp,'updated':stamp})
             from .notes import build_note
-            from .tag_taxonomy import content
-            known=read_json(root/'tag_taxonomy.json',{'tags':[]});known=known.get('tags',[]) if isinstance(known,dict) else known
+            from .tag_taxonomy import content,load_tags
+            known=load_tags(root)
             domain=_charter_domain(root,charter.get('domain'),entry['repos'])
-            note_id=str(uuid.uuid4());title=charter.get('title') or f"{entry['name']} charter"
+            note_id=str(uuid.uuid4())
+            title=charter.get('title') or f"{entry['name']} charter"
             if not isinstance(title,str):raise ValueError('charter.title must be a string')
-            changes={};added=tag(slug) not in known
+            changes={}
+            added=tag(slug) not in known
             if added:changes['tag_taxonomy.json']=content([tag(slug)],root,allow_managed=True)[0]
             path,note,text=build_note(title,charter['body'],['subject/project','concern/knowledge',tag(slug)],domain,root,'context',note_id=note_id,extra_tags=[tag(slug)])
             entry['charter']=f'{domain}:{note_id}'
-            changes['projects.json']=_registry(others+[entry]);changes[path.relative_to(root).as_posix()]=text
+            changes['projects.json']=_registry(others+[entry])
+            changes[path.relative_to(root).as_posix()]=text
             return commit(root,changes,'project_create',[domain],{'slug':slug,'tag':tag(slug),'added_tag':added,'charter':entry['charter'],'files':len(changes)})
         if not current:raise ValueError(f'Unknown project {slug}')
         values={'status':'archived'} if action=='archive' else {k:v for k,v in payload.items() if k!='slug'}
-        entry=_clean(values,current);entry['updated']=stamp
+        entry=_clean(values,current)
+        entry['updated']=stamp
         return commit(root,{'projects.json':_registry(others+[entry])},'project_'+action,[],{'slug':slug,'fields':sorted(values),'files':1})
 
 def _charter_domain(root,named,repos,field='charter.domain'):
@@ -144,14 +155,21 @@ def _charter_domain(root,named,repos,field='charter.domain'):
 def listing(root,status='any'):
     """Registry entries (optionally one status) with tag, tag_registered, and warnings for what no longer resolves."""
     from .notes import find_note,taxonomy
-    root=Path(root);known=taxonomy(root);rows=[];warnings=[]
+    root=Path(root)
+    known=taxonomy(root)
+    rows=[]
+    warnings=[]
     for p in load(root)['projects']:
         if status!='any' and p.get('status')!=status:continue
-        row=dict(p,tag=tag(p['slug']),tag_registered=tag(p['slug']) in known);rows.append(row);who=p['slug']
+        row=dict(p,tag=tag(p['slug']),tag_registered=tag(p['slug']) in known)
+        rows.append(row)
+        who=p['slug']
         if not row['tag_registered']:warnings.append(f"{who}: tag {row['tag']} is not in the taxonomy")
         warnings+=[f'{who}: repo folder does not exist: {r}' for r in p.get('repos',[]) if not Path(r).is_dir()]
         ref=p.get('charter')
         if ref:
-            try:domain,note_id=ref.split(':',1);find_note(note_id,canonical_domain(domain,root),root)
+            try:
+                domain,note_id=ref.split(':',1)
+                find_note(note_id,canonical_domain(domain,root),root)
             except (ValueError,AttributeError):warnings.append(f'{who}: charter {ref} does not resolve to a note')
     return {'ok':True,'projects':rows,'warnings':warnings}

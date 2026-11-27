@@ -9,23 +9,24 @@ derived: they are left out of snapshots and relocation, and `views render --all`
 The page needs no network: styles, script, font and logo are inline, and the data is a JSON block that the script
 turns into elements with textContent only. Note text is agent-written, so it is never put into markup unescaped."""
 from __future__ import annotations
-import base64,html,json,re,textwrap,uuid
+import html,json,re,textwrap,uuid
 from pathlib import Path
 from .common import atomic_write,safe_domain
 from .repository import read_json,canonical_json,store_lock,transaction,now
+from .web_assets import DARK,LIGHT,ALM_LOGO_SVG,asset as _asset,font_face as _font_face,script_json as _script_json,out_path as _out_path
 
 # Bump when the page changes, so views rendered by an older version count as stale.
 RENDERER=3
 TARGETS=('local','artifact')
 RELOAD_SECONDS=15
-URL=re.compile(r'https?://[^\s<>"\']+')
 
 def _path(root):return Path(root)/'views.json'
 def _cache_path(root):return Path(root)/'.cache'/'views.json'
 
 QUERY_ID=re.compile(r'q-[0-9a-f]{8}')
 SPEC_MAX=64*1024
-OPS=('eq','ne','lt','le','gt','ge','contains','exists','missing');VALUED=OPS[:7]
+OPS=('eq','ne','lt','le','gt','ge','contains','exists','missing')
+VALUED=OPS[:7]
 MAX_WHERE,MAX_SORT,MAX_LIMIT=10,5,1000
 
 def _kind(v):return v.get('kind','note')
@@ -41,7 +42,8 @@ def _valid(v):
 
 def load(root):
     """The registry as {'version':1 or 2,'views':[...]}; a missing file is an empty registry. A row without `kind` is a note view."""
-    data=read_json(_path(root),{'version':1,'views':[]});rows=data.get('views') if isinstance(data,dict) else None
+    data=read_json(_path(root),{'version':1,'views':[]})
+    rows=data.get('views') if isinstance(data,dict) else None
     if not isinstance(rows,list) or data.get('version') not in (1,2) or not all(_valid(v) for v in rows) or any(len({v[key] for v in rows if _kind(v)==kind})!=sum(_kind(v)==kind for v in rows) for kind,key in (('note','note'),('query','id'))):
         raise ValueError(f'Invalid or unreadable configuration preserved: {_path(root)}')
     return data
@@ -68,7 +70,8 @@ def check_spec(spec):
     if not isinstance(source,dict):raise bad('"from" is an object with notebooks, folder and tag')
     books=source.get('notebooks',[])
     if not isinstance(books,list) or any(not isinstance(n,str) for n in books):raise bad('"from.notebooks" is a list of notebook ids')
-    folder=name(source.get('folder'));tag=name(source.get('tag'))
+    folder=name(source.get('folder'))
+    tag=name(source.get('tag'))
     out={'version':1,'from':{'notebooks':books,'folder':folder.strip('/') or None if folder else None,'tag':tag.removeprefix('#').lower() if tag else None},'where':[],'sort':[]}
     where=spec.get('where',[])
     if not isinstance(where,list) or len(where)>MAX_WHERE:raise bad(f'"where" is a list of at most {MAX_WHERE} conditions')
@@ -85,9 +88,12 @@ def check_spec(spec):
         if not isinstance(s,dict) or not name(s.get('prop')) or s.get('dir',None) not in (None,'asc','desc'):raise bad('a sort key is {"prop","dir"} with dir asc or desc')
         out['sort'].append({'prop':name(s['prop']),'dir':'desc' if s.get('dir')=='desc' else 'asc'})
     if spec.get('view','table') not in ('table','board'):raise bad('"view" is table or board')
-    out['view']=spec.get('view','table');columns=spec.get('columns',[])
+    out['view']=spec.get('view','table')
+    columns=spec.get('columns',[])
     if not isinstance(columns,list) or any(not isinstance(c,str) for c in columns):raise bad('"columns" is a list of property names')
-    out['columns']=[c.strip() for c in columns if c.strip()];out['groupBy']=name(spec.get('groupBy'));limit=spec.get('limit',500)
+    out['columns']=[c.strip() for c in columns if c.strip()]
+    out['groupBy']=name(spec.get('groupBy'))
+    limit=spec.get('limit',500)
     if isinstance(limit,bool) or not isinstance(limit,(int,float)) or not float(limit).is_integer() or not 1<=limit<=MAX_LIMIT:raise bad(f'"limit" is a whole number from 1 to {MAX_LIMIT}')
     out['limit']=int(limit)
     if out['view']=='board' and not out['groupBy']:raise bad('a board needs "groupBy": the property its columns are made from')
@@ -118,14 +124,16 @@ def parse_item(text):
     """(groups, id, text) from an action item's text: leading [bracket groups] (each split on commas), then an ID
     such as CUR-1, HM-P4 or OPS-1b (capitals, digits and hyphens, with a hyphen or a digit; a segment may end in one
     lowercase letter), then the rest."""
-    groups=[];rest=(text or '').strip()
+    groups=[]
+    rest=(text or '').strip()
     while True:
         found=_BRACKET.match(rest)
         if not found:break
         tags=[t.strip() for t in found[1].split(',') if t.strip()]
         if tags:groups.append(tags)
         rest=rest[found.end():]
-    first=rest.split(None,1);token=first[0].rstrip(':') if first else ''
+    first=rest.split(None,1)
+    token=first[0].rstrip(':') if first else ''
     if _ID.fullmatch(token) and (('-' in token) or any(c.isdigit() for c in token)):
         return groups,token,(first[1].strip() if len(first)>1 else '')
     return groups,None,rest
@@ -157,7 +165,8 @@ def view_model(note,root=None):
     """The JSON-safe model of any note. Items are the Action items, numbered as `check --index` numbers them;
     sections are everything else, with the Details bullets that belong to an item moved onto that item."""
     from .note_format import action_items,detail_label,parts,plain
-    body=note.get('body') or '';found=parts(body)
+    body=note.get('body') or ''
+    found=parts(body)
     summary=next((text for key,_,text in found if key=='summary'),'')
     important=next((text for key,_,text in found if key=='important' and text.strip()),None)
     details=next((text for key,_,text in found if key=='details'),'')
@@ -171,11 +180,15 @@ def view_model(note,root=None):
         label=item['id'].casefold()
         for block in blocks:
             if block[0][:1] not in (' ','\t') and detail_label(block[0])==label:
-                item['detail']=_detail_text(block);blocks.remove(block);break
+                item['detail']=_detail_text(block)
+                blocks.remove(block)
+                break
     sections=[]
     for key,heading,text in found:
         if key in ('summary','important','actions'):continue
-        if key=='details':text='\n'.join(line for block in blocks for line in block).strip();heading='Details'
+        if key=='details':
+            text='\n'.join(line for block in blocks for line in block).strip()
+            heading='Details'
         elif key=='links':heading='Links'
         if heading and text.strip():sections.append({'heading':heading,'text':text.strip()})
     done=sum(1 for i in items if i['done'])
@@ -189,13 +202,7 @@ def missing_model(entry):
     return {'id':entry['note'],'domain':entry['domain'],'title':entry.get('title') or 'Note not found','type':'','status':'missing','updated':'','revision':'',
             'summary':'','important':None,'items':[],'sections':[],'counts':{'open':0,'done':0,'total':0},'superseded_by':None}
 
-# ---- the page ----
-
-# Hivemind's Emerald Enterprise theme (src/App.css, [data-theme="emerald"]): sage surfaces, emerald green for accents and approved items,
-# mint (--done) for completion. Chip tokens follow Hivemind's badge, chip, chip-ok and chip-next colours.
-DARK='''color-scheme:dark;--bg:#002d2a;--bg-alt:#0c3835;--bg-hover:#194441;--fg:#f5f5f5;--muted:#a7b9b7;--border:#1b4340;--accent:#7ecf1c;--accent-soft:#23462b;--error:#ff8f8f;--mark:#5a4a14;--bg-sidebar:#002420;--bg-topbar:#002926;--bg-input:#002522;--bg-code:#001f1c;--bg-active:#214846;--border-soft:#103532;--border-strong:#426461;--border-lilac:#a7b9b7;--accent-strong:#3b6a12;--primary:#7ecf1c;--done:#62d6a2;--success:#62d6a2;--success-soft:#0e4436;--warn:#f2b54a;--warn-fg:#f7d65e;--warn-bg:#3a3218;--warn-border:#a88b2a;--sub:#c8d2d2;--chip-bg:#123d3a;--p3-bg:#0c3835;--ok-bg:#1b3a1c;--ok-border:#4f8a1a;--ok-fg:#b1ee2c;--next-bg:#214846;--next-border:#6f908d;--next-fg:#e3ecea;'''
-# Hivemind's Emerald Enterprise Light theme (src/App.css, [data-theme="emerald-light"]), mapped to the same tokens as DARK.
-LIGHT='''color-scheme:light;--bg:#f5f5f5;--bg-alt:#ffffff;--bg-hover:#e9ecec;--fg:#002d2a;--muted:#426461;--border:#c8d2d2;--accent:#3b6a12;--accent-soft:#e3f2cf;--error:#b3261e;--mark:#fbe7a1;--bg-sidebar:#002d2a;--bg-topbar:#ffffff;--bg-input:#ffffff;--bg-code:#e9ecec;--bg-active:#dfe8e6;--border-soft:#dde4e4;--border-strong:#5e7f7c;--border-lilac:#426461;--accent-strong:#7ecf1c;--primary:#7ecf1c;--done:#16794c;--success:#16794c;--success-soft:#dcf3e8;--warn:#8a5700;--warn-fg:#6b4a00;--warn-bg:#fdf3d6;--warn-border:#d9a92e;--sub:#2b4a47;--chip-bg:#e9ecec;--p3-bg:#ffffff;--ok-bg:#e8f6d6;--ok-border:#7ecf1c;--ok-fg:#2f5a0c;--next-bg:#e9ecec;--next-border:#a7b9b7;--next-fg:#2b4a47;'''
+# ---- the page ---- (DARK, LIGHT, ALM_LOGO_SVG, _asset, _font_face, _script_json, _out_path imported from core.web_assets)
 
 CSS='''
 :root{--font-sans:"Plus Jakarta Sans Variable","Segoe UI",system-ui,-apple-system,sans-serif;--font-mono:"JetBrains Mono Variable",ui-monospace,"Cascadia Code",Consolas,monospace;font-family:var(--font-sans);font-size:clamp(14px,1.2vw,18px);line-height:1.5;color:var(--fg);background:var(--bg)}
@@ -441,29 +448,15 @@ if(document.documentElement.getAttribute('data-target')==='local')setInterval(fu
 })();
 '''
 
-_assets={}
-def _asset(name):
-    """The text of a vendored asset (assets/*.b64 hold binary files as base64 so the installer, which copies text, can carry them)."""
-    if name not in _assets:_assets[name]=(Path(__file__).resolve().parent.parent/'assets'/name).read_text(encoding='ascii').strip()
-    return _assets[name]
-
-# Standalone Living Memory emblem (inline base64 SVG data URI; keeps views/wiki independent of Hivemind branding and free of http:// xmlns text).
-_ALM_LOGO_BYTES=(b"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 36 36' fill='none'>"
-                 b"<rect x='2' y='2' width='32' height='32' rx='8' fill='#0c3835' stroke='#7ecf1c' stroke-width='2'/>"
-                 b"<path d='M11 12h14M11 18h10M11 24h7' stroke='#f5f5f5' stroke-width='2.2' stroke-linecap='round'/>"
-                 b"<circle cx='25' cy='24' r='3' fill='#7ecf1c'/></svg>")
-ALM_LOGO_SVG="data:image/svg+xml;base64,"+base64.b64encode(_ALM_LOGO_BYTES).decode("ascii")
-
 def _css(target):
-    face=('@font-face{font-family:"Plus Jakarta Sans Variable";font-style:normal;font-display:swap;font-weight:200 800;'
-          'src:url(data:font/woff2;base64,'+_asset('plus-jakarta-sans-latin-wght-normal.woff2.b64')+') format("woff2")}')
     if target=='local':theme=':root{'+DARK+'}'
     else:theme=(':root{'+LIGHT+'}@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){'+DARK+'}}'
                 ':root[data-theme="dark"]{'+DARK+'}')
-    return face+theme+CSS.replace('@@LOGO@@',ALM_LOGO_SVG)
+    return _font_face()+theme+CSS.replace('@@LOGO@@',ALM_LOGO_SVG)
 
 def _banner(model):
-    status=model['status'];name=model.get('superseded_by')
+    status=model['status']
+    name=model.get('superseded_by')
     if status=='missing':return 'This note was not found. It may have been deleted or moved to another store. Remove this view with views remove.'
     if status=='superseded':return 'This note was superseded'+(f' by {name}.' if name else '.')
     if status in ('resolved','archived'):return f'This note is {status}.'+(f' It was replaced by {name}.' if name else '')
@@ -474,10 +467,12 @@ def render_html(model,target='local'):
     if target not in TARGETS:raise ValueError('target must be local or artifact')
     esc=lambda v:html.escape(str(v),quote=True)
     short=model.get('view_title') or model['title'] or 'Note view'
-    data=json.dumps(model,ensure_ascii=False).replace('<','\\u003c').replace('>','\\u003e').replace('&','\\u0026').replace('\u2028','\\u2028').replace('\u2029','\\u2029')
+    data=_script_json(model)
     eyebrow=' · '.join(p for p in (model['domain'],model['type'] if model['status']!='missing' else '') if p)
-    banner=_banner(model);updated=str(model['updated'])[:10]
-    counts=model['counts'];pct=round(100*counts['done']/counts['total']) if counts['total'] else 0
+    banner=_banner(model)
+    updated=str(model['updated'])[:10]
+    counts=model['counts']
+    pct=round(100*counts['done']/counts['total']) if counts['total'] else 0
     progress=(f'<div class="progress-line"><span class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="{counts["total"]}" aria-valuenow="{counts["done"]}"><span style="width:{pct}%"></span></span>'
               f'<span class="muted small">{counts["done"]} of {counts["total"]} done</span></div>') if counts['total'] else ''
     bar=('<div id="work" hidden><div class="lib-bar"><div class="line-tabs" id="tabs" role="tablist"></div>'
@@ -509,13 +504,15 @@ def _find(entry,root,notes=None):
 
 def _model(entry,note,root):
     model=view_model(note,root) if note else missing_model(entry)
-    model['view_title']=entry.get('title') or model['title'];return model
+    model['view_title']=entry.get('title') or model['title']
+    return model
 
 def _revision(note):return str(note.get('revision') or '') if note else 'missing'
 
 def _render_local(root,entry,note,cache):
     """Write the local page for one entry and record its revision in `cache` (the caller saves the cache)."""
-    path=view_path(root,entry);atomic_write(path,render_html(_model(entry,note,root),'local'))
+    path=view_path(root,entry)
+    atomic_write(path,render_html(_model(entry,note,root),'local'))
     cache[entry['note']]={'revision':_revision(note),'renderer':RENDERER}
     return path
 
@@ -524,14 +521,6 @@ def _ids_in(root,domain):
     folder=Path(root)/'domains'/domain
     return {p.stem[-8:] for p in folder.rglob('*-????????.md')} if folder.is_dir() else set()
 
-def _out_path(root,out):
-    """An --out destination: anywhere outside the store, or under its .views folder. Inside the store it would overwrite
-    canonical files (notes, registries) with no revision check or journal."""
-    from .paths import is_within
-    path=Path(out).resolve()
-    if is_within(path,root) and not is_within(path,root/'.views'):raise ValueError('--out must be outside the memory store (or under its .views folder)')
-    return path
-
 def refresh(domain,root):
     """Re-render the local pages of this domain's views whose note changed. Called at the end of reconcile(), on every
     write: with no registry or no view in the domain it returns after one stat. It never raises."""
@@ -539,16 +528,21 @@ def refresh(domain,root):
         if not _path(root).is_file():return
         # A promoted or remapped note keeps its registry domain, so also take views whose note file now lives here
         # (one scan of the domain folder, and only when some view is registered elsewhere).
-        registered=note_rows(root);here=_ids_in(root,domain) if any(v['domain']!=domain for v in registered) else set()
+        registered=note_rows(root)
+        here=_ids_in(root,domain) if any(v['domain']!=domain for v in registered) else set()
         entries=[v for v in registered if v['domain']==domain or v['note'][:8] in here]
         if not entries:return
         from .repository import inventory
         notes={n['id']:dict(n,domain=domain) for n in inventory(domain,root,retired=True) if n.get('id')}
-        cache=_cache(root);changed=False
+        cache=_cache(root)
+        changed=False
         for entry in entries:
-            note=_find(entry,root,notes);seen=cache.get(entry['note']) or {}
+            note=_find(entry,root,notes)
+            seen=cache.get(entry['note']) or {}
             if seen.get('revision')==_revision(note) and seen.get('renderer')==RENDERER and view_path(root,entry).is_file():continue
-            try:_render_local(root,entry,note,cache);changed=True
+            try:
+                _render_local(root,entry,note,cache)
+                changed=True
             except Exception as exc:
                 from .logs import swallowed
                 swallowed('views.render',exc,root)
@@ -559,11 +553,17 @@ def refresh(domain,root):
 
 def listing(root,domain=None):
     """Registry rows with their derived state (domain None: every domain). Query views belong to no domain and are always listed."""
-    rows=[];cache=_cache(root)
+    rows=[]
+    cache=_cache(root)
     for entry in load(root)['views']:
-        if _kind(entry)=='query':rows.append({'kind':'query','id':entry['id'],'title':entry['title'],'spec':entry['spec'],'added':entry.get('added')});continue
+        if _kind(entry)=='query':
+            rows.append({'kind':'query','id':entry['id'],'title':entry['title'],'spec':entry['spec'],'added':entry.get('added')})
+            continue
         if domain and entry['domain']!=domain:continue
-        note=_find(entry,root);revision=_revision(note);seen=cache.get(entry['note']) or {};path=view_path(root,entry)
+        note=_find(entry,root)
+        revision=_revision(note)
+        seen=cache.get(entry['note']) or {}
+        path=view_path(root,entry)
         rows.append({'kind':'note','note':entry['note'],'domain':entry['domain'],'title':entry.get('title'),'note_title':note['title'] if note else None,'path':str(path),
                      'fresh':bool(seen.get('revision')==revision and seen.get('renderer')==RENDERER),'artifact_url':entry.get('artifact_url'),
                      'artifact_current':bool(entry.get('artifact_url') and entry.get('published_revision')==revision),'exists':path.is_file()})
@@ -579,12 +579,15 @@ def add(root,domain,note_id,title=None):
     with store_lock(root):
         note=_find({'note':note_id,'domain':domain},root)
         if not note:raise ValueError('No such note')
-        entries=load(root)['views'];found=next((v for v in entries if v.get('note')==note_id),None)
+        entries=load(root)['views']
+        found=next((v for v in entries if v.get('note')==note_id),None)
         title=(title or '').strip() or (found or {}).get('title') or note['title']
         if len(title)>120 or '\n' in title:raise ValueError('title must be one line of at most 120 characters')
         entry=dict(found or {'note':note_id,'domain':note['domain'],'added':now(),'artifact_url':None,'published_revision':None},title=title)
         receipt=transaction(root,{'views.json':_registry([v for v in entries if v.get('note')!=note_id]+[entry])},'views_add') if entry!=found else {}
-        cache=_cache(root);path=_render_local(root,entry,note,cache);_write_cache(root,cache)
+        cache=_cache(root)
+        path=_render_local(root,entry,note,cache)
+        _write_cache(root,cache)
     return {'ok':True,'note':note_id,'domain':entry['domain'],'title':title,'path':str(path),'status':'exists' if not receipt else 'added','operation_id':receipt.get('operation_id')}
 
 def _new_id(entries):
@@ -599,18 +602,24 @@ def _one_line(title):
 
 def add_query(root,title,spec):
     """Register a query view (kind views_add): a title and a checked query. Returns its new ID."""
-    root=Path(root).resolve();title=_one_line(title);spec=check_spec(spec)
+    root=Path(root).resolve()
+    title=_one_line(title)
+    spec=check_spec(spec)
     with store_lock(root):
-        entries=load(root)['views'];entry={'kind':'query','id':_new_id(entries),'title':title,'spec':spec,'added':now()}
+        entries=load(root)['views']
+        entry={'kind':'query','id':_new_id(entries),'title':title,'spec':spec,'added':now()}
         receipt=transaction(root,{'views.json':_registry(entries+[entry])},'views_add')
     return {'ok':True,'kind':'query','id':entry['id'],'title':title,'status':'added','operation_id':receipt.get('operation_id')}
 
 def update_query(root,query_id,spec=None,title=None):
     """Change a query view's query and/or title (kind views_update)."""
     if spec is None and title is None:raise ValueError('views update needs --spec-file or --title')
-    root=Path(root).resolve();title=None if title is None else _one_line(title);spec=None if spec is None else check_spec(spec)
+    root=Path(root).resolve()
+    title=None if title is None else _one_line(title)
+    spec=None if spec is None else check_spec(spec)
     with store_lock(root):
-        entries=load(root)['views'];entry=next((v for v in entries if v.get('id')==query_id),None)
+        entries=load(root)['views']
+        entry=next((v for v in entries if v.get('id')==query_id),None)
         if not entry:raise ValueError(f'No query view {query_id}')
         new=dict(entry,**({'title':title} if title is not None else {}),**({'spec':spec} if spec is not None else {}))
         receipt=transaction(root,{'views.json':_registry([v for v in entries if v is not entry]+[new])},'views_update') if new!=entry else {}
@@ -620,7 +629,8 @@ def remove(root,key):
     """Drop a view (kind views_remove): a note view (its note ID, and its pages are deleted) or a query view (its ID)."""
     root=Path(root).resolve()
     with store_lock(root):
-        entries=load(root)['views'];entry=next((v for v in entries if v.get('note')==key or v.get('id')==key),None)
+        entries=load(root)['views']
+        entry=next((v for v in entries if v.get('note')==key or v.get('id')==key),None)
         if not entry:raise ValueError(f'No query view {key}' if QUERY_ID.fullmatch(key) else 'That note has no view')
         rest=[v for v in entries if v is not entry]
         receipt=transaction(root,{'views.json':_registry(rest) if rest else None},'views_remove')
@@ -645,28 +655,36 @@ def published(root,note_id,url,project=None):
     if not isinstance(url,str) or not re.fullmatch(r'https?://[^\s<>"\']+',url):raise ValueError('--url must be an http(s) address')
     root=Path(root).resolve()
     with store_lock(root):
-        entries=load(root)['views'];entry=next((v for v in entries if v.get('note')==note_id),None)
+        entries=load(root)['views']
+        entry=next((v for v in entries if v.get('note')==note_id),None)
         if not entry:raise ValueError('That note has no view; add one with views add REF')
         note=_find(entry,root)
         if not note:raise ValueError('The note of this view was not found')
-        new={k:v for k,v in entry.items() if k!='project'};new.update(artifact_url=url,published_revision=_revision(note),**({'project':project} if project else {}))
+        new={k:v for k,v in entry.items() if k!='project'}
+        new.update(artifact_url=url,published_revision=_revision(note),**({'project':project} if project else {}))
         receipt=transaction(root,{'views.json':_registry([v for v in entries if v is not entry]+[new])},'views_published') if new!=entry else {}
     return {'ok':True,'note':note_id,'artifact_url':url,'published_revision':new['published_revision'],'operation_id':receipt.get('operation_id')}
 
 def render(root,entries,target='local',out=None,fmt='html'):
     """Render registered entries: html to their standard path (artifact: beside it, <name>.artifact.html) or to `out`
     (one entry only), or json models. Local pages update the cache like refresh does."""
-    root=Path(root).resolve();rows=[]
+    root=Path(root).resolve()
+    rows=[]
     if out is not None and len(entries)!=1:raise ValueError('--out needs exactly one view')
     if out is not None:out=_out_path(root,out)
     with store_lock(root):
-        cache=_cache(root);changed=False
+        cache=_cache(root)
+        changed=False
         for entry in entries:
-            note=_find(entry,root);model=_model(entry,note,root)
+            note=_find(entry,root)
+            model=_model(entry,note,root)
             if fmt=='json':
                 if out is not None:atomic_write(Path(out),json.dumps(model,ensure_ascii=False,indent=1)+'\n')
-                rows.append({'note':entry['note'],'model':model,**({'path':str(out)} if out is not None else {})});continue
-            if out is None and target=='local':path=_render_local(root,entry,note,cache);changed=True
+                rows.append({'note':entry['note'],'model':model,**({'path':str(out)} if out is not None else {})})
+                continue
+            if out is None and target=='local':
+                path=_render_local(root,entry,note,cache)
+                changed=True
             else:
                 path=Path(out) if out is not None else view_path(root,entry,target)
                 atomic_write(path,render_html(model,target))
@@ -688,16 +706,21 @@ def behind(root,domains,cmd='CMD',project=None):   # domains: names, or a functi
     published from a repo (`project`, see project_key) is reported only to sessions in that repo; one without stays domain-wide."""
     try:
         if not _path(root).is_file():return []
-        wanted=set(domains() if callable(domains) else domains);rows=[v for v in note_rows(root) if v.get('artifact_url') and v['domain'] in wanted and v.get('project') in (None,project)]
+        wanted=set(domains() if callable(domains) else domains)
+        rows=[v for v in note_rows(root) if v.get('artifact_url') and v['domain'] in wanted and v.get('project') in (None,project)]
         if not rows:return []
         from .notes import short_ref
-        cache=_cache(root);found=[]
+        cache=_cache(root)
+        found=[]
         for entry in rows:
             revision=(cache.get(entry['note']) or {}).get('revision')
             if not revision or revision=='missing' or entry.get('published_revision')==revision:continue
-            ref=short_ref(entry['domain'],entry['note']);url=entry['artifact_url'];title=' '.join(str(entry.get('title') or ref).split())[:80].replace('"',"'")
+            ref=short_ref(entry['domain'],entry['note'])
+            url=entry['artifact_url']
+            title=' '.join(str(entry.get('title') or ref).split())[:80].replace('"',"'")
             found.append((f"{entry['note']}@{revision}",f'Dashboard "{title}" is behind its note: run {cmd} views render {ref} --target artifact, publish the printed file to {url} with the Artifact tool, then {cmd} views published {ref} --url {url}'))
         return found[:HINT_MAX]
     except Exception as exc:
         from .logs import swallowed
-        swallowed('views.behind',exc,root);return []
+        swallowed('views.behind',exc,root)
+        return []

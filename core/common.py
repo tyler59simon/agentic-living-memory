@@ -1,6 +1,6 @@
 """Shared paths, domain resolution and small safety primitives."""
 from __future__ import annotations
-import copy, json, os, re, sys, time
+import copy, json, os, re, time
 from pathlib import Path
 from contextlib import contextmanager
 
@@ -95,7 +95,8 @@ def git_dir(repo) -> Path|None:
         if dot.is_file():
             match=re.match(r'gitdir:\s*(.+)',dot.read_text(encoding='utf-8',errors='replace').strip())
             if match:
-                target=Path(match[1].strip());target=target if target.is_absolute() else dot.parent/target
+                target=Path(match[1].strip())
+                target=target if target.is_absolute() else dot.parent/target
                 return target.resolve() if target.is_dir() else None
     except (OSError,ValueError):pass
     return None
@@ -103,14 +104,17 @@ def git_dir(repo) -> Path|None:
 def _common_dir(gd: Path) -> Path:
     """Where a linked worktree's repository-wide files (config, packed-refs, refs) live: its `commondir`, else the git directory itself."""
     try:
-        target=Path((gd/'commondir').read_text(encoding='utf-8',errors='replace').strip());return (target if target.is_absolute() else gd/target).resolve()
+        target=Path((gd/'commondir').read_text(encoding='utf-8',errors='replace').strip())
+        return (target if target.is_absolute() else gd/target).resolve()
     except (OSError,ValueError):return gd
 
 def _origin_url(config: str) -> str|None:
     inside=False
     for line in config.splitlines():
         line=line.strip()
-        if line.startswith('['):inside=bool(re.match(r'\[\s*remote\s+"origin"\s*\]',line,re.I));continue
+        if line.startswith('['):
+            inside=bool(re.match(r'\[\s*remote\s+"origin"\s*\]',line,re.I))
+            continue
         if inside:
             match=re.match(r'url\s*=\s*(.*)',line,re.I)
             if match and match[1].strip().strip('"'):return match[1].strip().strip('"')
@@ -125,16 +129,19 @@ def normalize_remote(url,base=None) -> str|None:
     def local(path):
         if re.match(r'/[A-Za-z]:[/\\]',path):path=path[1:]   # file:///C:/x
         try:
-            found=Path(path).expanduser();found=found if found.is_absolute() or base is None else Path(base)/found
+            found=Path(path).expanduser()
+            found=found if found.is_absolute() or base is None else Path(base)/found
             return 'file:'+found.resolve().as_posix().casefold()
         except (OSError,ValueError):return None
     def remote(host,path):
-        host=host.rpartition('@')[2].lower();path=re.sub(r'(?i)\.git$','',path.strip().strip('/')).strip('/')
+        host=host.rpartition('@')[2].lower()
+        path=re.sub(r'(?i)\.git$','',path.strip().strip('/')).strip('/')
         return f'{host}/{path.casefold()}' if path else host   # hosts such as GitHub treat Owner/Repo and owner/repo alike
     scheme=re.match(r'([a-z][a-z0-9+.-]*)://(.*)',text,re.I)
     if scheme:
         if scheme[1].lower()=='file':return local(scheme[2])
-        host,_,path=scheme[2].partition('/');return remote(re.sub(r':\d*$','',host),path)
+        host,_,path=scheme[2].partition('/')
+        return remote(re.sub(r':\d*$','',host),path)
     scp=re.match(r'(?:[^@/\\]+@)?([^/\\:@]{2,}):(.+)',text)   # git@host:owner/repo (a single letter is a drive)
     return remote(scp[1],scp[2]) if scp else local(text)
 
@@ -158,7 +165,8 @@ def head_oid(repo) -> str|None:
     try:
         head=(gd/'HEAD').read_text(encoding='utf-8',errors='replace').strip()
         if not head.startswith('ref:'):return head or None
-        ref=head[4:].strip();common=_common_dir(gd)
+        ref=head[4:].strip()
+        common=_common_dir(gd)
         for folder in (gd,common):
             try:return (folder/ref).read_text(encoding='utf-8',errors='replace').strip() or None
             except OSError:continue
@@ -178,7 +186,8 @@ def head_branch(repo) -> str|None:
 
 def default_branch(repo) -> str:
     """The branch origin/HEAD names, read from the git files without running git; main when the clone does not record one."""
-    gd=git_dir(repo);prefix='ref: refs/remotes/origin/'
+    gd=git_dir(repo)
+    prefix='ref: refs/remotes/origin/'
     try:ref=(_common_dir(gd)/'refs'/'remotes'/'origin'/'HEAD').read_text(encoding='utf-8',errors='replace').strip() if gd else ''
     except OSError:ref=''
     return ref[len(prefix):] or 'main' if ref.startswith(prefix) else 'main'
@@ -189,10 +198,12 @@ def safe_domain(name: str) -> str:
     return name
 
 def canonical_domain(name,root=None):
-    aliases=load_bindings(root).get('domain_aliases',{});seen=set()
+    aliases=load_bindings(root).get('domain_aliases',{})
+    seen=set()
     while name in aliases:
         if name in seen:raise ValueError('Domain alias cycle')
-        seen.add(name);name=aliases[name]
+        seen.add(name)
+        name=aliases[name]
     return safe_domain(name)
 
 # Notes that hold beyond any one project. Not bound to a folder: every session searches it.
@@ -215,7 +226,9 @@ def global_domain(root=None) -> str:
 @contextmanager
 def file_lock(path: Path, timeout: float=10.0):
     """Cross-platform exclusive lock using OS file locking (no stale-lock guessing)."""
-    path.parent.mkdir(parents=True,exist_ok=True); f=path.open("a+b"); deadline=time.monotonic()+timeout
+    path.parent.mkdir(parents=True,exist_ok=True)
+    f=path.open("a+b")
+    deadline=time.monotonic()+timeout
     locked=False
     try:
         while True:
@@ -223,8 +236,11 @@ def file_lock(path: Path, timeout: float=10.0):
                 if os.name=="nt":
                     import msvcrt
                     f.seek(0,os.SEEK_END)
-                    if f.tell()==0:f.write(b"\0");f.flush()
-                    f.seek(0); msvcrt.locking(f.fileno(),msvcrt.LK_NBLCK,1)
+                    if f.tell()==0:
+                        f.write(b"\0")
+                        f.flush()
+                    f.seek(0)
+                    msvcrt.locking(f.fileno(),msvcrt.LK_NBLCK,1)
                 else:
                     import fcntl
                     fcntl.flock(f.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -239,7 +255,8 @@ def file_lock(path: Path, timeout: float=10.0):
             if locked:
                 if os.name=="nt":
                     import msvcrt
-                    f.seek(0); msvcrt.locking(f.fileno(),msvcrt.LK_UNLCK,1)
+                    f.seek(0)
+                    msvcrt.locking(f.fileno(),msvcrt.LK_UNLCK,1)
                 else:
                     import fcntl
                     fcntl.flock(f.fileno(),fcntl.LOCK_UN)
@@ -272,7 +289,8 @@ def atomic_write(path: Path, text: str, fsync: bool = True):
     fd,tmp=tempfile.mkstemp(prefix="."+path.name+".",dir=path.parent)
     try:
         with os.fdopen(fd,"w",encoding="utf-8",newline="\n") as out:
-            out.write(text);out.flush()
+            out.write(text)
+            out.flush()
             if fsync:os.fsync(out.fileno())
         retry_sharing(lambda:os.replace(tmp,path))
     except BaseException:

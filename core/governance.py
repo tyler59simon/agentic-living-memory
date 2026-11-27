@@ -1,11 +1,10 @@
 """Direct journaled writes, receipts, history, undo and derived-state recovery. There are no plans to approve: every write is
 journaled with its before-bytes, so `undo OPERATION` reverses it (the user removed plans on 2026-11-26)."""
 from __future__ import annotations
-import json,os,stat,uuid
+import json,os,uuid
 from pathlib import Path
-from .common import memory_root
 from .note_types import keep_baseline
-from .repository import roll_forward_pending,canonical_json,confined,digest,read_json,transaction,recover,store_lock,reconcile,now
+from .repository import roll_forward_pending,canonical_json,confined,digest,read_json,transaction,store_lock,reconcile,now
 
 
 def reconciled_domains(paths):
@@ -74,7 +73,8 @@ def _check_guards(root,value):
         path=confined(root,rel)
         if (digest(path.read_bytes()) if path.exists() else None)!=expected:
             raise ValueError('stale_write: a file this change was built from changed: '+rel)
-    absent=set(guards.get('absent_ids',[]));unused=set(guards.get('unused_tags',[]))
+    absent=set(guards.get('absent_ids',[]))
+    unused=set(guards.get('unused_tags',[]))
     if not (absent or unused):return   # file guards only (setup in a harness home): no notes to scan
     folders=sorted(p.name for p in (root/'domains').iterdir() if p.is_dir()) if (root/'domains').is_dir() else []
     for domain in folders:
@@ -87,7 +87,8 @@ def _check_guards(root,value):
                     raise ValueError(f"stale_write: {domain}:{note['id']} now uses {', '.join(sorted(unused&set(note['tags'])))}, which this change removes; run the command again")
 
 def history(root,note_id=None,limit=20,include_private=False):
-    root=Path(root).resolve();rows=[]
+    root=Path(root).resolve()
+    rows=[]
     if note_id:
         from .activity import note_history   # only operations that changed the note itself, from the activity cache
         rows=note_history(root,note_id,limit)
@@ -120,16 +121,25 @@ def merge(root,payload):
     from .repository import serialize,validate,inventory
     from .migration import rewrite_type_links
     root=Path(root).resolve()
-    target_ref,target_revision=split_revision(payload['target']);domain,target_id=target_ref.split(':',1);sources=payload['sources']
+    target_ref,target_revision=split_revision(payload['target'])
+    domain,target_id=target_ref.split(':',1)
+    sources=payload['sources']
     if not isinstance(sources,list) or not 1<=len(sources)<=20 or len(set(sources))!=len(sources):raise ValueError('Merge requires 1..20 distinct source references')
     with store_lock(root):
         target_path,target=find_note(target_id,domain,root)
         _require_revision(target['revision'],target_revision,target_ref)
         if target.get('status')!='active':raise ValueError('Merge target must be active')
-        keep_baseline(target);target['body']=payload['body'].strip();target['updated']=now();changes={};merged=[];moves={};named=[]
+        keep_baseline(target)
+        target['body']=payload['body'].strip()
+        target['updated']=now()
+        changes={}
+        merged=[]
+        moves={}
+        named=[]
         if target.get('checked'):target['checked']=target['updated']   # the merged body is the author's word for the facts as of now
         for given in sources:
-            ref,revision=split_revision(given);source_domain,identity=ref.split(':',1)
+            ref,revision=split_revision(given)
+            source_domain,identity=ref.split(':',1)
             if source_domain!=domain:raise ValueError('Merge sources must be distinct notes in the target domain')
             path,note=find_note(identity,domain,root)
             _require_revision(note['revision'],revision,ref)
@@ -138,29 +148,37 @@ def merge(root,payload):
             if note.get('status')!='active':raise ValueError('Merge sources must be active')
             archived=root/'domains'/domain/'archive'/path.name
             if archived.exists():raise ValueError('Merge archive collision')
-            merged.append(note['id']);named.append(ref);moves[path.resolve()]=(path,archived,note)
+            merged.append(note['id'])
+            named.append(ref)
+            moves[path.resolve()]=(path,archived,note)
         targets={key:archived for key,(_,archived,_) in moves.items()}
         for path,archived,note in moves.values():
             # Moving to archive/: the note's own relative links, and links between moved sources, still resolve.
             note['body']=rewrite_type_links(note['body'],archived,targets,moved_from=path)
-            note.update(status='superseded',superseded_by=target['id'],updated=now(),last_retirement=retirement_record('supersede','agent',f"{domain}:{target['id']}"));validate(note,domain,root)
-            changes[path.relative_to(root).as_posix()]=None;changes[archived.relative_to(root).as_posix()]=serialize(note)
+            note.update(status='superseded',superseded_by=target['id'],updated=now(),last_retirement=retirement_record('supersede','agent',f"{domain}:{target['id']}"))
+            validate(note,domain,root)
+            changes[path.relative_to(root).as_posix()]=None
+            changes[archived.relative_to(root).as_posix()]=serialize(note)
         target['body']=rewrite_type_links(target['body'],target_path,targets)
-        target['supersedes']=sorted(set(target.get('supersedes',[])+merged));validate(target,domain,root)
+        target['supersedes']=sorted(set(target.get('supersedes',[])+merged))
+        validate(target,domain,root)
         changes[target_path.relative_to(root).as_posix()]=serialize(target)
         for referring in inventory(domain,root,retired=True):
             # Links from other notes follow the sources into archive/.
             if referring['id']==target['id'] or Path(referring['path']).resolve() in moves:continue
             new=rewrite_type_links(referring['body'],Path(referring['path']),targets)
             if new!=referring['body']:
-                keep_baseline(referring);referring['body']=new;referring['updated']=now()
+                keep_baseline(referring)
+                referring['body']=new
+                referring['updated']=now()
                 changes[Path(referring['path']).relative_to(root).as_posix()]=serialize(referring)
         return commit(root,changes,'merge',[domain],{'target':target_ref,'sources':named,'files':len(changes)})
 
 def undo(root,operation_id,include_private=False,revert_files=True):
     """revert_files: for the accept of a folder notebook proposal, put the page outside the store back first (folder_docs.revert_accept)."""
     if not __import__('re').fullmatch(r'[A-Za-z0-9_-]{1,100}',operation_id):raise ValueError('Invalid operation ID')
-    root=Path(root).resolve();journal=root/'.operations'/operation_id/'journal.json'
+    root=Path(root).resolve()
+    journal=root/'.operations'/operation_id/'journal.json'
     try:value=read_json(journal)
     except ValueError:
         if journal.exists():raise ValueError(f'corrupt_journal {operation_id}: this operation cannot be undone; see RECOVERY.md') from None
@@ -189,7 +207,8 @@ def undo(root,operation_id,include_private=False,revert_files=True):
         if not include_private and (journal_private(root,value,authorize=True) or (REGISTRY in changes and loosens(root,changes[REGISTRY]))):
             raise ValueError(f'not_found: operation {operation_id} changed a private notebook; requires --include-private (user or local client)')
         for effect in value['effects']:
-            p=confined(root,effect['path']);current=digest(p.read_bytes()) if p.exists() else None
+            p=confined(root,effect['path'])
+            current=digest(p.read_bytes()) if p.exists() else None
             if current!=effect['after_hash']:raise ValueError('Undo conflicts with later edits')
             # POSIX: a chmod made since is a later edit too (journals from before after_mode are not checked).
             if current is not None and effect.get('after_mode') is not None and os.name!='nt' and p.stat().st_mode&0o777!=effect['after_mode']&0o777:   # setgid can be cleared by the system
@@ -201,7 +220,7 @@ def undo(root,operation_id,include_private=False,revert_files=True):
         if 'tag_taxonomy.json' in changes:
             tags_of=lambda t:set((t.get('tags',[]) if isinstance(t,dict) else t) or [])
             dropped=tags_of(read_json(root/'tag_taxonomy.json',{'tags':[]}))-tags_of(json.loads(changes['tag_taxonomy.json'].lstrip('\ufeff')) if changes['tag_taxonomy.json'] else {})
-            guards={'unused_tags':dropped}
+            # Already under store_lock(root): verify unused_tags once here so commit() does not re-scan every domain.
             try:_check_guards(root,{'guards':{'unused_tags':sorted(dropped)},'domains':sorted(domains),'changes':changes})
             except ValueError as exc:raise ValueError('Undo would remove tags that notes still use; retag those notes first ('+str(exc).split(': ',1)[-1]+')') from None
         # Restoring an older type registry can drop a custom type, or its action items, that notes written since depend on; restoring an
@@ -237,15 +256,24 @@ def _require_revision(actual,given,ref):
 def remap(root,mappings):
     from .notes import find_note
     from .repository import serialize
-    root=Path(root).resolve();changes={};sources=set();targets=set();domains=set()
+    root=Path(root).resolve()
+    changes={}
+    sources=set()
+    targets=set()
+    domains=set()
     with store_lock(root):
         for mapping in mappings:
-            before=mapping['before'];after=mapping['after'];a=(before['domain'],before['id']);b=(after['domain'],after['id'])
+            before=mapping['before']
+            after=mapping['after']
+            a=(before['domain'],before['id'])
+            b=(after['domain'],after['id'])
             if a==b or a in sources or b in targets:raise ValueError('Ambiguous remap or identity collision')
-            sources.add(a);targets.add(b)
+            sources.add(a)
+            targets.add(b)
         if sources&targets:raise ValueError('Remap cycles are not allowed')
         for mapping in mappings:
-            before,after=mapping['before'],mapping['after'];path,note=find_note(before['id'],before['domain'],root)
+            before,after=mapping['before'],mapping['after']
+            path,note=find_note(before['id'],before['domain'],root)
             _require_revision(note['revision'],mapping.get('revision'),f"{before['domain']}:{before['id']}")
             if before['id']!=after['id']:raise ValueError('Stable IDs cannot change; remap changes domains only')
             try:find_note(after['id'],after['domain'],root)
@@ -256,8 +284,11 @@ def remap(root,mappings):
                 raise ValueError('Target domain is unregistered')
             target=confined(root,Path('domains')/after['domain']/('notes' if note['status']=='active' else 'archive')/path.name)
             if target.exists():raise ValueError('Remap filename collision')
-            keep_baseline(note);note['domain']=after['domain'];note['updated']=now()   # a move vouches for nothing
-            changes[path.relative_to(root).as_posix()]=None;changes[target.relative_to(root).as_posix()]=serialize(note)
+            keep_baseline(note)  # a move vouches for nothing
+            note['domain']=after['domain']
+            note['updated']=now()
+            changes[path.relative_to(root).as_posix()]=None
+            changes[target.relative_to(root).as_posix()]=serialize(note)
             domains.update((before['domain'],after['domain']))
         return commit(root,changes,'reference_remap',domains,{'mappings':mappings,'files':len(changes)})
 
@@ -270,21 +301,25 @@ def promote_suggest(root,domain=None):
     from .common import global_domains
     from .notes import domain_folders,related,scope_hint,TitleScorer,short_ref
     from .repository import inventory
-    root=Path(root).resolve();globals_=set(global_domains(root))
+    root=Path(root).resolve()
+    globals_=set(global_domains(root))
     projects=[d for d in domain_folders(root) if d not in globals_]
     active={d:[n for n in inventory(d,root) if n.get('status','active')=='active'] for d in domain_folders(root)}
     found={}
     def add(d,n,reason,**extra):
         row=found.setdefault(f"{d}:{n['id']}",{'ref':short_ref(d,n['id']),'title':n['title'],'type':n.get('type','knowledge'),'domain':d,'reasons':[]})
-        row['reasons'].append(reason);row.update(extra)
-    everything=[n for notes in active.values() for n in notes];scorer=TitleScorer(everything)
+        row['reasons'].append(reason)
+        row.update(extra)
+    everything=[n for notes in active.values() for n in notes]
+    scorer=TitleScorer(everything)
     for i,a in enumerate(projects):
         for b in projects[i+1:]:
             if related(a,b,root):continue
             for x in active[a]:
                 for y in active[b]:
                     if x.get('type')==y.get('type') and scorer.score(x['title'],y['title'])>=PROMOTE_PAIR:
-                        add(a,x,f"also in project {b}: {short_ref(b,y['id'])}",pair=short_ref(b,y['id']));add(b,y,f"also in project {a}: {short_ref(a,x['id'])}",pair=short_ref(a,x['id']))
+                        add(a,x,f"also in project {b}: {short_ref(b,y['id'])}",pair=short_ref(b,y['id']))
+                        add(b,y,f"also in project {a}: {short_ref(a,x['id'])}",pair=short_ref(a,x['id']))
     for d in projects:
         for n in active[d]:
             for g in globals_:
@@ -304,7 +339,8 @@ def promote(root,refs):
     from .notes import resolve_ref,find_note,_move_set,ensure_global,TitleScorer,domain_folders,promotion_blocker,split_revision,check_revision
     root=Path(root).resolve()
     if not isinstance(refs,list) or not 1<=len(refs)<=20:raise ValueError('promote takes 1..20 note references')
-    target=ensure_global(root);globals_=set(global_domains(root))
+    target=ensure_global(root)
+    globals_=set(global_domains(root))
     with store_lock(root):
         notes=[]
         for given in refs:
@@ -318,7 +354,9 @@ def promote(root,refs):
             blocker=promotion_blocker(note,root)
             if blocker:raise ValueError(f'{ref} stays in its project: {blocker}')
             notes.append(note)
-        scorer=TitleScorer(notes);moves={n['id']:{'note':n,'target':target,'clean':True} for n in notes};superseded=[]
+        scorer=TitleScorer(notes)
+        moves={n['id']:{'note':n,'target':target,'clean':True} for n in notes}
+        superseded=[]
         ordered=sorted(notes,key=lambda n:str(n.get('updated') or ''),reverse=True)
         for i,newer in enumerate(ordered):
             if moves[newer['id']].get('status'):continue
@@ -336,7 +374,9 @@ def promote(root,refs):
 def retag(root,mappings,domains=None):
     """A direct, journaled rename of tags across every note that carries them, and in the taxonomy."""
     from .repository import inventory,serialize,FACETS
-    root=Path(root).resolve();changes={};affected=[]
+    root=Path(root).resolve()
+    changes={}
+    affected=[]
     if not isinstance(mappings,dict) or not mappings:raise ValueError('Provide old-tag to new-tag mappings')
     if any('/' not in tag or tag.split('/',1)[0] not in FACETS for tag in mappings.values()):raise ValueError('New tags require controlled facets')
     wanted=sorted({t.split('/',1)[1] for t in mappings.values() if t.startswith('project/')})
@@ -357,7 +397,8 @@ def retag(root,mappings,domains=None):
             outside=[d for d in every if d not in set(domains)]
             still=sorted({t for d in outside for n in inventory(d,root,retired=True) for t in n.get('tags',[]) if t in mappings})
             if still:raise ValueError('Tags are still used in other domains: '+', '.join(still)+'; run retag without a domain restriction')
-        from .notes import taxonomy;registered=taxonomy(root)
+        from .notes import taxonomy
+        registered=taxonomy(root)
         used={t for d in sorted(domains or every) for n in inventory(d,root,retired=True) for t in n.get('tags',[])}
         unknown=sorted(t for t in mappings if t not in registered and t not in used)
         if unknown:raise ValueError('Unknown source tags: '+', '.join(unknown)+'; check the spelling with taxonomy')
@@ -365,8 +406,12 @@ def retag(root,mappings,domains=None):
             for note in inventory(domain,root,retired=True):
                 tags=sorted({mappings.get(t,t) for t in note.get('tags',[])})
                 if tags!=sorted(note.get('tags',[])):
-                    note['tags']=tags;note['updated']=now();changes[Path(note['path']).relative_to(root).as_posix()]=serialize(note);affected.append(domain)
-        taxonomy=read_json(root/'tag_taxonomy.json',{'tags':[]});known=taxonomy.get('tags',[]) if isinstance(taxonomy,dict) else taxonomy
+                    note['tags']=tags
+                    note['updated']=now()
+                    changes[Path(note['path']).relative_to(root).as_posix()]=serialize(note)
+                    affected.append(domain)
+        from .tag_taxonomy import load_tags
+        known=load_tags(root)
         changes['tag_taxonomy.json']=canonical_json({'version':2,'facets':list(FACETS),'tags':sorted({mappings.get(t,t) for t in known}|set(mappings.values()))})
         return commit(root,changes,'bulk_retag',affected,{'files':len(changes),'mappings':mappings},
                       guards={'unused_tags':set(mappings)-set(mappings.values())})

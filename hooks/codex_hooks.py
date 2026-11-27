@@ -1,4 +1,4 @@
-﻿"""Native Codex lifecycle adapter over the shared script runtime."""
+"""Native Codex lifecycle adapter over the shared script runtime."""
 from __future__ import annotations
 import sys
 from pathlib import Path
@@ -11,7 +11,8 @@ REPORTING={'session-start','user-prompt'}
 def handle(event,payload):
     from core.runtime import process
     result=process('codex',event,payload)
-    body={'hookEventName':EVENTS.get(event,event)};out={}
+    body={'hookEventName':EVENTS.get(event,event)}
+    out={}
     if result.get('context'):body['additionalContext']=result['context']
     if result.get('deny'):body.update(permissionDecision='deny',permissionDecisionReason=result['deny'])
     if len(body)>1:out['hookSpecificOutput']=body

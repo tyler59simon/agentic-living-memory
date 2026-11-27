@@ -1167,18 +1167,10 @@ SPAWN_COOLDOWN = 600
 
 
 def _spawn(root):
-    """Start `maintenance run --scheduled` detached, as sources.spawn does for source-sync."""
+    """Start `maintenance run --scheduled` detached via core/background.py."""
+    from .background import spawn_detached
     script = Path(__file__).resolve().parents[1] / 'living_memory.py'
-    argv = [sys.executable, str(script), '--root', str(root), 'maintenance', 'run', '--scheduled']
-    options = {'stdin': subprocess.DEVNULL, 'stdout': subprocess.DEVNULL, 'stderr': subprocess.DEVNULL, 'close_fds': True, 'cwd': tempfile.gettempdir()}   # not the store: a running process would block moving it
-    if os.name == 'nt':
-        flags = 0x00000008 | 0x00000200   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, and out of the host's job object when it allows (CREATE_BREAKAWAY_FROM_JOB)
-        try:
-            subprocess.Popen(argv, creationflags=flags | 0x01000000, **options)
-        except OSError:
-            subprocess.Popen(argv, creationflags=flags, **options)
-    else:
-        subprocess.Popen(argv, start_new_session=True, **options)
+    spawn_detached([sys.executable, str(script), '--root', str(root), 'maintenance', 'run', '--scheduled'])
 
 
 def schedule(root, *, subagent=False, plan=False, compact=False, now=None):
@@ -1186,19 +1178,10 @@ def schedule(root, *, subagent=False, plan=False, compact=False, now=None):
     never waits. It reads only the config, the checkpoint and recent run records (no notes, git or provider); the worker rechecks everything."""
     from .logs import swallowed
     try:
-        from .runtime import headless
-        if subagent:
-            return 'subagent'
-        if headless():
-            return 'headless'
-        if plan:
-            return 'plan_mode'
-        if compact:
-            return 'compact'
-        if os.environ.get('LIVING_MEMORY_NO_BACKGROUND'):
-            return 'background_disabled'
-        if os.environ.get('LIVING_MEMORY_MAINTENANCE_CHILD'):
-            return 'maintenance_child'
+        from .background import in_cooldown, session_gate, touch_cooldown
+        blocked = session_gate(subagent=subagent, plan=plan, compact=compact)
+        if blocked:
+            return blocked
         cfg = ms.config(root)
         if not cfg['enabled']:
             return 'disabled'
@@ -1208,14 +1191,10 @@ def schedule(root, *, subagent=False, plan=False, compact=False, now=None):
         if ms.running(root):
             return 'already_running'
         marker = Path(root) / 'hooks' / 'maintenance.spawned'
-        try:
-            if time.time() - float(marker.read_text()) < SPAWN_COOLDOWN:
-                return 'cooldown'
-        except (OSError, ValueError):
-            pass
+        if in_cooldown(marker, SPAWN_COOLDOWN):
+            return 'cooldown'
         _spawn(root)
-        from .common import atomic_write
-        atomic_write(marker, str(time.time()))
+        touch_cooldown(marker)
         return 'spawned'
     except Exception as exc:
         swallowed('maintenance.schedule', exc, root)

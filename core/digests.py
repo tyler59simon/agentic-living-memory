@@ -46,11 +46,14 @@ def cached_sha256(path,root):
     A file modified within the last 2 seconds is never cached. Call flush_hashes(root) to persist new entries."""
     try:st=os.stat(path)
     except OSError:return None
-    key=str(path);cache=_hash_cache(root);hit=cache.get(key)
+    key=str(path)
+    cache=_hash_cache(root)
+    hit=cache.get(key)
     if isinstance(hit,list) and len(hit)==3 and hit[0]==st.st_size and hit[1]==st.st_mtime_ns:return hit[2]
     sha=file_sha256(path)
     if sha is not None and time.time_ns()-st.st_mtime_ns>HASH_SETTLE_NS:
-        cache.pop(key,None);cache[key]=[st.st_size,st.st_mtime_ns,sha]
+        cache.pop(key,None)
+        cache[key]=[st.st_size,st.st_mtime_ns,sha]
         while len(cache)>HASH_CACHE_MAX:cache.pop(next(iter(cache)))
         _DIRTY.add(str(root))
     return sha
@@ -93,7 +96,8 @@ def locate(root,domain,path,bindings=None,specs=None):
     if Path(path).is_absolute():return (Path(path),True) if Path(path).is_file() else (None,False)
     if named:
         spec=(specs if specs is not None else _specs(root,domain,bindings)).get(named[1])
-        base=Path(spec['path']) if spec else None;rel=named[2]
+        base=Path(spec['path']) if spec else None
+        rel=named[2]
         found=(base/rel) if base is not None else None
         return (found if found is not None and found.is_file() and _inside(found,base) is not None else None),True
     prefixes=domain_prefixes(domain,bindings)
@@ -104,9 +108,12 @@ def locate(root,domain,path,bindings=None,specs=None):
 def describe(root,domain,value,cwd=None,bindings=None):
     """{path, sha256} for a --source value: an absolute path, one relative to a bound folder (or to cwd), or `name:rel`. Refuses a
     file outside the domain's bound folders and registered sources, or one that is not a file."""
-    bindings=bindings if bindings is not None else load_bindings(root);text=str(value).strip()
+    bindings=bindings if bindings is not None else load_bindings(root)
+    text=str(value).strip()
     if not text:raise ValueError('--source needs a file path')
-    prefixes=domain_prefixes(domain,bindings);specs=_specs(root,domain,bindings);found=None
+    prefixes=domain_prefixes(domain,bindings)
+    specs=_specs(root,domain,bindings)
+    found=None
     if NAMED.match(text) and NAMED.match(text)[1] in specs:found=locate(root,domain,text,bindings,specs)[0]
     else:
         given=Path(os.path.expandvars(text)).expanduser()
@@ -124,10 +131,13 @@ def describe(root,domain,value,cwd=None,bindings=None):
 
 def rehash(sources,domain,root,bindings=None):
     """The sources with the current hash of each file that exists (a missing file keeps its old hash, so it stays stale)."""
-    bindings=bindings if bindings is not None else load_bindings(root);specs=None;out=[]
+    bindings=bindings if bindings is not None else load_bindings(root)
+    specs=None
+    out=[]
     for s in sources:
         if NAMED.match(s['path']) and specs is None:specs=_specs(root,domain,bindings)
-        found,_=locate(root,domain,s['path'],bindings,specs);sha=file_sha256(found) if found else None
+        found,_=locate(root,domain,s['path'],bindings,specs)
+        sha=file_sha256(found) if found else None
         if sha:
             from .rebaseline import keep
             keep(root,found,sha)
@@ -159,21 +169,28 @@ def states(listed,domain,root,bindings=None,policy=None,flush=True):
     the file cannot be read, so nothing can be said), `unchecked` (no hash recorded) or `closed` (the file is in a folder notebook
     made hidden or private since: the note's text came from it, so it is withheld until the user reviews the note).
     policy: a folder_policy.Policy to reuse (one per scan over many notes); built here when not given."""
-    bindings=bindings if bindings is not None else load_bindings(root);specs=None;out={}
+    bindings=bindings if bindings is not None else load_bindings(root)
+    specs=None
+    out={}
     for s in listed or []:
         if NAMED.match(s['path']) and specs is None:specs=_specs(root,domain,bindings)
         path,known=locate(root,domain,s['path'],bindings,specs)
         from .folder_policy import Policy
         from .sources import NOTEBOOK_SOURCE
-        policy=policy or Policy(root);named=NAMED.match(s['path'])
+        policy=policy or Policy(root)
+        named=NAMED.match(s['path'])
         probes=[path] if path is not None else _probe(root,domain,s['path'],bindings,specs)   # a file deleted after its folder closed is judged too
         gone_source=bool(path is None and named and NOTEBOOK_SOURCE.fullmatch(named[1]) and named[1] not in (specs or {}))
         if any(_closed(root,p,policy) for p in probes) or gone_source:
-            out[s['path']]='closed';continue   # in a hidden or private notebook, or in a folder notebook whose own source is gone
-        if not s.get('sha256'):out[s['path']]='unchecked';continue
+            out[s['path']]='closed'  # in a hidden or private notebook, or in a folder notebook whose own source is gone
+            continue
+        if not s.get('sha256'):
+            out[s['path']]='unchecked'
+            continue
         if path is None:out[s['path']]='missing' if known else 'unavailable'
         else:
-            sha=cached_sha256(path,root);out[s['path']]='unavailable' if sha is None else 'current' if sha==s['sha256'] else 'changed'
+            sha=cached_sha256(path,root)
+            out[s['path']]='unavailable' if sha is None else 'current' if sha==s['sha256'] else 'changed'
     if flush:flush_hashes(root)
     return out
 
@@ -199,7 +216,8 @@ def stale_note(note,root,bindings=None,policy=None,flush=True):
         return stale_text([p for p,v in found.items() if v=='changed'],'digest' if note.get('sources') else 'note',[p for p,v in found.items() if v=='missing'])
     except Exception as exc:
         from .logs import swallowed
-        swallowed('digests.stale_note',exc,root);return ''
+        swallowed('digests.stale_note',exc,root)
+        return ''
 
 CLOSED='WITHHELD: a file this note was made from is now in a hidden or private notebook; the user reviews this note before agents see it again'
 
@@ -208,15 +226,19 @@ def mark(hits,root,bindings=None):
     """Give each hit that is a digest with a changed source, or a note with a changed hashed file, a `stale` text, and drop `sources` and `file_hashes` from all of them.
     A hit made from a file now in a hidden or private notebook keeps no text of its own: its snippet, summary and excerpt become that notice."""
     from .folder_policy import Policy
-    policy=None;hashed=False
+    policy=None
+    hashed=False
     for hit in hits:
-        sources=hit.pop('sources',None);file_hashes=hit.pop('file_hashes',None)
+        sources=hit.pop('sources',None)
+        file_hashes=hit.pop('file_hashes',None)
         if sources or file_hashes:
-            policy=policy or Policy(root);hashed=True
+            policy=policy or Policy(root)
+            hashed=True
             text=stale_note(dict(hit,sources=sources,file_hashes=file_hashes),root,bindings,policy,flush=False)
             if text:hit['stale']=text
             if text==CLOSED:
-                hit['withheld']=True;hit['title']='Withheld note'   # its title came from the file too
+                hit['withheld']=True  # its title came from the file too
+                hit['title']='Withheld note'
                 for key in ('snippet','summary','excerpt','body','text','units'):
                     if key in hit:hit[key]=[] if isinstance(hit[key],list) else ''
     if hashed:flush_hashes(root)
@@ -233,11 +255,14 @@ def skips(root,domain):
 def record_skips(root,domain,items,cwd=None,bindings=None):
     """Remember [{path, reason}] as skipped at the files' current hashes (a path that cannot be resolved is ignored); the newest MAX_SKIPS are kept. The count recorded."""
     from .common import atomic_write
-    bindings=bindings if bindings is not None else load_bindings(root);found=skips(root,domain);count=0
+    bindings=bindings if bindings is not None else load_bindings(root)
+    found=skips(root,domain)
+    count=0
     for item in items:
         try:sha=describe(root,domain,item['path'],cwd,bindings)
         except (ValueError,KeyError,TypeError):continue
-        found[sha['path']]={'sha256':sha['sha256'],'reason':str(item.get('reason') or '')[:200],'at':now()};count+=1
+        found[sha['path']]={'sha256':sha['sha256'],'reason':str(item.get('reason') or '')[:200],'at':now()}
+        count+=1
     if count:
         kept=dict(sorted(found.items(),key=lambda kv:str((kv[1] or {}).get('at')))[-MAX_SKIPS:])
         folder=Path(root)/'domains'/domain
@@ -247,7 +272,9 @@ def record_skips(root,domain,items,cwd=None,bindings=None):
 def clear_skips(root,domain,paths,cwd=None,bindings=None):
     """Remove the skip markers of these paths (as ingest-scan prints them; one that cannot be resolved is tried as written), so they read new again. The count removed."""
     from .common import atomic_write
-    bindings=bindings if bindings is not None else load_bindings(root);found=skips(root,domain);count=0
+    bindings=bindings if bindings is not None else load_bindings(root)
+    found=skips(root,domain)
+    count=0
     for path in paths:
         try:key=describe(root,domain,path,cwd,bindings)['path']
         except (ValueError,KeyError,TypeError):key=path
@@ -265,7 +292,9 @@ def classify(rel,source_kind='folder'):
     """(tier, kind) of a file of the source library: 0 decision records, 1 READMEs and top-level docs, 2 wiki and other docs, 3 entry points and
     build files, 4 modules (ranked by references and size), 5 the rest. Anything under a test or fixture path is a test, a Markdown ADR fixture included."""
     from . import sources as library
-    low=rel.casefold();name=low.rsplit('/',1)[-1];stem,ext=os.path.splitext(name)
+    low=rel.casefold()
+    name=low.rsplit('/',1)[-1]
+    stem,ext=os.path.splitext(name)
     if library.TEST_PATH.search(low):return 5,'test'
     if ext in library.DOC_EXT or ext in library.HTML_EXT:
         if ADR.search(low) and stem!='readme':return 0,'adr'   # an ADR folder's README only indexes the records
@@ -290,11 +319,13 @@ def scan(root,domain,source=None,limit=50,changed_only=False,bindings=None):
     source, kind, size, status (new | stale | current | skipped, against the active notes whose `sources` list the path) and, when one exists, digest
     (its ref; skipped: an agent judged the file not worth a digest, see record_skips); `file` is the path for `--file` when it lies in a bound folder; `abs` is where to read it. Reads the index and the files of existing digests only."""
     from . import sources as library
-    bindings=bindings if bindings is not None else load_bindings(root);specs=_specs(root,domain,bindings)
+    bindings=bindings if bindings is not None else load_bindings(root)
+    specs=_specs(root,domain,bindings)
     if source is not None and source not in specs:raise ValueError(f'unknown source {source}; `sources` lists them')
     db=library._readonly(root,domain)
     if db is None:raise ValueError('No knowledge-base index yet: run source-sync first')
-    prefixes=domain_prefixes(domain,bindings);rows=[]
+    prefixes=domain_prefixes(domain,bindings)
+    rows=[]
     try:
         files=db.execute('SELECT id,source,path,size FROM file WHERE skipped IS NULL AND chunks>0'+(' AND source=?' if source else ''),(source,) if source else ()).fetchall()
         bases={n:Path(s['path']).resolve() for n,s in specs.items()}
@@ -307,7 +338,8 @@ def scan(root,domain,source=None,limit=50,changed_only=False,bindings=None):
         for file_id,name,rel,size in files:
             if name not in specs:continue
             stored=leads[name]+rel
-            tier,kind=classify(rel,specs[name]['kind']);rows.append({'id':file_id,'path':stored,'rel':rel,'source':name,'kind':kind,'size':size,'tier':tier,'refs':0})
+            tier,kind=classify(rel,specs[name]['kind'])
+            rows.append({'id':file_id,'path':stored,'rel':rel,'source':name,'kind':kind,'size':size,'tier':tier,'refs':0})
         modules=sorted((r for r in rows if r['tier']==4),key=lambda r:-r['size'])[:REF_CANDIDATES]
         for r in modules:
             if r['size']>=MIN_MODULE:r['refs']=_references(db,os.path.splitext(r['rel'].rsplit('/',1)[-1])[0],r['id'])
@@ -321,13 +353,18 @@ def scan(root,domain,source=None,limit=50,changed_only=False,bindings=None):
     for n in inventory(domain,root):
         if n.get('status','active')=='active':
             for s in n.get('sources') or []:digests.setdefault(s['path'],[]).append((str(n.get('updated') or ''),n,s['sha256']))
-    counts={'new':0,'stale':0,'current':0,'skipped':0};items=[];skipped=skips(root,domain)
+    counts={'new':0,'stale':0,'current':0,'skipped':0}
+    items=[]
+    skipped=skips(root,domain)
     for r in rows:
         status,ref='new',None
         if r['path'] in digests:
-            found=sorted(digests[r['path']],key=lambda d:d[0],reverse=True);live=file_sha256(bases[r['source']]/r['rel'])
-            current=next((d for d in found if d[2]==live),None);pick=current or found[0]
-            status='current' if current else 'stale';ref=f"{domain}:{pick[1]['id']}"
+            found=sorted(digests[r['path']],key=lambda d:d[0],reverse=True)
+            live=file_sha256(bases[r['source']]/r['rel'])
+            current=next((d for d in found if d[2]==live),None)
+            pick=current or found[0]
+            status='current' if current else 'stale'
+            ref=f"{domain}:{pick[1]['id']}"
         elif isinstance(skipped.get(r['path']),dict) and skipped[r['path']].get('sha256')==file_sha256(bases[r['source']]/r['rel']):status='skipped'   # until the file changes
         counts[status]+=1
         if changed_only and status in ('current','skipped'):continue

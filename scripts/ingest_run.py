@@ -1,6 +1,6 @@
 """Drive headless agents through the ingest-scan worklist to write digest notes (project knowledge base, layer 2).
 
-Living Memory never calls a model; this script does the calling, one batch of files per agent run, and the agent writes
+This script drives headless agent runs, one batch of files per agent run, and the agent writes
 its digests through the normal LM CLI (`capture ... --source PATH`, so each digest records the file's hash and reads STALE
 when the file changes). Only new and stale files are sent (--all adds current and skipped ones), and test files are left out (--kinds adds them); a file the agent skips as trivial is
 remembered (ingest-skip, a sidecar in the domain folder) until its content changes. Reruns are idempotent: a digest's capture key is digest:<path>:<sha256>, so a file whose content

@@ -48,12 +48,6 @@ def same_name(a,b):
     return a.casefold()==b.casefold() or _caseless(a)==_caseless(b)
 
 
-def name_within(child,parent):
-    """True when the /-separated name child is parent or lies under it, ignoring case and Unicode spelling."""
-    child,parent=str(child)+'/',str(parent)+'/'
-    return child.casefold().startswith(parent.casefold()) or _caseless(child).startswith(_caseless(parent))
-
-
 def _real(path):
     try:return os.path.realpath(str(path))
     except (OSError,ValueError):return os.path.abspath(str(path))
@@ -103,5 +97,6 @@ def remove_empty_dir(path):
         names=os.listdir(path)
         if not all(is_os_junk(os.path.join(path,n)) for n in names):return False
         for n in names:os.remove(os.path.join(path,n))
-        os.rmdir(path);return True
+        os.rmdir(path)
+        return True
     except OSError:return False

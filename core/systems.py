@@ -80,7 +80,10 @@ def system_write(root,action,payload):
     slug=payload.get('slug')
     if not isinstance(slug,str) or not SLUG.fullmatch(slug):raise ValueError('slug must match [a-z0-9][a-z0-9-]{0,39}')
     with store_lock(root):
-        entries=load(root)['systems'];current=next((s for s in entries if s['slug']==slug),None);others=[s for s in entries if s['slug']!=slug];stamp=now()
+        entries=load(root)['systems']
+        current=next((s for s in entries if s['slug']==slug),None)
+        others=[s for s in entries if s['slug']!=slug]
+        stamp=now()
         slugs=[s['slug'] for s in others]
         if action=='create':
             if current:raise ValueError(f'System {slug} already exists')
@@ -90,32 +93,43 @@ def system_write(root,action,payload):
             if set(passport)-{'domain','title','body'}:raise ValueError('passport accepts domain, title and body')
             entry=_clean({k:v for k,v in payload.items() if k!='passport'},{'slug':slug,'status':'active','description':'','owners':[],'capabilities':[],'repos':[],'depends_on':[],'project':None,'architecture':None,'created':stamp,'updated':stamp},slugs,root)
             from .notes import build_note
-            from .tag_taxonomy import content
-            known=read_json(root/'tag_taxonomy.json',{'tags':[]});known=known.get('tags',[]) if isinstance(known,dict) else known
+            from .tag_taxonomy import content,load_tags
+            known=load_tags(root)
             domain=_charter_domain(root,passport.get('domain'),entry['repos'],'passport.domain')
-            note_id=str(uuid.uuid4());title=passport.get('title') or f"{entry['name']} passport"
+            note_id=str(uuid.uuid4())
+            title=passport.get('title') or f"{entry['name']} passport"
             if not isinstance(title,str):raise ValueError('passport.title must be a string')
-            changes={};added=tag(slug) not in known
+            changes={}
+            added=tag(slug) not in known
             if added:changes['tag_taxonomy.json']=content([tag(slug)],root,allow_managed=True)[0]
             path,note,text=build_note(title,passport['body'],['subject/project','concern/architecture',tag(slug)],domain,root,'context',note_id=note_id,extra_tags=[tag(slug)])
             entry['passport']=f'{domain}:{note_id}'
-            changes['systems.json']=_registry(others+[entry]);changes[path.relative_to(root).as_posix()]=text
+            changes['systems.json']=_registry(others+[entry])
+            changes[path.relative_to(root).as_posix()]=text
             return commit(root,changes,'system_create',[domain],{'slug':slug,'tag':tag(slug),'added_tag':added,'passport':entry['passport'],'files':len(changes)})
         if not current:raise ValueError(f'Unknown system {slug}')
         values={'status':'retired'} if action=='retire' else {k:v for k,v in payload.items() if k!='slug'}
-        entry=_clean(values,current,slugs,root);entry['updated']=stamp
+        entry=_clean(values,current,slugs,root)
+        entry['updated']=stamp
         return commit(root,{'systems.json':_registry(others+[entry])},'system_'+action,[],{'slug':slug,'fields':sorted(values),'files':1})
 
 def listing(root,status='any'):
     """Registry entries (optionally one status) with tag, tag_registered and dependents, and warnings for what no longer resolves."""
     from .notes import find_note,taxonomy
-    root=Path(root);known=taxonomy(root);rows=[];warnings=[];entries=load(root)['systems'];slugs={s['slug'] for s in entries}
+    root=Path(root)
+    known=taxonomy(root)
+    rows=[]
+    warnings=[]
+    entries=load(root)['systems']
+    slugs={s['slug'] for s in entries}
     try:project_slugs={p['slug'] for p in projects.load(root)['projects']}
     except ValueError:project_slugs=set()
     for s in entries:
         if status!='any' and s.get('status')!=status:continue
-        who=s['slug'];dependents=sorted(o['slug'] for o in entries if who in o.get('depends_on',[]))
-        row=dict(s,tag=tag(who),tag_registered=tag(who) in known,dependents=dependents);rows.append(row)
+        who=s['slug']
+        dependents=sorted(o['slug'] for o in entries if who in o.get('depends_on',[]))
+        row=dict(s,tag=tag(who),tag_registered=tag(who) in known,dependents=dependents)
+        rows.append(row)
         if not row['tag_registered']:warnings.append(f"{who}: tag {row['tag']} is not in the taxonomy")
         warnings+=[f'{who}: repo folder does not exist: {r}' for r in s.get('repos',[]) if not Path(r).is_dir()]
         if s.get('architecture') and not Path(s['architecture']).is_dir():warnings.append(f"{who}: architecture folder does not exist: {s['architecture']}")
@@ -123,6 +137,8 @@ def listing(root,status='any'):
         if s.get('project') and s['project'] not in project_slugs:warnings.append(f"{who}: project {s['project']} is not in the project registry")
         ref=s.get('passport')
         if ref:
-            try:domain,note_id=ref.split(':',1);find_note(note_id,canonical_domain(domain,root),root)
+            try:
+                domain,note_id=ref.split(':',1)
+                find_note(note_id,canonical_domain(domain,root),root)
             except (ValueError,AttributeError):warnings.append(f'{who}: passport {ref} does not resolve to a note')
     return {'ok':True,'systems':rows,'warnings':warnings}

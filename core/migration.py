@@ -15,26 +15,35 @@ def migrate_schema(root=None,sync_overlay=True):
 
 
 def _migrate_schema(root,sync_overlay=True):
-    changes={};warnings=[]
+    changes={}
+    warnings=[]
     config=read_json(root/'bindings.json',{'version':2,'domains':{},'search_scope':{'global_domains':['_global'],'foreign_domains':[]}})
     if not isinstance(config,dict) or not isinstance(config.get('domains',{}),dict):raise ValueError('Invalid bindings preserved')
-    config['version']=2;scope=config.setdefault('search_scope',{});scope.pop('min_relevance_score',None)
-    scope.setdefault('global_domains',['_global']);scope.setdefault('foreign_domains',[])
+    config['version']=2
+    scope=config.setdefault('search_scope',{})
+    scope.pop('min_relevance_score',None)
+    scope.setdefault('global_domains',['_global'])
+    scope.setdefault('foreign_domains',[])
     if (root/'domains/global').exists() and not (root/'domains/_global').exists():
-        config.setdefault('domain_aliases',{})['_global']='global';warnings.append('Legacy global directory retained as the _global alias')
+        config.setdefault('domain_aliases',{})['_global']='global'
+        warnings.append('Legacy global directory retained as the _global alias')
     # A configured global domain with no folder and no alias (e.g. "global" from an older default) would never
     # hold a note: point it at _global and keep the old name working as an alias.
-    aliases=config.setdefault('domain_aliases',{});names=scope.get('global_domains')
+    aliases=config.setdefault('domain_aliases',{})
+    names=scope.get('global_domains')
     if isinstance(names,list):
         for i,name in enumerate(names):
             if isinstance(name,str) and name!='_global' and name not in aliases and not (root/'domains'/name).exists():
-                aliases[name]='_global';names[i]='_global';warnings.append(f"Global domain '{name}' had no folder; it is now an alias of _global")
+                aliases[name]='_global'
+                names[i]='_global'
+                warnings.append(f"Global domain '{name}' had no folder; it is now an alias of _global")
         scope['global_domains']=list(dict.fromkeys(names))
     if not aliases:config.pop('domain_aliases')
     changes['bindings.json']=canonical_json(config)
     if not (root/'tag_taxonomy.json').exists():changes['tag_taxonomy.json']=canonical_json({'version':2,'facets':list(FACETS),'tags':DEFAULT_TAGS})
     else:
-        taxonomy=read_json(root/'tag_taxonomy.json');tags=taxonomy.get('tags',[]) if isinstance(taxonomy,dict) else taxonomy
+        from .tag_taxonomy import load_tags
+        tags=load_tags(root)
         if any('/' not in tag for tag in tags):warnings.append('Legacy tags retained; use retag to migrate existing values')
     domains=sorted(p.name for p in (root/'domains').iterdir() if p.is_dir()) if (root/'domains').exists() else []
     count=sum(len(inventory(d,root,retired=True)) for d in domains)
@@ -51,7 +60,8 @@ def rewrite_type_links(body, referring_path, targets, moved_from=None):
     def rewrite(raw):
         parsed=re.fullmatch(r'''(?P<url><[^>]*>|.*?)(?P<title>\s+(?:"[^"]*"|'[^']*'))?''',raw)
         if not parsed:return raw
-        raw_url=parsed.group('url');title=parsed.group('title') or ''
+        raw_url=parsed.group('url')
+        title=parsed.group('title') or ''
         angle=raw_url.startswith('<') and raw_url.endswith('>')
         url=raw_url[1:-1] if angle else raw_url
         parts=urlsplit(url)
@@ -77,27 +87,38 @@ def migrate_note_types(root=None):
     from .notes import slug
     root=Path(root or memory_root()).resolve()
     with store_lock(root):
-        notes=[];targets={};occupied=set()
+        notes=[]
+        targets={}
+        occupied=set()
         for directory in sorted((root/'domains').iterdir()) if (root/'domains').exists() else []:
             if directory.is_dir():notes.extend(inventory(directory.name,root,retired=True))
         for note in notes:
-            normalized=normalize(note);path=Path(note['path'])
+            normalized=normalize(note)
+            path=Path(note['path'])
             target=path.with_name(f"{normalized['prefix']} - {slug(note['title'])}-{note['id'][:8]}.md")
             key=str(target).casefold()
             if key in occupied or (target!=path and target.exists()):raise ValueError('Portable filename collision: '+str(target))
             occupied.add(key)
             if path!=target:targets[path.resolve()]=target
-        changes={};updates=[];domains=set()
+        changes={}
+        updates=[]
+        domains=set()
         for original in notes:
-            note=normalize(original);path=Path(original['path']);target=targets.get(path.resolve(),path)
+            note=normalize(original)
+            path=Path(original['path'])
+            target=targets.get(path.resolve(),path)
             note['path']=str(target)
             note['body']=rewrite_type_links(note['body'],path,targets)
             validate(note,note['domain'],root)
             text=serialize(note)
             if target==path and text==path.read_bytes().decode('utf-8'):continue
-            keep_baseline(note);note['updated']=now();old=path.relative_to(root).as_posix();new=target.relative_to(root).as_posix()
+            keep_baseline(note)
+            note['updated']=now()
+            old=path.relative_to(root).as_posix()
+            new=target.relative_to(root).as_posix()
             if old!=new:changes[old]=None
-            changes[new]=serialize(note);domains.add(note['domain'])
+            changes[new]=serialize(note)
+            domains.add(note['domain'])
             updates.append({'id':note['id'],'domain':note['domain'],'type':note['type'],'status':note['status'],'before':old,'after':new})
         return commit(root,changes,'note_type_migration',domains,
                       {'notes':len(updates),'renamed':sum(n['before']!=n['after'] for n in updates),
@@ -110,7 +131,10 @@ def migrate_baseline(root=None):
     `file_hashes` whose `checked` is older than a later body update would report already-covered changes. It sets
     checked=updated for those notes (only `checked` changes; `updated` and the body stay). Notes without `checked` are unaffected."""
     from .repository import serialize,validate
-    root=Path(root or memory_root()).resolve();changes={};updates=[];domains=set()
+    root=Path(root or memory_root()).resolve()
+    changes={}
+    updates=[]
+    domains=set()
     from .repository import store_lock
     with store_lock(root):
         for directory in sorted((root/'domains').iterdir()) if (root/'domains').exists() else []:
@@ -118,7 +142,10 @@ def migrate_baseline(root=None):
             for note in inventory(directory.name,root,retired=True):
                 if not note.get('checked') or not (note.get('type') in ('map','brief') or note.get('sources') or note.get('file_hashes')):continue
                 if str(note['checked'])>=str(note.get('updated') or ''):continue
-                note=dict(note,checked=note['updated']);validate(note,note['domain'],root)
-                rel=Path(note['path']).relative_to(root).as_posix();changes[rel]=serialize(note);domains.add(note['domain'])
+                note=dict(note,checked=note['updated'])
+                validate(note,note['domain'],root)
+                rel=Path(note['path']).relative_to(root).as_posix()
+                changes[rel]=serialize(note)
+                domains.add(note['domain'])
                 updates.append({'id':note['id'],'domain':note['domain'],'type':note.get('type'),'path':rel})
         return commit(root,changes,'baseline_migration',domains,{'notes':len(updates),'updates':updates})

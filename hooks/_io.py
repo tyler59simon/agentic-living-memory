@@ -12,4 +12,5 @@ def read_payload():
 
 def emit(obj):
     """One JSON reply line on stdout."""
-    sys.stdout.write(json.dumps(obj,separators=(',',':'))+'\n');sys.stdout.flush()
+    sys.stdout.write(json.dumps(obj,separators=(',',':'))+'\n')
+    sys.stdout.flush()

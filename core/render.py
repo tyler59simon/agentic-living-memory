@@ -34,15 +34,20 @@ def _row(row,n):
     return lines
 
 def _kv(value,depth=0):
-    pad='  '*depth;out=[]
+    pad='  '*depth
+    out=[]
     if isinstance(value,dict):
         for k,v in value.items():
             if k=='ok' and v is True and not depth:continue
-            if isinstance(v,(dict,list)) and v:out.append(f'{pad}{k}:');out+=_kv(v,depth+1)
+            if isinstance(v,(dict,list)) and v:
+                out.append(f'{pad}{k}:')
+                out+=_kv(v,depth+1)
             else:out.append(f'{pad}{k}: {_s(v)}')
     elif isinstance(value,list):
         for v in value:
-            if isinstance(v,(dict,list)):out.append(pad+'-');out+=_kv(v,depth+1)
+            if isinstance(v,(dict,list)):
+                out.append(pad+'-')
+                out+=_kv(v,depth+1)
             else:out.append(f'{pad}- {_s(v)}')
     else:out.append(pad+_s(value))
     return out
@@ -97,7 +102,8 @@ def _upgrade(r):
     moved=f"{r['from']} to {r['to']}"+(f" ({r['commits']} commits)" if r.get('commits') else '')
     head={'current':f"Already current: {r['source']} ({r['branch']}) is at the installed commit {r['to']}.",
           'upgraded':f"Upgraded from {r['source']} ({r['branch']}), {moved}: installed {r.get('files')} files."}[r['status']]
-    lines=_wrap(head,indent='');lead='& ' if os.name=='nt' else ''   # PowerShell runs a quoted program only after &
+    lines=_wrap(head,indent='')  # PowerShell runs a quoted program only after &
+    lead='& ' if os.name=='nt' else ''
     if r.get('next_steps'):lines+=['','Rewire these harnesses:']+['  '+lead+step for step in r['next_steps']]
     elif r.get('wiring_current'):lines+=['',f"Harness wiring is current ({', '.join(r['wiring_current'])}); nothing to rerun."]
     if r.get('notice'):lines+=['']+_wrap(r['notice'],indent='')
@@ -167,7 +173,8 @@ def _logs(r):
 
 def _maintenance_status(r):
     state='enabled' if r.get('enabled') else 'disabled'
-    limits=r.get('limits') or {};acc=r.get('accounting') or {}
+    limits=r.get('limits') or {}
+    acc=r.get('accounting') or {}
     lines=[f"Maintenance: {state}"+(f"  (domains: {', '.join(r.get('domains') or [])})" if r.get('domains') else '')]
     if limits.get('model'):lines.append(f"  model: {limits['model']}  daily budget: ${limits.get('daily_budget_usd','?')}  max notes/day: {limits.get('max_notes_per_day','?')}")
     if acc:lines.append(f"  today ({acc.get('day','?')}): reviewed={acc.get('reviewed',0)}  charged=${acc.get('charged_usd','0.00')}")

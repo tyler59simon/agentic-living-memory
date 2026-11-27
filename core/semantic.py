@@ -65,7 +65,10 @@ def _tokenizer_spec(folder):
     prompt, so the parsed plain data is kept beside it as tokenizer.marshal, keyed by the source's size and mtime; a missing, stale or
     unreadable cache is rebuilt, and one that cannot be written (read-only folder) is skipped. Derived: safe to delete."""
     import marshal
-    source=folder/'tokenizer.json';stat=source.stat();key=[stat.st_size,stat.st_mtime_ns];cache=folder/'tokenizer.marshal'
+    source=folder/'tokenizer.json'
+    stat=source.stat()
+    key=[stat.st_size,stat.st_mtime_ns]
+    cache=folder/'tokenizer.marshal'
     try:
         stored=marshal.loads(cache.read_bytes())
         if stored.get('source')==key and isinstance(stored.get('spec'),dict):return stored['spec']
@@ -89,25 +92,37 @@ class Model:
     """A loaded static model: BERT normalization and pre-tokenization, greedy WordPiece, rows read on demand."""
     def __init__(self,folder):
         import mmap
-        folder=Path(folder);spec=_tokenizer_spec(folder)
+        folder=Path(folder)
+        spec=_tokenizer_spec(folder)
         model,norm,pre=spec.get('model') or {},spec.get('normalizer') or {},spec.get('pre_tokenizer') or {}
         if model.get('type')!='WordPiece' or norm.get('type')!='BertNormalizer' or pre.get('type')!='BertPreTokenizer':
             raise ValueError('semantic_model_unsupported: only WordPiece tokenizers with BERT normalization are read')
-        self.name=folder.name;self.vocab=model['vocab'];self.unk=self.vocab.get(model.get('unk_token','[UNK]'))
-        self.prefix=model.get('continuing_subword_prefix','##');self.max_chars=model.get('max_input_chars_per_word',100)
-        self.lower=norm.get('lowercase',True);accents=norm.get('strip_accents')
-        self.strip=self.lower if accents is None else accents;self.clean=norm.get('clean_text',True);self.chinese=norm.get('handle_chinese_chars',True)
+        self.name=folder.name
+        self.vocab=model['vocab']
+        self.unk=self.vocab.get(model.get('unk_token','[UNK]'))
+        self.prefix=model.get('continuing_subword_prefix','##')
+        self.max_chars=model.get('max_input_chars_per_word',100)
+        self.lower=norm.get('lowercase',True)
+        accents=norm.get('strip_accents')
+        self.strip=self.lower if accents is None else accents
+        self.clean=norm.get('clean_text',True)
+        self.chinese=norm.get('handle_chinese_chars',True)
         with open(folder/'model.safetensors','rb') as handle:self._map=mmap.mmap(handle.fileno(),0,access=mmap.ACCESS_READ)
-        size=struct.unpack_from('<Q',self._map,0)[0];header=json.loads(self._map[8:8+size])
+        size=struct.unpack_from('<Q',self._map,0)[0]
+        header=json.loads(self._map[8:8+size])
         tensors=[v for k,v in header.items() if k!='__metadata__']
         if len(tensors)!=1 or tensors[0].get('dtype') not in _DTYPES or len(tensors[0].get('shape',[]))!=2:
             raise ValueError('semantic_model_unsupported: expected one F32 or F16 embedding matrix')
-        tensor=tensors[0];self.rows,self.dim=tensor['shape'];self._code,width=_DTYPES[tensor['dtype']]
-        self._row_bytes=self.dim*width;self._base=8+size+tensor['data_offsets'][0]
+        tensor=tensors[0]
+        self.rows,self.dim=tensor['shape']
+        self._code,width=_DTYPES[tensor['dtype']]
+        self._row_bytes=self.dim*width
+        self._base=8+size+tensor['data_offsets'][0]
         if tensor['data_offsets'][1]-tensor['data_offsets'][0]!=self.rows*self._row_bytes or 8+size+tensor['data_offsets'][1]>len(self._map):
             raise ValueError('semantic_model_corrupt: embedding matrix size does not match its header')
         if max(self.vocab.values(),default=-1)>=self.rows:raise ValueError('semantic_model_corrupt: vocabulary is larger than the embedding matrix')
-        self._format='<'+str(self.dim)+self._code;self._cache=OrderedDict()
+        self._format='<'+str(self.dim)+self._code
+        self._cache=OrderedDict()
 
     def close(self):self._map.close()
 
@@ -137,7 +152,9 @@ class Model:
             current=''
             for ch in chunk:
                 if _punctuation(ch):
-                    if current:words.append(current);current=''
+                    if current:
+                        words.append(current)
+                        current=''
                     words.append(ch)
                 else:current+=ch
             if current:words.append(current)
@@ -148,21 +165,31 @@ class Model:
         ids=[]
         for word in self._words(self._normalize(text)):
             if len(ids)>=MAX_TOKENS:break
-            if len(word)>self.max_chars:ids.append(self.unk);continue
-            pieces=[];start=0
+            if len(word)>self.max_chars:
+                ids.append(self.unk)
+                continue
+            pieces=[]
+            start=0
             while start<len(word):
-                end=len(word);found=None
+                end=len(word)
+                found=None
                 while start<end:
                     piece=word[start:end] if not start else self.prefix+word[start:end]
-                    if piece in self.vocab:found=self.vocab[piece];break
+                    if piece in self.vocab:
+                        found=self.vocab[piece]
+                        break
                     end-=1
-                if found is None:pieces=[self.unk];break
-                pieces.append(found);start=end
+                if found is None:
+                    pieces=[self.unk]
+                    break
+                pieces.append(found)
+                start=end
             ids.extend(pieces)
         return [i for i in ids[:MAX_TOKENS] if i is not None and i!=self.unk]
 
     def row(self,index):
-        cache=self._cache;row=cache.get(index)
+        cache=self._cache
+        row=cache.get(index)
         if row is None:
             row=cache[index]=struct.unpack_from(self._format,self._map,self._base+index*self._row_bytes)
             if len(cache)>ROW_CACHE:cache.popitem(last=False)
@@ -182,7 +209,9 @@ class Model:
 
 def to_blob(vector):return vector.tobytes()
 def from_blob(blob):
-    vector=array.array('f');vector.frombytes(blob);return vector
+    vector=array.array('f')
+    vector.frombytes(blob)
+    return vector
 def cosine(a,b):return sum(map(operator.mul,a,b))
 
 def models_dir(root):return Path(root)/FOLDER
@@ -195,22 +224,28 @@ def installed(root):
         if (folder/name/MARKER).is_file():return name
     return None
 
-_loaded={};_errors={}
+_loaded={}
+_errors={}
 def load(root):
     """The installed model, loaded once per process; None when absent or unreadable (the error is kept for status)."""
     name=installed(root)
     if not name:return None
     folder=str((models_dir(root)/name).resolve())
     if folder not in _loaded:
-        try:_loaded[folder]=Model(folder);_errors.pop(folder,None)
-        except (OSError,ValueError,KeyError,TypeError,struct.error) as error:_loaded[folder]=None;_errors[folder]=str(error)
+        try:
+            _loaded[folder]=Model(folder)
+            _errors.pop(folder,None)
+        except (OSError,ValueError,KeyError,TypeError,struct.error) as error:
+            _loaded[folder]=None
+            _errors[folder]=str(error)
     return _loaded[folder]
 
 def _unload():
     """Close every mapped model file (Windows cannot delete a mapped file) and forget it."""
     for model in _loaded.values():
         if model:model.close()
-    _loaded.clear();_errors.clear()
+    _loaded.clear()
+    _errors.clear()
 
 def threshold(root):
     name=installed(root)
@@ -239,13 +274,16 @@ def _fetch(url,target):
                     raise ValueError(f'Refusing non-HTTPS redirect during model download: {newurl}')
                 return super().redirect_request(r,fp,code,msg,headers,newurl)
         stream_cm=req.build_opener(_HttpsOnlyRedirect()).open(url,timeout=60)
-    beat=0.0;total=0
+    beat=0.0
+    total=0
     with stream_cm as response,open(target,'wb') as out:
         for block in iter(lambda:response.read(1<<20),b''):
             total+=len(block)
             if total>MAX_DOWNLOAD_BYTES:raise ValueError('Model download exceeds maximum byte cap')
             out.write(block)
-            if time.time()-beat>=HEARTBEAT_SECONDS:os.utime(target.parent);beat=time.time()
+            if time.time()-beat>=HEARTBEAT_SECONDS:
+                os.utime(target.parent)
+                beat=time.time()
 
 def rebuild_all(root,units=False):
     """Rebuild every domain's note index (and with it the unit index, core/vectors.py). units: discard each unit index
@@ -267,7 +305,9 @@ def install(root,name=DEFAULT_MODEL,source=None):
     """Download (or copy from a local folder) the pinned model files, verify every SHA-256, then rebuild indexes."""
     sh,tf=_lazy('shutil'),_lazy('tempfile')
     if name not in MODELS:raise ValueError(f'unknown_model: choose one of {", ".join(MODELS)}')
-    spec=MODELS[name];folder=models_dir(root);folder.mkdir(parents=True,exist_ok=True)
+    spec=MODELS[name]
+    folder=models_dir(root)
+    folder.mkdir(parents=True,exist_ok=True)
     _clear_stale_partials(folder)
     partial=Path(tf.mkdtemp(prefix=PARTIAL,dir=folder))   # one per installer, so two cannot share it
     try:
@@ -308,7 +348,8 @@ def _retire(folder):
 
 def remove(root):
     """Delete the downloaded model; indexes are rebuilt lexical-only."""
-    folder=models_dir(root);existed=folder.is_dir()
+    folder=models_dir(root)
+    existed=folder.is_dir()
     _unload()
     if existed:
         for other in folder.iterdir():
@@ -322,7 +363,8 @@ def remove(root):
 
 def status(root):
     import sqlite3
-    name=installed(root);model=load(root) if name else None
+    name=installed(root)
+    model=load(root) if name else None
     folder=models_dir(root)/name if name else None
     indexes={}
     for directory in sorted((Path(root)/'domains').iterdir()) if (Path(root)/'domains').is_dir() else []:

@@ -59,23 +59,27 @@ def _locate(value,prefixes,repos):
     text=str(value).strip().replace('\\','/')
     while text.startswith('./'):text=text[2:]
     text=text.rstrip('/') or '.'
-    raw=Path(text);candidates=[raw] if raw.is_absolute() else [prefix/text for prefix in prefixes]
+    raw=Path(text)
+    candidates=[raw] if raw.is_absolute() else [prefix/text for prefix in prefixes]
     path=next((c for c in candidates if probe(c,Path.exists)),candidates[0] if candidates else None)
     # '.' is the bound folder itself, always a folder: shown by the name of the binding it resolved to (the repo's, when a registered repo owns it).
     shown,owner=((path.name if path is not None else '') if text=='.' else text),None
     if path is not None:
-        full=Path(os.path.normpath(path)).as_posix().rstrip('/');folded=full.casefold()
+        full=Path(os.path.normpath(path)).as_posix().rstrip('/')
+        folded=full.casefold()
         for repo in repos:
             base=repo.replace('\\','/').rstrip('/')
             if folded==base.casefold() or folded.startswith(base.casefold()+'/'):
-                shown,owner=(base.rsplit('/',1)[-1]+full[len(base):]).strip('/'),repo;break
+                shown,owner=(base.rsplit('/',1)[-1]+full[len(base):]).strip('/'),repo
+                break
     last=shown.rsplit('/',1)[-1]
     exists=path is not None and probe(path,Path.exists)
     return shown,owner,(text=='.' or (probe(path,Path.is_dir) if exists else '.' not in last))
 
 def _split_lead(body,summary):
     """The body without its leading summary paragraph, which the page shows as the lead."""
-    lead=(summary or '').strip();text=(body or '').lstrip()
+    lead=(summary or '').strip()
+    text=(body or '').lstrip()
     return text[len(lead):].lstrip('\n') if lead and text.startswith(lead) else (body or '')
 
 def wiki_model(domain,root,archived=False,records=None):
@@ -88,11 +92,16 @@ def wiki_model(domain,root,archived=False,records=None):
     root=Path(root)
     raw=[dict(n,domain=domain) for n in (inventory(domain,root,retired=archived) if records is None else records)]
     graph=note_links(root,[domain],'any' if archived else 'active')
-    nodes={n['ref']:n for n in graph['nodes']};out={};back={};external={}
+    nodes={n['ref']:n for n in graph['nodes']}
+    out={}
+    back={}
+    external={}
     for edge in graph['edges']:
         a,b=nodes[edge['from']],nodes[edge['to']]
         if edge['kind']!='link' or a['domain']!=domain:continue
-        if b['domain']==domain:out.setdefault(a['id'],[]).append(b['id']);back.setdefault(b['id'],[]).append(a['id'])
+        if b['domain']==domain:
+            out.setdefault(a['id'],[]).append(b['id'])
+            back.setdefault(b['id'],[]).append(a['id'])
         else:external[(b['title'] or '').strip().casefold()]={'title':b['title'],'domain':b['domain']}
 
     projects=[]
@@ -101,18 +110,22 @@ def wiki_model(domain,root,archived=False,records=None):
         projects.append({'slug':p['slug'],'name':p.get('name') or p['slug'],'description':p.get('description') or '','aliases':list(p.get('aliases') or []),
                          'repos':[Path(r).name for r in p.get('repos') or []],'repo_paths':list(p.get('repos') or []),'status':p.get('status') or 'active',
                          'tag':registry.tag(p['slug']),'charter':charter.split(':',1)[1] if charter.startswith(domain+':') else None})
-    by_tag={p['tag']:p for p in projects};repo_project={r:p['slug'] for p in projects for r in p['repo_paths']}
+    by_tag={p['tag']:p for p in projects}
+    repo_project={r:p['slug'] for p in projects for r in p['repo_paths']}
     repos=sorted(repo_project,key=len,reverse=True)
     from .common import domain_prefixes,load_bindings
     prefixes=domain_prefixes(domain,load_bindings(root))
     # The pseudo-project for unassigned notes takes the first free slug, so a registered project named general keeps its own.
-    registered={p['slug'] for p in projects};general=next(s for s in ('general',*(f'general-{i}' for i in range(2,100))) if s not in registered)
+    registered={p['slug'] for p in projects}
+    general=next(s for s in ('general',*(f'general-{i}' for i in range(2,100))) if s not in registered)
 
-    notes=[];where={}
+    notes=[]
+    where={}
     for n in raw:
         summary=next((text for key,_,text in parts(n.get('body') or '') if key=='summary'),'')
         located=[l for l in (_locate(v,prefixes,repos) for v in n.get('files') or []) if l[0]]
-        files=[l[0] for l in located];owner=repo_project.get(located[0][1]) if located else None
+        files=[l[0] for l in located]
+        owner=repo_project.get(located[0][1]) if located else None
         if located:where[n['id']]=located[0]
         tagged=[by_tag[t]['slug'] for t in n.get('tags') or [] if t in by_tag]
         if len(tagged)>1 and owner in tagged:project=owner
@@ -124,33 +137,45 @@ def wiki_model(domain,root,archived=False,records=None):
                       'lead':' '.join(plain(summary).split()),'body':_split_lead(n.get('body') or '',summary),
                       'out':out.get(n['id'],[]),'backlinks':back.get(n['id'],[]),
                       'project':project,'section':section_of(n,files),'folder':None,'filename':''})
-    by_id={n['id']:n for n in notes};used={n['project'] for n in notes}
+    by_id={n['id']:n for n in notes}
+    used={n['project'] for n in notes}
     projects=[p for p in projects if p['slug'] in used]+([dict(GENERAL,slug=general)] if general in used else [])
 
     # The code tree: one folder per path prefix and project; a note sits in the folder of its first file.
-    folders=[];index={}
+    folders=[]
+    index={}
     def folder(project,segs):
         key=(project,tuple(segs))
         if key not in index:
             node={'id':f'c-{len(folders)+1}','project':project,'name':segs[-1],'path':'/'.join(segs),'parent':None,'folders':[],'notes':[]}
-            folders.append(node);index[key]=node
-            if len(segs)>1:parent=folder(project,segs[:-1]);node['parent']=parent['id'];parent['folders'].append(node['id'])
+            folders.append(node)
+            index[key]=node
+            if len(segs)>1:
+                parent=folder(project,segs[:-1])
+                node['parent']=parent['id']
+                parent['folders'].append(node['id'])
         return index[key]
     for n in notes:
         if n['id'] not in where:continue
-        shown,owner,is_dir=where[n['id']];segs=[s for s in shown.split('/') if s]
+        shown,owner,is_dir=where[n['id']]
+        segs=[s for s in shown.split('/') if s]
         if not segs:continue
         if owner is None:segs=[OTHER]+segs[-1:]
         is_file=not is_dir and len(segs)>1
         node=folder(n['project'],segs[:-1] if is_file else segs)
-        node['notes'].append(n['id']);n['folder']=node['id'];n['filename']=segs[-1] if is_file else ''
+        node['notes'].append(n['id'])
+        n['folder']=node['id']
+        n['filename']=segs[-1] if is_file else ''
     live={f['id']:f for f in folders}
     # Collapse chains of folders that hold one subfolder and no notes (src-tauri/src is one entry).
     for f in folders:
         if f['id'] not in live:continue
         while len(f['folders'])==1 and not f['notes']:
             child=live.pop(f['folders'][0])
-            f['name']+='/'+child['name'];f['path']=child['path'];f['folders']=child['folders'];f['notes']=child['notes']
+            f['name']+='/'+child['name']
+            f['path']=child['path']
+            f['folders']=child['folders']
+            f['notes']=child['notes']
             for c in f['folders']:live[c]['parent']=f['id']
             for i in f['notes']:by_id[i]['folder']=f['id']
     folders=[f for f in folders if f['id'] in live]
@@ -158,7 +183,9 @@ def wiki_model(domain,root,archived=False,records=None):
     # stops collapsing (Hivemind keeps the route across refreshes).
     rename={f['id']:'c-'+hashlib.sha1(f"{f['project']}/{f['path']}".encode()).hexdigest()[:10] for f in folders}
     for f in folders:
-        f['id']=rename[f['id']];f['parent']=rename.get(f['parent']);f['folders']=[rename[c] for c in f['folders']]
+        f['id']=rename[f['id']]
+        f['parent']=rename.get(f['parent'])
+        f['folders']=[rename[c] for c in f['folders']]
     for n in notes:
         if n['folder']:n['folder']=rename[n['folder']]
     live={f['id']:f for f in folders}
@@ -169,7 +196,8 @@ def wiki_model(domain,root,archived=False,records=None):
         f['notes'].sort(key=lambda i:(by_id[i]['filename'] or by_id[i]['title']).lower())
 
     for p in projects:
-        mine=[n for n in notes if n['project']==p['slug']];sections={}
+        mine=[n for n in notes if n['project']==p['slug']]
+        sections={}
         for key,_,_ in SECTIONS:
             if key=='code':
                 roots=sorted((f['id'] for f in folders if f['project']==p['slug'] and not f['parent']),key=lambda i:live[i]['name'].lower())
@@ -180,7 +208,8 @@ def wiki_model(domain,root,archived=False,records=None):
             if key in CHRONOLOGICAL:ids.sort(key=lambda i:by_id[i]['updated'],reverse=True)
             else:ids.sort(key=lambda i:(by_id[i]['type'] not in ('brief','map'),by_id[i]['title'].lower()))
             sections[key]={'notes':ids,'count':len(ids)}
-        p.pop('repo_paths',None);p.pop('tag',None)
+        p.pop('repo_paths',None)
+        p.pop('tag',None)
         p.update(sections=sections,count=len(mine),updated=max((n['updated'] for n in mine),default=''),
                  briefs=[n['id'] for n in mine if n['type']=='brief'],maps=[n['id'] for n in mine if n['type']=='map'])
         if p['charter'] not in by_id:p['charter']=None
@@ -924,9 +953,7 @@ paint();window.addEventListener('hashchange',function(){q.value='';route()});rou
 '''
 
 def _css():
-    from .views import _asset,ALM_LOGO_SVG
-    face=('@font-face{font-family:"Plus Jakarta Sans Variable";font-style:normal;font-display:swap;font-weight:200 800;'
-          'src:url(data:font/woff2;base64,'+_asset('plus-jakarta-sans-latin-wght-normal.woff2.b64')+') format("woff2")}')
+    from .web_assets import ALM_LOGO_SVG,font_face
     # Without a picked theme the page follows the host's data-theme, else the system. The picker (and --theme) sets data-hm, which comes
     # last so it wins over both; its dark sidebar stays a dark island in Emerald Light, and Purple's is its own.
     theme=(':root{'+LIGHT+'}.sidebar{'+DARK+SIDEBAR_LIGHT+'}'
@@ -936,17 +963,20 @@ def _css():
            ':root[data-hm="emerald-light"]{'+LIGHT+'}:root[data-hm="emerald-light"] .sidebar{'+DARK+SIDEBAR_LIGHT+'}'
            ':root[data-hm="purple"],:root[data-hm="purple"] .sidebar{'+PURPLE+'}')
     types=''.join(f'.type-{t}{{color:var(--t-{t})}}' for t in NOTE_TYPES)
-    return face+theme+CSS.replace('@@LOGO@@',ALM_LOGO_SVG).replace('@@TYPES@@',types)
+    return font_face()+theme+CSS.replace('@@LOGO@@',ALM_LOGO_SVG).replace('@@TYPES@@',types)
 
 def render_html(model,document=True,theme=None):
     """One self-contained page for the model. document=False leaves out the doctype, html, head and body wrapper (a
     claude.ai artifact adds its own); the content is otherwise the same. `theme` (purple, emerald or emerald-light) is the one the
     page starts in; without it the page follows the system, or the host's data-theme."""
+    from .web_assets import script_json
     if theme is not None and theme not in {k for k,_ in THEMES}:raise ValueError('--theme is purple, emerald or emerald-light')
-    esc=lambda v:html.escape(str(v),quote=True);agent=model.get('edition')=='agent'
+    esc=lambda v:html.escape(str(v),quote=True)
+    agent=model.get('edition')=='agent'
     pages=[n for n in model['notes'] if n['type']=='article'] if agent else model['notes']
-    data=json.dumps(model,ensure_ascii=False).replace('<','\\u003c').replace('>','\\u003e').replace('&','\\u0026').replace('\u2028','\\u2028').replace('\u2029','\\u2029')
-    domain=model['domain'];title=f'{domain[:1].upper()}{domain[1:]} {"agent" if agent else "memory"} wiki'
+    data=script_json(model)
+    domain=model['domain']
+    title=f'{domain[:1].upper()}{domain[1:]} {"agent" if agent else "memory"} wiki'
     noscript=''.join(f'<li>{esc(n["title"])}: {esc(MARKER.sub("",n["lead"]))}</li>' for n in pages)
     picker='<div class="themes" role="group" aria-label="Theme">'+''.join(f'<button type="button" data-t="{k}" aria-label="{l}" title="{l}"><i class="sw sw-{k}"></i><span>{l}</span></button>' for k,l in THEMES)+'</div>'
     content=(f'<title>{esc(title)}</title><meta name="claude:viewport-fit-sides" content="cover"><style>{_css()}</style>'
@@ -972,9 +1002,10 @@ def default_path(root,domain):return Path(root)/'.views'/domain/'wiki.html'
 def export(domain,root,archived=False,out=None,fmt='html',theme=None):
     """Write the wiki of one domain: html to `out` or <store>/.views/<domain>/wiki.html, or the json model to `out`.
     --out inside the store is refused unless it is under .views (it would overwrite canonical files unjournaled)."""
-    from .views import _out_path
-    root=Path(root).resolve();model=wiki_model(domain,root,archived)
-    path=_out_path(root,out) if out is not None else default_path(root,domain)
+    from .web_assets import out_path
+    root=Path(root).resolve()
+    model=wiki_model(domain,root,archived)
+    path=out_path(root,out) if out is not None else default_path(root,domain)
     text=json.dumps(model,ensure_ascii=False,indent=1)+'\n' if fmt=='json' else render_html(model,theme=theme)
     atomic_write(path,text)
     return {'ok':True,'domain':domain,'path':str(path),'pages':len(model['notes']),'format':fmt}

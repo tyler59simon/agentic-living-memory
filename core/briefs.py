@@ -7,21 +7,22 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 from .common import domain_prefixes,resolve_domain,memory_root,git_root,repo_identity
-from .maps import _rows,_json,map_domains,repo_of,repo_name,_identity_of,stale_clause
+from .maps import _rows,_json,map_domains,repo_of,_identity_of,stale_clause
 
 BRIEF_BUDGET=2500
-LABELS='Goals and scope, Stakeholders and decision-makers, Team and ownership, Current phase, status and blockers, Key decisions, Active risks, Glossary'
 MIN_NOTES=3
 
 def find_brief(cwd,root=None,bindings=None):
     """The active brief of the project folder holding cwd (the deepest such folder), else None. A brief of the same repo identity
     (a clone of the same origin elsewhere) comes first."""
     from .common import load_bindings
-    root=Path(root or memory_root()).resolve();bindings=bindings if bindings is not None else load_bindings(root)
+    root=Path(root or memory_root()).resolve()
+    bindings=bindings if bindings is not None else load_bindings(root)
     try:here=Path(cwd).resolve()
     except (OSError,ValueError):return None
     rows=[(domain,note) for domain in map_domains(here,bindings,root) for note in _rows(domain,root,'brief')]
-    repo=git_root(here);identity=repo_identity(repo) if repo else None
+    repo=git_root(here)
+    identity=repo_identity(repo) if repo else None
     if identity:
         found=next((dict(n,domain=d) for d,n in rows if _identity_of(n,d,bindings)==identity),None)
         if found:return found
@@ -34,7 +35,8 @@ def find_brief(cwd,root=None,bindings=None):
 def brief_folder(hit,cwd,bindings):
     """The checkout to measure a brief's freshness against: the git repo holding cwd when it has the brief's identity (a clone
     of the same origin, wherever the brief was captured), else the folder the brief is keyed to."""
-    repo=git_root(cwd) if cwd else None;identity=_identity_of(hit,hit['domain'],bindings)
+    repo=git_root(cwd) if cwd else None
+    identity=_identity_of(hit,hit['domain'],bindings)
     return repo if repo and identity and repo_identity(repo)==identity else repo_of(hit,hit['domain'],bindings)
 
 def project_dir(cwd,bindings):
@@ -42,7 +44,8 @@ def project_dir(cwd,bindings):
     (a domain bound to a parent of several repos gets one brief per repo, as maps do), else the deepest bound
     folder holding cwd, else cwd."""
     from .common import git_root
-    here=Path(cwd).resolve();domain=resolve_domain(here,bindings)
+    here=Path(cwd).resolve()
+    domain=resolve_domain(here,bindings)
     base=next((p for p in domain_prefixes(domain,bindings) if here.is_relative_to(p)),None)
     repo=git_root(here)
     if base and repo and repo.is_relative_to(base):return repo

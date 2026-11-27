@@ -43,15 +43,22 @@ def _unquote(token):
 
 def _split(text):
     """The commands of a line: split on && || ; | and newlines outside quotes."""
-    parts=[];buf=[];quote='';i=0
+    parts=[]
+    buf=[]
+    quote=''
+    i=0
     while i<len(text):
         c=text[i]
         if quote:
-            buf.append(c);quote='' if c==quote else quote
-        elif c in '"\'':quote=c;buf.append(c)
+            buf.append(c)
+            quote='' if c==quote else quote
+        elif c in '"\'':
+            quote=c
+            buf.append(c)
         elif c in ';|\n\r' or text.startswith('&&',i):
             if c=='&' or text.startswith('||',i):i+=1
-            parts.append(''.join(buf));buf=[]
+            parts.append(''.join(buf))
+            buf=[]
         else:buf.append(c)
         i+=1
     return [p for p in parts+[''.join(buf)] if p.strip()]
@@ -59,7 +66,9 @@ def _split(text):
 def _program(token):
     base=_unquote(token).replace('\\','/').rstrip('/').rsplit('/',1)[-1].lower()
     for ext in EXTENSIONS:
-        if base.endswith(ext) and len(base)>len(ext):base=base[:-len(ext)];break
+        if base.endswith(ext) and len(base)>len(ext):
+            base=base[:-len(ext)]
+            break
     return 'python' if _PYTHON.match(base) else 'pip' if _PIP.match(base) else base
 
 def _inner(program,rest):
@@ -67,7 +76,9 @@ def _inner(program,rest):
     low=[_unquote(t).lower() for t in rest]
     if program=='cmd':
         for i,t in enumerate(low):
-            if t in {'/c','//c','/k','//k'}:tail=rest[i+1:];break
+            if t in {'/c','//c','/k','//k'}:
+                tail=rest[i+1:]
+                break
             if not t.startswith('/'):return None
         else:return None
     elif program=='powershell' or program=='pwsh':
@@ -84,7 +95,9 @@ def _inner(program,rest):
         tail=rest[i:]
     else:   # bash, sh, ...: `-c STRING`
         for i,t in enumerate(low):
-            if re.fullmatch(r'-[a-z]*c[a-z]*',t):tail=rest[i+1:i+2];break
+            if re.fullmatch(r'-[a-z]*c[a-z]*',t):
+                tail=rest[i+1:i+2]
+                break
         else:return None
     if not tail:return None
     return _unquote(tail[0]) if len(tail)==1 else ' '.join(tail)
@@ -99,15 +112,21 @@ def _strip(tokens):
     return tokens
 
 def _sig(wrapper,tokens):
-    program=_program(tokens[0]);args=[_unquote(t) for t in tokens[1:]]
+    program=_program(tokens[0])
+    args=[_unquote(t) for t in tokens[1:]]
     if program=='python' and '-m' in args[:-1]:
-        i=args.index('-m');program=args[i+1].lower();args=args[i+2:]
+        i=args.index('-m')
+        program=args[i+1].lower()
+        args=args[i+2:]
     elif program in {'npx','pnpx','bunx'}:
         rest=[a for a in args if not a.startswith('-')]
         if not rest:return None
-        i=args.index(rest[0]);program=_program(rest[0]);args=args[i+1:]
+        i=args.index(rest[0])
+        program=_program(rest[0])
+        args=args[i+1:]
     if not program or program[0] in '-$':return None
-    subs=[];flags=set()
+    subs=[]
+    flags=set()
     # An interpreter's script is its discriminating operand even as a path: `python scripts/build.py` is not `python scripts/other.py`.
     script=next((i for i,a in enumerate(args) if not a.startswith('-')),None) if program in INTERPRETERS and not INLINE.intersection(args) else None
     for i,a in enumerate(args):
@@ -136,7 +155,8 @@ def _is_command(text):
     for segment in _split(text):
         tokens=_strip(_TOKEN.findall(segment))
         if not tokens:continue
-        first=_unquote(tokens[0]);program=_program(first)
+        first=_unquote(tokens[0])
+        program=_program(first)
         if program in WRAPPERS:
             if _inner(program,tokens[1:]):return True
         elif first.startswith(('./','.\\')) and (not _program(first).count('.') or first.lower().endswith(EXTENSIONS)):return True
@@ -145,11 +165,16 @@ def _is_command(text):
 
 def _lines(block):
     """The commands of a shell block: one per line, a trailing backslash joins the next, comments and prompts dropped."""
-    joined=[];carry=''
+    joined=[]
+    carry=''
     for line in block.splitlines():
         line=line.strip()
-        if line.endswith('\\'):carry+=line[:-1].rstrip()+' ';continue
-        if carry:line=carry+line;carry=''
+        if line.endswith('\\'):
+            carry+=line[:-1].rstrip()+' '
+            continue
+        if carry:
+            line=carry+line
+            carry=''
         line=_PROMPT.sub('',line)
         if line and not line.startswith('#'):joined.append(line)
     return joined
@@ -169,9 +194,12 @@ def extract(title,body,explicit=()):
     for candidate in candidates:
         text=' '.join(candidate.split())
         if text and len(text)<=MAX_CHARS and _is_command(text) and not find_secret(text):found.append(text)   # never index a credential
-    seen=set();result=[]
+    seen=set()
+    result=[]
     for text in found:
-        if text.casefold() not in seen:seen.add(text.casefold());result.append(text)
+        if text.casefold() not in seen:
+            seen.add(text.casefold())
+            result.append(text)
     return result[:MAX_COMMANDS]
 
 _READONLY=[]
@@ -199,7 +227,8 @@ def command_notes(text,domains,root=None,limit=2):
     sigs=[s for s in signature(text) if not _ignored(s.program)]
     if not sigs:return []
     progs=sorted({s.program for s in sigs})
-    root=Path(root or search.memory_root()).resolve();ranked=[]
+    root=Path(root or search.memory_root()).resolve()
+    ranked=[]
     for domain in dict.fromkeys(domains):
         try:db_path=search.domain_dir(domain,root)/'search.sqlite3'
         except ValueError:continue

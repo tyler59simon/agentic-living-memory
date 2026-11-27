@@ -45,11 +45,15 @@ def role_of(heading):
 def _plain(text):
     """Readable section text: markup removed outside fences (note_format.plain), fenced code kept exactly as written."""
     from .note_format import plain
-    out=[];prose=[];fence=None
+    out=[]
+    prose=[]
+    fence=None
     for line in text.split('\n'):
         mark=_FENCE.match(line)
         if fence or mark:
-            if prose:out.append(plain('\n'.join(prose)));prose=[]
+            if prose:
+                out.append(plain('\n'.join(prose)))
+                prose=[]
             out.append(line.rstrip())
             if fence and mark and mark[1][0]==fence[0] and len(mark[1])>=len(fence) and not line.strip().strip(fence[0]):fence=None
             elif not fence and mark:fence=mark[1]
@@ -74,24 +78,32 @@ def _body_offset(note):
 def _sections(body):
     """[(heading path, heading, [(line number, text)])] with 1-based body line numbers; fenced code is never a heading.
     Text before the first heading is the preamble (heading None)."""
-    out=[[(),None,[]]];fence=None;path=[]
+    out=[[(),None,[]]]
+    fence=None
+    path=[]
     for number,line in enumerate((body or '').split('\n'),1):
         mark=_FENCE.match(line)
         if fence:
             out[-1][2].append((number,line))
             if mark and mark[1][0]==fence[0] and len(mark[1])>=len(fence) and not line.strip().strip(fence[0]):fence=None
             continue
-        if mark:fence=mark[1];out[-1][2].append((number,line));continue
+        if mark:
+            fence=mark[1]
+            out[-1][2].append((number,line))
+            continue
         heading=_HEADING.match(line)
         if heading and heading[2]:
-            level=len(heading[1]);path=[p for p in path if p[0]<level]+[(level,heading[2])]
-            out.append([tuple(h for _,h in path),heading[2],[(number,line)]]);continue
+            level=len(heading[1])
+            path=[p for p in path if p[0]<level]+[(level,heading[2])]
+            out.append([tuple(h for _,h in path),heading[2],[(number,line)]])
+            continue
         out[-1][2].append((number,line))
     return [(p,h,rows) for p,h,rows in out]
 
 def _paragraphs(rows):
     """Rows grouped at blank lines outside fences: a fence, a list or a table stays with its paragraph."""
-    groups=[[]];fence=None
+    groups=[[]]
+    fence=None
     for number,line in rows:
         mark=_FENCE.match(line)
         if fence:
@@ -131,9 +143,13 @@ def extract(note):
     role, heading (path joined with ' > '), lines [first, last] in the file (body-relative when the file is
     unreadable), text (what is embedded), excerpt (the section's own readable text) and sha (of text)."""
     from .search import _embedding_text
-    note_id=note.get('id') or note.get('path');title=note.get('title','')
-    offset=_body_offset(note);shift=(offset-1) if offset else 0
-    units=[];seen=set();occurrences={}
+    note_id=note.get('id') or note.get('path')
+    title=note.get('title','')
+    offset=_body_offset(note)
+    shift=(offset-1) if offset else 0
+    units=[]
+    seen=set()
+    occurrences={}
     overview=_embedding_text(note)
     sections=_sections(note.get('body',''))
     first=sections[0][2] if sections else []
@@ -144,7 +160,8 @@ def extract(note):
     # A callout in the preamble ("> **Important:** ...") is a caveat the reader must see: a unit of its own.
     callout=[r for r in first if _CALLOUT.match(r[1].strip())]
     if callout:
-        start=first.index(callout[0]);rows=[callout[0]]+[r for r in first[start+1:] if r[1].lstrip().startswith('>')]
+        start=first.index(callout[0])
+        rows=[callout[0]]+[r for r in first[start+1:] if r[1].lstrip().startswith('>')]
         text=_plain('\n'.join(t for _,t in rows))
         if len(text.split())>=MIN_WORDS:
             embedded=title+' > Important\n'+text
@@ -153,14 +170,17 @@ def extract(note):
     ids={u['unit_id'] for u in units}
     for path,heading,rows in sections[1:]:
         if _letters(heading) in SKIP:continue
-        key=tuple(_norm(h) for h in path);occurrence=occurrences.get(key,0);occurrences[key]=occurrence+1
+        key=tuple(_norm(h) for h in path)
+        occurrence=occurrences.get(key,0)
+        occurrences[key]=occurrence+1
         content=rows[1:]
         if _words(content)<MIN_WORDS:continue
         for part,piece in enumerate(_split(content)):
             text=_plain('\n'.join(t for _,t in piece))
             if len(text.split())<MIN_WORDS or _sha(text) in seen:continue   # empty, or the same words as another unit
             seen.add(_sha(text))
-            label=' > '.join(path);embedded=f'{title} > {label}\n{text}'
+            label=' > '.join(path)
+            embedded=f'{title} > {label}\n{text}'
             unit_id=_unit_id(note_id,path,occurrence,part)
             while unit_id in ids:unit_id=_unit_id(note_id,path+('#',),occurrence,unit_id)   # a section headed like the callout unit
             ids.add(unit_id)

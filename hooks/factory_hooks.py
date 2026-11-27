@@ -1,4 +1,4 @@
-﻿"""Factory Droid native adapter; Factory hooks use the Claude-compatible wire shape."""
+"""Factory Droid native adapter; Factory hooks use the Claude-compatible wire shape."""
 import sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))

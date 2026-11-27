@@ -1,10 +1,11 @@
-﻿"""Validate canonical notes with the shared repository rules."""
+"""Validate canonical notes with the shared repository rules."""
 from pathlib import Path
 from .common import memory_root
 from .repository import inventory,validate,problems,reconcile as refresh
 
 def validate_domain(domain,root=None):
-    root=Path(root or memory_root()).resolve();issues=[]
+    root=Path(root or memory_root()).resolve()
+    issues=[]
     if not (root/'domains'/domain/'notes').is_dir():return ['Domain notes directory is missing: '+domain]
     try:
         for note in inventory(domain,root,retired=True):
@@ -22,7 +23,8 @@ def reconcile(domain,root=None):
     root=Path(root or memory_root()).resolve()
     issues=validate_domain(domain,root)
     if not (root/'domains'/domain/'notes').is_dir():return {'ok':False,'domain':domain,'issues':issues,'indexed':0}
-    skipped=[];refresh(domain,root,skipped=skipped,full=True)   # `rebuild` rebuilds every row, not only changed ones
+    skipped=[]  # `rebuild` rebuilds every row, not only changed ones
+    refresh(domain,root,skipped=skipped,full=True)
     issues+=[f'Left out of the search index ({error}): {path}' for path,error in skipped]
     left_out={path for path,_ in skipped}
     result={'ok':True,'domain':domain,'indexed':sum(1 for n in inventory(domain,root) if n.get('path') not in left_out)}

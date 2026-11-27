@@ -35,7 +35,8 @@ def record_many(root,items,session=None):
     try:
         from .common import file_lock
         from .runtime import session_hash
-        when=clock.now();path=_path(root,when)
+        when=clock.now()
+        path=_path(root,when)
         s=session_hash(session) if session and session!='unknown' else None
         stamp=when.isoformat(timespec='seconds')
         chunks=[]
@@ -58,7 +59,8 @@ def _file_events(path):
     key=str(path)
     try:st=os.stat(path)
     except OSError:
-        _EVENTS_CACHE.pop(key,None);return []
+        _EVENTS_CACHE.pop(key,None)
+        return []
     hit=_EVENTS_CACHE.get(key)
     if hit is not None and hit[0]==st.st_mtime_ns and hit[1]==st.st_size:return hit[2]
     rows=[]
@@ -75,7 +77,8 @@ def _file_events(path):
 
 def events(root,days=30,today=None):
     """Diary rows from the last `days` days before `today` (a date; default: now), oldest first; unreadable lines are skipped."""
-    cutoff=((clock.now().date() if today is None else today)-timedelta(days=days));rows=[]
+    cutoff=((clock.now().date() if today is None else today)-timedelta(days=days))
+    rows=[]
     for path in sorted((Path(root)/'.turns').glob('usage-*.jsonl')):
         try:
             if datetime.strptime(path.stem[6:],'%Y-%m-%d').date()<cutoff:continue
@@ -100,7 +103,8 @@ def _day(value):
 def strength(note,uses=(),today=None):
     """Activation for one note. uses: (event, iso time) pairs from the diary."""
     import math
-    today=today or clock.now().date();presented=[]
+    today=today or clock.now().date()
+    presented=[]
     for value in (note.get('created'),note.get('updated') if note.get('updated')!=note.get('created') else None):
         if value and _day(value):presented.append((1.0,_day(value)))
     presented+=[(1.0,_day(d)) for d in note.get('confirmed') or [] if _day(d)]
@@ -118,7 +122,8 @@ def strength_map(root,domains,today=None):
         try:notes=inventory(domain,root)
         except (OSError,ValueError):continue
         for note in notes:
-            ref=f"{domain}:{note['id']}";found[ref]=strength(note,uses.get(ref,()),today)
+            ref=f"{domain}:{note['id']}"
+            found[ref]=strength(note,uses.get(ref,()),today)
     return found
 
 def used_refs(root,days=30,today=None,rows=None):
@@ -127,9 +132,11 @@ def used_refs(root,days=30,today=None,rows=None):
 
 def _tally(rows,domains):
     """({ref: counts per event}, sessions with injections) for the notes of these domains."""
-    counts={};sessions=set()
+    counts={}
+    sessions=set()
     for row in rows:
-        event=row['e'];ref=row.get('ref')
+        event=row['e']
+        ref=row.get('ref')
         if event in {'reminder','signal-capture','surface',*PROPOSAL_EVENTS} or not isinstance(ref,str) or ref.split(':',1)[0] not in domains:continue   # surfaced is neither shown nor used
         entry=counts.setdefault(ref,dict.fromkeys(('inject','standing')+USE,0))
         # Standing context is delivered whatever the prompt, so going unread says nothing about the note.
@@ -149,13 +156,15 @@ def capture_coverage(root,domains,days=30,today=None):
     files (f > 0), how many saved a note (n) or got a receipt (r). ratio is None with no such session. PROV-1 (a read-only
     PowerShell command counted as an edit) inflates `mutating`."""
     from .activity import last_session_rows,_instant
-    now=clock.now() if today is None else today;mutating=covered=0
+    now=clock.now() if today is None else today
+    mutating=covered=0
     for row in last_session_rows(root).values():
         try:
             if row.get('d') not in domains or _instant(row['t'])<now-timedelta(days=days):continue
         except (ValueError,TypeError):continue
         if type(row.get('f')) is int and row['f']>0:
-            mutating+=1;covered+=bool(row.get('n') or row.get('r'))
+            mutating+=1
+            covered+=bool(row.get('n') or row.get('r'))
     return {'days':days,'mutating':mutating,'covered':covered,'ratio':round(covered/mutating,2) if mutating else None}
 
 def stats(root,domains,days=30,limit=10):
@@ -163,7 +172,10 @@ def stats(root,domains,days=30,limit=10):
     reminders by kind and captures made on turns that carried a durable signal, per ISO week."""
     from .repository import inventory
     from .notes import short_ref
-    rows=events(root,days);reminders={};weekly={};proposed=dict.fromkeys(('proposed','accepted','accepted_edited','rejected'),0)
+    rows=events(root,days)
+    reminders={}
+    weekly={}
+    proposed=dict.fromkeys(('proposed','accepted','accepted_edited','rejected'),0)
     for row in rows:
         event=row['e']
         if event=='propose':proposed['proposed']+=1
@@ -171,15 +183,19 @@ def stats(root,domains,days=30,limit=10):
         elif event=='proposal-reject':proposed['rejected']+=1
         if event=='reminder':reminders[row.get('k') or 'unknown']=reminders.get(row.get('k') or 'unknown',0)+1
         elif event=='signal-capture':
-            try:year,week,_=parse_iso(row['t']).isocalendar();key=f'{year}-W{week:02d}'
+            try:
+                year,week,_=parse_iso(row['t']).isocalendar()
+                key=f'{year}-W{week:02d}'
             except (KeyError,ValueError,TypeError):continue
             weekly[key]=weekly.get(key,0)+1
-    counts,sessions=_tally(rows,domains);notes={}
+    counts,sessions=_tally(rows,domains)
+    notes={}
     for domain in domains:
         try:notes.update({f'{domain}:{n["id"]}':n for n in inventory(domain,root,retired=True)})
         except (OSError,ValueError):continue
     def item(ref,c):
-        note=notes.get(ref);domain,note_id=ref.split(':',1)
+        note=notes.get(ref)
+        domain,note_id=ref.split(':',1)
         return {'ref':ref,'short_ref':short_ref(domain,note_id),'title':note['title'] if note else None,
                 'status':note.get('status','active') if note else 'missing','counts':{k:v for k,v in c.items() if v}}
     used=lambda c:sum(c[k] for k in USE)
