@@ -165,7 +165,7 @@ def protected_rule(path,cwd,root):
         from .storage import config_path
         from .paths import is_within,path_key
         if is_within(p,root/'domains'):return 'domains'
-        if any(is_within(p,root/part) for part in ('ledger','.views','maintenance','.operations','backups','.turns')):return 'config'
+        if any(is_within(p,root/part) for part in ('ledger','.views','maintenance','.operations','backups','.turns','brand')):return 'config'
         if path_key(p) in {path_key(x) for x in (root/'bindings.json',root/'tag_taxonomy.json',root/'projects.json',root/'systems.json',root/'sources.json',root/'note_types.json',root/'maintenance.json',root/'views.json',root/'.relocated.json',
                  root/'notebook-folders.json',config_path())}:return 'config'
         # Vault edits, archives and deletions are applied at sync, so agents must not write there either.

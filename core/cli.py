@@ -1286,7 +1286,7 @@ def build_parser():
     p.add_argument('--out',type=Path,help='Write here instead of <store>/.views/<domain>/wiki.html (agent edition: agent-wiki.html)')
     p.add_argument('--theme',choices=['purple','emerald','emerald-light'],help='The theme the page starts in (default: follow the system); the page has a picker')
     p.add_argument('--agent',action='store_true',help='The agent-written edition: show the saved one (no model call), or with --build write it')
-    p.add_argument('--project',help='--agent: one project slug instead of the whole domain')
+    p.add_argument('--project',help='One project slug instead of the whole domain (default file wiki-<slug>.html, agent edition agent-wiki-<slug>.html)')
     p.add_argument('--build',action='store_true',help='--agent: call the model to plan and write the pages (costs money; main agent only; the harness asks first)')
     p.add_argument('--restructure',action='store_true',help='--build: plan the sections and pages again (default: keep them and write only new or changed pages)')
     p.add_argument('--model',help='--build: the Claude model alias (default sonnet)')
@@ -1446,7 +1446,6 @@ def main(argv=None):
         if cmd=='wiki':
             stray=[f for f,v in (('--restructure',args.restructure),('--model',args.model),('--budget',args.budget),('--dry-run',args.dry_run),('--progress',args.progress)) if v and not args.build]
             if args.build and not args.agent:raise ValueError('--build needs --agent')
-            if args.project and not args.agent:raise ValueError('--project needs --agent')
             if stray:raise ValueError(', '.join(stray)+(' only applies' if len(stray)==1 else ' only apply')+' with --agent --build')
         if cmd=='wiki' and args.build:
             if args.actor in {'subagent','viewer'}:raise ValueError(('Subagents' if args.actor=='subagent' else 'Viewers')+' cannot build the agent wiki (it calls a model and costs money); run it as --actor main')
@@ -1869,7 +1868,7 @@ def _cmd_read(args,root,domain,cwd,session,subs):
 
 def _cmd_version(args,root,domain,cwd,session,subs):
     from .installer_lifecycle import CORE_RELEASE,installed_stamp
-    return {'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'proposals':1,'restore':1,'pin':1,'rule':1,'direct_writes':2,'revisions':1,'note_types':1,'history':3,'items':{'fields':2},'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']},'wiki_agent':{'version':1},'systems':{'project':1},'views':{'version':2,'kinds':['note','query']},
+    return {'ok':True,'api':SERVE_API,'release':CORE_RELEASE,'install':installed_stamp(),'python':sys.version.split()[0],'commands':sorted(subs.choices),'capabilities':{'proposals':1,'restore':1,'pin':1,'rule':1,'direct_writes':2,'revisions':1,'note_types':1,'history':3,'items':{'fields':2},'maintenance':{'version':1,'actions':['status','preview','run','enable','disable','history']},'wiki_agent':{'version':1},'systems':{'project':1},'views':{'version':2,'kinds':['note','query']},'brand':1,
             'docs':{'version':1,'max_page_bytes':4194304,'folder_policy':2,'accept_edited':True,'folder_proposals':1}}}
 
 def _cmd_update(args,root,domain,cwd,session,subs):
@@ -2332,8 +2331,8 @@ def _cmd_wiki(args,root,domain,cwd,session,subs):
             return {'ok':True,'model':wiki_agent.read_model(root,domain,args.project)}
         return wiki_agent.export(domain,root,args.project,args.out,args.format,args.theme)
     if args.format=='json' and not args.out:
-        return {'ok':True,'model':wiki.wiki_model(domain,root,args.archived)}
-    return wiki.export(domain,root,args.archived,args.out,args.format,args.theme)
+        return {'ok':True,'model':wiki.model_for(domain,root,args.archived,args.project)}
+    return wiki.export(domain,root,args.archived,args.out,args.format,args.theme,args.project)
 
 def _cmd_batch(args,root,domain,cwd,session,subs):
     import contextlib,io

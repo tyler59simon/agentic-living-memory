@@ -749,7 +749,7 @@ class Command(Base):
                 code,err=self.cli_json('wiki','--agent','--build');self.assertNotEqual(code,0);self.assertIn(text,err['error']['message'])
                 code,err=self.cli_json('wiki','--agent','--build','--dry-run');self.assertNotEqual(code,0)   # even a dry run: the guard is about who may start it
             self.assertFalse(self.log.exists())
-        for argv,text in ((('wiki','--build'),'--build needs --agent'),(('wiki','--project','hive'),'--project needs --agent'),(('wiki','--agent','--restructure'),'--restructure only applies'),
+        for argv,text in ((('wiki','--build'),'--build needs --agent'),(('wiki','--project','nosuch'),'no notes for project nosuch'),(('wiki','--agent','--restructure'),'--restructure only applies'),
                           (('wiki','--agent','--budget','1'),'--budget only applies'),(('wiki','--agent','--model','sonnet','--dry-run'),'--model, --dry-run only apply'),(('wiki','--agent','--progress'),'--progress only applies')):
             code,err=self.cli_json(*argv);self.assertNotEqual(code,0,argv);self.assertIn(text,err['error']['message'])
         for argv in (('wiki','--agent','--build','--budget','0'),('wiki','--agent','--build','--budget','x'),('wiki','--agent','--build','--model','No Way!'),('wiki','--agent','--build','--project','nosuch'),

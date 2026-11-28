@@ -9,7 +9,7 @@ from .repository import read_json,canonical_json,find_secrets,store_lock,now
 
 STATUSES=('active','paused','archived')
 SLUG=re.compile(r'[a-z0-9][a-z0-9-]{0,39}')
-FIELDS={'create':{'slug','name','repos','description','aliases','charter'},'update':{'slug','name','repos','aliases','description','status','charter'},'archive':{'slug'}}
+FIELDS={'create':{'slug','name','repos','description','aliases','charter'},'update':{'slug','name','repos','aliases','description','status','charter','brand'},'archive':{'slug'}}
 
 def tag(slug):return f'project/{slug}'
 def _path(root):return Path(root)/'projects.json'
@@ -139,9 +139,20 @@ def project_write(root,action,payload):
             return commit(root,changes,'project_create',[domain],{'slug':slug,'tag':tag(slug),'added_tag':added,'charter':entry['charter'],'files':len(changes)})
         if not current:raise ValueError(f'Unknown project {slug}')
         values={'status':'archived'} if action=='archive' else {k:v for k,v in payload.items() if k!='slug'}
-        entry=_clean(values,current)
+        entry=_clean({k:v for k,v in values.items() if k!='brand'},current)
+        changes={}
+        if 'brand' in values:
+            from .brand import clean
+            record,changes=clean(values['brand'],current.get('brand'),f'project-{slug}',False)
+            if record is None:entry.pop('brand',None)
+            else:entry['brand']=record
         entry['updated']=stamp
-        return commit(root,{'projects.json':_registry(others+[entry])},'project_'+action,[],{'slug':slug,'fields':sorted(values),'files':1})
+        changes['projects.json']=_registry(others+[entry])
+        receipt=commit(root,changes,'project_'+action,[],{'slug':slug,'fields':sorted(values),'files':len(changes)})
+    if 'brand' in values:
+        from .brand import refresh_views
+        refresh_views(root)
+    return receipt
 
 def _charter_domain(root,named,repos,field='charter.domain'):
     """The charter's domain: the one named (must exist), else the repo's bound domain, else the global domain."""

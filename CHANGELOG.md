@@ -15,6 +15,8 @@ First versioned release. Earlier work was not versioned; `git log` has the full 
 - `alm --version` and `-V`; `alm version` now works before `alm setup`.
 - `LICENSE` (Apache-2.0), `NOTICE`, `pyproject.toml`, `SECURITY.md` and `CONTRIBUTING.md`.
 - `install.py` adds the PATH line for fish shells to `config.fish` with `fish_add_path`.
+- Wiki and dashboard brand: each project can set its own name and logo (`project update` with `brand`), and the store a default one (`config set brand`), in place of the Living Memory name and emblem.
+- `wiki --project SLUG` writes the structured wiki of one project.
 
 ### Changed
 

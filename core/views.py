@@ -448,11 +448,11 @@ if(document.documentElement.getAttribute('data-target')==='local')setInterval(fu
 })();
 '''
 
-def _css(target):
+def _css(target,logo=None):
     if target=='local':theme=':root{'+DARK+'}'
     else:theme=(':root{'+LIGHT+'}@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){'+DARK+'}}'
                 ':root[data-theme="dark"]{'+DARK+'}')
-    return _font_face()+theme+CSS.replace('@@LOGO@@',ALM_LOGO_SVG)
+    return _font_face()+theme+CSS.replace('@@LOGO@@',logo or ALM_LOGO_SVG)
 
 def _banner(model):
     status=model['status']
@@ -462,9 +462,11 @@ def _banner(model):
     if status in ('resolved','archived'):return f'This note is {status}.'+(f' It was replaced by {name}.' if name else '')
     return ''
 
-def render_html(model,target='local'):
-    """One self-contained page for the model. target 'local' is dark and reloads itself; 'artifact' follows the viewer's theme and never reloads."""
+def render_html(model,target='local',brand=None):
+    """One self-contained page for the model. target 'local' is dark and reloads itself; 'artifact' follows the viewer's theme and never reloads.
+    `brand` ({name, logo} from core.brand.resolve) replaces the Living Memory name and emblem."""
     if target not in TARGETS:raise ValueError('target must be local or artifact')
+    brand=brand or {}
     esc=lambda v:html.escape(str(v),quote=True)
     short=model.get('view_title') or model['title'] or 'Note view'
     data=_script_json(model)
@@ -481,8 +483,8 @@ def render_html(model,target='local'):
          '<div class="chips" id="chips" style="margin-top:.8rem"></div><div class="work-list" id="list" style="margin-top:.8rem"></div></div>')
     script=JS.replace('@@RELOAD@@',str(RELOAD_SECONDS*1000))
     return (f'<!doctype html>\n<html lang="en" data-target="{target}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>{esc(short)}</title><style>{_css(target)}</style></head><body><main class="page">'
-            f'<div class="brand"><span class="brand-logo" aria-hidden="true"></span><span>Living Memory</span></div>'
+            f'<title>{esc(short)}</title><style>{_css(target,brand.get('logo'))}</style></head><body><main class="page">'
+            f'<div class="brand"><span class="brand-logo" aria-hidden="true"></span><span>{esc(brand.get('name') or 'Living Memory')}</span></div>'
             f'<header class="page-head"><div class="page-title"><div class="eyebrow">{esc(eyebrow)}</div><h1>{esc(model["title"] or short)}</h1>'
             +(f'<p class="page-sub" id="summary">{esc(model["summary"])}</p>' if model['summary'] else '')+'</div>'
             +(f'<div class="page-date muted small">Updated {esc(updated)}</div>' if updated else '')+'</header>'
@@ -509,11 +511,18 @@ def _model(entry,note,root):
 
 def _revision(note):return str(note.get('revision') or '') if note else 'missing'
 
-def _render_local(root,entry,note,cache):
-    """Write the local page for one entry and record its revision in `cache` (the caller saves the cache)."""
+def _brand(root,note,known):
+    """The brand of a note's page: its project's when it carries exactly one registered project tag, else the default."""
+    from .brand import note_project,resolve
+    return resolve(root,note_project(note,known) if note else None,known)
+
+def _render_local(root,entry,note,cache,known):
+    """Write the local page for one entry and record its revision and brand in `cache` (the caller saves the cache).
+    known: a core.brand.state() result."""
     path=view_path(root,entry)
-    atomic_write(path,render_html(_model(entry,note,root),'local'))
-    cache[entry['note']]={'revision':_revision(note),'renderer':RENDERER}
+    brand=_brand(root,note,known)
+    atomic_write(path,render_html(_model(entry,note,root),'local',brand))
+    cache[entry['note']]={'revision':_revision(note),'renderer':RENDERER,'brand':brand['key']}
     return path
 
 def _ids_in(root,domain):
@@ -536,12 +545,15 @@ def refresh(domain,root):
         notes={n['id']:dict(n,domain=domain) for n in inventory(domain,root,retired=True) if n.get('id')}
         cache=_cache(root)
         changed=False
+        from .brand import state
+        known=state(root)
         for entry in entries:
             note=_find(entry,root,notes)
             seen=cache.get(entry['note']) or {}
-            if seen.get('revision')==_revision(note) and seen.get('renderer')==RENDERER and view_path(root,entry).is_file():continue
+            if (seen.get('revision')==_revision(note) and seen.get('renderer')==RENDERER and seen.get('brand')==_brand(root,note,known)['key']
+                    and view_path(root,entry).is_file()):continue
             try:
-                _render_local(root,entry,note,cache)
+                _render_local(root,entry,note,cache,known)
                 changed=True
             except Exception as exc:
                 from .logs import swallowed
@@ -586,7 +598,8 @@ def add(root,domain,note_id,title=None):
         entry=dict(found or {'note':note_id,'domain':note['domain'],'added':now(),'artifact_url':None,'published_revision':None},title=title)
         receipt=transaction(root,{'views.json':_registry([v for v in entries if v.get('note')!=note_id]+[entry])},'views_add') if entry!=found else {}
         cache=_cache(root)
-        path=_render_local(root,entry,note,cache)
+        from .brand import state
+        path=_render_local(root,entry,note,cache,state(root))
         _write_cache(root,cache)
     return {'ok':True,'note':note_id,'domain':entry['domain'],'title':title,'path':str(path),'status':'exists' if not receipt else 'added','operation_id':receipt.get('operation_id')}
 
@@ -675,6 +688,8 @@ def render(root,entries,target='local',out=None,fmt='html'):
     with store_lock(root):
         cache=_cache(root)
         changed=False
+        from .brand import state
+        known=state(root)
         for entry in entries:
             note=_find(entry,root)
             model=_model(entry,note,root)
@@ -683,11 +698,11 @@ def render(root,entries,target='local',out=None,fmt='html'):
                 rows.append({'note':entry['note'],'model':model,**({'path':str(out)} if out is not None else {})})
                 continue
             if out is None and target=='local':
-                path=_render_local(root,entry,note,cache)
+                path=_render_local(root,entry,note,cache,known)
                 changed=True
             else:
                 path=Path(out) if out is not None else view_path(root,entry,target)
-                atomic_write(path,render_html(model,target))
+                atomic_write(path,render_html(model,target,_brand(root,note,known)))
                 if out is None and target=='local':changed=True
             rows.append({'note':entry['note'],'target':target,'path':str(path)})
         if changed:_write_cache(root,cache)

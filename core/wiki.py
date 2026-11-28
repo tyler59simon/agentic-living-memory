@@ -217,6 +217,15 @@ def wiki_model(domain,root,archived=False,records=None):
     return {'domain':domain,'generated':datetime.now(timezone.utc).strftime('%Y-%m-%d'),'renderer':WIKI_RENDERER,'archived':bool(archived),
             'notes':notes,'projects':projects,'folders':folders,'sections':[{'key':k,'label':l,'blurb':b} for k,l,b in SECTIONS],'external':external}
 
+def project_model(model,project):
+    """The model limited to one project (`wiki --project`): its notes, folders and project entry. Links to notes of other
+    projects are left out of Links to and Linked from; a [[link]] to one in a body shows as a link to a missing page."""
+    if project not in {p['slug'] for p in model['projects']}:raise ValueError(f'no notes for project {project}: the projects command lists the registered ones')
+    keep={n['id'] for n in model['notes'] if n['project']==project}
+    notes=[dict(n,out=[i for i in n['out'] if i in keep],backlinks=[i for i in n['backlinks'] if i in keep]) for n in model['notes'] if n['id'] in keep]
+    return dict(model,project=project,notes=notes,projects=[p for p in model['projects'] if p['slug']==project],
+                folders=[f for f in model['folders'] if f['project']==project])
+
 # ---- the page ----
 
 def _tokens(spec):return ''.join(f'--{k}:{v};' for k,v in (p.split('=') for p in spec.split()))
@@ -952,7 +961,7 @@ paint();window.addEventListener('hashchange',function(){q.value='';route()});rou
 })();
 '''
 
-def _css():
+def _css(logo=None):
     from .web_assets import ALM_LOGO_SVG,font_face
     # Without a picked theme the page follows the host's data-theme, else the system. The picker (and --theme) sets data-hm, which comes
     # last so it wins over both; its dark sidebar stays a dark island in Emerald Light, and Purple's is its own.
@@ -963,12 +972,13 @@ def _css():
            ':root[data-hm="emerald-light"]{'+LIGHT+'}:root[data-hm="emerald-light"] .sidebar{'+DARK+SIDEBAR_LIGHT+'}'
            ':root[data-hm="purple"],:root[data-hm="purple"] .sidebar{'+PURPLE+'}')
     types=''.join(f'.type-{t}{{color:var(--t-{t})}}' for t in NOTE_TYPES)
-    return font_face()+theme+CSS.replace('@@LOGO@@',ALM_LOGO_SVG).replace('@@TYPES@@',types)
+    return font_face()+theme+CSS.replace('@@LOGO@@',logo or ALM_LOGO_SVG).replace('@@TYPES@@',types)
 
-def render_html(model,document=True,theme=None):
+def render_html(model,document=True,theme=None,brand=None):
     """One self-contained page for the model. document=False leaves out the doctype, html, head and body wrapper (a
     claude.ai artifact adds its own); the content is otherwise the same. `theme` (purple, emerald or emerald-light) is the one the
-    page starts in; without it the page follows the system, or the host's data-theme."""
+    page starts in; without it the page follows the system, or the host's data-theme. `brand` ({name, logo} from
+    core.brand.resolve) replaces the Living Memory name and emblem in the sidebar header."""
     from .web_assets import script_json
     if theme is not None and theme not in {k for k,_ in THEMES}:raise ValueError('--theme is purple, emerald or emerald-light')
     esc=lambda v:html.escape(str(v),quote=True)
@@ -976,12 +986,14 @@ def render_html(model,document=True,theme=None):
     pages=[n for n in model['notes'] if n['type']=='article'] if agent else model['notes']
     data=script_json(model)
     domain=model['domain']
-    title=f'{domain[:1].upper()}{domain[1:]} {"agent" if agent else "memory"} wiki'
+    scoped=next((p['name'] for p in model['projects'] if p['slug']==model.get('project')),None)
+    title=f'{scoped} memory wiki' if scoped else f'{domain[:1].upper()}{domain[1:]} {"agent" if agent else "memory"} wiki'
+    brand=brand or {}
     noscript=''.join(f'<li>{esc(n["title"])}: {esc(MARKER.sub("",n["lead"]))}</li>' for n in pages)
     picker='<div class="themes" role="group" aria-label="Theme">'+''.join(f'<button type="button" data-t="{k}" aria-label="{l}" title="{l}"><i class="sw sw-{k}"></i><span>{l}</span></button>' for k,l in THEMES)+'</div>'
-    content=(f'<title>{esc(title)}</title><meta name="claude:viewport-fit-sides" content="cover"><style>{_css()}</style>'
+    content=(f'<title>{esc(title)}</title><meta name="claude:viewport-fit-sides" content="cover"><style>{_css(brand.get('logo'))}</style>'
              '<div class="shell" id="shell"><aside class="sidebar" id="sidebar" aria-label="Wiki pages">'
-             f'<div class="brand-block"><span class="logo" aria-hidden="true"></span><span>Living Memory</span><button type="button" class="icon-button close" id="close" aria-label="Close navigation">{_svg("x")}</button></div>'
+             f'<div class="brand-block"><span class="logo" aria-hidden="true"></span><span>{esc(brand.get('name') or 'Living Memory')}</span><button type="button" class="icon-button close" id="close" aria-label="Close navigation">{_svg("x")}</button></div>'
              f'<div class="switcher">{_svg("book")}<span>{esc(domain)}</span><span class="muted">{"agent wiki" if agent else "wiki"}</span></div>'
              '<nav class="tree" id="tree"></nav>'
              f'<div class="sidebar-foot">{len(pages)} pages. Generated <span class="nowrap">{esc(model["generated"])}</span> from Living Memory.</div></aside>'
@@ -997,15 +1009,23 @@ def render_html(model,document=True,theme=None):
     return ('<!doctype html>\n<html lang="en"'+(f' data-hm="{theme}"' if theme else '')+'><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
             '</head><body>'+content+'</body></html>\n')
 
-def default_path(root,domain):return Path(root)/'.views'/domain/'wiki.html'
+def default_path(root,domain,project=None):return Path(root)/'.views'/domain/(f'wiki-{project}.html' if project else 'wiki.html')
 
-def export(domain,root,archived=False,out=None,fmt='html',theme=None):
-    """Write the wiki of one domain: html to `out` or <store>/.views/<domain>/wiki.html, or the json model to `out`.
-    --out inside the store is refused unless it is under .views (it would overwrite canonical files unjournaled)."""
-    from .web_assets import out_path
-    root=Path(root).resolve()
+def model_for(domain,root,archived=False,project=None):
+    """The domain's wiki model, or one project's (project_model) when project is given."""
+    from .wiki_agent import check_project
+    check_project(project)
     model=wiki_model(domain,root,archived)
-    path=out_path(root,out) if out is not None else default_path(root,domain)
-    text=json.dumps(model,ensure_ascii=False,indent=1)+'\n' if fmt=='json' else render_html(model,theme=theme)
+    return project_model(model,project) if project is not None else model
+
+def export(domain,root,archived=False,out=None,fmt='html',theme=None,project=None):
+    """Write the wiki of one domain, or of one project of it: html to `out` or <store>/.views/<domain>/wiki[-<slug>].html, or the
+    json model to `out`. --out inside the store is refused unless it is under .views (it would overwrite canonical files unjournaled)."""
+    from .web_assets import out_path
+    from .brand import resolve
+    root=Path(root).resolve()
+    model=model_for(domain,root,archived,project)
+    path=out_path(root,out) if out is not None else default_path(root,domain,project)
+    text=json.dumps(model,ensure_ascii=False,indent=1)+'\n' if fmt=='json' else render_html(model,theme=theme,brand=resolve(root,project))
     atomic_write(path,text)
-    return {'ok':True,'domain':domain,'path':str(path),'pages':len(model['notes']),'format':fmt}
+    return {'ok':True,'domain':domain,**({'project':project} if project else {}),'path':str(path),'pages':len(model['notes']),'format':fmt}

@@ -1217,6 +1217,7 @@ def export(domain, root, project=None, out=None, fmt='html', theme=None):
     root = Path(root).resolve()
     model = read_model(root, domain, project)
     path = _out_path(root, out) if out is not None else html_path(root, domain, project)
-    text = json.dumps(model, ensure_ascii=False, indent=1) + '\n' if fmt == 'json' else wiki.render_html(model, theme=theme)
+    from .brand import resolve
+    text = json.dumps(model, ensure_ascii=False, indent=1) + '\n' if fmt == 'json' else wiki.render_html(model, theme=theme, brand=resolve(root, project))
     atomic_write(path, text)
     return {'ok': True, 'domain': domain, 'path': str(path), 'pages': model['build']['pages'], 'format': fmt}

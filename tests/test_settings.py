@@ -22,7 +22,7 @@ class Config(StoreFixture):
 
     def test_get_shows_defaults_and_stored_values(self):
         settings=self.ok('get')['settings']
-        self.assertEqual(set(settings),{'search_scope','repo_aliases','suggest_bind','auto_resolve','auto_rebaseline','cross_project','digest_refresh'})
+        self.assertEqual(set(settings),{'search_scope','repo_aliases','suggest_bind','auto_resolve','auto_rebaseline','cross_project','digest_refresh','brand'})
         self.assertEqual(settings['auto_resolve'],{'value':True,'default':True})
         self.assertEqual(settings['search_scope']['value']['global_domains'],['_global'])
         self.assertEqual(self.ok('get','cross_project')['settings'],{'cross_project':{'value':True,'default':True}})
