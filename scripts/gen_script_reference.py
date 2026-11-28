@@ -1,7 +1,7 @@
 """Keep the flag table in SCRIPT_REFERENCE.md in step with the argparse parser of core/cli.py.
 
-    py -3.15 scripts/gen_script_reference.py          # rewrite the table between the markers
-    py -3.15 scripts/gen_script_reference.py --check  # exit 1 and list missing flags when the file is out of date
+    python scripts/gen_script_reference.py          # rewrite the table between the markers
+    python scripts/gen_script_reference.py --check  # exit 1 and list missing flags when the file is out of date
 
 One row per command (alphabetical), listing the flags that command defines itself, sorted. The options every command accepts
 (`--root`, `--domain`, `--cwd`, `--json`, `--actor`, `-h`) are described in the prose of the document, and flags hidden from
@@ -19,7 +19,7 @@ DOC=ROOT/'SCRIPT_REFERENCE.md'
 BEGIN='<!-- flags:begin -->'
 END='<!-- flags:end -->'
 COMMON={'-h','--help','--root','--domain','--cwd','--json','--actor'}
-COMMAND='py -3.15 scripts/gen_script_reference.py'
+COMMAND='python scripts/gen_script_reference.py'
 
 def _rows(parser,path=()):
     """Yield (command words, action choices, flags) for every subcommand, depth first."""

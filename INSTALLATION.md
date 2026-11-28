@@ -1,32 +1,32 @@
 # Direct installation
 
-After cloning the repository, run `py -3.15 living_memory.py setup` from its directory. Python 3.10 to 3.15 with SQLite FTS5 is required; substitute your selected Python version on other installations. The wizard displays the current store and suggests `~/LivingMemory` (for example `C:\Users\you\LivingMemory`). Press Enter or supply a custom absolute local folder. Setup initializes an empty store or connects to an existing valid store. It never merges stores implicitly.
+After cloning the repository, run `py -3 living_memory.py setup` from its directory. Python 3.10 to 3.15 with SQLite FTS5 is required. Commands in this guide are written for Windows, where `py -3` picks your newest Python 3 (`py -3.13` picks a version); on macOS and Linux see below. The wizard displays the current store and suggests `~/LivingMemory` (for example `C:\Users\you\LivingMemory`). Press Enter or supply a custom absolute local folder. Setup initializes an empty store or connects to an existing valid store. It never merges stores implicitly.
 
 The shared pointer is `~/.config/agentic-living-memory/config.json`: `{"version":1,"data_root":"ABSOLUTE_PATH"}`. It is independent of every harness installation. Installers and hooks use the same resolver. `--root` takes precedence over `LIVING_MEMORY_ROOT`, then the legacy `LIVING_MEMORY_HOME` alias, then this configuration. An existing legacy store can be discovered when no shared configuration exists; new harness-specific stores are not created implicitly. Invalid configuration or an unavailable selected directory produces an error rather than a fallback store.
 
-For unattended setup use `py -3.15 living_memory.py setup --location C:/Users/you/LivingMemory --non-interactive`. Harness installers also accept `--location`; without existing shared configuration or an intentional environment override, interactive installation launches setup and unattended installation requires a location. With an existing legacy store and an empty new destination, setup moves the store there (see [Relocating existing memory](#relocating-existing-memory)).
+For unattended setup use `py -3 living_memory.py setup --location C:/Users/you/LivingMemory --non-interactive`. Harness installers also accept `--location`; without existing shared configuration or an intentional environment override, interactive installation launches setup and unattended installation requires a location. With an existing legacy store and an empty new destination, setup moves the store there (see [Relocating existing memory](#relocating-existing-memory)).
 
-Then run `py -3.15 install.py`. It installs the package into a per-user folder that belongs to no harness:
+Then run `py -3 install.py`. It installs the package into a per-user folder that belongs to no harness:
 - Windows: `%LOCALAPPDATA%\agentic-living-memory\app`
 - elsewhere: `~/.local/lib/agentic-living-memory/app`
 
-It installs directly, as one journaled write: its journal and ownership record sit beside `app/` in that folder, operation IDs start `i-`, and `alm undo i-...` puts the previous package files back. The receipt's summary lists `next_steps`: `integrations/setup.py HARNESS --hooks` commands, run from the installed copy. A first install lists one for each harness found on the machine (Claude Code, Codex, Copilot, Factory, Antigravity CLI). An update lists only harnesses wired before whose hook handlers or instruction block the new copy would change, and names the others under `wiring_current`; a harness you never wired is left out. A managed block or handler you edited by hand is listed too, and setup then asks for `--adopt` (see [Upgrading the instruction block](#upgrading-the-instruction-block)). Each command writes the harness files directly (see INTEGRATION.md). The interpreter that runs setup is the one the hooks use. After an install, `install.py` also prints those commands on stderr, ready to paste into PowerShell (a leading `&` and quoted paths; no `&` elsewhere), while stdout stays the same JSON result. Then:
+It installs directly, as one journaled write: its journal and ownership record sit beside `app/` in that folder, operation IDs start `i-`, and `alm undo i-...` puts the previous package files back. With `--wire-all` it then runs those wiring commands itself and lists the wired harnesses under `wired` (a failure becomes a warning). Otherwise the receipt's summary lists `next_steps`: `integrations/setup.py HARNESS --hooks` commands, run from the installed copy. A first install lists one for each harness found on the machine (Claude Code, Codex, Copilot, Factory, Antigravity CLI). An update lists only harnesses wired before whose hook handlers or instruction block the new copy would change, and names the others under `wiring_current`; a harness you never wired is left out. A managed block or handler you edited by hand is listed too, and setup then asks for `--adopt` (see [Upgrading the instruction block](#upgrading-the-instruction-block)). Each command writes the harness files directly (see INTEGRATION.md). The interpreter that runs setup is the one the hooks use. After an install, `install.py` also prints those commands on stderr, ready to paste into PowerShell (a leading `&` and quoted paths; no `&` elsewhere), while stdout stays the same JSON result. Then:
 1. Review native hook trust and restart the harness.
 2. Bind a project with `alm bind my-project C:/Projects/MyProject` (open a new terminal first; see [The `alm` command](#the-alm-command)).
 3. Run `alm doctor --cwd C:/Projects/MyProject`.
 
 Updating or uninstalling a harness preserves the shared pointer and data.
 
-On macOS and Linux, use `python3` (3.10 or later) where this guide says `py -3.15`, and POSIX paths:
+On macOS and Linux, use `python3` (3.10 or later) where this guide says `py -3`, and POSIX paths:
 - `python3 living_memory.py setup --location ~/LivingMemory --non-interactive`
-- `python3 install.py`
+- `python3 install.py` (add `--wire-all` to wire every harness found)
 - `alm bind my-project ~/Projects/MyProject` and `alm doctor --cwd ~/Projects/MyProject`
 
 On macOS, the Python from Xcode's Command Line Tools may be older than 3.10; install a current one from python.org or Homebrew. The python.org build needs its `Install Certificates.command` run once before `semantic` can download a model. Store paths are compared ignoring letter case and Unicode spelling, as APFS names files.
 
 ## Updating
 
-Run `alm upgrade`. It works from the installed copy and the checkout it was installed from:
+Run `alm upgrade` (or `alm upgrade --rewire`, which also runs the wiring commands from step 4). It works from the installed copy and the checkout it was installed from:
 1. It refuses while that checkout has uncommitted changes or is on another branch than the one `origin/HEAD` names (else `main`), so work on a feature branch is never installed.
 2. It runs `git pull --ff-only` in the checkout. Nothing pulled and the checkout already at the installed commit means `status: current`, and nothing is installed.
 3. It runs the checkout's `install.py` with the Python recorded in the install, which installs directly (one journaled write; the result carries `operation_id` and `undo`).
@@ -45,11 +45,11 @@ Edit the sections freely; setup changes only its own block. Credits: the Behavio
 
 ## The `alm` command
 
-`install.py` also installs a launcher named `alm`, so you can type `alm search 'cache'` instead of the interpreter and script paths. For a new user the whole sequence is: clone the repository, run `py -3.15 install.py`, open a new terminal, then run `alm doctor`.
+`install.py` also installs a launcher named `alm`, so you can type `alm search 'cache'` instead of the interpreter and script paths. For a new user the whole sequence is: clone the repository, run `py -3 install.py`, open a new terminal, then run `alm doctor`.
 
 - **Where:** `~/.local/bin/alm.exe` on Windows, `~/.local/bin/alm` (an sh script) elsewhere. The install receipt lists it under `launcher` (`create`, `replace`, `keep`, `remove` or `none`, with the reason).
 - **Windows build:** `alm.exe` is built at install time from pip's bundled launcher stub (`pip/_vendor/distlib/t64.exe`, or the arm64 or 32-bit variant) plus the interpreter path and a zip holding the entry point, the same layout as `pip.exe`. It needs pip: if there is no stub the receipt says `none` and suggests `py -m ensurepip`. No `.cmd` or `.ps1` is written, because `cmd.exe` would expand `%VAR%` text inside note arguments and `.ps1` runs into execution policy. After writing it the installer runs `alm --help`; if that fails (for example Smart App Control blocks the exe) the launcher is removed and a warning says so.
-- **PATH:** when `~/.local/bin` is not on your PATH the install adds it and the receipt names it under `path_change`. On Windows it appends the folder to the user `Path` value under `HKCU\Environment` (keeping its value type) and broadcasts the change. Elsewhere it appends `export PATH="$HOME/.local/bin:$PATH"  # agentic-living-memory` to `~/.zprofile` (zsh; `$ZDOTDIR/.zprofile` when `ZDOTDIR` is set), `~/.bash_profile` if it exists else `~/.profile` (bash), or `~/.profile`. Open a new terminal, and restart running agent sessions, to see it.
+- **PATH:** when `~/.local/bin` is not on your PATH the install adds it and the receipt names it under `path_change`. On Windows it appends the folder to the user `Path` value under `HKCU\Environment` (keeping its value type) and broadcasts the change. Elsewhere it appends `export PATH="$HOME/.local/bin:$PATH"  # agentic-living-memory` to `~/.zprofile` (zsh; `$ZDOTDIR/.zprofile` when `ZDOTDIR` is set), `~/.bash_profile` if it exists else `~/.profile` (bash), or `~/.profile`. For fish it appends `fish_add_path -g $HOME/.local/bin  # agentic-living-memory` to `~/.config/fish/config.fish` (under `$XDG_CONFIG_HOME` when that is set). The profile is written through a temp file and a rename; a symlinked profile is written at its target. On Linux, a terminal that starts a non-login bash reads `~/.bashrc` instead; the receipt's `notice` says to add the line there if `alm` is still not found. Open a new terminal, and restart running agent sessions, to see it.
 - **Ownership:** every launcher carries the marker `# agentic-living-memory launcher`. Install and uninstall replace or remove only a file with that marker. A foreign `alm`, or a symlink, is left alone and reported as `none`.
 - **Agents:** while this install's launcher is the first `alm` on PATH, hooks give agents `CMD = alm --json --domain NAME` and auto-allow bare `alm` read/search/capture commands as they do the full form. If another `alm` shadows it, a `.cmd` or `.ps1` sits beside it, or it was built for a different interpreter or script, agents keep the full quoted command and the host's normal permission prompt applies. Install and hooks must use the same Python for this to match.
 - **Uninstall:** `install.py --uninstall` removes our launcher but leaves the PATH entry, since other programs may use the folder. `undo` does not remove or restore the launcher or the PATH entry: the launcher runs whatever copy is in `app/`.
@@ -58,12 +58,12 @@ Edit the sections freely; setup changes only its own block. Credits: the Behavio
 ## Upgrading from a CODEX_HOME install
 
 Earlier builds installed the package into `CODEX_HOME/agentic-living-memory` (default `~/.codex/agentic-living-memory`). Claude, Copilot and Factory hooks pointed into that Codex folder, so removing Codex broke them. To move:
-1. From the source checkout, run `py -3.15 install.py`. This installs the new copy; the old one keeps working meanwhile.
+1. From the source checkout, run `py -3 install.py`. This installs the new copy; the old one keeps working meanwhile.
 2. From the new copy, run `integrations/setup.py HARNESS --hooks` for each harness. Setup recognises handlers that point at the old copy and replaces them without a "Modified managed handlers preserved" error and without duplicates. For Codex this takes over `hooks.json` and the `AGENTS.md` block from the old installer.
 3. Restart each harness and check `doctor`.
+4. Run `py -3 install.py --retire-legacy`. It removes the old copy directly, as one journaled write in CODEX_HOME. It refuses while any harness configuration still references the old folder. It checks the default harness homes, plus any home you set up with `setup.py --home PATH`, which you pass as `--home HARNESS=PATH` (repeatable); the receipt lists every file it checked under `checked`. It removes only the files the old install owns and that are unchanged; anything else is listed under `not_owned_left_in_place`. It does not touch the legacy data store `CODEX_HOME/agentic-living-memory-data` or old lifecycle receipts.
 
 Hook handlers hold the absolute path of the Python that ran `setup.py`. After upgrading, moving or removing that Python, every hooked event fails inside the harness until the harness is wired again: run `doctor` (its `hooks.wiring` section names the missing interpreter), then `integrations/setup.py HARNESS --hooks` from the installed copy with the Python you use now.
-4. Run `py -3.15 install.py --retire-legacy`. It removes the old copy directly, as one journaled write in CODEX_HOME. It refuses while any harness configuration still references the old folder. It checks the default harness homes, plus any home you set up with `setup.py --home PATH`, which you pass as `--home HARNESS=PATH` (repeatable); the receipt lists every file it checked under `checked`. It removes only the files the old install owns and that are unchanged; anything else is listed under `not_owned_left_in_place`. It does not touch the legacy data store `CODEX_HOME/agentic-living-memory-data` or old lifecycle receipts.
 
 ## Upgrading the instruction block
 
@@ -71,7 +71,7 @@ When the managed block in `CLAUDE.md`, `AGENTS.md` or `copilot-instructions.md` 
 
 ## Relocating existing memory
 
-Run `py -3.15 living_memory.py setup --location C:/Users/you/LivingMemory --non-interactive`. To select a source explicitly, add `--source C:/Users/you/.codex/agentic-living-memory-data`. Close other harness sessions first: setup moves the store directly. The destination must be empty (a destination containing only the store lock file counts as empty); stores are never merged.
+Run `py -3 living_memory.py setup --location C:/Users/you/LivingMemory --non-interactive`. To select a source explicitly, add `--source C:/Users/you/.codex/agentic-living-memory-data`. Close other harness sessions first: setup moves the store directly. The destination must be empty (a destination containing only the store lock file counts as empty); stores are never merged.
 
 The relocation locks both stores, copies and hashes durable files, verifies the copy, validates notes, rebuilds catalogs and SQLite indexes, marks the source as relocated for updated clients, and then switches the shared pointer. The result has `status: committed`, the `notes` and `files` counts and a `next` step. Notes, bindings, taxonomy and operation history are preserved. Hook delivery and turn receipts are transient and start fresh. The source stays as a backup; no cleanup is performed. Do not use older clients during or after the move: their code cannot enforce the relocated marker.
 
@@ -79,7 +79,7 @@ Relocation records and phase journals are stored beside the shared configuration
 
 ## Proxies and offline machines
 
-Living Memory itself reaches the network in two places, both optional: the `semantic install` download and `source-sync` for registered Confluence or Notion sources. Both use Python's standard `urllib`. The optional features that call `claude -p` (note maintenance and the agent wiki build) go through Claude Code and its own network settings instead.
+Living Memory itself reaches the network in two places, both optional: the `semantic install` download and `source-sync` for registered Confluence or Notion sources. Both use Python's standard `urllib`. The optional features that call `claude -p` (note maintenance, the digest refresh and the agent wiki build) go through Claude Code and its own network settings instead.
 
 - An `HTTPS_PROXY` (or `https_proxy`) environment variable works. On Windows, the proxy set in Internet Options (read from the registry) is used only when no proxy variable has a value; a non-empty `NO_PROXY` alone turns that lookup off, so set `HTTPS_PROXY` as well in that case. Certificates are checked against the Windows certificate store, so a proxy that inspects TLS with a company root certificate works when that certificate is installed there.
 - PAC files (automatic proxy configuration scripts) are not read, and proxies that need NTLM or Kerberos sign-in are not supported.

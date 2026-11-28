@@ -5,8 +5,10 @@
 Run setup from the installed package. It writes directly, as one journaled write in `~/.gemini/config` (operation ID `s-antigravity-...`; `alm undo s-antigravity-...` restores the previous files):
 
 ```powershell
-py -3.15 $env:LOCALAPPDATA/agentic-living-memory/app/integrations/setup.py antigravity
+py -3 $env:LOCALAPPDATA/agentic-living-memory/app/integrations/setup.py antigravity
 ```
+
+On macOS and Linux: `python3 ~/.local/lib/agentic-living-memory/app/integrations/setup.py antigravity`.
 
 Setup owns three things in `~/.gemini/config` (or `$ANTIGRAVITY_HOME`):
 

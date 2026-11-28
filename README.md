@@ -1,24 +1,35 @@
 # Agentic Living Memory
 
-A local, harness-independent memory store with canonical Markdown, disposable SQLite FTS5 indexes, and compact Python scripts. Native lifecycle hooks retrieve scoped context and ask the main agent to make a durable capture decision. There is no background model, daemon, skill, or marketplace dependency.
+A local, harness-independent memory store with canonical Markdown, disposable SQLite FTS5 indexes, and compact Python scripts. Native lifecycle hooks retrieve scoped context and ask the main agent to make a durable capture decision. There is no daemon, skill, or marketplace dependency. Nothing calls a model unless you turn on note maintenance or the daily digest refresh, or run the agent wiki build (`wiki --agent`); each of those runs `claude -p`.
 
 See [architecture](ARCHITECTURE.md) for the design, components and known limits.
 
 ## Install and use
 
-Python 3.10 to 3.15 with SQLite FTS5 is required; use your selected interpreter for setup and installation. On this Windows installation:
+Python 3.10 to 3.15 with SQLite FTS5 is required. The interpreter that runs `install.py` is the one the hooks use. From the repository folder on Windows:
 
 ```powershell
-py -3.15 living_memory.py setup
-py -3.15 install.py
-# then, from the installed copy, for each harness (the install lists the exact commands):
-py -3.15 $env:LOCALAPPDATA/agentic-living-memory/app/integrations/setup.py claude --hooks
+py -3 living_memory.py setup
+py -3 install.py --wire-all   # installs, then wires every harness found on this machine
 # open a new terminal: install.py put the `alm` command on your PATH
 alm bind my-project C:/path/to/project
 alm doctor --cwd C:/path/to/project
-# later, to update: pull the checkout, install it, and list the harnesses to rewire
-alm upgrade
+# later, to update: pull the checkout, install it, and rewire the harnesses that need it
+alm upgrade --rewire
 ```
+
+On macOS and Linux:
+
+```sh
+python3 living_memory.py setup
+python3 install.py --wire-all
+# open a new terminal
+alm bind my-project ~/path/to/project
+alm doctor --cwd ~/path/to/project
+alm upgrade --rewire
+```
+
+Without `--wire-all`, the install lists one `integrations/setup.py HARNESS --hooks` command per harness to run from the installed copy.
 
 Setup suggests `~/LivingMemory` and records your choice in `~/.config/agentic-living-memory/config.json`. All harness adapters read this same pointer. The Git checkout and harness packages contain software; the selected folder contains your memory. `setup --location NEW` moves an existing store directly (copy, verify, then switch the pointer) and retains the source as a backup. See [installation](INSTALLATION.md).
 
@@ -28,7 +39,8 @@ Notes are created by the script, including when the main agent decides automatic
 
 ```powershell
 alm capture --domain my-project --type decision --subject project --concern architecture 'Cache policy' 'The cache is rebuildable.'
-alm update --domain my-project my-project:NOTE_ID --body 'The cache is disposable and rebuilt on start.'
+alm read --domain my-project my-project:NOTE_ID   # prints the note and its revision
+alm update --domain my-project my-project:NOTE_ID --expected-revision REVISION --body 'The cache is disposable and rebuilt on start.'
 alm search --domain my-project 'How does our cache work?'
 alm review --domain my-project
 ```
@@ -44,5 +56,6 @@ Notes have thirteen types: knowledge, decision, preference, context, status, bug
 ## Documentation
 
 - [Protocol](PROTOCOL.md), [script reference](SCRIPT_REFERENCE.md), [installation](INSTALLATION.md), [native integration](INTEGRATION.md)
-- [Architecture](ARCHITECTURE.md), [note types and use cases](NOTE_TYPES.md), [writing notes](WRITING.md), [recovery](RECOVERY.md), [maintenance](MAINTENANCE.md), [tagging](TAGGING.md)
+- [Architecture](ARCHITECTURE.md), [note types and use cases](NOTE_TYPES.md), [writing notes](WRITING.md), [recovery](RECOVERY.md), [maintenance](MAINTENANCE.md), [note maintenance](NOTE_MAINTENANCE.md), [tagging](TAGGING.md)
 - [Obsidian](OBSIDIAN.md), [notebooks](NOTEBOOKS.md), [validation](VALIDATION.md)
+- [Changelog](CHANGELOG.md), [security](SECURITY.md), [contributing](CONTRIBUTING.md); licensed under [Apache-2.0](LICENSE)

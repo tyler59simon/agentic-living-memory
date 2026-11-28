@@ -3,8 +3,10 @@
 Run setup from the **installed package**, not the development checkout, so live hooks change only through an install:
 
 ```powershell
-py -3.15 $env:LOCALAPPDATA/agentic-living-memory/app/integrations/setup.py claude --home C:/Users/you/.claude
+py -3 $env:LOCALAPPDATA/agentic-living-memory/app/integrations/setup.py claude --home C:/Users/you/.claude
 ```
+
+On macOS and Linux: `python3 ~/.local/lib/agentic-living-memory/app/integrations/setup.py claude --home ~/.claude`.
 
 Setup writes directly, as one journaled write in the Claude home (operation ID `s-claude-...`; `alm undo s-claude-...` restores the previous `settings.json` and `CLAUDE.md` byte for byte). It merges seven hook groups into `settings.json` (SessionStart, UserPromptSubmit, SubagentStart, PreToolUse, Stop, PreCompact, SessionEnd) and keeps the file pretty-printed with unrelated keys preserved. It adds the static protocol block (the gate sentence, the protocol and the command shapes, with no paths, domains or sessions) to `CLAUDE.md` and records ownership in `.living-memory-ownership.json`. Claude Code's file watcher picks up the hooks immediately.
 

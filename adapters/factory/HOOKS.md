@@ -1,6 +1,6 @@
 # Factory Droid adapter
 
-Run setup with `py -3.15 $env:LOCALAPPDATA/agentic-living-memory/app/integrations/setup.py factory --home PATH`. It writes directly, as one journaled write in that home that `alm undo s-factory-...` reverses.
+Run setup with `py -3 $env:LOCALAPPDATA/agentic-living-memory/app/integrations/setup.py factory --home PATH` (macOS and Linux: `python3 ~/.local/lib/agentic-living-memory/app/integrations/setup.py factory --home PATH`). It writes directly, as one journaled write in that home that `alm undo s-factory-...` reverses.
 
 The default is instructions only: a full protocol block in `~/.factory/AGENTS.md`. That mode has no session or turn identity, so it requests no per-turn receipts.
 

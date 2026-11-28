@@ -13,7 +13,7 @@ Living Memory is a single-user, local store. It runs only when a hook or a CLI c
 - **Network use is opt-in.** Only these reach the network, and only when you run them:
   - `semantic install` downloads the embedding model and checks its hashes.
   - Confluence and Notion sources (`source-sync` on a remote source) fetch pages over https. The token is read from the environment variable the source names and is never stored.
-- **Model calls are opt-in.** Note maintenance (`maintenance enable`) and the agents started by `scripts/ingest_run.py` run the `claude` CLI, which sends note text and file contents to the model provider. Both are off until you turn them on.
+- **Model calls are opt-in.** Note maintenance (`maintenance enable`), the daily digest refresh (`config set digest_refresh`), the agent wiki build (`wiki --agent`) and `scripts/ingest_run.py` run the `claude` CLI, which sends note text and file contents to the model provider. None of them runs until you turn it on or start it.
 - **Nothing is erased automatically.** Journals, undoable deletes and backups keep note text. Do not store secrets in notes; capture refuses text that looks like a vendor credential, but that check is a pattern match.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the stated limits.

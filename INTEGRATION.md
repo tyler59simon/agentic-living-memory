@@ -2,15 +2,17 @@
 
 `install.py` installs only the package, in its own per-user folder. Claude Code, Codex, Copilot, Factory and Antigravity CLI use `integrations/setup.py` and share the same Python core and memory store.
 
-Run `py -3.15 living_memory.py setup` once before installing adapters. Every adapter reads `~/.config/agentic-living-memory/config.json`; no per-harness data directory or environment variable is needed. Installer `--location PATH` supports unattended first-time selection. Subsequent adapters reuse the existing selection. Uninstalling an adapter preserves the shared configuration and memory. Generated adapter commands use the interpreter that runs installation; substitute `-3.15` below to select Python 3.15.
+Run `py -3 living_memory.py setup` (`python3` on macOS and Linux) once before installing adapters. Every adapter reads `~/.config/agentic-living-memory/config.json`; no per-harness data directory or environment variable is needed. Installer `--location PATH` supports unattended first-time selection. Subsequent adapters reuse the existing selection. Uninstalling an adapter preserves the shared configuration and memory. Generated adapter commands use the interpreter that runs installation; substitute `-3.15` below to select Python 3.15.
 
 ```powershell
-py -3.15 integrations/setup.py claude --home C:/path/to/.claude
-py -3.15 integrations/setup.py codex --home C:/path/to/.codex
-py -3.15 integrations/setup.py copilot --home C:/path/to/.copilot
-py -3.15 integrations/setup.py factory --home C:/path/to/.factory --hooks
-py -3.15 integrations/setup.py antigravity
+py -3 integrations/setup.py claude --home C:/path/to/.claude
+py -3 integrations/setup.py codex --home C:/path/to/.codex
+py -3 integrations/setup.py copilot --home C:/path/to/.copilot
+py -3 integrations/setup.py factory --home C:/path/to/.factory --hooks
+py -3 integrations/setup.py antigravity
 ```
+
+On macOS and Linux, run the same commands with `python3` and POSIX paths. `install.py --wire-all` runs the right one for every harness it finds.
 
 Each command writes directly into the harness home as one journaled write (the journal is in that home, operation IDs start `s-HARNESS-`); `alm undo s-HARNESS-...` restores the previous settings and instruction files byte for byte. `--uninstall` removes only managed blocks/handlers; modified managed content is preserved as a conflict. Setup treats a handler as managed when it runs the adapter script from this copy, the installed copy, the source checkout this copy was installed from or the legacy folder, so wiring a harness from the checkout first does not block later runs. A real edit to a managed handler or to the managed instruction block stops setup, before it writes anything, with an error that names the file and the command to run. To keep going without undoing the edit, add `--adopt` (`setup.py HARNESS --hooks --adopt`, or with `--uninstall`): setup takes ownership directly and prints the unified diff it replaced on stderr (also under `summary.adopt`), and `alm undo s-HARNESS-...` puts your edit back. Unrelated settings and later unrelated hook additions survive reruns. Factory defaults to instructions; `--hooks` opts into native command hooks.
 
@@ -48,7 +50,7 @@ Claude Code can be locked down by an administrator, and then it silently skips t
 To keep memory working under `allowManagedHooksOnly`, ask whoever manages the computer to ship the hooks as managed settings, or to lift the setting. Print the hooks block this copy would write and hand it over:
 
 ```powershell
-py -3.15 -c "import json,sys; sys.path.insert(0,r'C:/path/to/app'); from integrations import setup; print(json.dumps({'hooks': setup.hooks('claude')}, indent=2))"
+py -3 -c "import json,sys; sys.path.insert(0,r'C:/path/to/app'); from integrations import setup; print(json.dumps({'hooks': setup.hooks('claude')}, indent=2))"
 ```
 
 Merge the printed `hooks` object into `managed-settings.json` (or a file in `managed-settings.d/`). The handlers hold absolute interpreter and script paths from the machine that printed them, so run this from the installed copy on the machine that will use it, and again after moving the package or changing Python. The installed copy does not need to change.

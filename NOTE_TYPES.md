@@ -143,7 +143,7 @@ Date status snapshots in the body and preserve the information needed to interpr
 CLI and JSON capture accept the lowercase values `knowledge`, `decision`, `preference`, `context`, `status`, `bug`, `plan`, `risk`, `research`, `policy`, `map`, `runbook` and `brief`. The default is `knowledge`. For example, after binding the project:
 
 ```powershell
-py -3.15 living_memory.py capture --domain my-project --type risk --subject project --concern architecture "Older clients during migration" "Older clients may keep writing to the previous store. Upgrade clients before switching locations."
+alm capture --domain my-project --type risk --subject project --concern architecture "Older clients during migration" "Older clients may keep writing to the previous store. Upgrade clients before switching locations."
 ```
 
 Existing `progress` and `correction` notes remain readable. New captures must use `status` and `knowledge`, respectively. `migrate --note-types` converts them across the store:
