@@ -42,6 +42,9 @@ def commit(root,changes,kind,domains=(),summary=None,guards=None,sync_overlay=Tr
                 from .logs import swallowed
                 swallowed('governance.commit',exc,root)
                 receipt.setdefault('warnings',[]).append(f'{domain}: derived state requires repair')
+        if any(rel in ('projects.json','bindings.json') or str(rel).startswith('brand/') for rel in changes):
+            from .brand import refresh_views   # a brand, a project name or an undo of either: note views show the brand they resolve to
+            refresh_views(root)
         receipt.update(kind=kind,summary=summary or {'files':len(changes)},undo=f'undo {operation_id}')
         return receipt
 

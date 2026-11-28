@@ -82,9 +82,10 @@ def _split_lead(body,summary):
     text=(body or '').lstrip()
     return text[len(lead):].lstrip('\n') if lead and text.startswith(lead) else (body or '')
 
-def wiki_model(domain,root,archived=False,records=None):
+def wiki_model(domain,root,archived=False,records=None,scope=None):
     """The JSON-safe wiki of one domain: notes (as articles), projects with their sections, the code folder tree,
-    the section list, and the targets of links into other domains. `records` is an inventory the caller already read (so it can pair the text with revisions of the same read)."""
+    the section list, and the targets of links into other domains. `records` is an inventory the caller already read (so it can pair the text with revisions of the same read).
+    `scope` (a project slug) limits it to that project (project_model)."""
     from .repository import inventory
     from .note_format import parts,plain
     from .links import note_links
@@ -96,13 +97,17 @@ def wiki_model(domain,root,archived=False,records=None):
     out={}
     back={}
     external={}
+    linked_from={}   # external key -> the ids of the notes that link to it, so a one-project model keeps only its own targets
     for edge in graph['edges']:
         a,b=nodes[edge['from']],nodes[edge['to']]
         if edge['kind']!='link' or a['domain']!=domain:continue
         if b['domain']==domain:
             out.setdefault(a['id'],[]).append(b['id'])
             back.setdefault(b['id'],[]).append(a['id'])
-        else:external[(b['title'] or '').strip().casefold()]={'title':b['title'],'domain':b['domain']}
+        else:
+            key=(b['title'] or '').strip().casefold()
+            external[key]={'title':b['title'],'domain':b['domain']}
+            linked_from.setdefault(key,set()).add(a['id'])
 
     projects=[]
     for p in registry.load(root)['projects']:
@@ -214,17 +219,21 @@ def wiki_model(domain,root,archived=False,records=None):
                  briefs=[n['id'] for n in mine if n['type']=='brief'],maps=[n['id'] for n in mine if n['type']=='map'])
         if p['charter'] not in by_id:p['charter']=None
     projects.sort(key=lambda p:(p['slug']==general,-p['count']))
-    return {'domain':domain,'generated':datetime.now(timezone.utc).strftime('%Y-%m-%d'),'renderer':WIKI_RENDERER,'archived':bool(archived),
-            'notes':notes,'projects':projects,'folders':folders,'sections':[{'key':k,'label':l,'blurb':b} for k,l,b in SECTIONS],'external':external}
+    model={'domain':domain,'generated':datetime.now(timezone.utc).strftime('%Y-%m-%d'),'renderer':WIKI_RENDERER,'archived':bool(archived),
+           'notes':notes,'projects':projects,'folders':folders,'sections':[{'key':k,'label':l,'blurb':b} for k,l,b in SECTIONS],'external':external}
+    return project_model(model,scope,linked_from) if scope is not None else model
 
-def project_model(model,project):
-    """The model limited to one project (`wiki --project`): its notes, folders and project entry. Links to notes of other
-    projects are left out of Links to and Linked from; a [[link]] to one in a body shows as a link to a missing page."""
+def project_model(model,project,linked_from):
+    """The model limited to one project (`wiki --project`): its notes, folders and project entry, and the links into other
+    domains that its own notes make (linked_from: external key -> ids of the linking notes). Links to notes of other projects
+    are left out of Links to and Linked from; a [[link]] to one in a body shows as a link to a missing page. A charter note
+    outside the project is dropped, so the overview falls back to the project's brief."""
     if project not in {p['slug'] for p in model['projects']}:raise ValueError(f'no notes for project {project}: the projects command lists the registered ones')
     keep={n['id'] for n in model['notes'] if n['project']==project}
     notes=[dict(n,out=[i for i in n['out'] if i in keep],backlinks=[i for i in n['backlinks'] if i in keep]) for n in model['notes'] if n['id'] in keep]
-    return dict(model,project=project,notes=notes,projects=[p for p in model['projects'] if p['slug']==project],
-                folders=[f for f in model['folders'] if f['project']==project])
+    projects=[dict(p,charter=p['charter'] if p['charter'] in keep else None) for p in model['projects'] if p['slug']==project]
+    external={k:v for k,v in model['external'].items() if linked_from.get(k,set())&keep}
+    return dict(model,project=project,notes=notes,projects=projects,folders=[f for f in model['folders'] if f['project']==project],external=external)
 
 # ---- the page ----
 
@@ -512,6 +521,8 @@ var N={},R={},T={},P={},F={},S={},X={};
 Object.keys(D.external).forEach(function(k){var x=D.external[k];X[k]=x;X[x.title.trim().toLowerCase()]=x});
 D.notes.forEach(function(n){N[n.id]=n;R[n.ref]=n;var k=n.title.trim().toLowerCase();if(!T[k]||T[k].retired&&!n.retired)T[k]=n});
 D.projects.forEach(function(p){P[p.slug]=p});
+// A one-project wiki (wiki --project) names the project, not the domain, in its heading and browser title.
+var SCOPED=!AG&&D.project&&P[D.project]?P[D.project].name:null,WTITLE=(SCOPED||cap(D.domain))+' wiki';
 D.folders.forEach(function(f){F[f.id]=f});
 D.sections.forEach(function(s){S[s.key]=s});
 // The agent edition: its sections are the model's own, so the structured edition's chronological months, code tree and "Start here" never apply;
@@ -728,7 +739,7 @@ function agentHome(){
 function mainPage(){
   if(AG)return agentHome();
   setCrumbs([['Wiki','#']]);
-  page.appendChild(head(D.domain+' \u00b7 wiki',cap(D.domain)+' wiki','The working memory of the '+D.domain+' domain, organised by project. Open a project for its overview, decisions, guides and code reference, or search every page.','Generated '+D.generated));
+  page.appendChild(head(D.domain+' \u00b7 wiki',WTITLE,SCOPED?'The working memory of the '+SCOPED+' project in the '+D.domain+' domain. Open it for its overview, decisions, guides and code reference, or search every page.':'The working memory of the '+D.domain+' domain, organised by project. Open a project for its overview, decisions, guides and code reference, or search every page.','Generated '+D.generated));
   var sp=wsec('projects','Projects',D.projects.length),grid=el('div','portals');
   D.projects.forEach(function(p){
     var c=el('div','portal'),h=el('h3');h.appendChild(link('#p-'+p.slug,null,p.name));c.appendChild(h);
@@ -841,7 +852,7 @@ function notePage(n){
     ['Tags',tags],['Ref',el('span','mono',D.domain+':'+n.ref)]])];
   if(heads.length||pg){var items=heads.map(function(h){return {text:h.text,id:h.id,sub:h.level===3}});if(pg)items.push({text:pg.written?'Sources':'Planned sources',id:'sources'});items.push({text:'See also',id:'see-also'});rail.push(toc(items,wide()))}
   page.appendChild(article(rail,body));CITE=null;
-  document.title=shortTitle(n)+' \u00b7 '+cap(D.domain)+' wiki';
+  document.title=shortTitle(n)+' \u00b7 '+WTITLE;
 }
 function azPage(){
   setCrumbs([['Wiki','#'],['A to Z index','#az']]);
@@ -923,7 +934,7 @@ function expand(){
 function closeNav(){shell.classList.remove('open')}
 function sectionRoute(h){var hit=null;D.projects.forEach(function(p){var pre='s-'+p.slug+'-';if(h.indexOf(pre)===0&&p.sections[h.slice(pre.length)])hit=[p,h.slice(pre.length)]});return hit}
 function route(){
-  var h=location.hash.slice(1),sec;page.textContent='';document.title=cap(D.domain)+' wiki';
+  var h=location.hash.slice(1),sec;page.textContent='';document.title=WTITLE;
   if(q.value.trim())searchPage(q.value.trim());
   else if(h.indexOf('n-')===0&&R[h.slice(2)])notePage(R[h.slice(2)]);
   else if(h.indexOf('p-')===0&&P[h.slice(2)])projectPage(P[h.slice(2)]);
@@ -989,11 +1000,12 @@ def render_html(model,document=True,theme=None,brand=None):
     scoped=next((p['name'] for p in model['projects'] if p['slug']==model.get('project')),None)
     title=f'{scoped} memory wiki' if scoped else f'{domain[:1].upper()}{domain[1:]} {"agent" if agent else "memory"} wiki'
     brand=brand or {}
+    logo,brand_name=brand.get('logo'),esc(brand.get('name') or 'Living Memory')
     noscript=''.join(f'<li>{esc(n["title"])}: {esc(MARKER.sub("",n["lead"]))}</li>' for n in pages)
     picker='<div class="themes" role="group" aria-label="Theme">'+''.join(f'<button type="button" data-t="{k}" aria-label="{l}" title="{l}"><i class="sw sw-{k}"></i><span>{l}</span></button>' for k,l in THEMES)+'</div>'
-    content=(f'<title>{esc(title)}</title><meta name="claude:viewport-fit-sides" content="cover"><style>{_css(brand.get('logo'))}</style>'
+    content=(f'<title>{esc(title)}</title><meta name="claude:viewport-fit-sides" content="cover"><style>{_css(logo)}</style>'
              '<div class="shell" id="shell"><aside class="sidebar" id="sidebar" aria-label="Wiki pages">'
-             f'<div class="brand-block"><span class="logo" aria-hidden="true"></span><span>{esc(brand.get('name') or 'Living Memory')}</span><button type="button" class="icon-button close" id="close" aria-label="Close navigation">{_svg("x")}</button></div>'
+             f'<div class="brand-block"><span class="logo" aria-hidden="true"></span><span>{brand_name}</span><button type="button" class="icon-button close" id="close" aria-label="Close navigation">{_svg("x")}</button></div>'
              f'<div class="switcher">{_svg("book")}<span>{esc(domain)}</span><span class="muted">{"agent wiki" if agent else "wiki"}</span></div>'
              '<nav class="tree" id="tree"></nav>'
              f'<div class="sidebar-foot">{len(pages)} pages. Generated <span class="nowrap">{esc(model["generated"])}</span> from Living Memory.</div></aside>'
@@ -1013,10 +1025,9 @@ def default_path(root,domain,project=None):return Path(root)/'.views'/domain/(f'
 
 def model_for(domain,root,archived=False,project=None):
     """The domain's wiki model, or one project's (project_model) when project is given."""
-    from .wiki_agent import check_project
-    check_project(project)
-    model=wiki_model(domain,root,archived)
-    return project_model(model,project) if project is not None else model
+    from .projects import SLUG
+    if project is not None and not SLUG.fullmatch(project):raise ValueError('--project takes a project slug (see the projects command)')
+    return wiki_model(domain,root,archived,scope=project)
 
 def export(domain,root,archived=False,out=None,fmt='html',theme=None,project=None):
     """Write the wiki of one domain, or of one project of it: html to `out` or <store>/.views/<domain>/wiki[-<slug>].html, or the

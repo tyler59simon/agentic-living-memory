@@ -467,6 +467,7 @@ def render_html(model,target='local',brand=None):
     `brand` ({name, logo} from core.brand.resolve) replaces the Living Memory name and emblem."""
     if target not in TARGETS:raise ValueError('target must be local or artifact')
     brand=brand or {}
+    logo,brand_name=brand.get('logo'),html.escape(brand.get('name') or 'Living Memory',quote=True)
     esc=lambda v:html.escape(str(v),quote=True)
     short=model.get('view_title') or model['title'] or 'Note view'
     data=_script_json(model)
@@ -483,8 +484,8 @@ def render_html(model,target='local',brand=None):
          '<div class="chips" id="chips" style="margin-top:.8rem"></div><div class="work-list" id="list" style="margin-top:.8rem"></div></div>')
     script=JS.replace('@@RELOAD@@',str(RELOAD_SECONDS*1000))
     return (f'<!doctype html>\n<html lang="en" data-target="{target}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>{esc(short)}</title><style>{_css(target,brand.get('logo'))}</style></head><body><main class="page">'
-            f'<div class="brand"><span class="brand-logo" aria-hidden="true"></span><span>{esc(brand.get('name') or 'Living Memory')}</span></div>'
+            f'<title>{esc(short)}</title><style>{_css(target,logo)}</style></head><body><main class="page">'
+            f'<div class="brand"><span class="brand-logo" aria-hidden="true"></span><span>{brand_name}</span></div>'
             f'<header class="page-head"><div class="page-title"><div class="eyebrow">{esc(eyebrow)}</div><h1>{esc(model["title"] or short)}</h1>'
             +(f'<p class="page-sub" id="summary">{esc(model["summary"])}</p>' if model['summary'] else '')+'</div>'
             +(f'<div class="page-date muted small">Updated {esc(updated)}</div>' if updated else '')+'</header>'

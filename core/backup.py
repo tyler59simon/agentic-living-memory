@@ -10,6 +10,7 @@ from pathlib import Path
 from .common import atomic_write,parse_iso,retry_sharing
 from .paths import is_os_junk
 from .repository import canonical_json,confined,parse_text,read_json,store_lock
+from .brand import FILE as BRAND,DATA_URI   # logos are saved with the registries that name them, so a restore never pairs a record with another logo
 
 KEEP=7
 # Rotation never deletes a snapshot holding at least twice the notes of the new one (and this many more):
@@ -41,6 +42,8 @@ def canonical_files(root):
     found=[name for name in TOP_LEVEL if (root/name).is_file() and not is_link_or_junction(root/name)]
     if (root/'ledger').is_dir() and not is_link_or_junction(root/'ledger'):found+=sorted(p.relative_to(root).as_posix() for p in (root/'ledger').glob('sessions-*.jsonl') if LEDGER.fullmatch(p.relative_to(root).as_posix()) and p.is_file() and not is_link_or_junction(p))
     found+=_maintenance_files(root)
+    if (root/'brand').is_dir() and not is_link_or_junction(root/'brand'):
+        found+=sorted(rel for rel in (p.relative_to(root).as_posix() for p in (root/'brand').glob('*.logo') if p.is_file() and not is_link_or_junction(p)) if BRAND.fullmatch(rel))
     for domain in sorted((root/'domains').iterdir()) if (root/'domains').is_dir() and not is_link_or_junction(root/'domains') else []:
         if is_link_or_junction(domain):continue
         for folder in ('notes','archive'):
@@ -61,7 +64,7 @@ def _maintenance_files(root):
 
 def _allowed(name):
     if not name or name.startswith('/') or '\\' in name or any(part in ('','.','..') for part in name.split('/')):return False
-    return name in TOP_LEVEL or name in LEGACY or bool(LEGACY_NOTEBOOK.fullmatch(name)) or name==MANIFEST or bool(MEMBER.fullmatch(name)) or bool(LEDGER.fullmatch(name)) or bool(MAINT.fullmatch(name))
+    return name in TOP_LEVEL or name in LEGACY or bool(LEGACY_NOTEBOOK.fullmatch(name)) or name==MANIFEST or bool(MEMBER.fullmatch(name)) or bool(LEDGER.fullmatch(name)) or bool(MAINT.fullmatch(name)) or bool(BRAND.fullmatch(name))
 
 def snapshots(root):
     """Existing snapshots, newest first: by timestamp, then by same-second sequence (lm-T.zip, lm-T-1.zip, ...)."""
@@ -195,6 +198,10 @@ def verify(path,max_member_bytes=None,max_total_bytes=None):
                     for line in data.decode('utf-8').splitlines():
                         if line.strip():json.loads(line)
                 except (UnicodeError,ValueError):found.append({'member':info.filename,'problem':'invalid JSON lines'})
+            elif BRAND.fullmatch(info.filename):
+                try:ok=bool(DATA_URI.fullmatch(data.decode('utf-8').strip()))
+                except UnicodeError:ok=False
+                if not ok:found.append({'member':info.filename,'problem':'not a logo data URI'})
             elif MEMBER.fullmatch(info.filename):
                 try:text=data.decode('utf-8')
                 except UnicodeError:
@@ -294,7 +301,7 @@ def _restore_backup(root,source,max_member_bytes=None,max_total_bytes=None):
         from .folder_policy import merge_registry
         wanted['notebook-folders.json']=merge_registry(root,wanted['notebook-folders.json'])
     # Notes of covered domains and the top-level files.
-    current=[rel for rel in canonical_files(root) if not MAINT.fullmatch(rel) and (rel in TOP_LEVEL or (MEMBER.fullmatch(rel) and rel.split('/')[1] in covered))]
+    current=[rel for rel in canonical_files(root) if not MAINT.fullmatch(rel) and (rel in TOP_LEVEL or BRAND.fullmatch(rel) or (MEMBER.fullmatch(rel) and rel.split('/')[1] in covered))]
     changes={}
     unchanged=0
     for rel,text in wanted.items():

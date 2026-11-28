@@ -88,7 +88,7 @@ def set_(root,key,text):
             if current==(text.encode('utf-8') if text is not None else None):del files[rel]   # the same logo again writes nothing
             else:expected[rel]=digest(current)
         receipt=transaction(root,{'bindings.json':new,**files},'config_set',expected=expected) if new!=old or files else {}
-    if key=='brand' and receipt:
-        from .brand import refresh_views
-        refresh_views(root)
+        if key=='brand' and receipt:
+            from .brand import refresh_views
+            refresh_views(root)
     return {'ok':True,'setting':key,'value':config.get(key,DEFAULTS[key]),'default':key not in config,'previous':before,'operation_id':receipt.get('operation_id')}

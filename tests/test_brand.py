@@ -7,7 +7,7 @@ from core.runtime import protected_rule
 SVG=b"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8'><rect width='8' height='8' fill='#c00'/></svg>"
 PNG=b'\x89PNG\r\n\x1a\n'+b'\x00'*32
 
-class Brand(Fixture):
+class BrandFixture(Fixture):
     def file(self,name,data):
         path=self.base/'images'/name;path.parent.mkdir(exist_ok=True);path.write_bytes(data);return str(path)
     def update(self,slug,brand):
@@ -20,6 +20,7 @@ class Brand(Fixture):
     def page(self,*argv):return Path(self.ok('wiki',*argv)['path']).read_text(encoding='utf-8')
     def uri(self,kind,data):return f'data:image/{kind};base64,'+base64.b64encode(data).decode()
 
+class Brand(BrandFixture):
     def test_project_brand_names_its_project_page_and_undo_removes_it(self):
         self.sample()
         result=self.brand('hive',{'name':'Hive Docs','logo':self.file('logo.svg',SVG)})
@@ -96,3 +97,65 @@ class Brand(Fixture):
     def test_the_brand_folder_is_protected_and_reported(self):
         self.assertEqual(protected_rule(str(self.root/'brand'/'default.logo'),str(self.base),self.root),'config')
         self.assertEqual(self.ok('version')['capabilities']['brand'],1)
+
+class ReviewFixes(BrandFixture):
+    """Codex review of e55e529 (2026-11-28)."""
+    def test_backup_keeps_logos_and_restore_pairs_them_with_their_record(self):
+        from core import backup
+        self.brand('hive',{'name':'Hive Docs','logo':self.file('logo.svg',SVG)})
+        snap=backup.backup(self.root)['backup']
+        import zipfile
+        with zipfile.ZipFile(snap) as z:self.assertIn('brand/project-hive.logo',z.namelist())
+        self.assertEqual(backup.verify(snap),[])
+        self.brand('hive',{'name':'Hive Docs','logo':self.file('logo.png',PNG)})
+        self.default({'name':'Acme','logo':self.file('logo2.svg',SVG)})
+        backup.restore_backup(self.root,snap)
+        self.assertEqual((self.root/'brand'/'project-hive.logo').read_text(encoding='utf-8').strip(),self.uri('svg+xml',SVG))
+        self.assertFalse((self.root/'brand'/'default.logo').exists())   # not in the snapshot: removed with its record
+
+    def test_verify_flags_a_logo_member_that_is_not_a_data_uri(self):
+        from core import backup
+        import zipfile
+        self.brand('hive',{'name':'Hive Docs','logo':self.file('logo.svg',SVG)})
+        snap=Path(backup.backup(self.root)['backup']);bad=self.base/'bad.zip'
+        with zipfile.ZipFile(snap) as src,zipfile.ZipFile(bad,'w') as dst:
+            for info in src.infolist():dst.writestr(info,b'<style>x</style>' if info.filename.startswith('brand/') else src.read(info))
+        self.assertEqual(backup.verify(bad),[{'member':'brand/project-hive.logo','problem':'not a logo data URI'}])
+
+    def test_a_tampered_logo_file_or_record_falls_back_to_the_emblem(self):
+        self.sample()
+        self.brand('hive',{'name':'Hive Docs','logo':self.file('logo.svg',SVG)})
+        (self.root/'brand'/'project-hive.logo').write_text('data:image/png;base64,AA)}</style><script>alert(1)</script>',encoding='utf-8')
+        page=self.page('--project','hive');self.assertNotIn('<script>alert(1)',page);self.assertIn('<span>Hive Docs</span>',page)
+        outside=self.base/'outside.logo';outside.write_text(self.uri('png',PNG),encoding='utf-8')
+        data=json.loads((self.root/'projects.json').read_text(encoding='utf-8'))
+        for p in data['projects']:
+            if p['slug']=='hive':p['brand']['logo']=str(outside)
+        (self.root/'projects.json').write_text(json.dumps(data),encoding='utf-8')
+        self.assertNotIn(self.uri('png',PNG),self.page('--project','hive'))   # only brand/project-hive.logo is ever read
+
+    def test_undo_and_a_project_rename_re_render_dashboards(self):
+        ids=self.sample()
+        path=Path(self.ok('views','add',ids['decision'])['path'])
+        self.brand('hive',{'logo':self.file('logo.svg',SVG)})
+        self.assertIn('<span>Hive</span>',path.read_text(encoding='utf-8'))
+        payload=self.base/'rename.json';payload.write_text(json.dumps({'slug':'hive','name':'Hive Two'}))
+        self.ok('project','update','--payload-file',str(payload))
+        self.assertIn('<span>Hive Two</span>',path.read_text(encoding='utf-8'))   # the brand has no name, so it follows the project's
+        self.default({'name':'Acme'})
+        reset=self.brand('hive',None);self.assertIn('<span>Acme</span>',path.read_text(encoding='utf-8'))
+        self.ok('undo',reset['operation_id'])
+        page=path.read_text(encoding='utf-8');self.assertIn('<span>Hive Two</span>',page);self.assertIn(self.uri('svg+xml',SVG),page)
+
+    def test_project_scope_drops_other_projects_charter_and_external_links(self):
+        ids=self.sample();self.registry(charter='demo:'+ids['both'])   # the hive charter is a note of lm
+        model=self.ok('wiki','--project','hive','--format','json')['model']
+        self.assertIsNone(model['projects'][0]['charter'])
+        self.assertIn('shared rule',model['external'])   # Use SQLite (hive) links to Shared rule in _global
+        self.assertEqual(self.ok('wiki','--project','lm','--format','json')['model']['external'],{})
+        code,err=self.cli('wiki','--project','domain');self.assertNotEqual(code,0);self.assertIn('no notes for project domain',err['error']['message'])
+
+    def test_the_project_page_names_the_project(self):
+        self.sample();page=self.page('--project','hive')
+        self.assertIn('"project": "hive"',page)   # the page script names the project from D.project (checked in a browser)
+        self.assertIn("WTITLE=(SCOPED||cap(D.domain))+' wiki'",page)

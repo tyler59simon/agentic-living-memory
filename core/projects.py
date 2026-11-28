@@ -148,11 +148,7 @@ def project_write(root,action,payload):
             else:entry['brand']=record
         entry['updated']=stamp
         changes['projects.json']=_registry(others+[entry])
-        receipt=commit(root,changes,'project_'+action,[],{'slug':slug,'fields':sorted(values),'files':len(changes)})
-    if 'brand' in values:
-        from .brand import refresh_views
-        refresh_views(root)
-    return receipt
+        return commit(root,changes,'project_'+action,[],{'slug':slug,'fields':sorted(values),'files':len(changes)})   # commit re-renders note views
 
 def _charter_domain(root,named,repos,field='charter.domain'):
     """The charter's domain: the one named (must exist), else the repo's bound domain, else the global domain."""

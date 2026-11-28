@@ -16,6 +16,10 @@ MAX_LOGO=256*1024
 NAME_MAX=60
 DEFAULT_NAME='Living Memory'
 _SVG=re.compile(r'<svg[\s>]',re.I)
+# What a stored logo file must hold (stripped): anything else, such as a hand-edited or restored file, falls back to the emblem.
+DATA_URI=re.compile(r'data:image/(?:png|jpeg|gif|webp|svg\+xml);base64,[A-Za-z0-9+/]*={0,2}')
+# The only files under brand/: one per owner.
+FILE=re.compile(r'brand/(?:default|project-[a-z0-9][a-z0-9-]{0,39})\.logo')
 
 def _sniff(data):
     """The image type of the bytes (png, jpeg, gif, webp or svg+xml), else None."""
@@ -31,8 +35,8 @@ def logo_uri(source):
     """The logo file at `source` as a data URI; ValueError (invalid_logo) when it is missing, too large or not an image."""
     path=Path(str(source)).expanduser()
     if not path.is_file():raise ValueError(f'invalid_logo: {source} is not a file')
-    if path.stat().st_size>MAX_LOGO:raise ValueError(f'invalid_logo: {source} is larger than {MAX_LOGO//1024} KB')
-    data=path.read_bytes()
+    with open(path,'rb') as f:data=f.read(MAX_LOGO+1)   # one read, capped: a file that grows after the check cannot get past the limit
+    if len(data)>MAX_LOGO:raise ValueError(f'invalid_logo: {source} is larger than {MAX_LOGO//1024} KB')
     kind=_sniff(data)
     if not kind:raise ValueError(f'invalid_logo: {source} is not a PNG, JPEG, GIF, WebP or SVG image')
     return f'data:image/{kind};base64,'+base64.b64encode(data).decode('ascii')
@@ -65,11 +69,13 @@ def clean(value,old,owner,name_required):
         record['logo']=rel
     return record,changes
 
-def _stored_logo(root,record):
+def _stored_logo(root,record,owner):
+    """The owner's stored logo as a data URI, or None. Only brand/<owner>.logo is read, whatever path the record names."""
     if not record or not record.get('logo'):return None
-    try:text=(Path(root)/record['logo']).read_text(encoding='utf-8').strip()
-    except OSError:return None
-    return text if text.startswith('data:image/') and ';base64,' in text else None
+    from .repository import confined
+    try:text=confined(root,logo_path(owner)).read_text(encoding='utf-8').strip()
+    except (OSError,ValueError):return None
+    return text if DATA_URI.fullmatch(text) else None
 
 def state(root):
     """The stored brand records: {'default': record or None, 'projects': {slug: (project name, record or None)}}."""
@@ -88,12 +94,12 @@ def resolve(root,project=None,known=None):
     default=known['default']
     name,logo=DEFAULT_NAME,None
     if default:
-        name,logo=default.get('name') or DEFAULT_NAME,_stored_logo(root,default)
+        name,logo=default.get('name') or DEFAULT_NAME,_stored_logo(root,default,'default')
     if project in known['projects']:
         project_name,record=known['projects'][project]
         if record is not None:
             name=record.get('name') or project_name
-            logo=_stored_logo(root,record) or logo
+            logo=_stored_logo(root,record,f'project-{project}') or logo
     key=hashlib.sha256(f'{name}\n{logo or ""}'.encode('utf-8')).hexdigest()[:16]
     return {'name':name,'logo':logo,'key':key}
 

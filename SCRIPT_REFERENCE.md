@@ -268,7 +268,7 @@ With no saved choice it follows the system setting (dark is Emerald Dark, light 
 
 In Emerald Light the page tree stays dark, as Hivemind's sidebar does; its routes are plain hash names (`#p-<slug>`, `#s-<slug>-<section>`, `#c-<id>`, `#n-<ref>`, `#az`, `#recent`), so the same page also works as a claude.ai artifact. `--archived` adds resolved, archived and superseded notes, marked retired. `--out` follows the views rule: outside the store, or under its `.views` folder.
 
-`wiki --project SLUG` limits the structured wiki to one project: its notes, its code folders and its own project entry, written to `<store>/.views/<domain>/wiki-<slug>.html`; `--format json` adds `project` to the model. Links to notes of other projects are left out of Links to and Linked from. An unknown slug fails with `no notes for project SLUG`.
+`wiki --project SLUG` limits the structured wiki to one project: its notes, its code folders, its own project entry (a charter note outside the project is dropped) and the links into other domains that its notes make, written to `<store>/.views/<domain>/wiki-<slug>.html`; `--format json` adds `project` to the model. Links to notes of other projects are left out of Links to and Linked from. An unknown slug fails with `no notes for project SLUG`.
 
 ### Brand
 
@@ -279,7 +279,7 @@ The sidebar header of a wiki page and of a note view shows a name and a logo, "L
 
 `logo` is the path of a PNG, JPEG, GIF, WebP or SVG file (checked by its bytes) of at most 256 KB. It is read once and copied into the store as `brand/project-<slug>.logo` or `brand/default.logo`, a text file holding the image as a data URI, in the same journaled change as the record, so `undo` reverts both. A brand without `logo` keeps the stored one; `"logo": null` removes it. The stored record is `{"name": ..., "logo": "brand/<owner>.logo"}`. The `brand/` folder is protected config.
 
-Which brand a page shows: a page scoped to one project (`wiki --project`, `wiki --agent --project`, or a note view whose note carries exactly one registered `project/<slug>` tag) shows that project's brand when it has one, with the default logo, else the emblem, when the project brand has no logo. Every other page shows the default brand, else Living Memory. The footer still says the page was generated from Living Memory. A brand change re-renders the local note views at once (their cache records the brand they show); wiki pages show it at the next `wiki`. `version` reports `capabilities.brand = 1`.
+Which brand a page shows: a page scoped to one project (`wiki --project`, `wiki --agent --project`, or a note view whose note carries exactly one registered `project/<slug>` tag) shows that project's brand when it has one, with the default logo, else the emblem, when the project brand has no logo. Every other page shows the default brand, else Living Memory. The footer still says the page was generated from Living Memory. Any write that changes `projects.json`, `bindings.json` or a logo (a brand, a project rename, an `undo` of either, `restore-backup`) re-renders the local note views at once (their cache records the brand they show); wiki pages show it at the next `wiki`. A logo file that is not a valid data URI is ignored (the page shows the emblem), and `backup` saves the logos with the registries; `verify` reports a logo member that is not one. `version` reports `capabilities.brand = 1`.
 
 ### Agent-written wiki
 
