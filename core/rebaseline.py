@@ -493,7 +493,7 @@ def before_review(root,cands,seconds):
         written=0
         for cand in cands:
             note=cand.get('note') or {}
-            if time.monotonic()>deadline:break
+            if time.monotonic()>=deadline:break   # >=: before 3.13 the Windows clock ticks every ~15 ms, so a zero budget would still run one
             if not (note.get('sources') or note.get('file_hashes')):continue
             note=dict(note,domain=cand['domain'])
             files,body=note_plan(note,root,bindings,deadline)

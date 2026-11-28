@@ -28,3 +28,5 @@ First versioned release. Earlier work was not versioned; `git log` has the full 
 ### Fixed
 
 - `scripts/rehearse_store.py --root DIR` no longer needs a configured store.
+- On Windows with Python 3.10 to 3.12, the re-baseline pass before a maintenance review no longer runs with a zero time budget (the clock there ticks every ~15 ms).
+- On Windows with Python 3.12, a file whose name holds a colon (`sub/a:b`) keeps its folder in the path a note shows.

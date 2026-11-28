@@ -75,8 +75,8 @@ def display_path(path: Path, prefixes: list[Path]) -> str|None:
     from .paths import is_within
     for prefix in prefixes:
         if path.is_relative_to(prefix):
-            rel=path.relative_to(prefix).as_posix()
-            return None if rel=='.' else rel
+            # From the parts, not relative_to(): Python 3.12 on Windows rebuilds 'sub/a:b' as the drive path 'a:b'.
+            return '/'.join(path.parts[len(prefix.parts):]) or None
         if is_within(path,prefix,resolve=False):   # the same folder spelled in another case (macOS)
             return '/'.join(Path(os.path.abspath(path)).parts[len(Path(os.path.abspath(prefix)).parts):]) or None
     return path.as_posix()
