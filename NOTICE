@@ -1,0 +1,23 @@
+Agentic Living Memory
+Copyright 2026 Tyler Simon
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This project includes or adapts the following third-party material:
+
+- Plus Jakarta Sans (assets/plus-jakarta-sans-latin-wght-normal.woff2.b64)
+  Copyright 2020 The Plus Jakarta Sans Project Authors
+  (https://github.com/tokotype/PlusJakartaSans)
+  Licensed under the SIL Open Font License, Version 1.1; see
+  assets/OFL-plus-jakarta-sans.txt.
+
+- The Behavior section of the instruction templates (templates/) is from
+  forrestchang/andrej-karpathy-skills
+  (https://github.com/forrestchang/andrej-karpathy-skills), MIT License.
+
+- The writing rules in WRITING.md and the Writing style section of the
+  instruction templates adapt humanizer v4.0.0
+  (https://github.com/blader/humanizer), MIT License, and Wikipedia's
+  "Signs of AI writing"
+  (https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing),
+  CC BY-SA 4.0.

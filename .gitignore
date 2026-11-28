@@ -7,3 +7,6 @@ __pycache__/
 .coverage
 .cache/
 node_modules
+*.egg-info/
+build/
+dist/

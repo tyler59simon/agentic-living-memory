@@ -889,6 +889,8 @@ def build_parser():
         p.add_argument('--json',action='store_true',default=argparse.SUPPRESS if suppress else False)
         p.add_argument('--actor',choices=['main','subagent','viewer'],default=argparse.SUPPRESS if suppress else os.environ.get('LIVING_MEMORY_ACTOR','main'))
     common(parser)
+    from . import __version__
+    parser.add_argument('-V','--version',action='version',version=f'alm {__version__}')
     subs=parser.add_subparsers(dest='command',required=True,metavar='COMMAND',help='one of the commands listed below')
     # No help= here, so argparse does not print its own flat list; the epilog lists them by group.
     def sub(name):
@@ -1408,6 +1410,9 @@ def main(argv=None):
             if args.actor in {'subagent','viewer'}:raise ValueError('Subagents are read-only' if args.actor=='subagent' else 'Viewers are read-only')
             from .upgrade import run as upgrade
             _emit(upgrade(rewire=args.rewire),args)
+            return 0
+        if args.command=='version':   # needs no store, so it works before setup
+            _emit(_cmd_version(args,None,None,cwd,None,subs),args)
             return 0
         from .storage import resolve_root
         root=resolve_root(args.root)[0]

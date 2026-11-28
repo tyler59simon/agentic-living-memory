@@ -39,6 +39,7 @@ INSTALL_DIR = INSTALL_HOME / "app"
 LEGACY_DIR = CODEX_HOME / "agentic-living-memory"
 LAUNCHER_DIR = Path.home() / ".local" / "bin"
 PROFILE_LINE = 'export PATH="$HOME/.local/bin:$PATH"  # agentic-living-memory'
+FISH_PROFILE_LINE = 'fish_add_path -g $HOME/.local/bin  # agentic-living-memory'
 
 
 def default_homes() -> list:
@@ -296,6 +297,8 @@ def install(uninstall=False, extra_homes=()):
                 (_add_to_path_windows if change['kind'] == 'registry' else _add_to_path_posix)(change)
             receipt['path_change'] = change['add']
             receipt['notice'] = 'Open a new terminal (and restart running agent sessions) so `alm` is found.'
+            if change['kind'] == 'profile' and sys.platform.startswith('linux') and Path(change['target']).name in ('.profile', '.bash_profile'):
+                receipt['notice'] += f' Terminals that start a non-login bash read ~/.bashrc instead; if `alm` is still not found, add this line there: {change["add"]}'
     return receipt
 
 
@@ -356,6 +359,9 @@ def _registry_path():
 def _profile():
     shell = os.path.basename(os.environ.get('SHELL', ''))
     home = Path.home()
+    if shell == 'fish':
+        xdg = os.environ.get('XDG_CONFIG_HOME', '')
+        return Path(xdg if os.path.isabs(xdg) else home / '.config') / 'fish' / 'config.fish'
     zdot = os.environ.get('ZDOTDIR', '')
     return Path(zdot if os.path.isabs(zdot) else home) / '.zprofile' if shell == 'zsh' else home / '.bash_profile' if shell == 'bash' and (home / '.bash_profile').exists() else home / '.profile'
 
@@ -370,10 +376,11 @@ def _path_step():
             return None
         return {'kind': 'registry', 'target': 'HKCU\\Environment\\Path', 'before': value, 'before_type': kind, 'add': str(LAUNCHER_DIR)}
     profile = _profile()
+    line = FISH_PROFILE_LINE if profile.name == 'config.fish' else PROFILE_LINE
     data = profile.read_bytes() if profile.is_file() else None   # bytes: a CRLF or non-UTF-8 profile is read as it is
-    if data is not None and PROFILE_LINE.encode() in data:
+    if data is not None and line.encode() in data:
         return None
-    return {'kind': 'profile', 'target': str(profile), 'before': _sha(data) if data is not None else None, 'add': PROFILE_LINE}
+    return {'kind': 'profile', 'target': str(profile), 'before': _sha(data) if data is not None else None, 'add': line}
 
 
 def _add_to_path_windows(change):
@@ -391,10 +398,28 @@ def _add_to_path_windows(change):
 
 
 def _add_to_path_posix(change):
-    profile = Path(change['target'])
+    """Append the PATH line through a temp file and a rename, so a crash never leaves a half-written profile. A symlinked
+    profile (dotfile managers) is written at its target, so the link stays."""
+    import stat
+    import tempfile
+    profile = Path(change['target']).resolve()
     data = profile.read_bytes() if profile.is_file() else b''
+    mode = stat.S_IMODE(profile.stat().st_mode) if profile.is_file() else 0o644
     profile.parent.mkdir(parents=True, exist_ok=True)
-    profile.write_bytes(data + (b'' if not data or data.endswith(b'\n') else b'\n') + change['add'].encode() + b'\n')
+    fd, tmp = tempfile.mkstemp(prefix='.' + profile.name + '.', dir=profile.parent)
+    try:
+        with os.fdopen(fd, 'wb') as out:
+            out.write(data + (b'' if not data or data.endswith(b'\n') else b'\n') + change['add'].encode() + b'\n')
+            out.flush()
+            os.fsync(out.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, profile)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _path_done(change):

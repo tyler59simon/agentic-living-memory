@@ -22,13 +22,14 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 try:
+    from . import __version__ as CORE_RELEASE
     from .common import file_lock, memory_root
 except ImportError:  # Permit `py core/installer_lifecycle.py ...` from the repo root.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from core import __version__ as CORE_RELEASE
     from core.common import file_lock, memory_root
 
 PROTOCOL_VERSION = 1
-CORE_RELEASE = "1.0.0"
 OWNERSHIP_SCHEMA = "living-memory-core-ownership-v1"
 PLAN_SCHEMA = "living-memory-core-plan-v1"
 RECEIPT_SCHEMA = "living-memory-core-install-receipt-v1"
@@ -41,6 +42,7 @@ ROOT_DOCUMENTS = (
     "living_memory.py", "PROTOCOL.md",
     "ARCHITECTURE.md", "SCRIPT_REFERENCE.md", "RECOVERY.md", "NOTE_TYPES.md", "NOTE_MAINTENANCE.md", "NOTEBOOKS.md",
     "WRITING.md", "templates/CLAUDE.md", "templates/AGENTS.md", "templates/GEMINI.md",
+    "LICENSE", "NOTICE", "SECURITY.md",
 )
 SKIP_NAMES = {".git", ".agents", ".codex-plugin", "__pycache__", ".DS_Store"}
 SKIP_SUFFIXES = {".pyc", ".db", ".sqlite", ".sqlite3", ".lock"}

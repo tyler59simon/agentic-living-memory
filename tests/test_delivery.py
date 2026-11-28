@@ -321,14 +321,29 @@ class LauncherInstall(StoreFixture):
     def test_profile_choice_by_shell(self):
         home=self.base/'h';home.mkdir()
         with patch.object(Path,'home',return_value=home):
-            for shell,expected in (('/bin/zsh','.zprofile'),('/bin/bash','.profile'),('/bin/fish','.profile'),('','.profile')):
-                with patch.dict(os.environ,{'SHELL':shell}):self.assertEqual(self.install._profile(),home/expected)
+            for shell,expected in (('/bin/zsh','.zprofile'),('/bin/bash','.profile'),('/bin/fish','.config/fish/config.fish'),('','.profile')):
+                with patch.dict(os.environ,{'SHELL':shell,'XDG_CONFIG_HOME':''}):self.assertEqual(self.install._profile(),home/expected)
             (home/'.bash_profile').write_text('x')
             with patch.dict(os.environ,{'SHELL':'/bin/bash'}):self.assertEqual(self.install._profile(),home/'.bash_profile')
     def test_profile_line_is_appended_once_to_the_end(self):
         profile=self.base/'h'/'.profile';profile.parent.mkdir();profile.write_text('alias x=y')
         change={'kind':'profile','target':str(profile),'before':None,'add':self.install.PROFILE_LINE}
         self.install._add_to_path_posix(change);self.assertEqual(profile.read_text(),'alias x=y\n'+self.install.PROFILE_LINE+'\n')
+    def test_fish_gets_fish_add_path(self):   # REL-R1
+        fish=self.base/'h'/'.config'/'fish'/'config.fish'   # _profile picks this path for fish (test_profile_choice_by_shell)
+        with patch.object(self.install,'_profile',return_value=fish),patch.object(self.install,'_on_path',return_value=False),\
+             patch.object(self.install.os,'name','posix'):
+            change=self.install._path_step()
+        self.assertEqual((change['target'],change['add']),(str(fish),self.install.FISH_PROFILE_LINE))
+        self.install._add_to_path_posix(change);self.assertTrue(self.install._path_done(change))
+    def test_profile_write_leaves_no_temp_file_and_keeps_a_symlink(self):   # REL-R1
+        real=self.base/'dotfiles'/'profile';real.parent.mkdir();real.write_text('alias x=y\n')
+        link=self.base/'h'/'.profile';link.parent.mkdir()
+        try:link.symlink_to(real)
+        except OSError:self.skipTest('symlinks need privileges here')
+        self.install._add_to_path_posix({'kind':'profile','target':str(link),'before':None,'add':self.install.PROFILE_LINE})
+        self.assertTrue(link.is_symlink());self.assertEqual(real.read_text(),'alias x=y\n'+self.install.PROFILE_LINE+'\n')
+        self.assertEqual(sorted(p.name for p in real.parent.iterdir()),['profile'])
     @unittest.skipUnless(os.name=='nt','Windows registry Path')
     def test_windows_path_write_keeps_a_folder_added_after_the_step_was_read(self):
         import winreg

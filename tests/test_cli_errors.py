@@ -84,3 +84,18 @@ class CliErrors(StoreFixture):
         wide=self.note(title='Wide',body='A wide note.\n\n## Notes\n'+'z'*65000)
         result=self.read_with(wide['id'],'--section','Notes','--max-chars','70000')
         self.assertEqual((len(result['body']),result['truncated']),(64000,True))
+
+    def test_version_flag_prints_the_release(self):   # REL-R1
+        from core import __version__
+        out=io.StringIO()
+        with contextlib.redirect_stdout(out),self.assertRaises(SystemExit) as stop:cli.main(['--version'])
+        self.assertEqual((stop.exception.code,out.getvalue().strip()),(0,f'alm {__version__}'))
+
+    def test_version_command_needs_no_store(self):   # REL-R1: it used to fail with "setup required" before alm setup
+        from core import __version__
+        out=io.StringIO()
+        with patch('core.storage.resolve_root',side_effect=AssertionError('version must not look for a store')),contextlib.redirect_stdout(out):
+            code=cli.main(['--json','version'])
+        result=json.loads(out.getvalue())
+        self.assertEqual((code,result['ok'],result['release']),(0,True,__version__))
+        self.assertTrue({'api','install','python','commands','capabilities'}<=set(result))

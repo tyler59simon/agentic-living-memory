@@ -1,0 +1,31 @@
+# Package metadata and the `alm` entry point for tooling and editable development installs (`pip install -e .`).
+# The supported install is still `install.py`, which copies the code, hooks, templates and assets into the app
+# folder that harness hooks run from; there are no runtime dependencies.
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentic-living-memory"
+dynamic = ["version"]
+description = "Local, harness-independent memory for coding agents: canonical Markdown notes, SQLite FTS5 indexes and native hooks."
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10,<3.16"
+dependencies = []
+
+[project.optional-dependencies]
+vec = ["sqlite-vec>=0.1.6,<0.2"]
+
+[project.scripts]
+alm = "core.cli:main"
+
+[project.urls]
+Source = "https://github.com/tyler59simon/agentic-living-memory"
+
+[tool.setuptools]
+packages = ["core"]
+py-modules = ["living_memory", "install"]
+
+[tool.setuptools.dynamic]
+version = {attr = "core.__version__"}
