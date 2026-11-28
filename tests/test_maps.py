@@ -378,7 +378,7 @@ class Staleness(StoreFixture):
         self.assertEqual(self.state()['repos'][self.app.as_posix()]['fresh']['ref'],self.ref)
         reason=stop['continue_reason']
         self.assertIn(f'map {self.short} is stale (docs/adr/ADR-004-money.md, pom.xml changed since it was written): CMD read {self.short}, then CMD update {self.short} --session s1',reason)
-        self.assertIn("--set-detail '**Conventions:** ...' for each bullet that changed.",reason)
+        self.assertIn("--set-detail '**Conventions:** ...' --expected-revision REV for each bullet that changed.",reason)
         self.assertEqual([r['k'] for r in usage.events(self.root) if r['e']=='reminder'],['stale'])
         self.prompt('next');self.edit_app()
         self.assertEqual(self.hook('stop'),{})   # once per note per session

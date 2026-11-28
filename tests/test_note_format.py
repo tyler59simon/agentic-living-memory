@@ -11,7 +11,8 @@ from revision_fill import main as cli
 from core.notes import capture, change, find_note, quality_warnings
 from core.repository import parse_text, serialize
 from core.search import snippet
-from core.sync import build_overlay, TEMPLATE_PROMPTS
+from core.note_types import TEMPLATE_PROMPTS
+from core.sync import build_overlay
 
 TAGS = ['subject/project', 'concern/architecture']
 # A note as it was written before the current layout.

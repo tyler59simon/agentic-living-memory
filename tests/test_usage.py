@@ -150,6 +150,9 @@ class CaptureCoverage(StoreFixture):
         self.ledger([(1, 1, [], False)] * 4)
         self.assertNotIn('Capture coverage', self.start())   # four sessions: below the minimum
         self.ledger([(1, 1, [], False)] * 4 + [(1, 1, ['demo:a'], False)])
+        # A healthy check is the day's check too (REL-P4), so the fifth session is reported the next day.
+        self.assertNotIn('Capture coverage', self.start('s1'))
+        (self.root / '.cache' / 'coverage-told').write_text('2000-01-01\n', encoding='utf-8')
         line = 'Capture coverage: 1 of 5 sessions that changed files in the last 14 days left a note or receipt.'
         self.assertIn(line, self.start('s1'))
         self.assertNotIn('Capture coverage', self.start('s2'))   # told today already

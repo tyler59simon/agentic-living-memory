@@ -165,10 +165,12 @@ Generated from the argparse parser in `core/cli.py` by `py -3.15 scripts/gen_scr
 | `backup` | `--keep` |
 | `batch` | `--payload-file` |
 | `bind` | none |
-| `capture` | `--action`, `--allow-similar`, `--command`, `--concern`, `--content-file`, `--context`, `--detail`, `--done`, `--drop-links`, `--file`, `--files`, `--from-proposal`, `--global`, `--idempotency-key`, `--important`, `--link`, `--payload-file`, `--pin`, `--platform`, `--project`, `--redact`, `--review-by`, `--rule`, `--section`, `--session`, `--source`, `--subject`, `--summary`, `--supersedes`, `--system`, `--tag`, `--technology`, `--title`, `--turn`, `--type` |
+| `capture` | `--action`, `--allow-similar`, `--body-file`, `--command`, `--concern`, `--content-file`, `--context`, `--detail`, `--done`, `--drop-links`, `--file`, `--files`, `--from-proposal`, `--global`, `--idempotency-key`, `--important`, `--link`, `--payload-file`, `--pin`, `--platform`, `--project`, `--redact`, `--review-by`, `--rule`, `--section`, `--session`, `--source`, `--subject`, `--summary`, `--supersedes`, `--system`, `--tag`, `--technology`, `--title`, `--turn`, `--type` |
 | `capture-finalize` | `--note`, `--session`, `--turn` |
 | `check` | `--expected-revision`, `--index`, `--session`, `--turn`, `--undo` |
-| `config get/set` | none |
+| `config` | none |
+| `config get` | none |
+| `config set` | none |
 | `confirm` | `--expected-revision`, `--session`, `--turn` |
 | `delete` | `--expected-revision` |
 | `diff` | `--include-private` |
@@ -191,7 +193,13 @@ Generated from the argparse parser in `core/cli.py` by `py -3.15 scripts/gen_scr
 | `ingest-skip` | `--payload-file` |
 | `log` | `--event`, `--limit`, `--note`, `--project`, `--since`, `--type`, `--until` |
 | `logs` | `--days`, `--event`, `--kind`, `--level`, `--limit` |
-| `maintenance status/preview/run/enable/disable/history` | `--all-domains`, `--daily-budget-usd`, `--dry-run`, `--limit`, `--max-notes-per-day`, `--model`, `--run`, `--timeout-seconds` |
+| `maintenance` | none |
+| `maintenance disable` | none |
+| `maintenance enable` | `--all-domains`, `--daily-budget-usd`, `--max-notes-per-day`, `--model`, `--timeout-seconds` |
+| `maintenance history` | `--limit`, `--run` |
+| `maintenance preview` | `--limit` |
+| `maintenance run` | `--dry-run` |
+| `maintenance status` | none |
 | `merge` | `--payload-file` |
 | `migrate` | `--baseline`, `--note-types`, `--schema` |
 | `off` | `--session` |
@@ -203,8 +211,12 @@ Generated from the argparse parser in `core/cli.py` by `py -3.15 scripts/gen_scr
 | `project create/update/archive` | `--payload-file` |
 | `projects` | `--status` |
 | `promote` | `--only`, `--suggest` |
-| `proposals list/show/accept/reject` | `--body-file`, `--edited`, `--expected-revision`, `--include-private`, `--kind`, `--notebook`, `--pin`, `--reason`, `--rule`, `--session`, `--status`, `--turn` |
-| `propose` | `--action`, `--allow-similar`, `--command`, `--concern`, `--content-file`, `--context`, `--detail`, `--done`, `--drop-links`, `--file`, `--files`, `--global`, `--idempotency-key`, `--important`, `--link`, `--payload-file`, `--pin`, `--platform`, `--project`, `--redact`, `--review-by`, `--rule`, `--section`, `--session`, `--source`, `--subject`, `--summary`, `--supersedes`, `--system`, `--tag`, `--technology`, `--title`, `--turn`, `--type` |
+| `proposals` | none |
+| `proposals accept` | `--body-file`, `--edited`, `--expected-revision`, `--include-private`, `--pin`, `--rule`, `--session`, `--turn` |
+| `proposals list` | `--include-private`, `--kind`, `--notebook`, `--session`, `--status` |
+| `proposals reject` | `--include-private`, `--reason`, `--session` |
+| `proposals show` | `--include-private` |
+| `propose` | `--action`, `--allow-similar`, `--body-file`, `--command`, `--concern`, `--content-file`, `--context`, `--detail`, `--done`, `--drop-links`, `--file`, `--files`, `--global`, `--idempotency-key`, `--important`, `--link`, `--payload-file`, `--pin`, `--platform`, `--project`, `--redact`, `--review-by`, `--rule`, `--section`, `--session`, `--source`, `--subject`, `--summary`, `--supersedes`, `--system`, `--tag`, `--technology`, `--title`, `--turn`, `--type` |
 | `query` | none |
 | `read` | `--max-chars`, `--metadata-only`, `--section` |
 | `rebaseline` | `--dry-run` |
@@ -219,8 +231,13 @@ Generated from the argparse parser in `core/cli.py` by `py -3.15 scripts/gen_scr
 | `retag` | `--payload-file` |
 | `review` | `--all-domains`, `--kind`, `--limit`, `--tag` |
 | `rewrite` | `--payload-file` |
-| `search` | `--all`, `--all-domains`, `--explain`, `--file`, `--filter`, `--limit`, `--links`, `--offset`, `--pages`, `--rebuild`, `--scope`, `--session`, `--sources`, `--status`, `--tag`, `--transcript`, `--type`, `--with-summary` |
-| `semantic status/install/remove/rebuild/native` | `--from`, `--model` |
+| `search` | `--all`, `--all-domains`, `--explain`, `--file`, `--filter`, `--limit`, `--links`, `--offset`, `--pages`, `--project`, `--rebuild`, `--scope`, `--session`, `--sources`, `--status`, `--tag`, `--transcript`, `--type`, `--with-summary` |
+| `semantic` | none |
+| `semantic install` | `--from`, `--model` |
+| `semantic native` | none |
+| `semantic rebuild` | none |
+| `semantic remove` | none |
+| `semantic status` | none |
 | `serve` | `--stdio` |
 | `setup` | `--location`, `--non-interactive`, `--source` |
 | `source add/remove/implicit` | `--payload-file` |
@@ -232,16 +249,24 @@ Generated from the argparse parser in `core/cli.py` by `py -3.15 scripts/gen_scr
 | `sync` | none |
 | `system create/update/retire` | `--payload-file` |
 | `systems` | `--status` |
+| `taxonomy` | none |
 | `taxonomy add` | none |
+| `taxonomy show` | none |
 | `timeline` | `--after`, `--all`, `--before`, `--by`, `--date`, `--type` |
 | `type create/update/retire` | `--payload-file` |
 | `types` | `--all` |
 | `unbind` | `--prefix` |
 | `undo` | `--include-private` |
-| `update` | `--action`, `--add-action`, `--add-detail`, `--add-link`, `--body`, `--body-file`, `--command`, `--concern`, `--context`, `--detail`, `--distinct`, `--done`, `--drop-section`, `--due`, `--expected-revision`, `--file`, `--files`, `--important`, `--item`, `--item-index`, `--link`, `--no-rule`, `--not-distinct`, `--owner`, `--payload-file`, `--pin`, `--platform`, `--priority`, `--redact`, `--replace-actions`, `--review-by`, `--rule`, `--section`, `--session`, `--set-detail`, `--source`, `--subject`, `--summary`, `--tag`, `--technology`, `--title`, `--turn`, `--type`, `--unpin`, `--why` |
-| `upgrade` | none |
+| `update` | `--action`, `--add-action`, `--add-detail`, `--add-link`, `--add-tag`, `--body`, `--body-file`, `--command`, `--concern`, `--content-file`, `--context`, `--detail`, `--distinct`, `--done`, `--drop-section`, `--due`, `--expected-revision`, `--file`, `--files`, `--important`, `--item`, `--item-index`, `--link`, `--no-rule`, `--not-distinct`, `--owner`, `--payload-file`, `--pin`, `--platform`, `--priority`, `--project`, `--redact`, `--remove-tag`, `--replace-actions`, `--review-by`, `--rule`, `--section`, `--session`, `--set-detail`, `--source`, `--subject`, `--summary`, `--system`, `--tag`, `--technology`, `--title`, `--turn`, `--type`, `--unpin`, `--why` |
+| `upgrade` | `--rewire` |
 | `validate` | none |
 | `version` | none |
-| `views list/add/update/remove/render/published` | `--all`, `--all-domains`, `--format`, `--out`, `--spec-file`, `--target`, `--title`, `--url` |
+| `views` | none |
+| `views add` | `--spec-file`, `--title` |
+| `views list` | `--all-domains` |
+| `views published` | `--url` |
+| `views remove` | none |
+| `views render` | `--all`, `--format`, `--out`, `--target` |
+| `views update` | `--spec-file`, `--title` |
 | `wiki` | `--agent`, `--archived`, `--budget`, `--build`, `--dry-run`, `--format`, `--model`, `--out`, `--progress`, `--project`, `--restructure`, `--theme` |
 <!-- flags:end -->
