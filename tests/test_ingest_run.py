@@ -72,7 +72,7 @@ class Batches(IngestRun):
         out=self.run_script('--batch','3','--dry-run')
         self.assertTrue(out['dry_run']);self.assertEqual(out['files'],self.total());self.assertEqual(len(out['batches']),-(-self.total()//3))
         first=out['batches'][0];self.assertEqual(first['paths'],['kb/docs/adr/0003-use-event-sourcing.md','kb/README.md','kb/docs/guide.md'])
-        for text in ('capture --type TYPE','--source','--file','300-1,200 characters','decision for decision records','project brief','codebase map','"digested"','"confirmed"','smallest change that makes the digest true again','read: ','starts with the quoted interpreter path: no shell functions, variables'):self.assertIn(text,first['prompt'])
+        for text in ('capture --type TYPE','--source','--file','300-1,200 characters','decision for decision records','project brief','codebase map','"digested"','"confirmed"','smallest change that makes the digest true again','read: ','starts with the quoted interpreter path: no shell functions, variables','Read every file to its last line','Never write a digest from part of a file'):self.assertIn(text,first['prompt'])
         self.assertFalse(self.calls.exists());self.assertEqual(self.active(),[])
 
     def test_files_go_to_the_agent_in_ranked_batches_and_get_digests(self):
@@ -90,6 +90,20 @@ class Batches(IngestRun):
     def test_max_batches_limits_the_run(self):
         out=self.run_script('--batch','2','--max-batches','2');self.assertEqual((out['batches_run'],out['batches_planned']),(2,2));self.assertEqual(len(self.active()),4)
         self.assertEqual(self.cli('ingest-scan','--limit','100')[1]['counts']['current'],4)
+
+    def test_a_large_file_goes_in_a_batch_of_its_own(self):
+        size=Agent.script(self).LARGE_FILE_BYTES;put(self.repo/'src'/'big.py','x = 1\n'*(size//6+1));sources.sync(self.root,'demo')
+        out=self.run_script('--batch','3','--dry-run');batches=[b['paths'] for b in out['batches']]
+        self.assertIn(['kb/src/big.py'],batches);self.assertEqual(sum(p.count('kb/src/big.py') for p in batches),1)
+        self.assertTrue(all(len(p)<=3 for p in batches));self.assertEqual(out['files'],self.total())
+    def test_make_batches_keeps_the_order_and_puts_each_large_file_alone(self):
+        module=Agent.script(self);big=module.LARGE_FILE_BYTES
+        items=[{'path':p,'size':s} for p,s in (('a',10),('b',big),('c',20),('d',30),('e',big-1),('f',big*4))]
+        self.assertEqual([[i['path'] for i in b] for b in module.make_batches(items,2)],[['a'],['b'],['c','d'],['e'],['f']])
+    def test_make_batches_uses_the_live_size_of_a_file_that_grew_since_the_index(self):
+        module=Agent.script(self);grown=self.base/'grown.py';put(grown,'x\n'*module.LARGE_FILE_BYTES)
+        items=[{'path':'a','size':10,'abs':str(self.base/'missing.py')},{'path':'g','size':10,'abs':str(grown)},{'path':'c','size':10}]
+        self.assertEqual([[i['path'] for i in b] for b in module.make_batches(items,8)],[['a'],['g'],['c']])
 
     def test_the_budget_stops_further_batches(self):
         out=self.run_script('--batch','2','--budget-usd','1.0');self.assertEqual(out['batches_run'],2);self.assertEqual(out['cost_usd'],1.0);self.assertGreater(out['batches_planned'],2)

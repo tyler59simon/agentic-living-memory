@@ -106,7 +106,7 @@ A changed or missing file reads `STALE: <path> changed since this note`. The ind
 
 ### Ingest run script
 
-`scripts/ingest_run.py [--root R] [--domain D] [--cwd DIR] [--source NAME] [--batch 8] [--max-batches N] [--budget-usd X] [--parallel 1] [--all] [--kinds KIND,...|all] [--model sonnet] [--command-json '[...]'] [--allowed-tools ...] [--timeout 1800] [--log FILE] [--dry-run]` drives headless agents over the `ingest-scan` list, one batch of files per agent run (the agent writes its digests through this CLI; LM itself calls no model).
+`scripts/ingest_run.py [--root R] [--domain D] [--cwd DIR] [--source NAME] [--batch 8] [--max-batches N] [--budget-usd X] [--parallel 1] [--all] [--kinds KIND,...|all] [--model sonnet] [--command-json '[...]'] [--allowed-tools ...] [--timeout 1800] [--log FILE] [--dry-run]` drives headless agents over the `ingest-scan` list, one batch of files per agent run (the agent writes its digests through this CLI; LM itself calls no model). A file of 25,000 bytes or more gets a batch of its own, and the prompt tells the agent to read every file to its end, in offset/limit chunks when Read refuses a large file, and to report a file it could not read in full as failed rather than digest part of it.
 
 The agent argv template takes `{prompt}` and `{model}` (default `claude -p {prompt} --model MODEL --output-format json --permission-mode acceptEdits --allowedTools Read Glob Grep` plus a rule for this CLI as the prompt tells the agent to type it with the Bash tool (`Bash("<python>" "<CLI>" *)`; Claude Code PowerShell rules did not match a quoted path, so a PowerShell call relies on the Living Memory hook's auto-allow); without `{prompt}`, or for a Windows `.cmd` shim, the prompt goes to stdin; no shell).
 
