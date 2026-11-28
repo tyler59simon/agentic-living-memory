@@ -2,15 +2,37 @@
 
 ## Note maintenance state
 
-`core/maintenance_state.py` holds the configuration (`maintenance.json`), per-run records (`maintenance/runs/`) and the accounting checkpoint (`maintenance/state.json`) for automatic note maintenance. The allowance in force is the element-wise maximum of the checkpoint and the figures summed from the run records, so deleting a checkpoint or `.cache` never grants a new allowance. Money is integer microdollars. It runs no model work. Backup, restore and relocation carry its files: a snapshot restore (`merge_restore`) keeps the current configuration but disabled, takes the element-wise maximum of the checkpoint and only adds run records, and relocation refuses while a run is unfinished (`active_runs`) or the worker lock is held (`running`), leaves the lock behind and writes the destination's configuration disabled.
+`core/maintenance_state.py` holds the configuration (`maintenance.json`), per-run records (`maintenance/runs/`) and the accounting checkpoint (`maintenance/state.json`) for automatic note maintenance. The allowance in force is the element-wise maximum of the checkpoint and the figures summed from the run records, so deleting a checkpoint or `.cache` never grants a new allowance.
 
-`core/maintenance.py` selects candidates (spec priority order, round-robin over enabled domains, retry holds, no preference or policy notes), builds the redacted evidence packet with its private manifest (a free preview: no model call, no usage events, no allowance), and holds the executor `apply`, the only automatic writer: each decision is re-checked against the current note, pin, action items, config and source hashes, then committed as one journaled transaction with a deterministic operation id. `run` ties these to the allowance accounting. `core/maintenance_agent.py` is the provider adapter: one tool-less `claude -p` call (no MCP, hooks or session, packet on stdin, fresh temp directory, process tree killed on timeout or overflow) and strict validation of the structured report. `runtime.process` does nothing when `LIVING_MEMORY_MAINTENANCE_CHILD=1`. The `maintenance` command, SessionStart scheduling (a detached `maintenance run --scheduled`), the summary line and the doctor checks call these modules; `NOTE_MAINTENANCE.md` describes the feature.
+Money is integer microdollars. It runs no model work.
+
+Backup, restore and relocation carry its files: a snapshot restore (`merge_restore`) keeps the current configuration but disabled, takes the element-wise maximum of the checkpoint and only adds run records, and relocation refuses while a run is unfinished (`active_runs`) or the worker lock is held (`running`), leaves the lock behind and writes the destination's configuration disabled.
+
+### Selection, executor and provider
+
+`core/maintenance.py` selects candidates (spec priority order, round-robin over enabled domains, retry holds, no preference or policy notes), builds the redacted evidence packet with its private manifest (a free preview: no model call, no usage events, no allowance), and holds the executor `apply`, the only automatic writer: each decision is re-checked against the current note, pin, action items, config and source hashes, then committed as one journaled transaction with a deterministic operation id.
+
+`run` ties these to the allowance accounting. `core/maintenance_agent.py` is the provider adapter: one tool-less `claude -p` call (no MCP, hooks or session, packet on stdin, fresh temp directory, process tree killed on timeout or overflow) and strict validation of the structured report.
+
+`runtime.process` does nothing when `LIVING_MEMORY_MAINTENANCE_CHILD=1`. The `maintenance` command, SessionStart scheduling (a detached `maintenance run --scheduled`), the summary line and the doctor checks call these modules; `NOTE_MAINTENANCE.md` describes the feature.
 
 ## Notebook pages
 
-`core/folder_docs.py` serves the pages of folder notebooks, a record kind apart from notes: Markdown files in registered folders outside the store ([NOTEBOOKS.md](NOTEBOOKS.md), design in `docs/notebooks-design.md`, whose hosted sections are historical). Hosted notebooks, which kept pages under `domains/D/notebooks/`, were retired in CON-18. An agent stages an edit as a record under `domains/D/folder-proposals/<nb>/<id>.json`; the shared helpers in `core/docs.py` write it through `repository.transaction` as one `doc-` operation with `meta` (domain, notebook, `folder_notebook`) in its journal, undone with `undo`. `prune_journals` keeps the newest 100 operations of each file and drops finished ones after 90 days. Pages never reach `reconcile`, the notes index, review, maintenance, SessionStart or the wiki. The registry, the staged page edits and the retired mirror's `notebook-sync.json` are bookkeeping that `history` and `diff` redact unless `--include-private` is given; `accept` and `reject` take a record's domain and notebook from where its file lies, never from its fields. The hook keeps agents' `--include-private` (read from the option words of memory commands only) out, and refuses their direct edits of folder pages.
+`core/folder_docs.py` serves the pages of folder notebooks, a record kind apart from notes: Markdown files in registered folders outside the store ([NOTEBOOKS.md](NOTEBOOKS.md), design in `docs/archive/notebooks-design.md`, whose hosted sections are historical). Hosted notebooks, which kept pages under `domains/D/notebooks/`, were retired in CON-18.
 
-Folder pages are searched through the sources index (`core/sources.py`): `core/folder_policy.py` reads `notebook-folders.json` and each folder's `.hivemind/notebook.json`, `sources.walk` skips hidden and private notebooks, and `sources.search` checks each hit again as it is served, so notebook membership and reach are never stored in the index. `core/docs_index.py` keeps a small derived `domains/D/docs.sqlite3` (tables `meta`, `source`, `file`, `task`) of the task lines of those pages for `open` and SessionStart. Freshness comes from a bounded stat walk with a cursor in `open`, not from write hooks. A leftover `domains/D/notebook-sync.json` from the retired Obsidian page mirror is removed by the next vault sync.
+An agent stages an edit as a record under `domains/D/folder-proposals/<nb>/<id>.json`; the shared helpers in `core/docs.py` write it through `repository.transaction` as one `doc-` operation with `meta` (domain, notebook, `folder_notebook`) in its journal, undone with `undo`. `prune_journals` keeps the newest 100 operations of each file and drops finished ones after 90 days.
+
+Pages never reach `reconcile`, the notes index, review, maintenance, SessionStart or the wiki.
+
+The registry, the staged page edits and the retired mirror's `notebook-sync.json` are bookkeeping that `history` and `diff` redact unless `--include-private` is given; `accept` and `reject` take a record's domain and notebook from where its file lies, never from its fields. The hook keeps agents' `--include-private` (read from the option words of memory commands only) out, and refuses their direct edits of folder pages.
+
+### Search and task index
+
+Folder pages are searched through the sources index (`core/sources.py`): `core/folder_policy.py` reads `notebook-folders.json` and each folder's `.hivemind/notebook.json`, `sources.walk` skips hidden and private notebooks, and `sources.search` checks each hit again as it is served, so notebook membership and reach are never stored in the index.
+
+`core/docs_index.py` keeps a small derived `domains/D/docs.sqlite3` (tables `meta`, `source`, `file`, `task`) of the task lines of those pages for `open` and SessionStart. Freshness comes from a bounded stat walk with a cursor in `open`, not from write hooks. A leftover `domains/D/notebook-sync.json` from the retired Obsidian page mirror is removed by the next vault sync.
+
+## Flow
 
 The local system follows a Bootstrap → Resolve → Read → Evaluate → Persist flow, with the adaptations and limits documented below.
 
@@ -26,6 +48,8 @@ flowchart LR
     M --> I[Disposable indexes and catalogs]
     M --> O[Staged Obsidian overlay]
 ```
+
+## Components
 
 | Component/flow | Implementation | Evidence and qualification |
 | --- | --- | --- |
@@ -51,23 +75,106 @@ flowchart LR
 | Obsidian sync | core/sync.py | Vault identity, copied/derived ownership, auto-applied edits, vault deletions and lifecycle changes applied at the next sync (journaled, listed under Recently applied with their undo command), self-clearing conflicts with "keep my version", rename following, quiet period, vault-only properties, preserved user-edited views, managed `overlay-sync-all` at session end. Shared dashboards display the last built domain. After a write, `schedule_overlay` starts a detached `refresh_overlay` worker instead of syncing inline; per-domain `queued` and `running` locks in `hooks/` keep at most one worker waiting and one running, and the worker waits until no write has reconciled the domain for 2 seconds before it syncs, because the sync holds the store lock. With background work off (`LIVING_MEMORY_NO_BACKGROUND=1`, a maintenance child) or a worker that cannot start, the write builds the overlay itself. |
 | Tag vocabulary expansion | core/tag_taxonomy.py; core/governance.py | Direct, journaled taxonomy additions (`taxonomy add`, kind `taxonomy_expansion`) and direct, journaled bulk retags (`retag`). Invalid overlay tags stay staged with a validation error until resolved. |
 
+## Regression tests
+
 The regression suite in tests/ covers the reviewed failures and the principal local journeys. Tests include actual process termination/recovery, interrupted transactions, concurrent CLI writers, safe installation/uninstallation, vault editing and conflict scenarios, retrieval relevance, Stop-hook change detection, and non-destructive migration. See VALIDATION.md for limits.
 
 ## Deliberate adaptations and limits
 
-- Custom note types live in the store-wide registry `note_types.json` (`core/type_registry.py`, written by `type create|update|retire` through `governance.commit`). `core/note_types.definition` answers for built-in and custom types alike (sections, action items, review horizon, default tags, summary prompt). Loading is lenient and writes are strict: `repository.parse` accepts any well-formed type name, so a note never drops out because its type is not registered, while capture, `update --type` and `repository.validate` require a registered type (an active one for new notes).
-- The thirteen note types and their use cases are defined in [NOTE_TYPES.md](NOTE_TYPES.md): knowledge, decision, preference, context, status, bug, plan, risk, research, policy, map, runbook and brief. STATUS incorporates progress; corrections use KNOWLEDGE with the correction concern tag. Type is the source of truth: schema-3 canonical frontmatter has no independent prefix field; filenames and read/search metadata derive the uppercase prefix. Legacy notes, including progress/correction types, remain readable. `migrate --note-types` converts existing notes in one journaled write that `undo OPERATION` reverses, mapping progress to status, correction to knowledge and old BUG/RESOLVED prefixes to bug while preserving lifecycle status and stable identity.
+### Note types
 
-- Storage is harness-independent: all adapters and scripts resolve one user-selected local data root from `~/.config/agentic-living-memory/config.json`. Setup suggests `~/LivingMemory`; the store contains canonical Markdown, bindings, taxonomy and durable history, while SQLite indexes and catalogs are derived. CLI/environment overrides remain explicit escape hatches and appear in diagnostics.
-- The one-time CLI wizard initializes or connects a store. `setup --location NEW` relocates an existing store directly: it copies and verifies the data before switching the shared pointer, retains the original as a backup, and marks it relocated for updated clients. A phase journal in `relocations/` lets a rerun of the same command resume after an interruption. Installed hooks use the chosen Python interpreter; Python 3.15 is supported. Harness installation and data ownership remain separate.
-- This shared store serves one user on one computer. Adapters retain project-domain scoping and cooperative script governance; sharing a folder does not broaden retrieval scope or add a remote service.
+Custom note types live in the store-wide registry `note_types.json` (`core/type_registry.py`, written by `type create|update|retire` through `governance.commit`). `core/note_types.definition` answers for built-in and custom types alike (sections, action items, review horizon, default tags, summary prompt).
 
-- There are no daemons or extra model APIs; everything runs when a script or hook is called. Two opt-in features start a detached run from SessionStart at most once a day: note maintenance (`maintenance enable`, core/maintenance.py) and the digest refresh (`config set digest_refresh`, core/digest_refresh.py, which runs `scripts/ingest_run.py`). Both, and the agent wiki build (`wiki --agent`), call `claude -p`.
-- Semantic search is optional and off until `semantic install`. A model2vec static model (potion-retrieval-32M) is a WordPiece vocabulary plus one embedding row per word piece. core/semantic.py reads it with the standard library: BERT normalization, greedy WordPiece, rows read from a memory-mapped safetensors file, mean then unit length. An index rebuild embeds only notes whose file changed and carries the other vectors over from the index it replaces, when the same model revision made them. The parsed tokenizer is kept beside tokenizer.json as `tokenizer.marshal` (stdlib `marshal`, keyed by the source's size and mtime inside the file, rebuilt when missing or stale, skipped when the folder is read-only; derived, safe to delete), so a hook process does not parse the 1.5 MB JSON each time. It matches model2vec's own vectors (cosine 1.0 on note texts). Each index gains a `vectors` table (title plus summary). The installed model is part of the index fingerprint, and the lexical and semantic rankings are fused by reciprocal rank (k = 60), so a note matching both wins. A static model averages word meanings and does not read word order. The relevance gate keeps every lexical rule and admits a meaning-only match at cosine 0.45 or more, tuned on the eval so that unrelated prompts inject nothing. An unreadable model leaves search lexical. Loading the model adds about 30 ms to a hook's process start, and retrieval about 7 ms.
-- Memory units and the unit index (core/units.py, core/vectors.py). Each note is also cut into units: an overview (title plus summary, the same text as the note-level vector), the `> **Important:**` caveat, and one unit per `##` to `####` section, found fence-aware, with its heading path, a role read from the heading (Why is rationale, Alternatives considered is alternative, Steps and Roll back are procedure, and so on; Links and Action items are skipped) and its line span in the note file. A section longer than 360 words is split between paragraphs, never inside a fenced block. Unit ids come from the note id, the normalized heading path and an occurrence count, so a moved section keeps its id; the text's SHA-256 decides re-embedding, so a moved section costs nothing and an edited one re-embeds alone. The units live in a derived sidecar per domain, `domains/D/vectors.sqlite3` (unit metadata and excerpts, one embedding per distinct text, and a `meta` table with the schema version, model identity, dimension, generation and the note index's fingerprint). It is written by `rebuild_index` under the store lock, in one transaction per write that bumps `generation`; a schema, model or mode change, or a file that does not open, rebuilds it into a temporary file that replaces it. Hooks only read it. `search.sqlite3` is unchanged, so code without the extension still opens and rebuilds it. The semantic channel finds notes on its own (a note with no query word can rank), scores each note by its best unit (never a sum, so length earns nothing) and fuses with FTS5 by the same RRF; lexical score, similarity, fused rank and gate verdict stay separate fields. A unit index that does not match the note index's fingerprint or the model is never read: search falls back to the note-level vectors and says why (`backend`, `backendReason` on each hit).
-- Optional native vector search (core/vectors.py). When the `sqlite-vec` package is installed (`pip install sqlite-vec==0.1.9`; versions 0.1.6 to below 0.2 are accepted), the unit index also holds a `vec0` table (`float[DIM]`, cosine) written in the same transaction as the units, and queries use its exact KNN, widening k (from 200, at most 4096, vec0's ceiling) until enough eligible notes are found, so retired or filtered notes cannot crowd out active ones. The library is located with `importlib.util.find_spec` (importing the package would load numpy when present) and loaded only from that fixed path, with extension loading switched on for that one call and off again. Backends, chosen per query: `native` (extension loaded, `vec0` written in the current generation), else `python` (the same embeddings, Python dot product; reasons `not_installed`, `load_unsupported`, `load_blocked`, `unsupported_version:V`, `disabled`, `native_stale`, `native_absent`, `knn_error`, `knn_k_cap`), else note-level vectors (`notes`), else FTS5 alone (`lexical`). Native and Python rank identically on the same embeddings (top 20 agree, scores within 1e-6); the native table changes speed, not results. A write made without the extension leaves the native table stale until a write with it resyncs the table in full. `semantic native off` (or `LIVING_MEMORY_NATIVE=0`) switches it off. Sources use sqlite-vec's `vec_distance_cosine` over their existing `vec` table, with no second table; without the extension they are scanned in Python.
-- The injection controller (core/injection.py) decides, per relevant note, how much to deliver: a pointer (the line format before units), evidence (the summary's opening, then one section's heading, file lines and up to 300 characters, cut at a sentence end), or expanded (the section up to 1,200 characters, when the prompt asks for the steps, all alternatives or the details). A section is chosen by a role cue in the prompt ("why", "turned down", "fixed", "how do I"), else by meaning (similarity at or above the model threshold, plus 0.05 per shared prompt word, beating the overview), else by at least two shared words. A rejected-options section is always labelled as such. Whole-prompt acknowledgments ("thanks", "go ahead") retrieve nothing. A short follow-up with a cue and no topic of its own ("why?", "what were the alternatives?") answers from the notes the previous prompt found; the session keeps those refs, never prompt text. Dedupe is per unit and level: a session that has a note's Why at evidence level still gets its Alternatives, a new revision, a deeper level, or an explicit "remind me"; a new session or a compaction starts clean. The prompt hook has one budget of 9,000 characters (`PROMPT_CAP`, equal to `PROMPT_HARD_CAP` and below Claude Code's 10,000-character hook limit): the header, maps and brief and governance lines always go out, note lines get what they leave (the first always), and source excerpts and post-compaction recall join only when they fit. `read REF --section HEADING` reads one section; `search --explain` shows the backend, scores, gate and the level the hook would choose. Retrieval also reaches two groups the active scope leaves out: resolved bug and risk notes (prompt hook and file hints only, at half fused score, labelled `[resolved] `; never an owed update) and, when no hit from the project, its parents, children and global domains is strong (`search.strong`: the relevance gate kept it on a title match, on `STRONG_COVERAGE` of the prompt's words, or on a similarity `STRONG_MARGIN` above the model's threshold), one portable note (knowledge, bug or runbook, active, no `project/` tag) from another bound domain, found by `search.sibling_search` in the sibling's index only (nothing is parsed or rebuilt; at most 4 siblings by name), delivered last as a pointer labelled `[from DOMAIN] `. `"cross_project": false` at the top level of `bindings.json` turns the sibling lookup off, like `"auto_resolve": false` for auto-resolve; the `foreign_domains` fallback is unchanged.
+Loading is lenient and writes are strict: `repository.parse` accepts any well-formed type name, so a note never drops out because its type is not registered, while capture, `update --type` and `repository.validate` require a registered type (an active one for new notes).
+
+The thirteen note types and their use cases are defined in [NOTE_TYPES.md](NOTE_TYPES.md): knowledge, decision, preference, context, status, bug, plan, risk, research, policy, map, runbook and brief. STATUS incorporates progress; corrections use KNOWLEDGE with the correction concern tag.
+
+Type is the source of truth: schema-3 canonical frontmatter has no independent prefix field; filenames and read/search metadata derive the uppercase prefix. Legacy notes, including progress/correction types, remain readable.
+
+`migrate --note-types` converts existing notes in one journaled write that `undo OPERATION` reverses, mapping progress to status, correction to knowledge and old BUG/RESOLVED prefixes to bug while preserving lifecycle status and stable identity.
+
+### Storage and setup
+
+Storage is harness-independent: all adapters and scripts resolve one user-selected local data root from `~/.config/agentic-living-memory/config.json`. Setup suggests `~/LivingMemory`; the store contains canonical Markdown, bindings, taxonomy and durable history, while SQLite indexes and catalogs are derived. CLI/environment overrides remain explicit escape hatches and appear in diagnostics.
+
+The one-time CLI wizard initializes or connects a store. `setup --location NEW` relocates an existing store directly: it copies and verifies the data before switching the shared pointer, retains the original as a backup, and marks it relocated for updated clients.
+
+A phase journal in `relocations/` lets a rerun of the same command resume after an interruption. Installed hooks use the chosen Python interpreter; Python 3.15 is supported. Harness installation and data ownership remain separate.
+
+This shared store serves one user on one computer. Adapters retain project-domain scoping and cooperative script governance; sharing a folder does not broaden retrieval scope or add a remote service.
+
+### Background work and model calls
+
+There are no daemons or extra model APIs; everything runs when a script or hook is called.
+
+Two opt-in features start a detached run from SessionStart at most once a day: note maintenance (`maintenance enable`, core/maintenance.py) and the digest refresh (`config set digest_refresh`, core/digest_refresh.py, which runs `scripts/ingest_run.py`). Both, and the agent wiki build (`wiki --agent`), call `claude -p`.
+
+### Semantic search
+
+Semantic search is optional and off until `semantic install`. A model2vec static model (potion-retrieval-32M) is a WordPiece vocabulary plus one embedding row per word piece. core/semantic.py reads it with the standard library: BERT normalization, greedy WordPiece, rows read from a memory-mapped safetensors file, mean then unit length.
+
+An index rebuild embeds only notes whose file changed and carries the other vectors over from the index it replaces, when the same model revision made them.
+
+The parsed tokenizer is kept beside tokenizer.json as `tokenizer.marshal` (stdlib `marshal`, keyed by the source's size and mtime inside the file, rebuilt when missing or stale, skipped when the folder is read-only; derived, safe to delete), so a hook process does not parse the 1.5 MB JSON each time. It matches model2vec's own vectors (cosine 1.0 on note texts).
+
+Each index gains a `vectors` table (title plus summary). The installed model is part of the index fingerprint, and the lexical and semantic rankings are fused by reciprocal rank (k = 60), so a note matching both wins.
+
+A static model averages word meanings and does not read word order. The relevance gate keeps every lexical rule and admits a meaning-only match at cosine 0.45 or more, tuned on the eval so that unrelated prompts inject nothing. An unreadable model leaves search lexical. Loading the model adds about 30 ms to a hook's process start, and retrieval about 7 ms.
+
+### Memory units
+
+Memory units and the unit index (core/units.py, core/vectors.py). Each note is also cut into units: an overview (title plus summary, the same text as the note-level vector), the `> **Important:**` caveat, and one unit per `##` to `####` section, found fence-aware, with its heading path, a role read from the heading (Why is rationale, Alternatives considered is alternative, Steps and Roll back are procedure, and so on; Links and Action items are skipped) and its line span in the note file.
+
+A section longer than 360 words is split between paragraphs, never inside a fenced block. Unit ids come from the note id, the normalized heading path and an occurrence count, so a moved section keeps its id; the text's SHA-256 decides re-embedding, so a moved section costs nothing and an edited one re-embeds alone.
+
+The units live in a derived sidecar per domain, `domains/D/vectors.sqlite3` (unit metadata and excerpts, one embedding per distinct text, and a `meta` table with the schema version, model identity, dimension, generation and the note index's fingerprint).
+
+It is written by `rebuild_index` under the store lock, in one transaction per write that bumps `generation`; a schema, model or mode change, or a file that does not open, rebuilds it into a temporary file that replaces it. Hooks only read it. `search.sqlite3` is unchanged, so code without the extension still opens and rebuilds it.
+
+The semantic channel finds notes on its own (a note with no query word can rank), scores each note by its best unit (never a sum, so length earns nothing) and fuses with FTS5 by the same RRF; lexical score, similarity, fused rank and gate verdict stay separate fields.
+
+A unit index that does not match the note index's fingerprint or the model is never read: search falls back to the note-level vectors and says why (`backend`, `backendReason` on each hit).
+
+### Native vector search
+
+Optional native vector search (core/vectors.py). When the `sqlite-vec` package is installed (`pip install sqlite-vec==0.1.9`; versions 0.1.6 to below 0.2 are accepted), the unit index also holds a `vec0` table (`float[DIM]`, cosine) written in the same transaction as the units, and queries use its exact KNN, widening k (from 200, at most 4096, vec0's ceiling) until enough eligible notes are found, so retired or filtered notes cannot crowd out active ones.
+
+The library is located with `importlib.util.find_spec` (importing the package would load numpy when present) and loaded only from that fixed path, with extension loading switched on for that one call and off again.
+
+Backends, chosen per query: `native` (extension loaded, `vec0` written in the current generation), else `python` (the same embeddings, Python dot product; reasons `not_installed`, `load_unsupported`, `load_blocked`, `unsupported_version:V`, `disabled`, `native_stale`, `native_absent`, `knn_error`, `knn_k_cap`), else note-level vectors (`notes`), else FTS5 alone (`lexical`).
+
+Native and Python rank identically on the same embeddings (top 20 agree, scores within 1e-6); the native table changes speed, not results. A write made without the extension leaves the native table stale until a write with it resyncs the table in full.
+
+`semantic native off` (or `LIVING_MEMORY_NATIVE=0`) switches it off. Sources use sqlite-vec's `vec_distance_cosine` over their existing `vec` table, with no second table; without the extension they are scanned in Python.
+
+### Injection controller
+
+The injection controller (core/injection.py) decides, per relevant note, how much to deliver: a pointer (the line format before units), evidence (the summary's opening, then one section's heading, file lines and up to 300 characters, cut at a sentence end), or expanded (the section up to 1,200 characters, when the prompt asks for the steps, all alternatives or the details).
+
+A section is chosen by a role cue in the prompt ("why", "turned down", "fixed", "how do I"), else by meaning (similarity at or above the model threshold, plus 0.05 per shared prompt word, beating the overview), else by at least two shared words. A rejected-options section is always labelled as such.
+
+Whole-prompt acknowledgments ("thanks", "go ahead") retrieve nothing. A short follow-up with a cue and no topic of its own ("why?", "what were the alternatives?") answers from the notes the previous prompt found; the session keeps those refs, never prompt text.
+
+Dedupe is per unit and level: a session that has a note's Why at evidence level still gets its Alternatives, a new revision, a deeper level, or an explicit "remind me"; a new session or a compaction starts clean.
+
+The prompt hook has one budget of 9,000 characters (`PROMPT_CAP`, equal to `PROMPT_HARD_CAP` and below Claude Code's 10,000-character hook limit): the header, maps and brief and governance lines always go out, note lines get what they leave (the first always), and source excerpts and post-compaction recall join only when they fit.
+
+`read REF --section HEADING` reads one section; `search --explain` shows the backend, scores, gate and the level the hook would choose.
+
+Retrieval also reaches two groups the active scope leaves out: resolved bug and risk notes (prompt hook and file hints only, at half fused score, labelled `[resolved] `; never an owed update) and, when no hit from the project, its parents, children and global domains is strong (`search.strong`: the relevance gate kept it on a title match, on `STRONG_COVERAGE` of the prompt's words, or on a similarity `STRONG_MARGIN` above the model's threshold), one portable note (knowledge, bug or runbook, active, no `project/` tag) from another bound domain, found by `search.sibling_search` in the sibling's index only (nothing is parsed or rebuilt; at most 4 siblings by name), delivered last as a pointer labelled `[from DOMAIN] `.
+
+`"cross_project": false` at the top level of `bindings.json` turns the sibling lookup off, like `"auto_resolve": false` for auto-resolve; the `foreign_domains` fallback is unchanged.
+
+### Bootstrap, capture and recovery
+
 - The diagram's auto-memory bootstrap fallback is implemented as native managed instruction/protocol context rather than a skill. Native trust must still permit hook execution.
 - Automatic capture means the main agent silently judges and invokes the capture script. It does not mean a deterministic hook can understand and save every useful fact independently.
 - Canonical mutation is recoverable across files, not a filesystem-wide instantaneous transaction. Sync across two roots has separately recoverable phases. External tools can still edit files outside cooperative governance.
-- Each hook is a Python process start (about 100-150 ms on this machine) plus retrieval (about 30-70 ms in-process for tens of notes). Hook retrieval reads the domain's search index without the store lock and checks only the shortlisted hits against their files (`core/search.py` `_search_index_readonly`); `alm search` and other CLI searches still take the lock and read every note to confirm the index is fresh, so they grow linearly with the domain. Run scripts/benchmark.py for exact results (written to .cache/benchmark.json). There is no performance guarantee.
+
+### Performance
+
+Each hook is a Python process start (about 100-150 ms on this machine) plus retrieval (about 30-70 ms in-process for tens of notes).
+
+Hook retrieval reads the domain's search index without the store lock and checks only the shortlisted hits against their files (`core/search.py` `_search_index_readonly`); `alm search` and other CLI searches still take the lock and read every note to confirm the index is fresh, so they grow linearly with the domain.
+
+Run scripts/benchmark.py for exact results (written to .cache/benchmark.json). There is no performance guarantee.

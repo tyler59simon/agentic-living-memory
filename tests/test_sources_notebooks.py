@@ -1,6 +1,6 @@
 """Folder notebooks in the knowledge base (NS-2B): the notebook-folders.json registry (`doc folder set|unset`), sidecar policy,
 the walk that never enters hidden or private notebooks, the serve-time check, folder pages in search and ask, and ingest-scan.
-Design: docs/notebooks-design.md sections 8.2 and 12b."""
+Design: docs/archive/notebooks-design.md sections 8.2 and 12b."""
 import contextlib,json,os,sqlite3,sys,time
 from pathlib import Path
 from unittest.mock import patch

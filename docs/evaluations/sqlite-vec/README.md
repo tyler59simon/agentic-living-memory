@@ -64,12 +64,12 @@ Every variant: retrieval hit@3 1.0, false injection 0.0, 265 mean injected chara
 
 ## Tests
 
-- Baseline before any change: 1,085 tests, OK (1 skipped), 468 s (`baseline/unittest.txt`).
-- After, including the review fixes: 1,139 tests OK (1 skipped) with sqlite-vec loaded, and 1,139 OK (6 skipped: the 5 native tests and the existing skip) with `LIVING_MEMORY_NATIVE=0` (`results/unittest-final.txt`, `results/unittest-final-native-off.txt`); about 555 s each, the two run side by side. One more test, added after those runs for the read --section finding, passes on its own.
+- Baseline before any change: 1,085 tests, OK (1 skipped), 468 s (`docs/archive/sqlite-vec/baseline/unittest.txt`).
+- After, including the review fixes: 1,139 tests OK (1 skipped) with sqlite-vec loaded, and 1,139 OK (6 skipped: the 5 native tests and the existing skip) with `LIVING_MEMORY_NATIVE=0` (`docs/archive/sqlite-vec/results/unittest-final.txt`, `unittest-final-native-off.txt`); about 555 s each, the two run side by side. One more test, added after those runs for the read --section finding, passes on its own.
 - Codex review (gpt-6.1-sol, extra-high reasoning, `codex review --base origin/main`): 2 P1 and 6 P2 findings, all confirmed and fixed; each has a regression test in `tests/test_injection.py` (class `ReviewFindings`) or `tests/test_vectors.py` (`test_ties_at_the_knn_cutoff_resolve_like_python`) that fails on commit 499371c and passes after. New: `tests/test_units.py`, `tests/test_vectors.py` (its `Native` class needs sqlite-vec and is skipped without it), `tests/test_injection.py`, one source test. Adapted: `tests/test_index_v3.py` (note-level embed counts exclude the unit index), `tests/scenarios/retrieval-gate.json` (an explicit "remind me" now delivers again, per the task; a repeat without it is still suppressed).
 - Hook smoke test (Claude and Codex adapters, native on, off, and a store with no model): valid JSON, 2,495 to 2,877 characters.
 - Not run: macOS and Linux, a Python built without extension loading (covered by a mocked `load_unsupported` path only), an endpoint policy that blocks DLL loading (covered by a mocked `load_blocked` path).
 
 ## Files
 
-`results/units-*.json`, `results/synthetic-*.json`, `results/vectors-*.json`, `results/hook-store-copy.json`, `baseline/` (the code before the change). Reproduce with the commands in VALIDATION.md.
+The raw results are archived in `docs/archive/sqlite-vec/`: `results/units-*.json`, `results/synthetic-*.json`, `results/vectors-*.json`, `results/hook-store-copy.json`, `baseline/` (the code before the change), and the write-up `how-i-fixed-memory-retrieval.html`. Reproduce with the commands in VALIDATION.md.

@@ -3,7 +3,7 @@ retention and the privacy of their operations. Hosted notebooks, which kept thei
 
 A staged page edit is a record under `domains/D/folder-proposals/<nb>/<id>.json`. Every write is one journaled transaction
 whose kind starts with `doc_`, undone with `undo OPERATION`. Pages are never notes: no list, review, maintenance, SessionStart
-or wiki path reads them. Design: docs/notebooks-design.md (its hosted sections are historical)."""
+or wiki path reads them. Design: docs/archive/notebooks-design.md (its hosted sections are historical)."""
 from __future__ import annotations
 
 import json

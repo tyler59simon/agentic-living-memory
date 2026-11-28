@@ -24,17 +24,24 @@ class MaintenanceDocs(unittest.TestCase):
         self.assertNotIn('There are no background engines',(ROOT/'MAINTENANCE.md').read_text(encoding='utf-8'))
         self.assertIn('NOTE_MAINTENANCE.md',ROOT_DOCUMENTS);self.assertTrue((ROOT/'NOTE_MAINTENANCE.md').is_file())
 
-USER_DOCS=sorted([*ROOT.glob('*.md'),*ROOT.glob('adapters/**/*.md'),*ROOT.glob('templates/*.md')])
+USER_DOCS=sorted([*ROOT.glob('*.md'),*ROOT.glob('adapters/**/*.md'),*ROOT.glob('templates/*.md'),*ROOT.glob('docs/**/*.md')])
+
+def anchors(doc):
+    """The GitHub anchors of a Markdown file's headings."""
+    text=re.sub(r'```.*?```','',doc.read_text(encoding='utf-8'),flags=re.S)
+    return {re.sub(r'[^\w\- ]','',h.strip().lower()).replace(' ','-') for h in re.findall(r'^#{1,6} (.+)$',text,flags=re.M)}
 
 class DocLinks(unittest.TestCase):   # REL-R2
     def test_relative_links_point_at_files_that_exist(self):
         for doc in USER_DOCS:
             text=re.sub(r'```.*?```','',doc.read_text(encoding='utf-8'),flags=re.S)
             for target in re.findall(r'\]\(([^)\s]+)\)',text):
-                path=target.split('#',1)[0]
-                if not path or re.match(r'[a-z]+:',path):continue
+                path,_,anchor=target.partition('#')
+                if re.match(r'[a-z]+:',path):continue
                 with self.subTest(doc=doc.name,link=target):
-                    self.assertTrue((doc.parent/path).exists(),f'{doc.relative_to(ROOT)} links to missing {target}')
+                    linked=doc.parent/path if path else doc
+                    self.assertTrue(linked.exists(),f'{doc.relative_to(ROOT)} links to missing {target}')
+                    if anchor and linked.suffix=='.md':self.assertIn(anchor,anchors(linked),f'{doc.relative_to(ROOT)} links to a missing heading: {target}')
 
     def test_the_readme_indexes_every_root_doc(self):
         readme=(ROOT/'README.md').read_text(encoding='utf-8')

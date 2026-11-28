@@ -1,6 +1,6 @@
 # Notebooks: design for Notes Studio (NS-2A, NS-2B)
 
-> **Retired in part (CON-18, 2026-11-24).** Hosted notebooks, the ones that kept their pages inside the store, were removed: the `doc` commands that served them, `domain create --notebook-only`, the Obsidian page mirror and the privacy registry (`notebook-privacy.json`) are gone. The sections on hosted notebooks below are historical. Folder notebooks (sections 8.2 and 12b) stay; [NOTEBOOKS.md](../NOTEBOOKS.md) describes what exists now.
+> **Retired in part (CON-18, 2026-11-24).** Hosted notebooks, the ones that kept their pages inside the store, were removed: the `doc` commands that served them, `domain create --notebook-only`, the Obsidian page mirror and the privacy registry (`notebook-privacy.json`) are gone. The sections on hosted notebooks below are historical. Folder notebooks (sections 8.2 and 12b) stay; [NOTEBOOKS.md](../../NOTEBOOKS.md) describes what exists now.
 
 Hivemind's Notes Studio (roadmap NOTES-1) lets the user keep notebooks either as folders on disk or inside Living Memory. This document is the Living Memory side: a new record kind for notebook pages, notebook-only domains, an attachment store, and agent reach for both notebook kinds. The Hivemind side, and every decision behind this design, is in `agentic-hivemind-app/docs/notes-studio/README.md`. Decisions made by the user on 2026-11-20 are not reopened here.
 

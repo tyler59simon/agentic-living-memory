@@ -1,6 +1,6 @@
 """Folder notebook page proposals (CON-9) and the one proposals command (CON-25): `doc read --file` and `doc propose --file`
 for a registered folder of Markdown outside the store, accept and undo that put the bytes back, and `proposals` for staged
-notes and page edits. Design: docs/notebooks-design.md, NOTEBOOKS.md."""
+notes and page edits. Design: docs/archive/notebooks-design.md, NOTEBOOKS.md."""
 import base64,json,os,unittest
 from pathlib import Path
 from unittest.mock import patch
