@@ -69,24 +69,24 @@ class Bindings(GlobalFixture):
     def test_migration_points_a_folderless_global_at__global(self):
         config = load_bindings(self.root);config['search_scope']['global_domains'] = ['global']
         (self.root / 'bindings.json').write_text(json.dumps(config), encoding='utf-8')
-        self.assertTrue(any("names 'global'" in w for w in doctor(self.root, str(self.base / 'project'))['warnings']))
+        self.assertTrue(any("names 'global'" in w for w in doctor(self.root, str(self.base / 'project'), self.root)['warnings']))
         migrate_schema(self.root)
         config = load_bindings(self.root)
         self.assertEqual(config['search_scope']['global_domains'], ['_global'])
         self.assertEqual(canonical_domain('global', self.root), '_global')
-        self.assertFalse(any('global_domains' in w for w in doctor(self.root, str(self.base / 'project'))['warnings']))
+        self.assertFalse(any('global_domains' in w for w in doctor(self.root, str(self.base / 'project'), self.root)['warnings']))
 
 
     def test_doctor_warns_about_a_bound_folder_that_no_longer_exists(self):
         project = str(self.base / 'project');(self.base / 'project').mkdir(exist_ok=True)
-        self.assertFalse([w for w in doctor(self.root, project)['warnings'] if w.startswith('bindings:')])
+        self.assertFalse([w for w in doctor(self.root, project, self.root)['warnings'] if w.startswith('bindings:')])
         init_domain('moved', [str(self.base / 'gone')], self.root)
-        warned = [w for w in doctor(self.root, project)['warnings'] if w.startswith('bindings:')]
+        warned = [w for w in doctor(self.root, project, self.root)['warnings'] if w.startswith('bindings:')]
         self.assertEqual(len(warned), 1);self.assertIn("domain 'moved'", warned[0]);self.assertIn('bind moved NEW_PATH', warned[0])   # BIND-RENAME
         old = str((self.base / 'gone').resolve());self.assertIn(f'unbind moved --prefix {old}', warned[0])
         (self.base / 'moved-here').mkdir();self.assertEqual(self.cli('bind', 'moved', str(self.base / 'moved-here'))[0], 0)
         code, out = self.cli('unbind', 'moved', '--prefix', old);self.assertEqual((code, out['status'], out['prefix']), (0, 'prefix_removed', old))
-        self.assertFalse([w for w in doctor(self.root, project)['warnings'] if w.startswith('bindings:')])
+        self.assertFalse([w for w in doctor(self.root, project, self.root)['warnings'] if w.startswith('bindings:')])
         self.assertEqual(load_bindings(self.root)['domains']['moved']['prefixes'], [str((self.base / 'moved-here').resolve())])
 
     def test_unbind_prefix_matches_expanded_case_folded_and_legacy_folders(self):
@@ -95,14 +95,14 @@ class Bindings(GlobalFixture):
         config = load_bindings(self.root)
         config['domains']['legacy'] = {'prefixes': ['$ALM_TEST_BASE/old-a', str(self.base / 'keep')], 'root': str(self.base / 'old-b')}
         (self.root / 'bindings.json').write_text(json.dumps(config), encoding='utf-8')
-        warned = [w for w in doctor(self.root, str(self.base))['warnings'] if "domain 'legacy'" in w];self.assertEqual(len(warned), 2)
+        warned = [w for w in doctor(self.root, str(self.base), self.root)['warnings'] if "domain 'legacy'" in w];self.assertEqual(len(warned), 2)
         for old in ('old-a', 'old-b'):
             folder = str((self.base / old).resolve())
             spelled = folder.upper() if sys.platform in ('win32', 'darwin') else folder   # Windows and macOS paths are case-insensitive
             code, out = self.cli('unbind', 'legacy', '--prefix', spelled);self.assertEqual((code, out['status']), (0, 'prefix_removed'), out)
         entry = load_bindings(self.root)['domains']['legacy']
         self.assertEqual(entry, {'prefixes': [str(self.base / 'keep')]})   # the legacy root field is gone, not left behind
-        self.assertFalse([w for w in doctor(self.root, str(self.base))['warnings'] if "domain 'legacy'" in w])
+        self.assertFalse([w for w in doctor(self.root, str(self.base), self.root)['warnings'] if "domain 'legacy'" in w])
 
     def test_rebinding_keeps_legacy_binding_keys_and_the_old_folders_still_resolve(self):   # STO-4
         from core.common import resolve_domain

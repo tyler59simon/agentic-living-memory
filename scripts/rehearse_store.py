@@ -8,7 +8,8 @@ from core.validate import validate_domain
 from core.repository import inventory
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--root',type=Path,default=memory_root());args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--root',type=Path);args=parser.parse_args()
+    args.root=args.root or memory_root()   # resolved only when --root is absent, so a machine without a store can rehearse a copy
     with tempfile.TemporaryDirectory(prefix='living-memory-rehearsal-') as folder:
         root=Path(folder)/'store';shutil.copytree(args.root,root)
         before={str(p.relative_to(root)):hashlib.sha256(p.read_bytes()).hexdigest() for p in (root/'domains').rglob('*.md') if p.parent.name in {'notes','archive'}}

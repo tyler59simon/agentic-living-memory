@@ -183,7 +183,7 @@ class VectorsSurviveABump(StoreFixture):
         a = self.note('Layout rules', 'Sections follow a fixed order.')
         self.note('Cache', 'The local cache is rebuildable.', allow_similar=True)
         semantic.install(self.root, 'tiny', self.source)
-        path = next((self.root / 'domains' / 'demo' / 'notes').glob('*Layout*'))
+        path = next((self.root / 'domains' / 'demo' / 'notes').glob('*layout*'))
         path.write_text(path.read_text(encoding='utf-8').replace('fixed order', 'fixed order, always'), encoding='utf-8')   # edited outside the scripts
         model = semantic.load(self.root)
         with patch.object(model, 'embed', wraps=model.embed) as embed:

@@ -52,7 +52,8 @@ class Identity(unittest.TestCase):
         origin = (self.base / 'Origins' / 'Ledger.git')
         origin.mkdir(parents=True)
         want = 'file:' + origin.resolve().as_posix().casefold()
-        for url in (str(origin), origin.as_posix(), origin.as_uri(), str(origin).replace('/', '\\')):
+        backslashed = (str(origin).replace('/', '\\'),) if os.name == 'nt' else ()   # a backslash is a separator on Windows only
+        for url in (str(origin), origin.as_posix(), origin.as_uri(), *backslashed):
             with self.subTest(url=url):
                 self.assertEqual(normalize_remote(url), want)
         # A relative remote is relative to the clone.

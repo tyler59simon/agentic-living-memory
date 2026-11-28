@@ -5,7 +5,11 @@ from pathlib import Path
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--package',type=Path,default=Path(__file__).resolve().parents[1]);args=parser.parse_args();package=args.package.resolve()
     with tempfile.TemporaryDirectory(prefix='living-memory-installed-smoke-') as folder:
-        root=Path(folder)/'store';project=Path(folder)/'project';project.mkdir();env={**os.environ,'LIVING_MEMORY_ROOT':str(root)}
+        root=Path(folder)/'store';project=Path(folder)/'project';project.mkdir();home=Path(folder)/'home';home.mkdir()
+        # A temporary home, so no hook or command reads or writes the real harness folders or the shared config.
+        env={k:v for k,v in os.environ.items() if k not in ('LIVING_MEMORY_HOME','LIVING_MEMORY_CLAUDE')}
+        env.update({'LIVING_MEMORY_ROOT':str(root),'HOME':str(home),'USERPROFILE':str(home),'CODEX_HOME':str(home/'.codex'),'CLAUDE_CONFIG_DIR':str(home/'.claude'),
+                    'APPDATA':str(home/'AppData'/'Roaming'),'LOCALAPPDATA':str(home/'AppData'/'Local'),'XDG_CONFIG_HOME':str(home/'.config')})
         def run(script,arguments,payload=None):
             result=subprocess.run([sys.executable,str(package/script)]+arguments,input=json.dumps(payload) if payload is not None else None,text=True,capture_output=True,env=env,cwd=project,timeout=30)
             if result.returncode:raise RuntimeError(result.stderr or result.stdout)

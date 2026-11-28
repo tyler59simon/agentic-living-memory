@@ -1,4 +1,4 @@
-import json,os,subprocess,sys,tempfile,time,unittest
+import contextlib,json,os,subprocess,sys,tempfile,time,unittest
 from pathlib import Path
 from unittest.mock import patch
 from core import maintenance_agent as agent,runtime
@@ -76,13 +76,17 @@ class Provider(Fake):
     def test_schema_and_policy_are_well_formed(self):
         self.assertEqual(json.loads(agent.SCHEMA_JSON),agent.SCHEMA);self.assertIn('untrusted data',agent.POLICY)
         self.assertEqual(set(agent.SCHEMA['properties']['decisions']['items']['properties']['action']['enum']),set(agent.ACTIONS))
+    def no_host_claude(self):
+        """Hide the machine's own claude: LIVING_MEMORY_CLAUDE and the install folders are read after PATH."""
+        stack=contextlib.ExitStack();stack.enter_context(patch.dict(os.environ));os.environ.pop('LIVING_MEMORY_CLAUDE',None)
+        stack.enter_context(patch('core.maintenance_agent._install_folders',return_value=[]));return stack
     def test_a_missing_executable(self):
-        with patch('core.maintenance_agent.shutil.which',return_value=None):
+        with self.no_host_claude(),patch('core.maintenance_agent.shutil.which',return_value=None):
             self.assertEqual(agent.provider(),{'ok':False,'reason_code':'provider_unavailable'})
             out=agent.review(self.request);self.assertEqual((out['ok'],out['reason_code']),(False,'provider_unavailable'))
         self.assertEqual(agent.provider(executable=[str(self.dir/'nothing')])['reason_code'],'provider_unavailable')
     def test_a_script_shim_is_refused(self):
-        with patch('core.maintenance_agent.shutil.which',return_value=str(self.dir/'claude.cmd')):self.assertEqual(agent.provider()['reason_code'],'provider_unsupported')
+        with self.no_host_claude(),patch('core.maintenance_agent.shutil.which',return_value=str(self.dir/'claude.cmd')):self.assertEqual(agent.provider()['reason_code'],'provider_unsupported')
     def test_a_missing_flag_is_unsupported_and_nothing_runs(self):
         for flag in agent.REQUIRED_FLAGS:
             with self.subTest(flag=flag),patch.dict(os.environ,{'FAKE_DROP_FLAG':flag}):

@@ -1,5 +1,5 @@
 """#13 ingest: Claude Code auto-memory files become notes in one direct, undoable write."""
-import contextlib, io, json, os, unittest
+import contextlib, io, json, os, re, unittest
 from pathlib import Path
 from test_core import StoreFixture
 from revision_fill import main
@@ -113,8 +113,10 @@ class Ingest(StoreFixture):
         self.assertEqual(self.cli('--actor', 'subagent', 'ingest', '--source', str(self.source))[0], 2)
 
     def test_default_source_and_parser(self):
+        # The folder is named after the resolved path: on macOS /home resolves to /System/Volumes/Data/home.
+        posix = re.sub(r'[^A-Za-z0-9]', '-', str(Path('/home/me/My Project').resolve())) if os.name != 'nt' else None
         self.assertEqual(default_source(r'C:\Users\me\My Project') if os.name == 'nt' else default_source('/home/me/My Project'),
-                         self.base / 'home-claude' / 'projects' / ('C--Users-me-My-Project' if os.name == 'nt' else '-home-me-My-Project') / 'memory')
+                         self.base / 'home-claude' / 'projects' / ('C--Users-me-My-Project' if os.name == 'nt' else posix) / 'memory')
         meta, body = parse('\ufeff---\r\nname: "quoted"\r\nmetadata:\r\n  type: user\r\n---\r\n\r\nBody text\r\n')
         self.assertEqual((meta, body), ({'name': 'quoted', 'metadata': {'type': 'user'}}, 'Body text'))
         self.assertEqual(parse('no frontmatter'), ({}, 'no frontmatter'))

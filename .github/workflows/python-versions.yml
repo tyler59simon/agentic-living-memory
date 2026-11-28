@@ -1,6 +1,7 @@
-# Runs the full unittest suite on every supported Python (3.10 to 3.15) on Windows, Linux and macOS.
+# Runs the full unittest suite on every supported Python (3.10 to 3.15) on Windows, Linux and macOS, then installs the
+# package on each OS and drives the installed copy (CLI, every hook adapter, the `alm` launcher).
 # Manual only (Actions > Python versions > Run workflow, or `gh workflow run python-versions.yml --ref BRANCH`):
-# one job takes about 20 minutes, and jobs run in parallel.
+# a Windows test job takes about 40 minutes, Linux about 8, and jobs run in parallel.
 name: Python versions
 
 on:
@@ -9,21 +10,22 @@ on:
 permissions:
   contents: read
 
+env:
+  GIT_AUTHOR_NAME: ci
+  GIT_AUTHOR_EMAIL: ci@example.invalid
+  GIT_COMMITTER_NAME: ci
+  GIT_COMMITTER_EMAIL: ci@example.invalid
+
 jobs:
   test:
     name: ${{ matrix.os }} / ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
         python: ['3.10', '3.11', '3.12', '3.13', '3.14', '3.15']
-    env:
-      GIT_AUTHOR_NAME: ci
-      GIT_AUTHOR_EMAIL: ci@example.invalid
-      GIT_COMMITTER_NAME: ci
-      GIT_COMMITTER_EMAIL: ci@example.invalid
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -32,8 +34,34 @@ jobs:
           allow-prereleases: true
       - name: Check SQLite FTS5
         run: python -c "import sqlite3, sys; sqlite3.connect(':memory:').execute('CREATE VIRTUAL TABLE t USING fts5(x)'); print(sys.version, sqlite3.sqlite_version)"
-      - name: Optional sqlite-vec (macOS)
-        if: runner.os == 'macOS'
+      - name: Optional sqlite-vec
         run: python -m pip install sqlite-vec==0.1.9
       - name: Unit tests
         run: python -m unittest discover -s tests
+
+  installed-smoke:
+    name: installed / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      # The runner is thrown away after the job, so the install may write the real home and (on Windows) the user PATH.
+      - name: Install the package
+        run: |
+          python install.py --location "$RUNNER_TEMP/LivingMemory" | tee install.json
+          python -c "import json; r = json.load(open('install.json')); print('APP=' + r['summary']['package'])" >> "$GITHUB_ENV"
+          python -c "import json, pathlib; r = json.load(open('install.json')); print(pathlib.Path(r['launcher']['path']).parent)" >> "$GITHUB_PATH"
+      - name: Installed CLI, Codex hooks and the alm launcher
+        run: python scripts/installed_smoke.py --package "$APP"
+      - name: Every hook adapter, run from the installed copy
+        run: python scripts/simulate.py --package "$APP" --harness all --scenario all

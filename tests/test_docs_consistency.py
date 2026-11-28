@@ -24,6 +24,16 @@ class MaintenanceDocs(unittest.TestCase):
         self.assertNotIn('There are no background engines',(ROOT/'MAINTENANCE.md').read_text(encoding='utf-8'))
         self.assertIn('NOTE_MAINTENANCE.md',ROOT_DOCUMENTS);self.assertTrue((ROOT/'NOTE_MAINTENANCE.md').is_file())
 
+class ReleaseGates(unittest.TestCase):   # REL-R4
+    def test_every_file_the_installer_ships_exists(self):
+        from core.installer_lifecycle import ROOT_DOCUMENTS
+        self.assertFalse([name for name in ROOT_DOCUMENTS if not (ROOT/name).is_file()])
+
+    def test_no_python_file_starts_with_a_byte_order_mark(self):
+        skip={'.git','__pycache__','.cache','build','dist'}
+        found=[str(p.relative_to(ROOT)) for p in ROOT.rglob('*.py') if not skip&set(p.relative_to(ROOT).parts) and p.read_bytes()[:3]==b'\xef\xbb\xbf']
+        self.assertFalse(found,'remove the UTF-8 BOM from: '+', '.join(found))
+
 USER_DOCS=sorted([*ROOT.glob('*.md'),*ROOT.glob('adapters/**/*.md'),*ROOT.glob('templates/*.md')])
 
 def anchors(doc):

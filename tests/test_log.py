@@ -1,5 +1,5 @@
 """log: the activity index over the operation journals, its cache, and the session ledger."""
-import contextlib,io,json,time,unittest,zipfile
+import contextlib,io,json,unittest,zipfile
 from unittest.mock import patch
 from test_core import StoreFixture
 from revision_fill import main
@@ -113,12 +113,13 @@ class Cache(Log):
         op=interrupted('Cache policy two');recover(self.root,op,'backward');self.assertEqual([r['event'] for r in self.rows()],['created'])
         op=interrupted('Cache policy three');recover(self.root,op,'forward');self.assertEqual([r['event'] for r in self.rows()],['superseded','created','created'])
 
-    def test_first_run_is_slower_than_later_runs(self):
+    def test_later_runs_reopen_no_journal(self):
+        # Checked by what is read, not by timing: two short runs on a shared CI machine can finish in either order.
         init_domain('bulk',[str(self.base/'bulk')],self.root)
         for i in range(60):capture(f'Bulk note number {i}',f'Body about topic {i}.',TAGS,'bulk',self.root,allow_similar=True)
-        started=time.perf_counter();self.assertEqual(len(self.rows('--domain','bulk','--limit','1000')),60);cold=time.perf_counter()-started
-        started=time.perf_counter();self.rows();warm=time.perf_counter()-started
-        self.assertLess(warm,cold)
+        self.assertEqual(len(self.rows('--domain','bulk','--limit','1000')),60)
+        with patch('core.activity._read',side_effect=AssertionError('journal reopened')):
+            self.assertEqual(len(self.rows('--domain','bulk','--limit','1000')),60)
 
 class Filters(Log):
     def setUp(self):

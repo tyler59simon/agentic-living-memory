@@ -551,7 +551,7 @@ class VaultEditing(StoreFixture):
         build_overlay('demo', self.vault, self.root)
         page = self.status_page().read_text(encoding='utf-8')
         self.assertIn('Deleted: Cache', page)
-        self.assertIn('living_memory.py" --domain demo undo ', page)
+        self.assertRegex(page, r'living_memory\.py"? --domain demo undo ')   # the path is quoted on Windows only
 
     def test_sync_all_continues_past_a_failing_domain(self):
         from core.init_domain import init_domain

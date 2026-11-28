@@ -18,7 +18,8 @@ if '--help' in args:
     print('Usage: claude [options]\\n'+'\\n'.join('  '+f+' <value>' for f in %r));sys.exit(0)
 packet=json.loads(sys.stdin.read());task=packet['task'];env=os.environ.get
 title=packet['page']['title'] if task=='page' else None
-open(env('FAKE_LOG'),'a').write(json.dumps({'task':task,'title':title,'budget':args[args.index('--max-budget-usd')+1],'model':args[args.index('--model')+1],
+os.makedirs(env('FAKE_LOG'),exist_ok=True)   # one file per call: concurrent appends to one file can collide on Windows
+open(os.path.join(env('FAKE_LOG'),'%%d-%%d.json'%%(time.time_ns(),os.getpid())),'w').write(json.dumps({'task':task,'title':title,'budget':args[args.index('--max-budget-usd')+1],'model':args[args.index('--model')+1],
     'policy':args[args.index('--system-prompt')+1],'sources':len(packet.get('sources',[])),'bodies':[len(s['body']) for s in packet.get('sources',[])]})+'\\n')
 time.sleep(float(env('FAKE_SLEEP','0')))
 def done(report):
@@ -60,7 +61,7 @@ class Base(tw.Fixture):
         env.start();self.addCleanup(env.stop)
         for name in ('HIVEMIND_SESSION','LIVING_MEMORY_MAINTENANCE_CHILD'):os.environ.pop(name,None)
     def calls(self):
-        return [json.loads(l) for l in self.log.read_text(encoding='utf-8').splitlines()] if self.log.exists() else []
+        return [json.loads(p.read_text(encoding='utf-8')) for p in sorted(self.log.glob('*.json'))] if self.log.exists() else []
     def kinds(self):
         c=self.calls();return {k:sum(1 for x in c if x['task']==k) for k in ('outline','place','page')}
     def build(self,**kw):
@@ -542,6 +543,7 @@ class Page(Base):
 
     def render(self,body):
         """markdown() from the page's script run under node on `body`, as a [tag, text, kids] tree."""
+        if not __import__('shutil').which('node'):self.skipTest('needs node')
         js=wiki.JS;start=js.index('var INLINE=');end=js.index('// ---- building blocks')
         stub=("var N={},CITE={page:{sources:[{id:'a',title:'A',current:true,missing:false}]}},AG=true;"
               "function mk(t){var e={tag:t,kids:[],lastChild:null,appendChild:function(k){this.kids.push(k);this.lastChild=k;return k},setAttribute:function(){},querySelector:function(){return null}};return e}"
@@ -715,7 +717,8 @@ class Command(Base):
         r=self.ok('wiki','--agent','--theme','emerald-light','--out',str(self.base/'out'/'a.html'));self.assertIn('<html lang="en" data-hm="emerald-light">',Path(r['path']).read_text(encoding='utf-8'))
         r=self.ok('wiki','--agent','--format','json','--out',str(self.base/'out'/'a.json'));self.assertEqual(json.loads(Path(r['path']).read_text(encoding='utf-8'))['edition'],'agent')
         self.assertEqual(self.ok('wiki','--theme','purple')['format'],'html');self.assertIn('data-hm="purple"',(self.root/'.views'/'demo'/'wiki.html').read_text(encoding='utf-8'))
-        self.add('Fresh note','New.',['project/hive']);self.ok('wiki','--agent','--build','--project','hive');self.assertEqual(self.ok('wiki','--agent','--project','hive')['path'].endswith('agent-wiki-hive.html'),True)
+        self.add('Fresh note','New.',['project/hive']);code,out,err=self.run_cli('wiki','--agent','--build','--project','hive');self.assertEqual(code,0,err)
+        self.assertEqual(self.ok('wiki','--agent','--project','hive')['path'].endswith('agent-wiki-hive.html'),True)
     def test_an_empty_budget_is_refused_not_replaced_by_the_default(self):   # AW-4
         self.sample()
         for extra in ((),('--dry-run',)):
