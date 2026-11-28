@@ -1,4 +1,4 @@
-"""Real-agent evaluation of the subagent proposal inbox (docs/evaluations/2026-11-subagent-proposals.md).
+"""Real-agent evaluation of the subagent proposal inbox.
 
 Each run builds a throwaway Python repo whose bug or rule only investigation finds, a throwaway store bound to it, and
 drives headless Claude Code (`claude -p`, Claude Haiku 5.5 by default) with Living Memory hooks from one checkout:

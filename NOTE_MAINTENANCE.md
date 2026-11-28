@@ -80,7 +80,7 @@ An unreadable or unavailable file or source is not proof that a note is wrong. T
 
 `maintenance preview [--limit N]` lists the next batch (ref, title, type, level, kinds, permitted actions, protection reason, size) and the notes that would be dropped. It makes no model call, reserves nothing and records no usage.
 
-`maintenance run --dry-run` makes the real model call and lists each recommendation but changes no note. It works while maintenance is disabled (using the configured domains, or `--domain`), and it spends the same interval, note and budget allowance as a live run. Run it first on a fixture or a copied store (see the MAINT-1F gate in `VALIDATION.md`).
+`maintenance run --dry-run` makes the real model call and lists each recommendation but changes no note. It works while maintenance is disabled (using the configured domains, or `--domain`), and it spends the same interval, note and budget allowance as a live run. Run it first on a fixture or a copied store (see the maintenance dry-run gate in `VALIDATION.md`).
 
 ## History, audit and restore
 

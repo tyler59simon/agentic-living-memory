@@ -1,6 +1,5 @@
 """Folder notebooks (NS-2B): reach, policy, digests, history and recovery. These are the folder-notebook cases of the Codex reviews of
-NS-2B (rounds 1 to 3), kept when hosted notebooks were retired (CON-18). Each test names its finding: P, S, D, R and F, then a number.
-Record: docs/archive/ns2b-codex-review.md."""
+NS-2B (rounds 1 to 3), kept when hosted notebooks were retired (CON-18). Each test names its finding: P, S, D, R and F, then a number."""
 import contextlib,json,os,subprocess,time
 from pathlib import Path
 from unittest.mock import patch

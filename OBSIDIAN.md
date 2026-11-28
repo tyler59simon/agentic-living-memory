@@ -36,7 +36,7 @@ The vault is your own editing surface, so edits there need no approval:
 
 ## Notebooks
 
-Living Memory no longer mirrors notebook pages into the vault (hosted notebooks were retired in CON-18). Copies an earlier version left in `Notebooks/<domain>/<notebook>/` are plain files now: they stay, agents may not write them, and they are never indexed as a source. A leftover `domains/<domain>/notebook-sync.json` is ignored and removed by the next sync. Folder notebooks are folders you keep yourself, outside the vault. See [NOTEBOOKS.md](NOTEBOOKS.md#obsidian).
+Living Memory no longer mirrors notebook pages into the vault (hosted notebooks were retired on 2026-11-24). Copies an earlier version left in `Notebooks/<domain>/<notebook>/` are plain files now: they stay, agents may not write them, and they are never indexed as a source. A leftover `domains/<domain>/notebook-sync.json` is ignored and removed by the next sync. Folder notebooks are folders you keep yourself, outside the vault. See [NOTEBOOKS.md](NOTEBOOKS.md#obsidian).
 
 ## Conflicts and recovery
 

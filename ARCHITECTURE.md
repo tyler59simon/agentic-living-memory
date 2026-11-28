@@ -18,7 +18,7 @@ Backup, restore and relocation carry its files: a snapshot restore (`merge_resto
 
 ## Notebook pages
 
-`core/folder_docs.py` serves the pages of folder notebooks, a record kind apart from notes: Markdown files in registered folders outside the store ([NOTEBOOKS.md](NOTEBOOKS.md), design in `docs/archive/notebooks-design.md`, whose hosted sections are historical). Hosted notebooks, which kept pages under `domains/D/notebooks/`, were retired in CON-18.
+`core/folder_docs.py` serves the pages of folder notebooks, a record kind apart from notes: Markdown files in registered folders outside the store ([NOTEBOOKS.md](NOTEBOOKS.md)). Hosted notebooks, which kept pages under `domains/D/notebooks/`, were retired on 2026-11-24.
 
 An agent stages an edit as a record under `domains/D/folder-proposals/<nb>/<id>.json`; the shared helpers in `core/docs.py` write it through `repository.transaction` as one `doc-` operation with `meta` (domain, notebook, `folder_notebook`) in its journal, undone with `undo`. `prune_journals` keeps the newest 100 operations of each file and drops finished ones after 90 days.
 
@@ -173,7 +173,7 @@ Retrieval also reaches two groups the active scope leaves out: resolved bug and 
 
 ### Performance
 
-Each hook is a Python process start (about 100-150 ms on this machine) plus retrieval (about 30-70 ms in-process for tens of notes).
+Each hook is a Python process start (about 100-150 ms) plus retrieval (about 30-70 ms in-process for tens of notes).
 
 Hook retrieval reads the domain's search index without the store lock and checks only the shortlisted hits against their files (`core/search.py` `_search_index_readonly`); `alm search` and other CLI searches still take the lock and read every note to confirm the index is fresh, so they grow linearly with the domain.
 

@@ -27,7 +27,7 @@ File hints: before a write tool changes a file, PreToolUse may add up to two not
 - Codex: yes, since openai/codex#20692 (May 2026).
 - Copilot CLI, Factory and Antigravity CLI: no, because their PreToolUse output documents only permission decisions and modified arguments. They get no hints.
 
-Claude Code is deployed and verified live on this machine alongside Codex and Antigravity CLI. Factory and Copilot wire formats were checked against current vendor documentation but not exercised in live sessions. Host versions and permissions may affect event support. Moving the package requires regenerating adapters, because commands contain absolute interpreter and script paths.
+Claude Code, Codex and Antigravity CLI are verified in live sessions. Factory and Copilot wire formats were checked against current vendor documentation but not exercised in live sessions. Host versions and permissions may affect event support. Moving the package requires regenerating adapters, because commands contain absolute interpreter and script paths.
 
 ## Antigravity CLI
 

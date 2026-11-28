@@ -24,7 +24,7 @@ class MaintenanceDocs(unittest.TestCase):
         self.assertNotIn('There are no background engines',(ROOT/'MAINTENANCE.md').read_text(encoding='utf-8'))
         self.assertIn('NOTE_MAINTENANCE.md',ROOT_DOCUMENTS);self.assertTrue((ROOT/'NOTE_MAINTENANCE.md').is_file())
 
-USER_DOCS=sorted([*ROOT.glob('*.md'),*ROOT.glob('adapters/**/*.md'),*ROOT.glob('templates/*.md'),*ROOT.glob('docs/**/*.md')])
+USER_DOCS=sorted([*ROOT.glob('*.md'),*ROOT.glob('adapters/**/*.md'),*ROOT.glob('templates/*.md')])
 
 def anchors(doc):
     """The GitHub anchors of a Markdown file's headings."""
